@@ -4,7 +4,6 @@
 //! winit links objc2 0.5 and this module objc2 0.6, so the two never exchange types. The only
 //! bridge is the `NSView` pointer in winit's raw window handle.
 
-use std::fmt;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -31,6 +30,7 @@ use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle};
 use crate::SystemEvent;
 use crate::geometry::{Edge, Rect, strip_frame};
 
+/// Why the strip's window could not be attached. The app words it for people.
 #[derive(Debug)]
 pub enum PlatformError {
     /// `AppKit` windows may only be touched from the main thread.
@@ -42,19 +42,6 @@ pub enum PlatformError {
     /// The view is not in a window.
     NoWindow,
 }
-
-impl fmt::Display for PlatformError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotMainThread => write!(f, "not on the main thread"),
-            Self::Handle(err) => write!(f, "no window handle: {err}"),
-            Self::NotAppKit => write!(f, "the window handle is not an AppKit view"),
-            Self::NoWindow => write!(f, "the view is not in a window"),
-        }
-    }
-}
-
-impl std::error::Error for PlatformError {}
 
 impl From<HandleError> for PlatformError {
     fn from(err: HandleError) -> Self {

@@ -2,14 +2,16 @@
 //! instructions, notifications or exclamation marks. The probe is a tester's tool, so its steps
 //! do give instructions, in the same plain tone.
 
-use std::fmt::{Display, Write as _};
+use std::fmt::{self, Display, Write as _};
 use std::path::Path;
 
 use crate::cli::UsageError;
 use crate::hover::NativePoint;
-use crate::pinning::LevelMode;
+use crate::pinning::{AttachError, LevelMode};
+use crate::present::PresentError;
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
 use crate::probe::script::{Phase, Step};
+use crate::strip::StripError;
 
 const PRODUCT_NAME: &str = "Repo Terrarium";
 /// The binary's name, a machine identifier that never changes.
@@ -40,7 +42,50 @@ pub fn window_failed(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the strip could not open: {err}")
 }
 
-pub const NO_DISPLAY: &str = "no display is connected";
+impl Display for StripError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EventLoop(err) => write!(f, "the event loop failed: {err}"),
+            Self::Window(err) => write!(f, "the window could not be created: {err}"),
+            Self::Attach(err) => write!(f, "the window could not be pinned: {}", attach(err)),
+            Self::Present(err) => write!(f, "{err}"),
+            Self::NoDisplay => write!(f, "no display is connected"),
+        }
+    }
+}
+
+impl std::error::Error for StripError {}
+
+#[cfg(target_os = "macos")]
+fn attach(err: &AttachError) -> String {
+    match err {
+        AttachError::NotMainThread => "not on the main thread".to_owned(),
+        AttachError::Handle(err) => format!("no window handle: {err}"),
+        AttachError::NotAppKit => "the window handle is not an AppKit view".to_owned(),
+        AttachError::NoWindow => "the view is not in a window".to_owned(),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::trivially_copy_pass_by_ref)] // one signature with the macOS error
+fn attach(err: &AttachError) -> String {
+    match *err {}
+}
+
+impl Display for PresentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Surface(err) => write!(f, "the drawing surface failed: {err}"),
+            Self::Size(size) => write!(
+                f,
+                "the drawing surface holds {} pixels, not {}",
+                size.actual, size.expected
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PresentError {}
 
 pub fn menu_quit() -> &'static str {
     "Quit"
@@ -59,6 +104,12 @@ pub fn present_failed(err: &impl Display) -> String {
 }
 
 // The pinning probe.
+
+/// The key that ends input in the terminal the probe runs in.
+#[cfg(windows)]
+const END_OF_INPUT: &str = "Ctrl-Z then Enter";
+#[cfg(not(windows))]
+const END_OF_INPUT: &str = "Control-D";
 
 /// One step of the probe's walk-through.
 pub struct StepText {
@@ -220,8 +271,8 @@ pub fn probe_intro(json: &Path, text: &Path) -> String {
     format!(
         "{BINARY_NAME} {VERSION}: pinning probe\n\
          Each step describes something to try with the strip. Press Enter when it is done; to \
-         record a note, type it first. Control-D ends the probe early. The report is rewritten \
-         after every step:\n  {}\n  {}",
+         record a note, type it first. {END_OF_INPUT} ends the probe early. The report is \
+         rewritten after every step:\n  {}\n  {}",
         json.display(),
         text.display()
     )
@@ -388,6 +439,7 @@ fn end_reason(reason: EndReason) -> &'static str {
         EndReason::Quit => "quit from the menu",
         EndReason::InputClosed => "input closed",
         EndReason::WindowClosed => "window closed",
+        EndReason::LaunchFailed => "the strip could not open",
     }
 }
 

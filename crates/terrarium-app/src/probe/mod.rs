@@ -21,6 +21,7 @@ use report::{EndReason, ProbeEvent, Report, ScaleReport, StepReport, Timed};
 use script::Step;
 
 /// What the strip does after an answer.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Advance {
     /// The next step runs at this level.
     Next(LevelMode),
@@ -44,18 +45,37 @@ pub struct Probe {
     frames_at_step_start: u64,
     report: Report,
     dir: PathBuf,
+    /// Where the report goes if `dir` cannot be written.
+    fallback: PathBuf,
+    /// Tells apart runs started in the same second.
+    run_id: u32,
 }
 
 impl Probe {
-    /// Starts reading answers from stdin and prints where the report will be written.
+    /// Starts reading answers from stdin and prints where the report will be written: the
+    /// directory the tester ran it from, where they will look for it.
     pub fn start(proxy: EventLoopProxy<UserEvent>) -> Self {
         read_answers(proxy);
         let started_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
+        let probe = Self::new(
+            std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
+            std::env::temp_dir(),
+            started_unix,
+            std::process::id(),
+        );
+        println!(
+            "{}",
+            copy::probe_intro(&probe.json_path(), &probe.text_path())
+        );
+        probe
+    }
+
+    fn new(dir: PathBuf, fallback: PathBuf, started_unix: u64, run_id: u32) -> Self {
         let steps = script::pinning();
         let first = StepReport::new(&steps[0].id, steps[0].level);
-        let probe = Self {
+        Self {
             started: Instant::now(),
             steps,
             current: 0,
@@ -72,14 +92,10 @@ impl Probe {
                 steps: vec![first],
                 ended: None,
             },
-            // The directory the tester ran it from, where they will look for it.
-            dir: std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
-        };
-        println!(
-            "{}",
-            copy::probe_intro(&probe.json_path(), &probe.text_path())
-        );
-        probe
+            dir,
+            fallback,
+            run_id,
+        }
     }
 
     /// The level the current step runs at.
@@ -168,8 +184,8 @@ impl Probe {
 
     fn file_name(&self, extension: &str) -> String {
         format!(
-            "repo-terrarium-probe-pinning-{}.{extension}",
-            self.report.started_unix
+            "repo-terrarium-probe-pinning-{}-{}.{extension}",
+            self.report.started_unix, self.run_id
         )
     }
 
@@ -181,15 +197,14 @@ impl Probe {
         self.dir.join(self.file_name("txt"))
     }
 
-    /// Falls back to the temp directory once if the current one is not writable.
+    /// Moves to the fallback directory once if the current one cannot be written.
     fn write(&mut self) {
         let Err(err) = self.write_files() else {
             return;
         };
         eprintln!("{}", copy::probe_write_failed(&self.dir, &err));
-        let temp = std::env::temp_dir();
-        if self.dir != temp {
-            self.dir = temp;
+        if self.dir != self.fallback {
+            self.dir = self.fallback.clone();
             if let Err(err) = self.write_files() {
                 eprintln!("{}", copy::probe_write_failed(&self.dir, &err));
             }
@@ -214,4 +229,101 @@ fn read_answers(proxy: EventLoopProxy<UserEvent>) {
         }
         let _ = proxy.send_event(UserEvent::ProbeEnd);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    /// A directory the test owns under the system temp dir, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "terrarium-probe-test-{}-{name}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("the temp dir is writable");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn probe(dir: &Path) -> Probe {
+        Probe::new(dir.to_owned(), dir.to_owned(), 100, 7)
+    }
+
+    #[test]
+    fn answers_advance_the_steps_and_count_frames_per_step() {
+        let dir = TempDir::new("advance");
+        let mut probe = probe(&dir.0);
+        let second_level = probe.steps[1].level;
+        assert_eq!(probe.answer("first note", 5), Advance::Next(second_level));
+        assert_eq!(probe.answer("  ", 12), Advance::Next(probe.steps[2].level));
+        let steps = &probe.report.steps;
+        assert_eq!(steps.len(), 3);
+        assert_eq!((steps[0].note.as_str(), steps[0].frames), ("first note", 5));
+        assert_eq!((steps[1].note.as_str(), steps[1].frames), ("", 7));
+        assert_eq!(steps[2].id, probe.steps[2].id);
+    }
+
+    #[test]
+    fn the_last_answer_completes_the_report_once() {
+        let dir = TempDir::new("complete");
+        let mut probe = probe(&dir.0);
+        let total = probe.steps.len();
+        for _ in 1..total {
+            assert!(matches!(probe.answer("", 0), Advance::Next(_)));
+        }
+        assert_eq!(probe.answer("last", 3), Advance::Done);
+        probe.end(EndReason::InputClosed, 9);
+        assert_eq!(probe.report.ended, Some(EndReason::Completed));
+        assert_eq!(probe.report.steps.len(), total);
+        assert_eq!(probe.report.steps[total - 1].note, "last");
+        let json = std::fs::read_to_string(probe.json_path()).expect("the report is written");
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["ended"], "completed");
+    }
+
+    #[test]
+    fn ending_early_closes_the_open_step_and_stops_recording() {
+        let dir = TempDir::new("early");
+        let mut probe = probe(&dir.0);
+        probe.answer("", 2);
+        probe.end(EndReason::LaunchFailed, 10);
+        probe.record(ProbeEvent::Focused { focused: true });
+        let step = &probe.report.steps[1];
+        assert_eq!(step.frames, 8);
+        assert!(step.events.is_empty());
+        assert_eq!(probe.report.ended, Some(EndReason::LaunchFailed));
+    }
+
+    #[test]
+    fn an_unwritable_directory_falls_back_once() {
+        let dir = TempDir::new("fallback");
+        let missing = dir.0.join("missing").join("nested");
+        let mut probe = Probe::new(missing, dir.0.clone(), 100, 7);
+        probe.end(EndReason::Quit, 0);
+        assert_eq!(probe.dir, dir.0);
+        assert!(probe.json_path().is_file());
+        assert!(probe.text_path().is_file());
+    }
+
+    #[test]
+    fn runs_started_in_the_same_second_write_separate_files() {
+        let dir = TempDir::new("names");
+        let first = Probe::new(dir.0.clone(), dir.0.clone(), 100, 7);
+        let second = Probe::new(dir.0.clone(), dir.0.clone(), 100, 8);
+        assert_ne!(first.json_path(), second.json_path());
+        assert_ne!(first.text_path(), second.text_path());
+    }
 }

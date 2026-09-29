@@ -23,20 +23,29 @@ pub struct MonitorInfo {
 /// The monitor from the setting if it is connected; otherwise a monitor other than the primary,
 /// so the strip lands on a second screen; otherwise the primary. Among several non-primary
 /// monitors the lowest id wins, so the choice is the same on every launch.
-pub fn choose(monitors: &[MonitorInfo], preferred: Option<&MonitorId>) -> Option<usize> {
+pub fn choose(
+    monitors: &[impl AsRef<MonitorInfo>],
+    preferred: Option<&MonitorId>,
+) -> Option<usize> {
+    let infos = || monitors.iter().map(AsRef::as_ref);
     if let Some(preferred) = preferred
-        && let Some(index) = monitors.iter().position(|m| &m.id == preferred)
+        && let Some(index) = infos().position(|m| &m.id == preferred)
     {
         return Some(index);
     }
-    monitors
-        .iter()
+    infos()
         .enumerate()
         .filter(|(_, m)| !m.primary)
         .min_by(|(_, a), (_, b)| a.id.cmp(&b.id))
         .map(|(index, _)| index)
-        .or_else(|| monitors.iter().position(|m| m.primary))
+        .or_else(|| infos().position(|m| m.primary))
         .or_else(|| (!monitors.is_empty()).then_some(0))
+}
+
+impl AsRef<MonitorInfo> for MonitorInfo {
+    fn as_ref(&self) -> &MonitorInfo {
+        self
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +96,7 @@ mod tests {
 
     #[test]
     fn no_monitor_means_no_choice() {
-        assert_eq!(choose(&[], None), None);
+        let none: [MonitorInfo; 0] = [];
+        assert_eq!(choose(&none, None), None);
     }
 }

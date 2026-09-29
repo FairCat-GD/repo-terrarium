@@ -22,13 +22,7 @@ pub fn frame() -> Rgba640x74 {
     for y in 0..NATIVE_HEIGHT {
         for x in 0..NATIVE_WIDTH {
             let glass = !(GLASS_WIDTH..NATIVE_WIDTH - GLASS_WIDTH).contains(&x);
-            let colour = match y {
-                GROUND_Y => SOIL_LIGHT,
-                y if y > GROUND_Y => SOIL_BODY,
-                _ if glass => GLASS_OVER_SKY,
-                _ => SKY_BASE,
-            };
-            frame.set_pixel(x, y, colour);
+            frame.set_pixel(x, y, if glass { edge(y) } else { interior(y) });
         }
     }
     frame
@@ -37,12 +31,25 @@ pub fn frame() -> Rgba640x74 {
 /// The colour each native row continues with to the monitor's edges: the glass beside the
 /// sky, the soil beside the soil band.
 pub fn padding() -> [Rgba; NATIVE_HEIGHT as usize] {
-    let edge = frame();
     let mut rows = [SKY_BASE; NATIVE_HEIGHT as usize];
     for (y, row) in (0..NATIVE_HEIGHT).zip(&mut rows) {
-        *row = edge.pixel(0, y);
+        *row = edge(y);
     }
     rows
+}
+
+/// A row's colour at the frame's side edges.
+fn edge(y: u32) -> Rgba {
+    match y {
+        GROUND_Y => SOIL_LIGHT,
+        y if y > GROUND_Y => SOIL_BODY,
+        _ => GLASS_OVER_SKY,
+    }
+}
+
+/// A row's colour between the glass edges.
+fn interior(y: u32) -> Rgba {
+    if y < GROUND_Y { SKY_BASE } else { edge(y) }
 }
 
 #[cfg(test)]

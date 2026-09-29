@@ -180,6 +180,8 @@ pub enum EndReason {
     Quit,
     InputClosed,
     WindowClosed,
+    /// The strip never opened; stderr says why.
+    LaunchFailed,
 }
 
 #[cfg(test)]

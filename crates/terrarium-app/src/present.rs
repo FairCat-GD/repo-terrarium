@@ -1,7 +1,6 @@
 //! Putting composed pixels on screen. The `Presenter` is swappable: softbuffer first, a wgpu
 //! backend later, chosen by measurement.
 
-use std::fmt;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
@@ -21,24 +20,12 @@ pub trait Presenter {
     ) -> Result<(), PresentError>;
 }
 
+/// Its wording is in the copy module.
 #[derive(Debug)]
 pub enum PresentError {
     Surface(SoftBufferError),
     Size(SizeMismatch),
 }
-
-impl fmt::Display for PresentError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Surface(err) => write!(f, "{err}"),
-            Self::Size(SizeMismatch { expected, actual }) => {
-                write!(f, "the surface holds {actual} pixels, not {expected}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PresentError {}
 
 impl From<SoftBufferError> for PresentError {
     fn from(err: SoftBufferError) -> Self {

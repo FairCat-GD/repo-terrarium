@@ -5,7 +5,6 @@
 //! threads forward through the `EventLoopProxy`: hotkeys, menu choices, system notifications
 //! and probe answers. It waits until a deadline only while a raise is pending.
 
-use std::error::Error;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -18,6 +17,7 @@ use terrarium_platform::SystemEvent;
 use terrarium_platform::geometry::Edge;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
+use winit::error::{EventLoopError, OsError};
 use winit::event::{ElementState, MouseButton, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
@@ -27,9 +27,9 @@ use crate::copy;
 use crate::hotkey::{self, RaiseHotkey};
 use crate::hover::HoverTracker;
 use crate::menu::{self, StripMenu};
-use crate::monitor::{self, MonitorInfo};
-use crate::pinning::{self, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
-use crate::present::{FrameGate, Presenter, SoftbufferPresenter};
+use crate::monitor;
+use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
+use crate::present::{FrameGate, PresentError, Presenter, SoftbufferPresenter};
 use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
 use crate::probe::{Advance, Launch, Probe};
 use crate::raise::RaiseTimer;
@@ -48,8 +48,24 @@ pub enum UserEvent {
     ProbeEnd,
 }
 
+/// Why the strip could not run. Its wording is in the copy module.
+#[derive(Debug)]
+pub enum StripError {
+    EventLoop(EventLoopError),
+    Window(OsError),
+    Attach(AttachError),
+    Present(PresentError),
+    NoDisplay,
+}
+
+impl From<EventLoopError> for StripError {
+    fn from(err: EventLoopError) -> Self {
+        Self::EventLoop(err)
+    }
+}
+
 /// Runs the strip until it is quit. With a probe, it also records and reports.
-pub fn run(probe: Option<ProbeKind>) -> Result<(), Box<dyn Error>> {
+pub fn run(probe: Option<ProbeKind>) -> Result<(), StripError> {
     let mut builder = EventLoop::<UserEvent>::with_user_event();
     pinning::configure_event_loop(&mut builder);
     let event_loop = builder.build()?;
@@ -68,7 +84,9 @@ pub fn run(probe: Option<ProbeKind>) -> Result<(), Box<dyn Error>> {
 }
 
 struct Strip {
-    proxy: EventLoopProxy<UserEvent>,
+    /// Given to the system observers when the window opens. On macOS every proxy is a run-loop
+    /// source, so none is kept once it is handed on.
+    proxy: Option<EventLoopProxy<UserEvent>>,
     probe: Option<Probe>,
     view: Option<View>,
     frame: Rgba640x74,
@@ -79,7 +97,7 @@ struct Strip {
     gate: FrameGate,
     placement_pending: bool,
     idle_seen: bool,
-    failed: Option<Box<dyn Error>>,
+    failed: Option<StripError>,
 }
 
 /// Everything that exists once the window does.
@@ -97,7 +115,7 @@ impl Strip {
     fn new(proxy: EventLoopProxy<UserEvent>, probe: Option<Probe>) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
         Self {
-            proxy,
+            proxy: Some(proxy),
             probe,
             view: None,
             frame: placeholder::frame(),
@@ -112,16 +130,20 @@ impl Strip {
         }
     }
 
-    fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<View, Box<dyn Error>> {
+    fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<View, StripError> {
         let attributes = pinning::window_attributes()
             .with_title(copy::window_title())
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false)
             .with_active(false);
-        let window = Rc::new(event_loop.create_window(attributes)?);
-        let pinning = Pinning::attach(&window)?;
-        let presenter = SoftbufferPresenter::new(&window)?;
+        let window = Rc::new(
+            event_loop
+                .create_window(attributes)
+                .map_err(StripError::Window)?,
+        );
+        let pinning = Pinning::attach(&window).map_err(StripError::Attach)?;
+        let presenter = SoftbufferPresenter::new(&window).map_err(StripError::Present)?;
         let menu = StripMenu::new()
             .inspect_err(|err| eprintln!("{}", copy::menu_unavailable(err)))
             .ok();
@@ -135,19 +157,25 @@ impl Strip {
                 None
             }
         };
-        let proxy = self.proxy.clone();
+        let proxy = self.proxy.take();
         let observers = pinning.observe(move |event| {
-            let _ = proxy.send_event(UserEvent::System(event));
+            if let Some(proxy) = &proxy {
+                let _ = proxy.send_event(UserEvent::System(event));
+            }
         });
 
         let monitors = pinning.monitors(&window);
-        let infos: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
-        let (monitor, scale) = fit(monitors).ok_or(copy::NO_DISPLAY)?;
+        // Only the probe reports every monitor.
+        let reported = self
+            .probe
+            .is_some()
+            .then(|| monitors.iter().map(|m| m.info.clone()).collect());
+        let (monitor, scale) = fit(monitors).ok_or(StripError::NoDisplay)?;
         if let Some(probe) = &mut self.probe {
             probe.launched(Launch {
                 os: pinning::os_version(),
                 separate_spaces: pinning::separate_spaces(),
-                monitors: infos,
+                monitors: reported.unwrap_or_default(),
                 chosen: Some(monitor.info.id.clone()),
                 scale: Some(scale),
             });
@@ -341,8 +369,7 @@ impl Strip {
 
 /// The monitor the strip belongs on, and the strip's scale there.
 fn fit(mut monitors: Vec<Monitor>) -> Option<(Monitor, StripScale)> {
-    let infos: Vec<MonitorInfo> = monitors.iter().map(|m| m.info.clone()).collect();
-    let monitor = monitors.swap_remove(monitor::choose(&infos, None)?);
+    let monitor = monitors.swap_remove(monitor::choose(&monitors, None)?);
     let scale = StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP);
     Some((monitor, scale))
 }
@@ -368,6 +395,7 @@ impl ApplicationHandler<UserEvent> for Strip {
         match self.open(event_loop) {
             Ok(view) => self.view = Some(view),
             Err(err) => {
+                self.end_probe(EndReason::LaunchFailed);
                 self.failed = Some(err);
                 event_loop.exit();
             }

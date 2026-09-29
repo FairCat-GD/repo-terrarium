@@ -5,8 +5,8 @@
 use serde::Serialize;
 
 pub use imp::{
-    Monitor, Observers, Pinning, app_is_active, configure_event_loop, frontmost_app, os_version,
-    separate_spaces, window_attributes,
+    AttachError, Monitor, Observers, Pinning, app_is_active, configure_event_loop, frontmost_app,
+    os_version, separate_spaces, window_attributes,
 };
 
 /// Where the strip sits in the window stack. The checklist decides between the two.
@@ -41,7 +41,7 @@ mod imp {
     use terrarium_compose::scale::StripScale;
     use terrarium_platform::SystemEvent;
     use terrarium_platform::geometry::Edge;
-    use terrarium_platform::macos::{self, PlatformError, Screen, StripWindow};
+    use terrarium_platform::macos::{self, Screen, StripWindow};
     use winit::event_loop::EventLoopBuilder;
     use winit::platform::macos::{
         ActivationPolicy, EventLoopBuilderExtMacOS, WindowAttributesExtMacOS,
@@ -51,7 +51,7 @@ mod imp {
     use super::{LevelMode, Placed};
     use crate::monitor::{MonitorId, MonitorInfo};
 
-    pub use macos::Observers;
+    pub use macos::{Observers, PlatformError as AttachError};
 
     /// An accessory app: no Dock icon, no Cmd-Tab entry, no menu bar, and a launch that asks
     /// not to take focus from the app the user is in.
@@ -71,12 +71,18 @@ mod imp {
         screen: Screen,
     }
 
+    impl AsRef<MonitorInfo> for Monitor {
+        fn as_ref(&self) -> &MonitorInfo {
+            &self.info
+        }
+    }
+
     pub struct Pinning {
         strip: StripWindow,
     }
 
     impl Pinning {
-        pub fn attach(window: &Window) -> Result<Self, PlatformError> {
+        pub fn attach(window: &Window) -> Result<Self, AttachError> {
             Ok(Self {
                 strip: StripWindow::attach(window)?,
             })
@@ -176,8 +182,6 @@ mod imp {
 #[cfg(not(target_os = "macos"))]
 #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
 mod imp {
-    use std::convert::Infallible;
-
     use terrarium_compose::scale::StripScale;
     use terrarium_platform::SystemEvent;
     use terrarium_platform::geometry::Edge;
@@ -188,6 +192,9 @@ mod imp {
 
     use super::{LevelMode, Placed};
     use crate::monitor::{MonitorId, MonitorInfo};
+
+    /// Attaching cannot fail until the Windows platform module exists.
+    pub type AttachError = std::convert::Infallible;
 
     pub fn configure_event_loop<T>(_builder: &mut EventLoopBuilder<T>) {}
 
@@ -206,13 +213,19 @@ mod imp {
         handle: MonitorHandle,
     }
 
+    impl AsRef<MonitorInfo> for Monitor {
+        fn as_ref(&self) -> &MonitorInfo {
+            &self.info
+        }
+    }
+
     /// Nothing to observe until the Windows platform module exists.
     pub struct Observers;
 
     pub struct Pinning;
 
     impl Pinning {
-        pub fn attach(_window: &Window) -> Result<Self, Infallible> {
+        pub fn attach(_window: &Window) -> Result<Self, AttachError> {
             Ok(Self)
         }
 
