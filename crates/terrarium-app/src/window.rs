@@ -1,4 +1,4 @@
-//! A plain titled window that closes when asked. The strip window replaces it.
+//! A plain titled window that closes when asked. Nothing is drawn in it.
 
 use std::error::Error;
 

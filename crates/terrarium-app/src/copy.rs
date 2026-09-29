@@ -35,23 +35,64 @@ pub fn window_failed(err: &impl Display) -> String {
 mod tests {
     use super::*;
 
-    /// One rendering of every string above. A new string joins this list.
-    fn all_copy() -> Vec<String> {
-        vec![
-            version_line(),
-            window_title(),
-            usage_error(&UsageError {
-                unexpected: "--bogus".into(),
-            }),
-            window_failed(&"reason"),
-        ]
+    /// Every string literal in a source file, tests included, so a string anywhere in this module
+    /// is checked; a list of rendered strings would miss one nobody added to it.
+    fn string_literals(source: &str) -> Vec<String> {
+        let mut literals = Vec::new();
+        let mut chars = source.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                // A comment runs to the end of its line.
+                '/' if chars.clone().next() == Some('/') => {
+                    chars.by_ref().find(|&c| c == '\n');
+                }
+                // A char literal (`'"'`, `'\\''`) is skipped; a lifetime (`'static`) is not one.
+                '\'' => {
+                    let mut ahead = chars.clone();
+                    match (ahead.next(), ahead.next()) {
+                        (Some('\\'), _) => {
+                            chars.nth(1);
+                            chars.by_ref().find(|&c| c == '\'');
+                        }
+                        (Some(_), Some('\'')) => {
+                            chars.nth(1);
+                        }
+                        _ => {}
+                    }
+                }
+                '"' => {
+                    let mut literal = String::new();
+                    while let Some(c) = chars.next() {
+                        match c {
+                            '\\' => literal.extend(chars.next()),
+                            '"' => break,
+                            _ => literal.push(c),
+                        }
+                    }
+                    literals.push(literal);
+                }
+                _ => {}
+            }
+        }
+        literals
     }
 
     #[test]
     fn copy_has_no_exclamation_marks() {
-        for line in all_copy() {
-            assert!(!line.contains('!'), "copy must not exclaim: {line:?}");
+        let literals = string_literals(include_str!("copy.rs"));
+        assert!(
+            literals.iter().any(|l| l == "Repo Terrarium"),
+            "the scan found {literals:?}"
+        );
+        for literal in literals {
+            assert!(!literal.contains('!'), "copy must not exclaim: {literal:?}");
         }
+    }
+
+    #[test]
+    fn the_scan_finds_literals_and_skips_comments() {
+        let source = "// a comment: \"skipped\"\nconst A: &'static str = \"one\";\nfn f() { g(\"x \\\"y\\\" {}\", 1) }\nconst Q: [char; 2] = ['\"', '\\''];";
+        assert_eq!(string_literals(source), ["one", "x \"y\" {}"]);
     }
 
     #[test]

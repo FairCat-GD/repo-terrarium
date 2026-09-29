@@ -1,4 +1,4 @@
-//! The command line. Parsed by hand while it has two commands.
+//! The command line, parsed by hand: two commands do not justify a parser dependency.
 
 use std::ffi::OsString;
 
@@ -17,8 +17,15 @@ pub struct UsageError {
     pub unexpected: OsString,
 }
 
+/// macOS `LaunchServices` can append a process serial number (`-psn_0_12345`) when it launches
+/// an app bundle. It is not the user's argument, so it never makes the app refuse to start.
+const PROCESS_SERIAL_NUMBER: &str = "-psn_";
+
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageError> {
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().filter(|arg| {
+        !arg.to_str()
+            .is_some_and(|arg| arg.starts_with(PROCESS_SERIAL_NUMBER))
+    });
     let Some(first) = args.next() else {
         return Ok(Command::Run);
     };
@@ -59,6 +66,15 @@ mod tests {
     fn an_unknown_argument_is_refused() {
         assert_eq!(parse_strs(&["--bogus"]), unexpected("--bogus"));
         assert_eq!(parse_strs(&["-V"]), unexpected("-V"));
+    }
+
+    #[test]
+    fn a_launcher_process_serial_number_is_ignored() {
+        assert_eq!(parse_strs(&["-psn_0_12345"]), Ok(Command::Run));
+        assert_eq!(
+            parse_strs(&["-psn_0_12345", "--version"]),
+            Ok(Command::Version)
+        );
     }
 
     #[test]

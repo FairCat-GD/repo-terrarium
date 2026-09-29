@@ -16,12 +16,13 @@ summary. The stages:
 6. **deny**: `cargo deny check`, with the policy in `deny.toml`.
 7. **graph**: the crate-graph check below.
 
-It needs `cargo-nextest` and `cargo-deny`; a stage whose tool is missing fails and names the
-install command.
+It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
+tool is missing, or at another version, fails and names the install command.
 
 ## The crate-graph check
 
-`cargo metadata` gives the dependency graph, and `src/graph.rs` holds the policy as data:
+`cargo metadata` gives the dependency graph, resolved for the shipping targets listed in
+`deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the policy as data:
 
 - Each crate depends only on the workspace crates the policy allows, for every dependency kind.
   A new crate fails until it is added to the policy.

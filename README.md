@@ -14,7 +14,8 @@ window, and `--version` prints the version.
 - **Rust** through [rustup](https://rustup.rs). The toolchain is pinned in `rust-toolchain.toml`
   (1.98.1, with rustfmt, clippy and the `x86_64-pc-windows-msvc` target), and rustup installs it
   on first use.
-- **For `verify`:** `cargo install --locked cargo-nextest cargo-deny`.
+- **For `verify`:** `cargo install --locked cargo-nextest@0.9.146 cargo-deny@0.20.2`. `verify`
+  checks these exact versions, because `deny.toml` is written for cargo-deny 0.20.
 
 ## Build and run
 

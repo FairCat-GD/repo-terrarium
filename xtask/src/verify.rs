@@ -22,9 +22,13 @@ enum Step {
     Graph,
 }
 
+/// A third-party cargo subcommand, pinned to the exact version its configuration is written
+/// for: `deny.toml` follows cargo-deny 0.20's schema, and a newer tool could read it
+/// differently.
 struct Tool {
     subcommand: &'static str,
-    install: &'static str,
+    package: &'static str,
+    version: &'static str,
 }
 
 struct Stage {
@@ -76,7 +80,8 @@ const STAGES: &[Stage] = &[
             args: &["nextest", "run", "--workspace"],
             tool: Some(Tool {
                 subcommand: "nextest",
-                install: "cargo install --locked cargo-nextest",
+                package: "cargo-nextest",
+                version: "0.9.146",
             }),
         },
     },
@@ -94,7 +99,8 @@ const STAGES: &[Stage] = &[
             args: &["deny", "check"],
             tool: Some(Tool {
                 subcommand: "deny",
-                install: "cargo install --locked cargo-deny",
+                package: "cargo-deny",
+                version: "0.20.2",
             }),
         },
     },
@@ -136,21 +142,14 @@ pub fn run(root: &Path) -> ExitCode {
 }
 
 fn run_cargo(cargo: &OsString, root: &Path, args: &[&str], tool: Option<&Tool>) -> bool {
-    if let Some(tool) = tool {
-        let present = Command::new(cargo)
-            .args([tool.subcommand, "--version"])
-            .current_dir(root)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if !present {
-            println!(
-                "cargo {} is not installed: {}",
-                tool.subcommand, tool.install
-            );
-            return false;
-        }
+    if let Some(tool) = tool
+        && !has_pinned_version(cargo, root, tool)
+    {
+        println!(
+            "{} {} is required: cargo install --locked {}@{}",
+            tool.package, tool.version, tool.package, tool.version
+        );
+        return false;
     }
     match Command::new(cargo).args(args).current_dir(root).status() {
         Ok(status) => status.success(),
@@ -159,6 +158,22 @@ fn run_cargo(cargo: &OsString, root: &Path, args: &[&str], tool: Option<&Tool>) 
             false
         }
     }
+}
+
+/// `cargo nextest --version` prints `cargo-nextest 0.9.146 (…)`; `cargo deny --version` prints
+/// `cargo-deny 0.20.2`.
+fn has_pinned_version(cargo: &OsString, root: &Path, tool: &Tool) -> bool {
+    let Ok(out) = Command::new(cargo)
+        .args([tool.subcommand, "--version"])
+        .current_dir(root)
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let words: Vec<&str> = printed.split_whitespace().collect();
+    out.status.success() && words.windows(2).any(|w| w == [tool.package, tool.version])
 }
 
 fn run_graph(root: &Path) -> bool {

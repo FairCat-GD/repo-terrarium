@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use cargo_metadata::semver::Version;
-use cargo_metadata::{DependencyKind, Metadata, MetadataCommand};
+use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, TargetKind};
 
 const TRUTH: &str = "terrarium-truth";
 const ADAPTERS: &str = "terrarium-adapters";
@@ -79,8 +79,10 @@ pub struct Dep {
 pub struct TargetRoot {
     /// For example `lib`, `bin`, `test` or `custom-build`.
     pub kind: String,
+    /// Any library kind: `lib`, `rlib`, `cdylib`, `proc-macro` and the rest.
+    pub library: bool,
     pub path: String,
-    /// Trimmed lines of the root file that start with `#![`.
+    /// The root file's inner attributes (see `inner_attributes`).
     pub inner_attributes: BTreeSet<String>,
 }
 
@@ -181,9 +183,9 @@ fn check_roots(member: &Member, out: &mut Vec<String>) {
         if member.name != *crate_name {
             continue;
         }
-        let lib = member.targets.iter().find(|t| t.kind == "lib");
+        let lib = member.targets.iter().find(|t| t.library);
         if !lib.is_some_and(|t| t.inner_attributes.contains(*attribute)) {
-            out.push(format!("{} lib root lacks `{attribute}`", member.name));
+            out.push(format!("{} library root lacks `{attribute}`", member.name));
         }
     }
 }
@@ -248,8 +250,24 @@ fn check_msrv(ws: &Workspace, out: &mut Vec<String>) {
 
 /// Builds the model from `cargo metadata` and the files it names.
 pub fn load(root: &Path) -> Result<Workspace, String> {
+    // The graph is resolved for the shipping targets only, the same list cargo-deny checks, so
+    // a crate that never ships (Linux window-system crates) cannot fail a rule.
+    let deny = read_toml(&root.join("deny.toml"))?;
+    let targets = deny
+        .get("graph")
+        .and_then(|g| g.get("targets"))
+        .and_then(toml::Value::as_array)
+        .ok_or("deny.toml has no [graph] targets")?;
+    let mut filter = Vec::new();
+    for target in targets {
+        let triple = target
+            .as_str()
+            .ok_or("deny.toml [graph] targets must be strings")?;
+        filter.extend(["--filter-platform".to_owned(), triple.to_owned()]);
+    }
     let metadata = MetadataCommand::new()
         .current_dir(root)
+        .other_options(filter)
         .exec()
         .map_err(|e| format!("cargo metadata failed: {e}"))?;
     let root_manifest = read_toml(&root.join("Cargo.toml"))?;
@@ -314,13 +332,19 @@ fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
                 .map_err(|e| format!("cannot read {}: {e}", t.src_path))?;
             Ok(TargetRoot {
                 kind: t.kind.first().map_or_else(String::new, ToString::to_string),
+                library: t.kind.iter().any(|k| {
+                    matches!(
+                        k,
+                        TargetKind::Lib
+                            | TargetKind::RLib
+                            | TargetKind::DyLib
+                            | TargetKind::CDyLib
+                            | TargetKind::StaticLib
+                            | TargetKind::ProcMacro
+                    )
+                }),
                 path: t.src_path.to_string(),
-                inner_attributes: text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| l.starts_with("#!["))
-                    .map(str::to_owned)
-                    .collect(),
+                inner_attributes: inner_attributes(&text),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -332,6 +356,29 @@ fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
         inherited,
         lints_from_workspace,
     })
+}
+
+/// The inner attributes at the top of a crate root, each trimmed and without a trailing line
+/// comment. Only the leading run of attributes, comments and blank lines counts, so the text of
+/// an attribute inside a string or a later block comment is not mistaken for one.
+fn inner_attributes(text: &str) -> BTreeSet<String> {
+    let mut attributes = BTreeSet::new();
+    let mut in_block_comment = false;
+    for line in text.lines().map(str::trim) {
+        if in_block_comment || line.starts_with("/*") {
+            in_block_comment = !line.contains("*/");
+            continue;
+        }
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        if !line.starts_with("#![") {
+            break;
+        }
+        let code = line.find("//").map_or(line, |comment| &line[..comment]);
+        attributes.insert(code.trim_end().to_owned());
+    }
+    attributes
 }
 
 fn resolved_packages(metadata: &Metadata) -> Result<Vec<Package>, String> {
@@ -393,12 +440,17 @@ mod tests {
     }
 
     fn member(name: &str, deps: &[(&str, Kind)]) -> Member {
-        let mut root = vec![FORBID_UNSAFE];
-        match name {
-            PLATFORM => root = vec!["#![allow(unsafe_code)]", REQUIRED_ROOT_ATTRIBUTES[0].1],
-            TRUTH => root.push(REQUIRED_ROOT_ATTRIBUTES[1].1),
-            _ => {}
-        }
+        let mut root = if name == PLATFORM {
+            vec!["#![allow(unsafe_code)]"]
+        } else {
+            vec![FORBID_UNSAFE]
+        };
+        root.extend(
+            REQUIRED_ROOT_ATTRIBUTES
+                .iter()
+                .filter(|(crate_name, _)| *crate_name == name)
+                .map(|(_, attribute)| *attribute),
+        );
         Member {
             name: name.to_owned(),
             deps: deps
@@ -410,6 +462,7 @@ mod tests {
                 .collect(),
             targets: vec![TargetRoot {
                 kind: "lib".to_owned(),
+                library: true,
                 path: format!("crates/{name}/src/lib.rs"),
                 inner_attributes: attrs(&root),
             }],
@@ -576,6 +629,7 @@ mod tests {
         let mut ws = workspace();
         member_mut(&mut ws, APP).targets.push(TargetRoot {
             kind: "test".into(),
+            library: false,
             path: "crates/terrarium-app/tests/cli.rs".into(),
             inner_attributes: BTreeSet::new(),
         });
@@ -592,7 +646,7 @@ mod tests {
             attrs(&["#![allow(unsafe_code)]"]);
         fails_with(
             &ws,
-            "terrarium-platform lib root lacks `#![deny(clippy::undocumented",
+            "terrarium-platform library root lacks `#![deny(clippy::undocumented",
         );
     }
 
@@ -602,7 +656,7 @@ mod tests {
         member_mut(&mut ws, TRUTH).targets[0].inner_attributes = attrs(&[FORBID_UNSAFE]);
         fails_with(
             &ws,
-            "terrarium-truth lib root lacks `#![deny(clippy::float_arithmetic)]`",
+            "terrarium-truth library root lacks `#![deny(clippy::float_arithmetic)]`",
         );
     }
 
@@ -613,6 +667,35 @@ mod tests {
         member_mut(&mut ws, ENGINE).lints_from_workspace = false;
         fails_with(&ws, "terrarium-store must set `edition.workspace = true`");
         fails_with(&ws, "terrarium-engine must set `[lints] workspace = true`");
+    }
+
+    #[test]
+    fn a_library_of_any_kind_carries_the_required_attributes() {
+        let mut ws = workspace();
+        member_mut(&mut ws, PLATFORM).targets[0].kind = "rlib".into();
+        assert_eq!(check(&ws), Vec::<String>::new());
+    }
+
+    #[test]
+    fn inner_attributes_are_read_from_the_top_of_the_root_only() {
+        let root = "//! Crate docs.\n\
+            /* a block\n   comment */\n\
+            #![forbid(unsafe_code)] // I-9\n\
+            #![doc = include_str!(\"../README.md\")]\n\
+            \n\
+            const S: &str = r\"\n\
+            #![deny(clippy::float_arithmetic)]\n\
+            \";\n";
+        assert_eq!(
+            inner_attributes(root),
+            attrs(&[FORBID_UNSAFE, "#![doc = include_str!(\"../README.md\")]"])
+        );
+    }
+
+    #[test]
+    fn an_attribute_inside_a_leading_block_comment_does_not_count() {
+        let root = "/*\n#![forbid(unsafe_code)]\n*/\npub fn f() {}\n";
+        assert_eq!(inner_attributes(root), BTreeSet::new());
     }
 
     #[test]
