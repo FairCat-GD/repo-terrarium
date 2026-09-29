@@ -1,0 +1,680 @@
+{
+  "atlas": "sky-batch-02.png",
+  "batch": 2,
+  "height": 154,
+  "opacityContract": "PNG stores palette-coloured binary-alpha mask. Apply sprite.opacity / 255 and blend at draw time. Indexed source layer opacity matches the manifest.",
+  "origin": "Aseprite Lua native pixel artwork continuing the approved Botanical Cabinet palette and components",
+  "palette": "../../../palettes/exports/palette-temperate.json",
+  "revision": 3,
+  "schemaVersion": 1,
+  "sprites": [
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.clear.tile.png",
+      "layer": "sky",
+      "name": "tmp.sky.clear.tile",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 13,
+        "w": 8,
+        "x": 2,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "dayOnly": true,
+      "file": "individual/tmp.sky.sun.png",
+      "layer": "sky",
+      "name": "tmp.sky.sun",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 5,
+        "w": 5,
+        "x": 12,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.moon.phase.1.png",
+      "layer": "sky",
+      "name": "tmp.sky.moon.phase.1",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 5,
+        "w": 5,
+        "x": 19,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.moon.phase.2.png",
+      "layer": "sky",
+      "name": "tmp.sky.moon.phase.2",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 5,
+        "w": 5,
+        "x": 26,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.moon.phase.3.png",
+      "layer": "sky",
+      "name": "tmp.sky.moon.phase.3",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 5,
+        "w": 5,
+        "x": 33,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.moon.phase.4.png",
+      "layer": "sky",
+      "name": "tmp.sky.moon.phase.4",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 5,
+        "w": 5,
+        "x": 40,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.star.1.png",
+      "layer": "sky",
+      "name": "tmp.sky.star.1",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 47,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.star.2.png",
+      "layer": "sky",
+      "name": "tmp.sky.star.2",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 52,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.star.3.png",
+      "layer": "sky",
+      "name": "tmp.sky.star.3",
+      "nightOnly": true,
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 57,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.small.01.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.small.01",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 4,
+        "w": 10,
+        "x": 62,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.small.02.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.small.02",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 4,
+        "w": 10,
+        "x": 74,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.small.03.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.small.03",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 4,
+        "w": 10,
+        "x": 86,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.medium.01.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.medium.01",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 6,
+        "w": 18,
+        "x": 98,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.medium.02.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.medium.02",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 6,
+        "w": 18,
+        "x": 118,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.medium.03.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.medium.03",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 6,
+        "w": 18,
+        "x": 138,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.large.01.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.large.01",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 8,
+        "w": 30,
+        "x": 158,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.cloud.large.02.png",
+      "layer": "sky",
+      "name": "tmp.sky.cloud.large.02",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 8,
+        "w": 30,
+        "x": 190,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.overcast.tile.png",
+      "layer": "sky",
+      "name": "tmp.sky.overcast.tile",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 13,
+        "w": 16,
+        "x": 222,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.haze.tile.png",
+      "layer": "sky",
+      "name": "tmp.sky.haze.tile",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 13,
+        "w": 16,
+        "x": 240,
+        "y": 2
+      },
+      "signal": "unknown weather; never storm",
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "file": "individual/tmp.sky.storm.body.png",
+      "layer": "sky",
+      "name": "tmp.sky.storm.body",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 13,
+        "w": 16,
+        "x": 258,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "direction": "enters from left; mirror for right",
+      "file": "individual/tmp.sky.storm.front.png",
+      "layer": "sky",
+      "name": "tmp.sky.storm.front",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 13,
+        "w": 24,
+        "x": 276,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "multiply",
+      "category": "sky",
+      "file": "individual/tmp.sky.light.dusk.png",
+      "layer": "event-overlays",
+      "name": "tmp.sky.light.dusk",
+      "opacity": 34,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 74,
+        "w": 640,
+        "x": 302,
+        "y": 2
+      },
+      "transitionMs": 1200
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "add",
+      "category": "sky",
+      "file": "individual/tmp.sky.light.sunburst.png",
+      "layer": "event-overlays",
+      "name": "tmp.sky.light.sunburst",
+      "opacity": 26,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 74,
+        "w": 640,
+        "x": 2,
+        "y": 78
+      },
+      "transitionMs": 1200
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "lightning",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.lightning.f01.png",
+      "frame": 0,
+      "layer": "event-overlays",
+      "loop": false,
+      "name": "tmp.sky.lightning.f01",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 30,
+        "w": 6,
+        "x": 644,
+        "y": 78
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "lightning",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.lightning.f02.png",
+      "frame": 1,
+      "layer": "event-overlays",
+      "loop": false,
+      "name": "tmp.sky.lightning.f02",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 30,
+        "w": 6,
+        "x": 652,
+        "y": 78
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "rain",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.rain.f01.png",
+      "frame": 0,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.rain.f01",
+      "opacity": 100,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 74,
+        "w": 8,
+        "x": 660,
+        "y": 78
+      },
+      "signal": "rain-after-drought event",
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "rain",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.rain.f02.png",
+      "frame": 1,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.rain.f02",
+      "opacity": 100,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 74,
+        "w": 8,
+        "x": 670,
+        "y": 78
+      },
+      "signal": "rain-after-drought event",
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "rain",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.rain.f03.png",
+      "frame": 2,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.rain.f03",
+      "opacity": 100,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 74,
+        "w": 8,
+        "x": 680,
+        "y": 78
+      },
+      "signal": "rain-after-drought event",
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "wind-leaf-1",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.wind-leaf.1.f01.png",
+      "frame": 0,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.wind-leaf.1.f01",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 690,
+        "y": 78
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "wind-leaf-1",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.wind-leaf.1.f02.png",
+      "frame": 1,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.wind-leaf.1.f02",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 695,
+        "y": 78
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "wind-leaf-2",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.wind-leaf.2.f01.png",
+      "frame": 0,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.wind-leaf.2.f01",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 700,
+        "y": 78
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "wind-leaf-2",
+      "blend": "normal",
+      "category": "sky",
+      "durationMs": 166,
+      "file": "individual/tmp.sky.wind-leaf.2.f02.png",
+      "frame": 1,
+      "layer": "event-overlays",
+      "loop": true,
+      "name": "tmp.sky.wind-leaf.2.f02",
+      "opacity": 255,
+      "paletteGroup": "sky",
+      "rect": {
+        "h": 3,
+        "w": 3,
+        "x": 705,
+        "y": 78
+      }
+    }
+  ],
+  "status": "native-environment",
+  "width": 1024
+}

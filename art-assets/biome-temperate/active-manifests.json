@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "style": "Botanical Cabinet",
+  "status": "Batch 07: targeted moss refinement, eight provisional resident families and section 10 UI/fonts delivered; owner acceptance, human readability and runtime integration pending",
+  "assets": 778,
+  "manifests": [
+    {
+      "category": "plants",
+      "manifest": "plants/exports/batch-01/plants-batch-01.json",
+      "revision": 6,
+      "pieces": 90
+    },
+    {
+      "category": "sky",
+      "manifest": "sky/exports/batch-02/sky-batch-02.json",
+      "revision": 3,
+      "pieces": 32
+    },
+    {
+      "category": "soil-ground",
+      "manifest": "soil-ground/exports/batch-02/soil-ground-batch-02.json",
+      "revision": 3,
+      "pieces": 25
+    },
+    {
+      "category": "glass",
+      "manifest": "glass/exports/batch-02/glass-batch-02.json",
+      "revision": 2,
+      "pieces": 13
+    },
+    {
+      "category": "ui",
+      "manifest": "ui/exports/batch-02/ui-batch-02.json",
+      "revision": 2,
+      "pieces": 1
+    },
+    {
+      "category": "plants",
+      "manifest": "plants/exports/batch-03/plants-batch-03.json",
+      "pieces": 18,
+      "revision": 1
+    },
+    {
+      "category": "weeds-litter-fungus",
+      "manifest": "weeds-litter-fungus/exports/batch-03/weeds-litter-fungus-batch-03.json",
+      "pieces": 23,
+      "revision": 1
+    },
+    {
+      "category": "monuments",
+      "manifest": "monuments/exports/batch-03/monuments-batch-03.json",
+      "pieces": 9,
+      "revision": 1
+    },
+    {
+      "category": "plants",
+      "manifest": "plants/exports/batch-04/plants-batch-04.json",
+      "revision": 2,
+      "pieces": 108
+    },
+    {
+      "category": "events",
+      "manifest": "events/exports/batch-05/events-batch-05.json",
+      "revision": 1,
+      "pieces": 18
+    },
+    {
+      "category": "creatures",
+      "manifest": "creatures/exports/batch-06/creatures-batch-06.json",
+      "revision": 2,
+      "pieces": 140
+    },
+    {
+      "category": "creatures",
+      "manifest": "creatures/exports/batch-07/creatures-batch-07.json",
+      "revision": 2,
+      "pieces": 124
+    },
+    {
+      "category": "ui",
+      "manifest": "ui/exports/batch-07/ui-batch-07.json",
+      "revision": 1,
+      "pieces": 17
+    },
+    {
+      "category": "bitmap-fonts",
+      "manifest": "ui/exports/batch-07/fonts-batch-07.json",
+      "revision": 1,
+      "pieces": 160
+    }
+  ],
+  "historical": "All proof-v01 manifests are historical. Do not merge them with this active list.",
+  "nonGlyphAssets": 618,
+  "glyphs": 160,
+  "biome": "temperate"
+}

@@ -1,0 +1,14 @@
+# Build output
+/target/
+/dist/
+*.profraw
+*.profdata
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local harness leftovers (harnesses clean up after themselves; this catches killed runs)
+/tmp/

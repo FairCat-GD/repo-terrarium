@@ -1,0 +1,533 @@
+{
+  "atlas": "soil-ground-batch-02.png",
+  "batch": 2,
+  "height": 14,
+  "opacityContract": "PNG stores palette-coloured binary-alpha mask. Apply sprite.opacity / 255 and blend at draw time. Indexed source layer opacity matches the manifest.",
+  "origin": "Aseprite Lua native pixel artwork continuing the approved Botanical Cabinet palette and components",
+  "palette": "../../../palettes/exports/palette-temperate.json",
+  "revision": 3,
+  "schemaVersion": 1,
+  "sprites": [
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.soil.tile.01.png",
+      "layer": "soil",
+      "name": "tmp.soil.tile.01",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 8,
+        "w": 8,
+        "x": 2,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.soil.edge.01.png",
+      "layer": "ground",
+      "name": "tmp.soil.edge.01",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 2,
+        "w": 8,
+        "x": 12,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.soil.tile.02.png",
+      "layer": "soil",
+      "name": "tmp.soil.tile.02",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 8,
+        "w": 8,
+        "x": 22,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.soil.edge.02.png",
+      "layer": "ground",
+      "name": "tmp.soil.edge.02",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 2,
+        "w": 8,
+        "x": 32,
+        "y": 2
+      },
+      "tileX": true
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 1
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.pebble.01.png",
+      "layer": "ground",
+      "name": "tmp.ground.pebble.01",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 2,
+        "w": 2,
+        "x": 42,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 1
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.pebble.02.png",
+      "layer": "ground",
+      "name": "tmp.ground.pebble.02",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 2,
+        "w": 2,
+        "x": 46,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 1
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.pebble.03.png",
+      "layer": "ground",
+      "name": "tmp.ground.pebble.03",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 2,
+        "w": 3,
+        "x": 50,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 1
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.pebble.04.png",
+      "layer": "ground",
+      "name": "tmp.ground.pebble.04",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 2,
+        "w": 3,
+        "x": 55,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 2
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.tuft.01.png",
+      "layer": "near-plants",
+      "name": "tmp.ground.tuft.01",
+      "opacity": 255,
+      "paletteGroup": "green",
+      "rect": {
+        "h": 3,
+        "w": 4,
+        "x": 60,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 2
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.tuft.02.png",
+      "layer": "near-plants",
+      "name": "tmp.ground.tuft.02",
+      "opacity": 255,
+      "paletteGroup": "green",
+      "rect": {
+        "h": 3,
+        "w": 4,
+        "x": 66,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 2
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.tuft.03.png",
+      "layer": "near-plants",
+      "name": "tmp.ground.tuft.03",
+      "opacity": 255,
+      "paletteGroup": "green",
+      "rect": {
+        "h": 3,
+        "w": 4,
+        "x": 72,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 1,
+        "y": 2
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.ground.tuft.04.png",
+      "layer": "near-plants",
+      "name": "tmp.ground.tuft.04",
+      "opacity": 255,
+      "paletteGroup": "green",
+      "rect": {
+        "h": 3,
+        "w": 4,
+        "x": 78,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 10,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.soil.fresh-patch.01.png",
+      "layer": "ground",
+      "name": "tmp.soil.fresh-patch.01",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 4,
+        "w": 20,
+        "x": 84,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 10,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.soil.fresh-patch.02.png",
+      "layer": "ground",
+      "name": "tmp.soil.fresh-patch.02",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 4,
+        "w": 20,
+        "x": 106,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "earthquake",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 166,
+      "file": "individual/tmp.ground.crack.f01.png",
+      "frame": 0,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.crack.f01",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 6,
+        "w": 40,
+        "x": 128,
+        "y": 2
+      },
+      "settled": false
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "earthquake",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 166,
+      "file": "individual/tmp.ground.crack.f02.png",
+      "frame": 1,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.crack.f02",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 6,
+        "w": 40,
+        "x": 170,
+        "y": 2
+      },
+      "settled": false
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "earthquake",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 166,
+      "file": "individual/tmp.ground.crack.f03.png",
+      "frame": 2,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.crack.f03",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 6,
+        "w": 40,
+        "x": 212,
+        "y": 2
+      },
+      "settled": false
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "animation": "earthquake",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 1000,
+      "file": "individual/tmp.ground.crack.settled.png",
+      "frame": 3,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.crack.settled",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 6,
+        "w": 40,
+        "x": 254,
+        "y": 2
+      },
+      "settled": true
+    },
+    {
+      "anchor": {
+        "x": 12,
+        "y": 3
+      },
+      "animation": "sinkhole",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 166,
+      "file": "individual/tmp.ground.sinkhole.f01.png",
+      "frame": 0,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.sinkhole.f01",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 10,
+        "w": 24,
+        "x": 296,
+        "y": 2
+      },
+      "settled": false
+    },
+    {
+      "anchor": {
+        "x": 12,
+        "y": 3
+      },
+      "animation": "sinkhole",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 166,
+      "file": "individual/tmp.ground.sinkhole.f02.png",
+      "frame": 1,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.sinkhole.f02",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 10,
+        "w": 24,
+        "x": 322,
+        "y": 2
+      },
+      "settled": false
+    },
+    {
+      "anchor": {
+        "x": 12,
+        "y": 3
+      },
+      "animation": "sinkhole",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 166,
+      "file": "individual/tmp.ground.sinkhole.f03.png",
+      "frame": 2,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.sinkhole.f03",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 10,
+        "w": 24,
+        "x": 348,
+        "y": 2
+      },
+      "settled": false
+    },
+    {
+      "anchor": {
+        "x": 12,
+        "y": 3
+      },
+      "animation": "sinkhole",
+      "blend": "normal",
+      "category": "soil-ground",
+      "durationMs": 1000,
+      "file": "individual/tmp.ground.sinkhole.f04.png",
+      "frame": 3,
+      "layer": "ground",
+      "loop": false,
+      "name": "tmp.ground.sinkhole.f04",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 10,
+        "w": 24,
+        "x": 374,
+        "y": 2
+      },
+      "settled": true
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.fossil.shell.png",
+      "layer": "soil",
+      "name": "tmp.fossil.shell",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 4,
+        "w": 6,
+        "x": 400,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.fossil.bone.png",
+      "layer": "soil",
+      "name": "tmp.fossil.bone",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 3,
+        "w": 8,
+        "x": 408,
+        "y": 2
+      }
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "soil-ground",
+      "file": "individual/tmp.fossil.leaf-print.png",
+      "layer": "soil",
+      "name": "tmp.fossil.leaf-print",
+      "opacity": 255,
+      "paletteGroup": "soil-stone-green",
+      "rect": {
+        "h": 5,
+        "w": 6,
+        "x": 418,
+        "y": 2
+      }
+    }
+  ],
+  "status": "native-environment",
+  "width": 1024
+}
