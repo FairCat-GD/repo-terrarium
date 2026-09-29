@@ -1,0 +1,12 @@
+# Truth must be a pure function of its inputs (I-1). Clippy reads only the nearest
+# clippy.toml, so a root-level file added later would not apply here unless merged into this one.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order varies per run; use BTreeMap or IndexMap" },
+    { path = "std::collections::HashSet", reason = "iteration order varies per run; use BTreeSet or IndexSet" },
+    { path = "f32", reason = "floats are not reproducible across platforms; use the fixed-point types" },
+    { path = "f64", reason = "floats are not reproducible across platforms; use the fixed-point types" },
+]
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "truth reads no wall clock; time arrives as ticks" },
+    { path = "std::time::SystemTime::now", reason = "truth reads no wall clock; time arrives as ticks" },
+]

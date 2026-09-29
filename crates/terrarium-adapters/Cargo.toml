@@ -1,0 +1,15 @@
+[package]
+name = "terrarium-adapters"
+description = "Readers for git history, reports and CI that turn a repository into observations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+terrarium-truth.workspace = true
+
+[lints]
+workspace = true

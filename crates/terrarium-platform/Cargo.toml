@@ -1,0 +1,12 @@
+[package]
+name = "terrarium-platform"
+description = "The only unsafe code: Windows AppBar and macOS window-level FFI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

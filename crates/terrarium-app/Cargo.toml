@@ -1,0 +1,25 @@
+[package]
+name = "terrarium-app"
+description = "The repo-terrarium binary: window, presenter, egui windows and CLI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "repo-terrarium"
+path = "src/main.rs"
+
+[dependencies]
+terrarium-truth.workspace = true
+terrarium-adapters.workspace = true
+terrarium-store.workspace = true
+terrarium-engine.workspace = true
+terrarium-compose.workspace = true
+terrarium-platform.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

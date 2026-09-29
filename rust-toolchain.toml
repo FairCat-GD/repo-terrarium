@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+# verify lints the Windows build on macOS; there is no CI to compile it elsewhere.
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"

@@ -1,0 +1,60 @@
+# Supply-chain policy, checked by `cargo xtask verify`. An advisory or a license outside this
+# list stops the build until it is decided on; no `ignore` or exception is added without that.
+
+[graph]
+# The shipping targets. Linux is not a product target, so its window-system crates never ship.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+ignore = []
+
+[licenses]
+# Code is MIT OR Apache-2.0; everything linked must be compatible with it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The allowlist is policy, not a record of what is linked today.
+unused-allowed-license = "allow"
+
+[licenses.private]
+# The workspace crates are `publish = false`; their own license is set in the manifest.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+# Workspace path dependencies carry no version; they are allowed because every crate is
+# `publish = false`.
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    { crate = "bincode", reason = "unmaintained (RUSTSEC-2025-0141); postcard is the encoding" },
+    # The only network client is ureq, only in terrarium-adapters (I-6); the crate-graph check
+    # in verify enforces where ureq may be reached from.
+    { crate = "reqwest", reason = "the only HTTP client is ureq, in terrarium-adapters (I-6)" },
+    { crate = "hyper", reason = "the only HTTP client is ureq, in terrarium-adapters (I-6)" },
+    { crate = "curl", reason = "the only HTTP client is ureq, in terrarium-adapters (I-6)" },
+    { crate = "isahc", reason = "the only HTTP client is ureq, in terrarium-adapters (I-6)" },
+    { crate = "minreq", reason = "the only HTTP client is ureq, in terrarium-adapters (I-6)" },
+    { crate = "attohttpc", reason = "the only HTTP client is ureq, in terrarium-adapters (I-6)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,17 @@
+[package]
+name = "terrarium-engine"
+description = "Headless live pipeline: watcher, refresh, replay and panic containment."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+terrarium-truth.workspace = true
+terrarium-adapters.workspace = true
+terrarium-store.workspace = true
+
+[lints]
+workspace = true
