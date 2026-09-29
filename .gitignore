@@ -12,3 +12,6 @@
 
 # Local harness leftovers (harnesses clean up after themselves; this catches killed runs)
 /tmp/
+
+# Reports `repo-terrarium --probe` writes into whatever directory it runs from
+repo-terrarium-probe-*

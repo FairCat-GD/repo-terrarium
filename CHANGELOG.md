@@ -5,6 +5,34 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-29
+
+### Added
+
+- The strip. `repo-terrarium` now opens a borderless strip along the bottom edge of a monitor,
+  preferring one other than the primary.
+- **Size.** The strip shows the 640×74 scene at the largest whole-number scale that fits the
+  monitor's width, centred, with the frame continuing to both edges.
+- **On macOS the strip sits just above the desktop icons:**
+  - below every ordinary window, on every Space;
+  - never in the Dock or the Command-Tab switcher;
+  - left in place by another app's Hide Others;
+  - moved to fit again when displays change or the Mac wakes;
+  - the pointer is followed over it even while another app is in front.
+- **A placeholder scene** in the palette's colours: sky, the soil band and the glass edges. The
+  art arrives later.
+- **Raise hotkey.** Ctrl+Alt+T (Control-Option-T on a Mac) raises the strip above other
+  windows for 10 seconds without taking focus from the app in use.
+- **Quit.** Right-click the strip for a menu with **Quit**.
+- **No idle drawing.** The strip draws only when its size or place changes, so a still strip
+  draws no frames and uses no CPU.
+- **`repo-terrarium --probe pinning`** walks a tester through the pinning checklist and writes
+  a JSON and a text report to the current directory.
+
+### Removed
+
+- The plain titled window.
+
 ## [0.1.0] - 2026-09-29
 
 ### Added

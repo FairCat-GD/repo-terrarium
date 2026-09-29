@@ -4,6 +4,10 @@ Depiction: from `SceneInput` to pixels.
 
 ## Owns
 
+- The native frame, `Rgba640x74`, and the scene's fixed geometry.
+- The integer scale policy and the upscaler that applies it with padding, shared by the
+  presenter and, later, every export.
+- A placeholder frame in palette colours, until the compositor draws art.
 - The asset catalog.
 - The composer, its tweens and animation.
 - Frame scheduling hints.

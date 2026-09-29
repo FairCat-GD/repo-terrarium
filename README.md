@@ -6,8 +6,11 @@ and CI or local tests are the weather. It is built in Rust for macOS and Windows
 
 ## Status
 
-Pre-release, in a private repository. Version 0.1.0 is the scaffold: running the app opens a plain
-window, and `--version` prints the version.
+Pre-release, in a private repository. Version 0.2.0 shows the strip:
+- a borderless band along the bottom of a monitor, pinned below ordinary windows on macOS;
+- a placeholder scene in the palette's colours;
+- a raise hotkey (Ctrl+Alt+T);
+- a right-click **Quit**.
 
 ## Prerequisites
 
@@ -20,9 +23,10 @@ window, and `--version` prints the version.
 ## Build and run
 
 ```sh
-cargo run -p terrarium-app                 # opens the window
-cargo run -p terrarium-app -- --version    # prints the version
-cargo xtask verify                         # the gate: must be green before every commit
+cargo run -p terrarium-app                        # runs the strip; right-click it to quit
+cargo run -p terrarium-app -- --version           # prints the version
+cargo run -p terrarium-app -- --probe pinning     # the pinning checklist, with a report
+cargo xtask verify                                # the gate: must be green before every commit
 ```
 
 There is no CI. `cargo xtask verify` runs locally before every commit. It includes a clippy pass

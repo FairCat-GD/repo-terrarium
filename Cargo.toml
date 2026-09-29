@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -19,6 +19,53 @@ terrarium-compose = { path = "crates/terrarium-compose" }
 terrarium-platform = { path = "crates/terrarium-platform" }
 
 winit = "0.30.13"
+softbuffer = { version = "0.4.8", default-features = false }
+raw-window-handle = "0.6.2"
+global-hotkey = "0.8.0"
+muda = { version = "0.20.0", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+# macOS FFI, used only by terrarium-platform. winit links objc2 0.5; these are 0.6, and the two
+# never exchange types. The framework crates enable every framework by default.
+objc2 = "0.6.4"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSNotification",
+    "NSObject",
+    "NSOperation",
+    "NSProcessInfo",
+    "NSString",
+    "NSValue",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSApplication",
+    "NSGraphics",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSTrackingArea",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CGWindowLevel",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CFString",
+    "CFUUID",
+] }
 
 cargo_metadata = "0.23.1"
 toml = "1.1.6"

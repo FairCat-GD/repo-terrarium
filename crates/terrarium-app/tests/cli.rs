@@ -1,19 +1,19 @@
-//! The binary's command line, run the way a person runs it. Never without arguments: that opens
-//! a window.
+//! The binary's command line, run the way a person runs it. Never without arguments, and never
+//! with a whole `--probe` command: those open the strip.
 #![forbid(unsafe_code)]
 
 use std::process::{Command, Output};
 
-fn repo_terrarium(arg: &str) -> Output {
+fn repo_terrarium(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_repo-terrarium"))
-        .arg(arg)
+        .args(args)
         .output()
         .expect("the binary runs")
 }
 
 #[test]
 fn version_prints_the_binary_name_and_workspace_version() {
-    let out = repo_terrarium("--version");
+    let out = repo_terrarium(&["--version"]);
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
@@ -24,8 +24,28 @@ fn version_prints_the_binary_name_and_workspace_version() {
 
 #[test]
 fn an_unexpected_argument_exits_with_status_2() {
-    let out = repo_terrarium("--bogus");
+    let out = repo_terrarium(&["--bogus"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
     assert!(String::from_utf8(out.stderr).unwrap().contains("'--bogus'"));
+}
+
+#[test]
+fn a_probe_without_a_kind_exits_with_status_2() {
+    let out = repo_terrarium(&["--probe"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(
+        String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("--probe pinning")
+    );
+}
+
+#[test]
+fn an_unknown_probe_kind_exits_with_status_2() {
+    let out = repo_terrarium(&["--probe", "weather"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8(out.stderr).unwrap().contains("'weather'"));
 }

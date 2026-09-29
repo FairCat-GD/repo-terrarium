@@ -1,20 +1,29 @@
-//! The command line, parsed by hand: two commands do not justify a parser dependency.
+//! The command line, parsed by hand: a few commands do not justify a parser dependency.
 
 use std::ffi::OsString;
 
 /// What the process was asked to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    /// No arguments: open the window.
+    /// No arguments: run the strip.
     Run,
     /// `--version`: print the version and exit.
     Version,
+    /// `--probe <kind>`: run the strip with a recorder and write a report.
+    Probe(ProbeKind),
 }
 
-/// An argument the command line does not accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeKind {
+    /// Window level, Spaces, hover, the hotkey and activation.
+    Pinning,
+}
+
+/// A command line the program does not accept.
 #[derive(Debug, PartialEq, Eq)]
-pub struct UsageError {
-    pub unexpected: OsString,
+pub enum UsageError {
+    Unexpected(OsString),
+    MissingProbeKind,
 }
 
 /// macOS `LaunchServices` can append a process serial number (`-psn_0_12345`) when it launches
@@ -29,12 +38,20 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
     let Some(first) = args.next() else {
         return Ok(Command::Run);
     };
-    if first != "--version" {
-        return Err(UsageError { unexpected: first });
-    }
+    let command = if first == "--version" {
+        Command::Version
+    } else if first == "--probe" {
+        match args.next() {
+            None => return Err(UsageError::MissingProbeKind),
+            Some(kind) if kind == "pinning" => Command::Probe(ProbeKind::Pinning),
+            Some(kind) => return Err(UsageError::Unexpected(kind)),
+        }
+    } else {
+        return Err(UsageError::Unexpected(first));
+    };
     match args.next() {
-        None => Ok(Command::Version),
-        Some(extra) => Err(UsageError { unexpected: extra }),
+        None => Ok(command),
+        Some(extra) => Err(UsageError::Unexpected(extra)),
     }
 }
 
@@ -47,9 +64,7 @@ mod tests {
     }
 
     fn unexpected(arg: &str) -> Result<Command, UsageError> {
-        Err(UsageError {
-            unexpected: arg.into(),
-        })
+        Err(UsageError::Unexpected(arg.into()))
     }
 
     #[test]
@@ -80,5 +95,20 @@ mod tests {
     #[test]
     fn an_argument_after_version_is_refused() {
         assert_eq!(parse_strs(&["--version", "extra"]), unexpected("extra"));
+    }
+
+    #[test]
+    fn the_pinning_probe_is_accepted() {
+        assert_eq!(
+            parse_strs(&["--probe", "pinning"]),
+            Ok(Command::Probe(ProbeKind::Pinning))
+        );
+    }
+
+    #[test]
+    fn a_probe_needs_a_known_kind_and_nothing_after_it() {
+        assert_eq!(parse_strs(&["--probe"]), Err(UsageError::MissingProbeKind));
+        assert_eq!(parse_strs(&["--probe", "fps"]), unexpected("fps"));
+        assert_eq!(parse_strs(&["--probe", "pinning", "x"]), unexpected("x"));
     }
 }
