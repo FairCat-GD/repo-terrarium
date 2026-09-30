@@ -1,10 +1,13 @@
 //! The crate-graph check: the dependency graph and crate roots that make the invariants compile
-//! errors. The policy is data, checked by a pure function over a small model, so every rule can
-//! be falsified by a unit test with a synthetic graph.
+//! errors, plus the scan of truth's sources behind its float wall (I-1). The policy is data,
+//! checked by a pure function over a small model, so every rule can be falsified by a unit test
+//! with a synthetic graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+
+use crate::purity;
 
 use cargo_metadata::semver::Version;
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, TargetKind};
@@ -50,6 +53,7 @@ const UNSAFE_CRATE: &str = PLATFORM;
 const REQUIRED_ROOT_ATTRIBUTES: &[(&str, &str)] = &[
     (PLATFORM, "#![deny(clippy::undocumented_unsafe_blocks)]"),
     (TRUTH, "#![deny(clippy::float_arithmetic)]"),
+    (TRUTH, "#![deny(clippy::as_conversions)]"),
 ];
 
 /// Package fields every member inherits from `[workspace.package]`.
@@ -105,12 +109,21 @@ pub struct Package {
 }
 
 #[derive(Debug, Clone)]
+pub struct SourceFile {
+    /// Relative to the workspace root.
+    pub path: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Workspace {
     pub members: Vec<Member>,
     /// The resolved graph: every package, workspace members included.
     pub packages: Vec<Package>,
     /// `rust-version` from `[workspace.package]`.
     pub msrv: Version,
+    /// Every `.rs` file in truth's package directory.
+    pub truth_sources: Vec<SourceFile>,
 }
 
 /// Every rule the workspace breaks, one line each. Empty means the check passes.
@@ -124,8 +137,10 @@ pub fn check(ws: &Workspace) -> Vec<String> {
         check_roots(member, &mut violations);
         if member.name == TRUTH {
             check_truth_externals(member, &names, &mut violations);
+            check_truth_targets(member, &mut violations);
         }
     }
+    check_truth_sources(&ws.truth_sources, &mut violations);
     check_http_client(ws, &mut violations);
     check_msrv(ws, &mut violations);
     violations
@@ -200,6 +215,32 @@ fn check_truth_externals(member: &Member, names: &BTreeSet<&str>, out: &mut Vec<
                 dep.name,
                 TRUTH_EXTERNAL.join(", ")
             ));
+        }
+    }
+}
+
+/// Truth is a single library, so its crate-level lint walls cover all of its code: a test,
+/// bench, example or build-script target would be a crate of its own without them.
+fn check_truth_targets(member: &Member, out: &mut Vec<String>) {
+    for target in member.targets.iter().filter(|t| !t.library) {
+        out.push(format!(
+            "{TRUTH} has a {} target at {}; truth is one library, so its lint walls reach all of \
+             it (I-1)",
+            target.kind, target.path
+        ));
+    }
+}
+
+fn check_truth_sources(sources: &[SourceFile], out: &mut Vec<String>) {
+    for source in sources {
+        match purity::scan(&source.text) {
+            Ok(findings) => out.extend(findings.into_iter().map(|finding| {
+                format!(
+                    "{TRUTH} {}:{} has {} (I-1)",
+                    source.path, finding.line, finding.what
+                )
+            })),
+            Err(err) => out.push(format!("{TRUTH} {} does not lex: {err}", source.path)),
         }
     }
 }
@@ -284,11 +325,48 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         .into_iter()
         .map(member_from)
         .collect::<Result<Vec<_>, _>>()?;
+    let truth_dir = metadata
+        .workspace_packages()
+        .into_iter()
+        .find(|p| p.name.as_str() == TRUTH)
+        .and_then(|p| p.manifest_path.parent())
+        .ok_or("cargo metadata has no terrarium-truth")?
+        .as_std_path()
+        .to_path_buf();
+    let mut truth_sources = Vec::new();
+    collect_sources(root, &truth_dir, &mut truth_sources)?;
     Ok(Workspace {
         members,
         packages: resolved_packages(&metadata)?,
         msrv,
+        truth_sources,
     })
+}
+
+/// Every `.rs` file under `dir`, skipping build output, sorted so reports are stable.
+fn collect_sources(root: &Path, dir: &Path, out: &mut Vec<SourceFile>) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+    let mut paths: Vec<_> = entries
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name != "target") {
+                collect_sources(root, &path, out)?;
+            }
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let text = fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            out.push(SourceFile {
+                path: relative.display().to_string(),
+                text,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
@@ -501,6 +579,11 @@ mod tests {
             members,
             packages: Vec::new(),
             msrv: Version::new(1, 95, 0),
+            truth_sources: vec![SourceFile {
+                path: "crates/terrarium-truth/src/lib.rs".into(),
+                text: "#![deny(clippy::float_arithmetic)]\npub fn half(x: u32) -> u32 { x / 2 }\n"
+                    .into(),
+            }],
         };
         let edges: Vec<(String, Vec<String>)> = ws
             .members
@@ -657,6 +740,54 @@ mod tests {
         fails_with(
             &ws,
             "terrarium-truth library root lacks `#![deny(clippy::float_arithmetic)]`",
+        );
+    }
+
+    #[test]
+    fn truth_needs_its_cast_lint() {
+        let mut ws = workspace();
+        member_mut(&mut ws, TRUTH).targets[0]
+            .inner_attributes
+            .remove("#![deny(clippy::as_conversions)]");
+        fails_with(
+            &ws,
+            "terrarium-truth library root lacks `#![deny(clippy::as_conversions)]`",
+        );
+    }
+
+    #[test]
+    fn truth_is_one_library() {
+        let mut ws = workspace();
+        member_mut(&mut ws, TRUTH).targets.push(TargetRoot {
+            kind: "test".into(),
+            library: false,
+            path: "crates/terrarium-truth/tests/extra.rs".into(),
+            inner_attributes: attrs(&[FORBID_UNSAFE]),
+        });
+        fails_with(
+            &ws,
+            "terrarium-truth has a test target at crates/terrarium-truth/tests/extra.rs",
+        );
+    }
+
+    #[test]
+    fn truth_sources_are_scanned() {
+        let mut ws = workspace();
+        ws.truth_sources.push(SourceFile {
+            path: "crates/terrarium-truth/src/tuning.rs".into(),
+            text: "pub const SPLIT: bool = 0.5_f64 < 1.0;\n".into(),
+        });
+        fails_with(
+            &ws,
+            "terrarium-truth crates/terrarium-truth/src/tuning.rs:1 has the float literal `0.5_f64`",
+        );
+        ws.truth_sources.push(SourceFile {
+            path: "crates/terrarium-truth/src/broken.rs".into(),
+            text: "fn f() { \"unterminated }".into(),
+        });
+        fails_with(
+            &ws,
+            "terrarium-truth crates/terrarium-truth/src/broken.rs does not lex",
         );
     }
 

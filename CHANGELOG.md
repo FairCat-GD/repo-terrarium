@@ -5,6 +5,34 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-30
+
+Nothing changes on screen. This release lays truth's foundations, the deterministic core that
+later decides what the terrarium shows.
+
+### Added
+
+- **Fixed-point numbers** (`Q16`, `Q32`). Every operation saturates, and every rounding goes
+  half away from zero. They include `log2`, a moving average and `clamp01`.
+- **Randomness:** `PCG32` seeded through `SplitMix64`, with unbiased bounded draws and one
+  stream per purpose, so a new use of randomness never shifts an old one.
+- **Time and identity:** the one-hour UTC tick grid, the repository seed and `SIM_VERSION` 1.
+- **The domain types:**
+  - readings, where unknown is a state and never a number;
+  - climate and habitat;
+  - the facts read from each commit;
+  - the six observation kinds;
+  - the presentation classes.
+- **`SceneInput`, the frozen contract between truth and the picture.**
+  - Its names follow the art.
+  - It adds a list of ground marks that outlast their event: the settled crack, the settled
+    sinkhole, and fresh soil.
+- **The canonical text dump,** truth's golden format, with its SHA-256, and postcard encoding
+  for the cache. Both round-trip, and both are pinned by tests.
+- **Stronger purity walls in truth.**
+  - Any `as` cast, clock type, std hasher or unstable sort is refused.
+  - `cargo xtask verify` now scans truth's sources for floats that clippy cannot see.
+
 ## [0.3.0] - 2026-09-30
 
 ### Added

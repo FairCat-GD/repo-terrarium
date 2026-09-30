@@ -3,6 +3,7 @@
 
 mod graph;
 mod probe_zip;
+mod purity;
 mod verify;
 
 use std::path::Path;

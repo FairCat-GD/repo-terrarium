@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -25,6 +25,11 @@ global-hotkey = "0.8.0"
 muda = { version = "0.20.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Truth: postcard for the cache, without the heapless it never uses; SHA-256 for golden hashes
+# and RNG streams; proptest for its property tests.
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11.0", default-features = false }
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 # macOS FFI, used only by terrarium-platform. winit links objc2 0.5; these are 0.6, and the two
 # never exchange types. The framework crates enable every framework by default.
@@ -82,6 +87,8 @@ windows = { version = "0.62.2", features = [
 ] }
 
 cargo_metadata = "0.23.1"
+# The lexer behind xtask's scan of truth's sources; `span-locations` gives line numbers.
+proc-macro2 = { version = "1.0.107", default-features = false, features = ["span-locations"] }
 toml = "1.1.6"
 
 # Cargo cannot override workspace lints per crate (cargo#13157), so the per-crate differences
