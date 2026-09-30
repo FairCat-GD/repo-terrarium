@@ -264,13 +264,17 @@ fn palette_rows(colours: &[[u8; 3]; PALETTE_SLOTS]) -> Vec<u8> {
 
 #[cfg(test)]
 pub mod testing {
-    //! Re-encodes an indexed PNG after an edit, keeping or replacing its palette chunks.
+    //! Re-encodes an indexed PNG after an edit to its pixels or palette chunks.
 
     use super::*;
 
-    pub fn edit(bytes: &[u8], edit: impl FnOnce(&mut Indexed, &mut Vec<u8>)) -> Vec<u8> {
+    /// `edit` gets the pixels, the `PLTE` bytes and the `tRNS` alphas.
+    pub fn edit(
+        bytes: &[u8],
+        edit: impl FnOnce(&mut Indexed, &mut Vec<u8>, &mut Vec<u8>),
+    ) -> Vec<u8> {
         let mut decoded = decode_indexed(bytes).expect("a delivered PNG decodes");
-        edit(&mut decoded.image, &mut decoded.plte);
+        edit(&mut decoded.image, &mut decoded.plte, &mut decoded.trns);
         let mut out = Vec::new();
         let mut encoder = png::Encoder::new(&mut out, decoded.image.width, decoded.image.height);
         encoder.set_color(ColorType::Indexed);

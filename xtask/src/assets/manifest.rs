@@ -856,7 +856,7 @@ impl Loader {
             };
             (day[i], night[i]) = (d, n);
         }
-        let png = format!("{}.png", path.strip_suffix(".json").unwrap_or(&path));
+        let png = png_beside(&path);
         Some((png, Palette { day, night }))
     }
 
@@ -1238,6 +1238,12 @@ fn permille(value: f64) -> Result<u16, String> {
         .ok_or_else(|| format!("opacity key {value} is not a 0..=1 value in thousandths"))
 }
 
+/// The palette PNG beside its JSON: the JSON's extension, whatever its case, replaced.
+fn png_beside(json: &str) -> String {
+    let stem = json.rsplit_once('.').map_or(json, |(stem, _)| stem);
+    format!("{stem}.png")
+}
+
 /// `#RRGGBB`.
 fn colour(hex: &str) -> Option<Rgb> {
     let hex = hex.strip_prefix('#').filter(|h| h.len() == 6)?;
@@ -1322,6 +1328,18 @@ mod tests {
         assert!(permille(0.3333).is_err());
         assert!(permille(1.5).is_err());
         assert!(permille(-0.1).is_err());
+    }
+
+    #[test]
+    fn the_palette_png_sits_beside_its_json_whatever_the_case() {
+        assert_eq!(
+            png_beside("biome-t/palettes/p.json"),
+            "biome-t/palettes/p.png"
+        );
+        assert_eq!(
+            png_beside("biome-t/palettes/p.JSON"),
+            "biome-t/palettes/p.png"
+        );
     }
 
     #[test]

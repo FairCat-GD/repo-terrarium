@@ -81,11 +81,14 @@ Finder's `.DS_Store` files are never read (I-14). The checks:
      destination is the leftmost match of the terminal regex.
    - A terminal with no destination passes only if the routine loops or its text starts with
      `hold`.
+   - A creature frame that names a routine `animations[]` does not list fails. An effect's
+     frames are the attached-effect sprites hosted on its routine's frames.
 6. **Variants.** Every `SceneInput` variant has art, as `terrarium_compose::variants` maps it.
 7. **Generated files.** The regenerated files equal the committed ones, byte for byte.
 
 Checks 1 to 6 all run, so a delivery shows every problem at once. The exception is a biome
-whose manifests fail check 2: checks 3 to 6 need its sprite table, so they are skipped.
+whose manifests fail check 2: checks 3 to 6 need its sprite table, so they are skipped for
+it, and the summary names the biome.
 Packing and check 7 run only once 1 to 6 pass, so a broken package never writes output.
 
 - `cargo xtask assets --check` compares and writes nothing; verify runs this.

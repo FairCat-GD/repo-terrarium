@@ -522,6 +522,17 @@ impl Catalog {
                 return invalid(format!("{} is malformed", animation.name));
             }
         }
+        // `Font::glyph` binary-searches, so each font's codepoints must be sorted and unique.
+        if let Some(font) = self
+            .fonts
+            .iter()
+            .find(|font| !font.glyphs.windows(2).all(|pair| pair[0].0 < pair[1].0))
+        {
+            return invalid(format!(
+                "{}'s glyphs are not sorted by unique codepoint",
+                font.name
+            ));
+        }
         let glyphs = self
             .fonts
             .iter()
@@ -653,6 +664,16 @@ mod tests {
             Catalog::decode(&trailing, EMBEDDED_ATLAS),
             Err(DecodeError::Trailing(1))
         );
+    }
+
+    #[test]
+    fn unsorted_glyphs_are_refused() {
+        let mut catalog = Art::embedded().catalog.clone();
+        catalog.fonts[0].glyphs.swap(0, 1);
+        assert!(matches!(
+            Catalog::decode(&catalog.encode(), EMBEDDED_ATLAS),
+            Err(DecodeError::Invalid(what)) if what.contains("glyphs are not sorted")
+        ));
     }
 
     #[test]

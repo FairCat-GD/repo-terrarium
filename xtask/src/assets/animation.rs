@@ -100,7 +100,7 @@ struct Builder<'a> {
     drafts: Vec<AnimationDraft>,
 }
 
-impl Builder<'_> {
+impl<'a> Builder<'a> {
     fn fail(&mut self, name: &str, message: impl std::fmt::Display) {
         self.failures.push(Failure::new(
             Check::Animations,
@@ -266,22 +266,36 @@ impl Builder<'_> {
         }
     }
 
-    /// Sky, soil and burn-off: sequences assembled from their sprites' frame fields.
-    fn per_sprite(&mut self) {
-        let creature_names: BTreeSet<&str> = self
-            .biome
+    /// The sprites that carry frame fields for a sequence of their own, by sequence name. A
+    /// creature frame belongs to an `animations[]` routine, so one that names another is a
+    /// mistake, never a sequence of its own.
+    fn per_sprite_groups(&mut self) -> BTreeMap<&'a str, Vec<&'a SpriteDraft>> {
+        let biome = self.biome;
+        let creature_names: BTreeSet<&str> = biome
             .creature_animations
             .iter()
             .map(|a| a.name.as_str())
             .collect();
         let mut groups: BTreeMap<&str, Vec<&SpriteDraft>> = BTreeMap::new();
-        for sprite in &self.biome.sprites {
-            if let Some(name) = sprite.frame.as_ref().and_then(|f| f.animation.as_deref())
-                && !creature_names.contains(name)
-            {
+        for sprite in &biome.sprites {
+            let Some(name) = sprite.frame.as_ref().and_then(|f| f.animation.as_deref()) else {
+                continue;
+            };
+            if creature_names.contains(name) {
+                continue;
+            }
+            if sprite.keys.life_stage.is_some() {
+                self.fail(&sprite.id, format!("names {name}, which no routine lists"));
+            } else {
                 groups.entry(name).or_default().push(sprite);
             }
         }
+        groups
+    }
+
+    /// Sky, soil and burn-off: sequences assembled from their sprites' frame fields.
+    fn per_sprite(&mut self) {
+        let groups = self.per_sprite_groups();
         for (name, mut frames) in groups {
             frames.sort_by_key(|s| s.frame.as_ref().map(|f| f.index));
             let contiguous = frames.iter().enumerate().all(|(i, s)| {
@@ -375,30 +389,44 @@ impl Builder<'_> {
         let biome = self.biome;
         for effect in &biome.effects {
             let name = effect.tag.as_str();
-            let (species, life_stage) = effect
-                .sync
-                .split_once('.')
-                .map_or((None, None), |(sp, rest)| {
-                    (Some(sp), rest.split_once('.').map(|(stage, _)| stage))
-                });
+            // An effect's frames are the attached-effect sprites whose host frame belongs to
+            // the routine it syncs to, so two effects can never share frames.
+            let sync = biome
+                .creature_animations
+                .iter()
+                .find(|a| a.name == effect.sync);
+            if sync.is_none() {
+                self.fail(
+                    name,
+                    format!("it syncs to {}, which does not exist", effect.sync),
+                );
+            }
+            let hosts: BTreeSet<&str> = sync
+                .iter()
+                .flat_map(|a| a.frames.iter().map(String::as_str))
+                .collect();
             let mut frames: Vec<&SpriteDraft> = biome
                 .sprites
                 .iter()
                 .filter(|s| {
                     s.keys.part.as_deref() == Some("attached-effect")
-                        && s.keys.species.as_deref() == species
-                        && s.frame.as_ref().is_some_and(|f| f.animation.is_none())
+                        && s.attachment
+                            .as_deref()
+                            .is_some_and(|host| hosts.contains(host))
                 })
                 .collect();
             frames.sort_by_key(|s| s.frame.as_ref().map(|f| f.index));
-            if !biome
-                .creature_animations
-                .iter()
-                .any(|a| a.name == effect.sync)
-            {
+            let species = sync.map(|a| a.species.clone());
+            let life_stage = sync.map(|a| a.life_stage.clone());
+            let foreign = frames.iter().any(|s| {
+                s.frame.as_ref().is_none_or(|f| f.animation.is_some())
+                    || s.keys.species != species
+                    || s.keys.life_stage != life_stage
+            });
+            if foreign {
                 self.fail(
                     name,
-                    format!("it syncs to {}, which does not exist", effect.sync),
+                    "an effect frame is not an unnamed frame of its routine's species and stage",
                 );
             }
             let contiguous = frames.iter().enumerate().all(|(i, s)| {
@@ -430,8 +458,8 @@ impl Builder<'_> {
             self.drafts.push(AnimationDraft {
                 name: name.to_owned(),
                 keys: AnimationKeys {
-                    species: species.map(str::to_owned),
-                    life_stage: life_stage.map(str::to_owned),
+                    species,
+                    life_stage,
                     routine: frames.first().and_then(|s| s.keys.state.clone()),
                 },
                 frames: frames.iter().map(|s| s.id.clone()).collect(),

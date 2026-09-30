@@ -20,7 +20,11 @@
 //! - The art tags the flower sprinkles `clearing-burn`, so they belong to `ClearingBurn` here.
 //!
 //! Some enums have no art by design; [`NO_ART`] lists them with the reason.
+//!
+//! [`ArtTable`] resolves every variant once, so the composer reads maps instead of scanning the
+//! catalog. [`missing`], the gaps it finds, is check 6 of `cargo xtask assets`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use terrarium_truth::scene::{
@@ -84,7 +88,7 @@ pub enum PlantArt {
     Parts { stem: SpriteId, foliage: SpriteId },
 }
 
-pub fn plant(
+fn plant(
     catalog: &Catalog,
     species: PlantSpecies,
     growth: GrowthStage,
@@ -136,7 +140,7 @@ impl PlantKeys {
 }
 
 /// The bloom overlay, drawn only on a mature, thriving plant whose `bloom` truth set.
-pub fn bloom(catalog: &Catalog, species: PlantSpecies) -> Result<SpriteId, MissingArt> {
+fn bloom(catalog: &Catalog, species: PlantSpecies) -> Result<SpriteId, MissingArt> {
     let sp = art_key(species.name());
     one(
         catalog,
@@ -153,7 +157,7 @@ pub fn bloom(catalog: &Catalog, species: PlantSpecies) -> Result<SpriteId, Missi
 }
 
 /// The scorched foliage that stands in for a mature plant's while lightning's scorch plays.
-pub fn scorch(catalog: &Catalog, species: PlantSpecies) -> Result<SpriteId, MissingArt> {
+fn scorch(catalog: &Catalog, species: PlantSpecies) -> Result<SpriteId, MissingArt> {
     let sp = art_key(species.name());
     one(
         catalog,
@@ -186,7 +190,7 @@ pub fn art_life_stage(species: ResidentSpecies, stage: LifeStage) -> Option<&'st
 
 /// The routines a resident may play in a stage, sorted by name. `Dying` is the death routine
 /// alone, held until truth removes the resident.
-pub fn resident(
+fn resident(
     catalog: &Catalog,
     species: ResidentSpecies,
     stage: LifeStage,
@@ -228,7 +232,7 @@ pub fn resident(
 }
 
 /// The stone of a monument's age, and its night lichen glow once it has lichen.
-pub fn monument(catalog: &Catalog, age: MonumentAge) -> Result<Vec<SpriteId>, MissingArt> {
+fn monument(catalog: &Catalog, age: MonumentAge) -> Result<Vec<SpriteId>, MissingArt> {
     let ids: &[&str] = match age {
         MonumentAge::Young => &["tmp.monument.stone.young"],
         MonumentAge::Lichened => &[
@@ -251,11 +255,11 @@ pub const CARVED_MARKS: [&str; 4] = [
     "tmp.monument.carved-mark.04",
 ];
 
-pub fn carved_marks(catalog: &Catalog) -> Result<Vec<SpriteId>, MissingArt> {
+fn carved_marks(catalog: &Catalog) -> Result<Vec<SpriteId>, MissingArt> {
     named(catalog, "MonumentView.marks", &CARVED_MARKS)
 }
 
-pub fn fossil(catalog: &Catalog, form: FossilForm) -> Result<SpriteId, MissingArt> {
+fn fossil(catalog: &Catalog, form: FossilForm) -> Result<SpriteId, MissingArt> {
     let id = match form {
         FossilForm::Shell => "tmp.fossil.shell",
         FossilForm::Bone => "tmp.fossil.bone",
@@ -266,7 +270,7 @@ pub fn fossil(catalog: &Catalog, form: FossilForm) -> Result<SpriteId, MissingAr
 
 /// A mark that outlasts its event: the settled crack, the settled sinkhole, or either fresh
 /// soil patch.
-pub fn ground_mark(catalog: &Catalog, kind: GroundMark) -> Result<Vec<SpriteId>, MissingArt> {
+fn ground_mark(catalog: &Catalog, kind: GroundMark) -> Result<Vec<SpriteId>, MissingArt> {
     let ids: &[&str] = match kind {
         GroundMark::Crack => &["tmp.ground.crack.settled"],
         GroundMark::Sinkhole => &["tmp.ground.sinkhole.f04"],
@@ -276,7 +280,7 @@ pub fn ground_mark(catalog: &Catalog, kind: GroundMark) -> Result<Vec<SpriteId>,
 }
 
 /// The two films the glass can carry, each in levels 1 to `MAX_GLASS_LEVEL`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlassFilm {
     Condensation,
     Dust,
@@ -290,11 +294,7 @@ const CONDENSATION: [&str; 3] = [
 const DUST: [&str; 3] = ["tmp.glass.dust.1", "tmp.glass.dust.2", "tmp.glass.dust.3"];
 
 /// The film at a level; level 0 draws nothing.
-pub fn glass(
-    catalog: &Catalog,
-    film: GlassFilm,
-    level: u8,
-) -> Result<Option<SpriteId>, MissingArt> {
+fn glass(catalog: &Catalog, film: GlassFilm, level: u8) -> Result<Option<SpriteId>, MissingArt> {
     if level == 0 {
         return Ok(None);
     }
@@ -312,7 +312,7 @@ pub fn glass(
     }
 }
 
-pub fn weather(catalog: &Catalog, weather: Weather) -> Result<Vec<SpriteId>, MissingArt> {
+fn weather(catalog: &Catalog, weather: Weather) -> Result<Vec<SpriteId>, MissingArt> {
     let ids: &[&str] = match weather {
         Weather::Clear => &["tmp.sky.clear.tile"],
         Weather::Overcast => &["tmp.sky.overcast.tile"],
@@ -323,7 +323,7 @@ pub fn weather(catalog: &Catalog, weather: Weather) -> Result<Vec<SpriteId>, Mis
 }
 
 /// Dusk multiplies and sunburst adds over the scene; neutral light has no overlay.
-pub fn light(catalog: &Catalog, light: Light) -> Result<Option<SpriteId>, MissingArt> {
+fn light(catalog: &Catalog, light: Light) -> Result<Option<SpriteId>, MissingArt> {
     let id = match light {
         Light::Neutral => return Ok(None),
         Light::Dusk => "tmp.sky.light.dusk",
@@ -333,7 +333,7 @@ pub fn light(catalog: &Catalog, light: Light) -> Result<Option<SpriteId>, Missin
 }
 
 /// A breeze and a gale share the leaf art and differ in sway amplitude; calm has neither.
-pub fn wind(catalog: &Catalog, wind: Wind) -> Result<Vec<SpriteId>, MissingArt> {
+fn wind(catalog: &Catalog, wind: Wind) -> Result<Vec<SpriteId>, MissingArt> {
     match wind {
         Wind::Calm => Ok(Vec::new()),
         Wind::Breezy | Wind::Gale => group(catalog, &format!("Wind::{}", wind.name()), "wind", &[]),
@@ -388,7 +388,7 @@ const fn event_art(kind: EventKind) -> EventArt {
 }
 
 /// Every sprite the event plays, sorted and without repeats.
-pub fn event(catalog: &Catalog, kind: EventKind) -> Result<Vec<SpriteId>, MissingArt> {
+fn event(catalog: &Catalog, kind: EventKind) -> Result<Vec<SpriteId>, MissingArt> {
     let variant = format!("EventKind::{}", kind.name());
     let art = event_art(kind);
     let mut ids = Vec::new();
@@ -412,70 +412,212 @@ pub fn event(catalog: &Catalog, kind: EventKind) -> Result<Vec<SpriteId>, Missin
     Ok(ids)
 }
 
-/// Every gap between the `SceneInput` variants and the catalog. Empty when the art depicts
-/// all of them; `cargo xtask assets` refuses a package that leaves any.
-pub fn missing(catalog: &Catalog) -> Vec<MissingArt> {
-    let mut gaps = Vec::new();
-    let mut note = |result: Result<(), MissingArt>| {
-        if let Err(gap) = result {
-            gaps.push(gap);
+/// Every variant's art, resolved from a catalog once, so the composer's lookups are map reads
+/// rather than scans. Building it is check 6: it fails with every gap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtTable {
+    plants: BTreeMap<(PlantSpecies, GrowthStage, PlantState), PlantArt>,
+    blooms: BTreeMap<PlantSpecies, SpriteId>,
+    scorches: BTreeMap<PlantSpecies, SpriteId>,
+    residents: BTreeMap<(ResidentSpecies, LifeStage), Vec<AnimationId>>,
+    monuments: BTreeMap<MonumentAge, Vec<SpriteId>>,
+    carved_marks: Vec<SpriteId>,
+    fossils: BTreeMap<FossilForm, SpriteId>,
+    ground_marks: BTreeMap<GroundMark, Vec<SpriteId>>,
+    glass: BTreeMap<(GlassFilm, u8), SpriteId>,
+    weather: BTreeMap<Weather, Vec<SpriteId>>,
+    light: BTreeMap<Light, SpriteId>,
+    wind: BTreeMap<Wind, Vec<SpriteId>>,
+    events: BTreeMap<EventKind, Vec<SpriteId>>,
+}
+
+impl ArtTable {
+    fn empty() -> ArtTable {
+        ArtTable {
+            plants: BTreeMap::new(),
+            blooms: BTreeMap::new(),
+            scorches: BTreeMap::new(),
+            residents: BTreeMap::new(),
+            monuments: BTreeMap::new(),
+            carved_marks: Vec::new(),
+            fossils: BTreeMap::new(),
+            ground_marks: BTreeMap::new(),
+            glass: BTreeMap::new(),
+            weather: BTreeMap::new(),
+            light: BTreeMap::new(),
+            wind: BTreeMap::new(),
+            events: BTreeMap::new(),
         }
-    };
-    for &species in PlantSpecies::ALL {
-        for &stage in GrowthStage::ALL {
-            for &state in PlantState::ALL {
-                note(plant(catalog, species, stage, state).map(drop));
+    }
+
+    /// Resolves every variant, or returns every gap. `cargo xtask assets` refuses a package
+    /// that leaves any.
+    pub fn new(catalog: &Catalog) -> Result<ArtTable, Vec<MissingArt>> {
+        let mut gaps = Vec::new();
+        let mut keep = |result: Result<(), MissingArt>| {
+            if let Err(gap) = result {
+                gaps.push(gap);
+            }
+        };
+        let mut table = ArtTable::empty();
+        for &species in PlantSpecies::ALL {
+            for &growth in GrowthStage::ALL {
+                for &health in PlantState::ALL {
+                    keep(plant(catalog, species, growth, health).map(|art| {
+                        table.plants.insert((species, growth, health), art);
+                    }));
+                }
+            }
+            keep(bloom(catalog, species).map(|id| {
+                table.blooms.insert(species, id);
+            }));
+            keep(scorch(catalog, species).map(|id| {
+                table.scorches.insert(species, id);
+            }));
+        }
+        for &species in ResidentSpecies::ALL {
+            for &stage in LifeStage::ALL {
+                if stage == LifeStage::Pupa && !species.has_pupa() {
+                    keep(no_pupa_art(catalog, species));
+                } else {
+                    keep(resident(catalog, species, stage).map(|routines| {
+                        table.residents.insert((species, stage), routines);
+                    }));
+                }
             }
         }
-        note(bloom(catalog, species).map(drop));
-        note(scorch(catalog, species).map(drop));
-    }
-    for &species in ResidentSpecies::ALL {
-        for &stage in LifeStage::ALL {
-            if stage == LifeStage::Pupa && !species.has_pupa() {
-                note(no_pupa_art(catalog, species));
-            } else {
-                note(resident(catalog, species, stage).map(drop));
-            }
+        for &age in MonumentAge::ALL {
+            keep(monument(catalog, age).map(|ids| {
+                table.monuments.insert(age, ids);
+            }));
         }
-    }
-    for &age in MonumentAge::ALL {
-        note(monument(catalog, age).map(drop));
-    }
-    note(carved_marks(catalog).and_then(|marks| {
-        if marks.len() >= usize::from(MAX_MARKS) {
+        keep(carved_marks(catalog).and_then(|marks| {
+            if marks.len() < usize::from(MAX_MARKS) {
+                return Err(MissingArt {
+                    variant: "MonumentView.marks".into(),
+                    wanted: format!("{MAX_MARKS} designs"),
+                });
+            }
+            table.carved_marks = marks;
             Ok(())
+        }));
+        for &form in FossilForm::ALL {
+            keep(fossil(catalog, form).map(|id| {
+                table.fossils.insert(form, id);
+            }));
+        }
+        for &kind in GroundMark::ALL {
+            keep(ground_mark(catalog, kind).map(|ids| {
+                table.ground_marks.insert(kind, ids);
+            }));
+        }
+        for film in [GlassFilm::Condensation, GlassFilm::Dust] {
+            for level in 1..=MAX_GLASS_LEVEL {
+                keep(glass(catalog, film, level).map(|id| {
+                    table.glass.extend(id.map(|id| ((film, level), id)));
+                }));
+            }
+        }
+        for &kind in Weather::ALL {
+            keep(weather(catalog, kind).map(|ids| {
+                table.weather.insert(kind, ids);
+            }));
+        }
+        for &kind in Light::ALL {
+            keep(light(catalog, kind).map(|id| table.light.extend(id.map(|id| (kind, id)))));
+        }
+        for &kind in Wind::ALL {
+            keep(wind(catalog, kind).map(|ids| {
+                table.wind.insert(kind, ids);
+            }));
+        }
+        for &kind in EventKind::ALL {
+            keep(event(catalog, kind).map(|ids| {
+                table.events.insert(kind, ids);
+            }));
+        }
+        if gaps.is_empty() {
+            Ok(table)
         } else {
-            Err(MissingArt {
-                variant: "MonumentView.marks".into(),
-                wanted: format!("{MAX_MARKS} designs"),
-            })
-        }
-    }));
-    for &form in FossilForm::ALL {
-        note(fossil(catalog, form).map(drop));
-    }
-    for &kind in GroundMark::ALL {
-        note(ground_mark(catalog, kind).map(drop));
-    }
-    for film in [GlassFilm::Condensation, GlassFilm::Dust] {
-        for level in 1..=MAX_GLASS_LEVEL {
-            note(glass(catalog, film, level).map(drop));
+            Err(gaps)
         }
     }
-    for &kind in Weather::ALL {
-        note(weather(catalog, kind).map(drop));
+
+    /// How a plant in this stage and state is drawn. Every combination is present once `new`
+    /// succeeded.
+    pub fn plant(
+        &self,
+        species: PlantSpecies,
+        growth: GrowthStage,
+        health: PlantState,
+    ) -> PlantArt {
+        self.plants[&(species, growth, health)]
     }
-    for &kind in Light::ALL {
-        note(light(catalog, kind).map(drop));
+
+    /// The bloom overlay, drawn only on a mature, thriving plant whose `bloom` truth set.
+    pub fn bloom(&self, species: PlantSpecies) -> SpriteId {
+        self.blooms[&species]
     }
-    for &kind in Wind::ALL {
-        note(wind(catalog, kind).map(drop));
+
+    /// The scorched foliage that stands in for a mature plant's while lightning's scorch plays.
+    pub fn scorch(&self, species: PlantSpecies) -> SpriteId {
+        self.scorches[&species]
     }
-    for &kind in EventKind::ALL {
-        note(event(catalog, kind).map(drop));
+
+    /// The routines a resident may play in a stage, sorted by name; empty for a pupa the
+    /// species does not have. `Dying` is the death routine alone.
+    pub fn resident(&self, species: ResidentSpecies, stage: LifeStage) -> &[AnimationId] {
+        self.residents
+            .get(&(species, stage))
+            .map_or(&[], Vec::as_slice)
     }
-    gaps
+
+    /// The stone of a monument's age, and its night lichen glow once it has lichen.
+    pub fn monument(&self, age: MonumentAge) -> &[SpriteId] {
+        &self.monuments[&age]
+    }
+
+    /// The carved-mark designs: at least one per placement point.
+    pub fn carved_marks(&self) -> &[SpriteId] {
+        &self.carved_marks
+    }
+
+    pub fn fossil(&self, form: FossilForm) -> SpriteId {
+        self.fossils[&form]
+    }
+
+    pub fn ground_mark(&self, kind: GroundMark) -> &[SpriteId] {
+        &self.ground_marks[&kind]
+    }
+
+    /// The film at a level; level 0, or a level past `MAX_GLASS_LEVEL`, draws nothing.
+    pub fn glass(&self, film: GlassFilm, level: u8) -> Option<SpriteId> {
+        self.glass.get(&(film, level)).copied()
+    }
+
+    pub fn weather(&self, weather: Weather) -> &[SpriteId] {
+        &self.weather[&weather]
+    }
+
+    /// Dusk's or sunburst's overlay; neutral light has none.
+    pub fn light(&self, light: Light) -> Option<SpriteId> {
+        self.light.get(&light).copied()
+    }
+
+    /// The leaf art for a breeze or a gale; calm has none.
+    pub fn wind(&self, wind: Wind) -> &[SpriteId] {
+        &self.wind[&wind]
+    }
+
+    /// Every sprite the event plays, sorted and without repeats.
+    pub fn event(&self, kind: EventKind) -> &[SpriteId] {
+        &self.events[&kind]
+    }
+}
+
+/// Every gap between the `SceneInput` variants and the catalog: check 6.
+pub fn missing(catalog: &Catalog) -> Vec<MissingArt> {
+    ArtTable::new(catalog).err().unwrap_or_default()
 }
 
 /// A species without a pupa has no pupa art, so `has_pupa` and the art agree both ways.
@@ -584,6 +726,45 @@ mod tests {
     fn the_embedded_art_depicts_every_variant() {
         let gaps = missing(catalog());
         assert!(gaps.is_empty(), "art gaps:\n{}", lines(&gaps));
+    }
+
+    #[test]
+    fn the_table_answers_every_variant_from_its_maps() {
+        let table = ArtTable::new(catalog()).expect("the embedded art has no gaps");
+        let oak = table.plant(PlantSpecies::Oak, GrowthStage::Mature, PlantState::Thriving);
+        assert_eq!(
+            oak,
+            plant(
+                catalog(),
+                PlantSpecies::Oak,
+                GrowthStage::Mature,
+                PlantState::Thriving
+            )
+            .unwrap()
+        );
+        assert!(
+            table
+                .resident(ResidentSpecies::Snail, LifeStage::Pupa)
+                .is_empty()
+        );
+        assert_eq!(
+            table
+                .resident(ResidentSpecies::Snail, LifeStage::Dying)
+                .len(),
+            1
+        );
+        assert_eq!(table.light(Light::Neutral), None);
+        assert!(table.light(Light::Dusk).is_some());
+        assert_eq!(table.glass(GlassFilm::Dust, 0), None);
+        assert!(table.glass(GlassFilm::Dust, MAX_GLASS_LEVEL).is_some());
+        assert_eq!(table.glass(GlassFilm::Dust, MAX_GLASS_LEVEL + 1), None);
+        assert!(table.wind(Wind::Calm).is_empty());
+        assert_eq!(
+            table.event(EventKind::Storm),
+            table.event(EventKind::Clearing)
+        );
+        assert_eq!(table.carved_marks().len(), CARVED_MARKS.len());
+        assert_eq!(table.monument(MonumentAge::Ancient).len(), 2);
     }
 
     #[test]

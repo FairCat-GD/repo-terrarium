@@ -10,7 +10,7 @@ Depiction: from `SceneInput` to pixels.
 - A placeholder frame in palette colours, until the compositor draws art.
 - The asset catalog (`catalog`): every delivered sprite under its semantic ID, with its
   metadata and the atlas its pixels are packed into.
-- The variant table (`variants`): the art that depicts each `SceneInput` variant.
+- The variant table (`variants`, `ArtTable`): the art that depicts each `SceneInput` variant.
 - The composer, its tweens and animation.
 - Frame scheduling hints.
 - The CPU compositor, which draws a `Frame` into a 640×74 RGBA buffer.
@@ -45,9 +45,11 @@ misread. xtask builds on this crate, and this crate embeds the two files, so the
 for anything to compile. If they are ever lost, create them empty, then run `cargo xtask
 assets`.
 
-The variant table maps every `SceneInput` variant to its art. `variants::missing` is check 6
-of `cargo xtask assets`, and this crate's tests run it on the embedded art. The module's docs
-list where the art and the enums are not one to one.
+The variant table maps every `SceneInput` variant to its art. `ArtTable::new` resolves every
+variant once, so the composer reads maps rather than scanning the catalog, and fails with
+every gap. `variants::missing`, those gaps, is check 6 of `cargo xtask assets`, and this
+crate's tests run it on the embedded art. The module's docs list where the art and the enums
+are not one to one.
 
 ## Why it is a crate of its own
 

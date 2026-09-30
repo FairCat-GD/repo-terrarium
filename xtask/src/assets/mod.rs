@@ -107,8 +107,9 @@ impl Failure {
 #[derive(Debug, Default)]
 pub struct Report {
     pub failures: Vec<Failure>,
-    /// Checks that could not run because an earlier one failed.
-    pub skipped: BTreeSet<Check>,
+    /// Checks that could not run because an earlier one failed, with what they skipped: a
+    /// biome's name, or `None` for the whole package.
+    pub skipped: BTreeMap<Check, BTreeSet<Option<String>>>,
     /// Paths relative to the generated folder, such as `temperate/atlas.bin`.
     pub output: Option<BTreeMap<String, Vec<u8>>>,
     /// One line per biome: its counts and atlas size.
@@ -116,8 +117,13 @@ pub struct Report {
 }
 
 impl Report {
-    fn skip(&mut self, checks: impl IntoIterator<Item = Check>) {
-        self.skipped.extend(checks);
+    fn skip(&mut self, checks: impl IntoIterator<Item = Check>, biome: Option<&str>) {
+        for check in checks {
+            self.skipped
+                .entry(check)
+                .or_default()
+                .insert(biome.map(str::to_owned));
+        }
     }
 }
 
@@ -135,7 +141,7 @@ pub fn build(package: &Package) -> Report {
     let (contents, failures) = package::check(package);
     report.failures.extend(failures);
     let Some(contents) = contents else {
-        report.skip(Check::ALL.into_iter().skip(1));
+        report.skip(Check::ALL.into_iter().skip(1), None);
         return report;
     };
 
@@ -147,12 +153,15 @@ pub fn build(package: &Package) -> Report {
             Err(failures) => {
                 all_loaded = false;
                 report.failures.extend(failures);
-                report.skip([
-                    Check::Pixels,
-                    Check::Palette,
-                    Check::Animations,
-                    Check::Variants,
-                ]);
+                report.skip(
+                    [
+                        Check::Pixels,
+                        Check::Palette,
+                        Check::Animations,
+                        Check::Variants,
+                    ],
+                    Some(name),
+                );
             }
         }
     }
@@ -183,7 +192,7 @@ pub fn build(package: &Package) -> Report {
     }
 
     if !report.failures.is_empty() {
-        report.skip([Check::Generated]);
+        report.skip([Check::Generated], None);
         return report;
     }
     let mut output = BTreeMap::new();
@@ -312,32 +321,10 @@ pub fn compare(
 
 /// The committed generated files, by path relative to their folder.
 fn read_generated(dir: &Path) -> io::Result<BTreeMap<String, Vec<u8>>> {
-    let mut files = BTreeMap::new();
-    if dir.exists() {
-        walk(dir, "", &mut files)?;
+    if !dir.exists() {
+        return Ok(BTreeMap::new());
     }
-    Ok(files)
-}
-
-fn walk(dir: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) -> io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == ".DS_Store" {
-            continue;
-        }
-        let path = if prefix.is_empty() {
-            name
-        } else {
-            format!("{prefix}/{name}")
-        };
-        if entry.file_type()?.is_dir() {
-            walk(&entry.path(), &path, files)?;
-        } else {
-            files.insert(path, std::fs::read(entry.path())?);
-        }
-    }
-    Ok(())
+    package::read_tree(dir, |path| path.rsplit('/').next() == Some(".DS_Store"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -438,8 +425,13 @@ fn print(report: &Report) {
             .collect();
         let verdict = if !failures.is_empty() {
             format!("FAILED ({})", failures.len())
-        } else if report.skipped.contains(&check) {
-            "skipped".to_owned()
+        } else if let Some(skipped) = report.skipped.get(&check) {
+            let biomes: Vec<&str> = skipped.iter().flatten().map(String::as_str).collect();
+            if skipped.contains(&None) {
+                "skipped".to_owned()
+            } else {
+                format!("skipped for {}", biomes.join(", "))
+            }
         } else {
             "ok".to_owned()
         };

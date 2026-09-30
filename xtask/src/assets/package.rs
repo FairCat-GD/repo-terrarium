@@ -28,9 +28,9 @@ pub struct Package {
 
 impl Package {
     pub fn read(root: &Path) -> io::Result<Package> {
-        let mut files = BTreeMap::new();
-        read_dir(root, "", &mut files)?;
-        Ok(Package { files })
+        Ok(Package {
+            files: read_tree(root, skipped)?,
+        })
     }
 
     pub fn file(&self, path: &str) -> Option<&[u8]> {
@@ -75,7 +75,20 @@ pub fn skipped(path: &str) -> bool {
         || (first.starts_with("biome-") && second == Some("references"))
 }
 
-fn read_dir(dir: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) -> io::Result<()> {
+/// Every file under `root`, by `/`-separated path relative to it, except those `skip` names.
+/// A skipped directory is never entered.
+pub fn read_tree(root: &Path, skip: fn(&str) -> bool) -> io::Result<BTreeMap<String, Vec<u8>>> {
+    let mut files = BTreeMap::new();
+    read_dir(root, "", skip, &mut files)?;
+    Ok(files)
+}
+
+fn read_dir(
+    dir: &Path,
+    prefix: &str,
+    skip: fn(&str) -> bool,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) -> io::Result<()> {
     let mut entries = std::fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
@@ -88,11 +101,11 @@ fn read_dir(dir: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) -> 
         } else {
             format!("{prefix}/{name}")
         };
-        if skipped(&path) {
+        if skip(&path) {
             continue;
         }
         if entry.file_type()?.is_dir() {
-            read_dir(&entry.path(), &path, files)?;
+            read_dir(&entry.path(), &path, skip, files)?;
         } else {
             files.insert(path, std::fs::read(entry.path())?);
         }

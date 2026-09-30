@@ -18,6 +18,7 @@ const WEEDS: &str =
 const PLANTS: &str = "biome-temperate/plants/exports/batch-01/plants-batch-01.json";
 const CREATURES_06: &str = "biome-temperate/creatures/exports/batch-06/creatures-batch-06.json";
 const CREATURES_07: &str = "biome-temperate/creatures/exports/batch-07/creatures-batch-07.json";
+const PALETTE: &str = "biome-temperate/palettes/exports/palette-temperate.json";
 
 fn delivered() -> Package {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -40,7 +41,7 @@ fn only(report: &Report, check: Check) -> Vec<String> {
         report.output.is_none(),
         "a failing package generated output"
     );
-    assert!(report.skipped.contains(&Check::Generated));
+    assert!(report.skipped.contains_key(&Check::Generated));
     report.failures.iter().map(|f| f.message.clone()).collect()
 }
 
@@ -69,7 +70,11 @@ fn animation<'a>(manifest: &'a mut Value, name: &str) -> &'a mut Value {
         .unwrap_or_else(|| panic!("{name} is listed"))
 }
 
-fn edit_png(package: &mut Package, path: &str, edit: impl FnOnce(&mut Indexed, &mut Vec<u8>)) {
+fn edit_png(
+    package: &mut Package,
+    path: &str,
+    edit: impl FnOnce(&mut Indexed, &mut Vec<u8>, &mut Vec<u8>),
+) {
     let bytes = pixels::testing::edit(package.file(path).expect("the PNG exists"), edit);
     package.replace(path, bytes);
 }
@@ -226,7 +231,7 @@ fn check_3_fails_on_a_rect_outside_its_atlas() {
 #[test]
 fn check_3_fails_when_an_individual_png_differs_from_its_atlas() {
     let mut package = delivered();
-    edit_png(&mut package, SUN, |image, _| {
+    edit_png(&mut package, SUN, |image, _, _| {
         let index = image.pixels[0] % 32 + 1;
         set_pixel(image, 0, 0, index);
     });
@@ -241,8 +246,8 @@ fn check_3_fails_when_an_individual_png_differs_from_its_atlas() {
 fn check_4_fails_on_index_33_even_where_atlas_and_individual_agree() {
     let mut package = delivered();
     let (x, y) = sun_in_atlas(&package);
-    edit_png(&mut package, SUN, |image, _| set_pixel(image, 0, 0, 33));
-    edit_png(&mut package, SKY_ATLAS, |image, _| {
+    edit_png(&mut package, SUN, |image, _, _| set_pixel(image, 0, 0, 33));
+    edit_png(&mut package, SKY_ATLAS, |image, _, _| {
         set_pixel(image, x, y, 33);
     });
     let messages = only(&build(&package), Check::Palette);
@@ -258,7 +263,7 @@ fn check_4_fails_on_index_33_even_where_atlas_and_individual_agree() {
 #[test]
 fn check_4_fails_on_a_colour_outside_the_palette() {
     let mut package = delivered();
-    edit_png(&mut package, SUN, |_, plte| plte[3 * 5] ^= 1);
+    edit_png(&mut package, SUN, |_, plte, _| plte[3 * 5] ^= 1);
     let messages = only(&build(&package), Check::Palette);
     assert_eq!(
         messages,
@@ -352,6 +357,166 @@ fn check_6_fails_on_pupa_art_for_a_species_without_a_pupa() {
             "temperate: ResidentSpecies::Woodlouse × LifeStage::Pupa: no pupa art, since has_pupa is false"
         ]
     );
+}
+
+#[test]
+fn check_2_fails_when_the_package_index_miscounts() {
+    let mut package = delivered();
+    let mut contents: Value =
+        serde_json::from_slice(package.file(package::CONTENTS).unwrap()).unwrap();
+    contents["activeIds"] = 777.into();
+    contents["manifests"] = 15.into();
+    package.put(
+        package::CONTENTS,
+        serde_json::to_vec_pretty(&contents).unwrap(),
+    );
+    let messages = only(&build(&package), Check::Manifests);
+    assert_eq!(
+        messages,
+        [
+            "PACKAGE-CONTENTS.json declares 777 active IDs, 778 loaded",
+            "PACKAGE-CONTENTS.json declares 15 manifests, 14 loaded",
+        ]
+    );
+}
+
+#[test]
+fn check_2_in_one_biome_skips_its_later_checks_only() {
+    let mut package = delivered();
+    let mut contents: Value =
+        serde_json::from_slice(package.file(package::CONTENTS).unwrap()).unwrap();
+    contents["biomes"] = serde_json::json!(["temperate", "cave"]);
+    package.put(
+        package::CONTENTS,
+        serde_json::to_vec_pretty(&contents).unwrap(),
+    );
+    let report = build(&package);
+    let messages = only(&report, Check::Manifests);
+    assert_eq!(messages, ["biome-cave/active-manifests.json is missing"]);
+    let cave = BTreeSet::from([Some("cave".to_owned())]);
+    for check in [
+        Check::Pixels,
+        Check::Palette,
+        Check::Animations,
+        Check::Variants,
+    ] {
+        assert_eq!(report.skipped.get(&check), Some(&cave), "{check:?}");
+    }
+}
+
+#[test]
+fn check_4_fails_when_the_palette_png_leaves_the_json() {
+    let mut package = delivered();
+    edit_json(&mut package, PALETTE, |palette| {
+        palette["slots"][31]["night"] = "#000000".into();
+    });
+    let messages = only(&build(&package), Check::Palette);
+    assert_eq!(
+        messages,
+        [
+            "biome-temperate/palettes/exports/palette-temperate.png does not match the palette JSON (row 0 day, row 1 night)"
+        ]
+    );
+}
+
+#[test]
+fn check_4_fails_on_a_translucent_index() {
+    let mut package = delivered();
+    edit_png(&mut package, SUN, |_, _, trns| trns[5] = 128);
+    let messages = only(&build(&package), Check::Palette);
+    assert_eq!(
+        messages,
+        [format!(
+            "{SUN}: its tRNS does not make index 0, and only index 0, transparent"
+        )]
+    );
+}
+
+#[test]
+fn check_5_fails_on_a_creature_frame_no_routine_lists() {
+    let mut package = delivered();
+    edit_json(&mut package, CREATURES_06, |creatures| {
+        sprite(creatures, "tmp.creature.snail.adult.move.f01")["animation"] =
+            "snail.adult.mvoe".into();
+    });
+    let messages = only(&build(&package), Check::Animations);
+    assert!(
+        messages.contains(
+            &"tmp.creature.snail.adult.move.f01: names snail.adult.mvoe, which no routine lists"
+                .to_owned()
+        ),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn check_5_fails_on_an_effect_frame_hosted_outside_its_routine() {
+    let mut package = delivered();
+    edit_json(&mut package, CREATURES_06, |creatures| {
+        sprite(creatures, "tmp.creature.firefly.effect.signal-glow.f04")["attachment"] =
+            "tmp.creature.firefly.adult.idle.f01".into();
+    });
+    let messages = only(&build(&package), Check::Animations);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.starts_with("signal-glow-once: it declares 4 frames, and 3")),
+        "{messages:?}"
+    );
+}
+
+/// A directory the test owns under the system temp dir, removed when dropped.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> TempDir {
+        let path = std::env::temp_dir().join(format!(
+            "terrarium-assets-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("the temp dir is writable");
+        TempDir(path)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn write_mode_rewrites_what_changed_and_removes_what_is_no_longer_generated() {
+    let dir = TempDir::new("write");
+    std::fs::create_dir_all(dir.0.join("old")).unwrap();
+    std::fs::write(dir.0.join("old/atlas.bin"), [1]).unwrap();
+    std::fs::write(dir.0.join(".DS_Store"), [0]).unwrap();
+    let output = BTreeMap::from([
+        ("temperate/atlas.bin".to_owned(), vec![0, 1, 2]),
+        ("temperate/catalog.bin".to_owned(), vec![9]),
+    ]);
+
+    let committed = read_generated(&dir.0).unwrap();
+    assert_eq!(
+        committed.keys().collect::<Vec<_>>(),
+        ["old/atlas.bin"],
+        "Finder files are ignored"
+    );
+    let done = write(&dir.0, &output, &committed).unwrap();
+    assert_eq!(
+        done,
+        [
+            "wrote temperate/atlas.bin (3 bytes)",
+            "wrote temperate/catalog.bin (1 bytes)",
+            "removed old/atlas.bin"
+        ]
+    );
+    assert_eq!(read_generated(&dir.0).unwrap(), output);
+
+    let unchanged = read_generated(&dir.0).unwrap();
+    assert!(write(&dir.0, &output, &unchanged).unwrap().is_empty());
+    assert!(compare(&output, &unchanged).is_empty());
 }
 
 #[test]
