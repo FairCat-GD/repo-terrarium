@@ -4,7 +4,14 @@ Operating-system integration that needs FFI.
 
 ## Owns
 
-- `geometry`: where the strip sits on a screen, as pure arithmetic tested on every OS.
+- `geometry`: where the strip sits on a macOS screen, as pure arithmetic tested on every OS.
+- `appbar`: the Windows `AppBar`'s pure half, compiled and tested on every OS:
+  - the band on an edge, before and after Windows adjusts it;
+  - the check for a reservation a crashed strip left;
+  - the extended-style guard;
+  - the names of the window messages the probe counts.
+
+  Its Win32 numbers are checked against the `windows` crate when the Windows build compiles.
 - `macos`:
   - the strip's window level (desktop-icon + 1, or floating while raised);
   - its collection behaviour (every Space, fixed in Mission Control, out of the window
@@ -14,8 +21,16 @@ Operating-system integration that needs FFI.
   - the screens with their stable display UUIDs;
   - the display, wake, Space and activation notifications winit does not deliver;
   - the context menu.
-- `windows`: the context menu. Later the `AppBar` registration, window subclassing and
-  fullscreen detection.
+- `windows`: the strip as an `AppBar`.
+  - The strip reserves its edge, is topmost, stays out of the taskbar and Alt-Tab, and is
+    never activated by a click.
+  - A `SetWindowSubclass` procedure sees the sent messages winit's hook cannot.
+  - The edge is given back on a normal exit, a panic, Ctrl-C and an unhandled exception, and a
+    reservation left by a crash is cleared at the next launch.
+  - Also: the probe's message counts, the foreground window, the OS version, and the context
+    menu.
+  - Later, with Windows hardening: fullscreen yield, `TaskbarCreated` re-registration and
+    Peek exclusion.
 - Later: idle time, the login item, and power notifications.
 
 ## Why it is a crate of its own
@@ -27,7 +42,8 @@ FFI is reviewed line by line, so all of it lives in one small crate (I-9).
 - It is the only crate allowed `unsafe`, and every `unsafe` block carries a `SAFETY:` comment
   (`clippy::undocumented_unsafe_blocks` is denied).
 - Every public function is safe to call. Main-thread requirements are checked, not assumed.
-- It depends on no other workspace crate.
+- It depends on no other workspace crate. On Windows it links winit, but only to install
+  winit's message hook, so the raw `MSG` pointer is read here and nowhere else.
 - winit links objc2 0.5 and this crate objc2 0.6, so their types never meet. The only bridge
   is the view pointer in winit's raw window handle.
 

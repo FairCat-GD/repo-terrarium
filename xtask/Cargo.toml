@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Development tasks: cargo xtask verify."
+description = "Development tasks: cargo xtask verify and probe-zip."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

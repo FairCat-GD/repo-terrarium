@@ -2,6 +2,7 @@
 #![allow(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
+pub mod appbar;
 pub mod geometry;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -18,4 +19,15 @@ pub enum SystemEvent {
     SpaceChanged,
     AppBecameActive,
     AppResignedActive,
+    /// The taskbar or another `AppBar` moved, so the strip's reserved edge must be asked for
+    /// again (Windows).
+    AppBarPosChanged,
+    /// The taskbar's auto-hide or always-on-top setting changed (Windows).
+    AppBarStateChanged,
+    /// A hint that a full-screen app opened (`true`) or closed on some monitor (Windows).
+    FullscreenApp(bool),
+    /// Some monitor's work area changed (Windows).
+    WorkAreaChanged,
+    /// Explorer started again, and forgot every `AppBar` (Windows).
+    TaskbarCreated,
 }

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::cli::UsageError;
 use crate::hover::NativePoint;
-use crate::pinning::{AttachError, LevelMode};
+use crate::pinning::{AppBarPlaced, AttachError, LevelMode, OsSnapshot, PxRect};
 use crate::present::PresentError;
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
 use crate::probe::script::{Phase, Step};
@@ -66,10 +66,14 @@ fn attach(err: &AttachError) -> String {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-#[allow(clippy::trivially_copy_pass_by_ref)] // one signature with the macOS error
+#[cfg(windows)]
 fn attach(err: &AttachError) -> String {
-    match *err {}
+    match err {
+        AttachError::NotOwnerThread => "not on the window's own thread".to_owned(),
+        AttachError::Handle(err) => format!("no window handle: {err}"),
+        AttachError::NotWin32 => "the window handle is not a Win32 window".to_owned(),
+        AttachError::Subclass => "the window could not be subclassed".to_owned(),
+    }
 }
 
 impl Display for PresentError {
@@ -103,6 +107,13 @@ pub fn present_failed(err: &impl Display) -> String {
     format!("{BINARY_NAME}: a frame could not be shown: {err}")
 }
 
+/// Windows refused the `AppBar`, so the strip is a plain window above the taskbar and nothing
+/// stops maximised windows from covering it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn edge_not_reserved() -> String {
+    format!("{BINARY_NAME}: the screen edge could not be reserved; the strip is a plain window")
+}
+
 // The pinning probe.
 
 /// The key that ends input in the terminal the probe runs in.
@@ -117,10 +128,20 @@ pub struct StepText {
     pub text: &'static str,
 }
 
+#[cfg(target_os = "macos")]
 pub const PROBE_LAUNCH: StepText = StepText {
     key: "launch",
     text: "The strip should now lie along the bottom edge of the display marked with * above, \
            sky over a band of soil, without any app having lost focus.",
+};
+
+#[cfg(windows)]
+pub const PROBE_LAUNCH: StepText = StepText {
+    key: "launch",
+    text: "The strip should now lie along the bottom of the display marked with * above, just \
+           above the taskbar if the taskbar is on that display: sky over a band of soil. No \
+           app should have lost focus. If this run follows a taskkill, first note whether a \
+           maximised window stopped short of the bottom before this run started.",
 };
 
 /// Run once at each level: phase A at desktop-icon + 1, phase B at always-on-bottom.
@@ -155,14 +176,6 @@ pub const PROBE_LEVEL_STEPS: &[StepText] = &[
                stayed, then bring the hidden apps back.",
     },
 ];
-
-#[cfg(not(target_os = "macos"))]
-pub const PROBE_LEVEL_STEPS: &[StepText] = &[StepText {
-    key: "hover-clicks",
-    text: "Click a window of another app so that app has focus. Move the pointer onto the \
-           strip and off again, left-click the strip, then right-click it and dismiss the menu \
-           with Esc. Note whether the other app lost focus.",
-}];
 
 /// Run once, at the default level.
 #[cfg(target_os = "macos")]
@@ -231,12 +244,49 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
     },
 ];
 
-#[cfg(not(target_os = "macos"))]
+/// Windows has one level, the topmost `AppBar`, so every step runs once. The last one ends the
+/// process the way a crash does, so it must stay last.
+#[cfg(windows)]
 pub const PROBE_ONCE_STEPS: &[StepText] = &[
     StepText {
+        key: "hover-clicks",
+        text: "Click a window of another app so that app has focus. Move the pointer onto the \
+               strip and off again, left-click the strip, then right-click it and dismiss the \
+               menu with Esc. Note whether the other app lost focus after the left-click, and \
+               after the right-click.",
+    },
+    StepText {
+        key: "maximize",
+        text: "On the strip's display, maximise an ordinary window. Note whether it stops at \
+               the top of the strip or covers it, then restore the window.",
+    },
+    StepText {
+        key: "alt-tab-taskbar",
+        text: "Hold Alt and press Tab. Note whether Repo Terrarium is among the windows shown, \
+               then release. Then look along the taskbar and note whether it has a Repo \
+               Terrarium button.",
+    },
+    StepText {
+        key: "win-d",
+        text: "Press Win+D to show the desktop. Note whether the strip stays visible, then press \
+               Win+D again to bring the windows back.",
+    },
+    StepText {
+        key: "fullscreen",
+        text: "On the strip's display, play a video full screen, or press F11 in a browser. \
+               Note whether the strip covers the bottom of it, then leave full screen. This \
+               build keeps the strip on top on purpose; the report records what Windows says.",
+    },
+    StepText {
+        key: "display-scale",
+        text: "In Settings > System > Display, change the scale of the strip's display (for \
+               example from 100% to 125%), then change it back. Note whether the strip refitted \
+               both times.",
+    },
+    StepText {
         key: "hotkey",
-        text: "Press Ctrl+Alt+T. The strip should come above your windows for 10 seconds, then \
-               go back. Note whether any app lost focus.",
+        text: "Press Ctrl+Alt+T. The strip is already above other windows, so nothing should \
+               change. Note whether any app lost focus.",
     },
     StepText {
         key: "idle-cpu",
@@ -245,23 +295,36 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
                still strip draws none.",
     },
     StepText {
-        key: "preferred-level",
-        text: "Which level worked better: normal (phase A) or always-on-bottom (phase B)? Type \
-               the choice and the reason.",
+        key: "second-display",
+        text: "If a second display is connected, note which display the strip chose. \
+               Otherwise press Enter.",
+    },
+    StepText {
+        key: "taskkill",
+        text: "Last step. Open a second terminal and run: taskkill /f /im repo-terrarium.exe \
+               It ends this probe the way a crash would, so this report stops here. Then \
+               maximise a window on the strip's display and see whether it stops short of the \
+               bottom, and start the probe again as the README describes.",
     },
 ];
 
 pub fn level_name(mode: LevelMode) -> &'static str {
     match mode {
+        #[cfg(target_os = "macos")]
         LevelMode::DesktopIconPlusOne => "desktop-icon + 1",
+        #[cfg(target_os = "macos")]
         LevelMode::AlwaysOnBottom => "always-on-bottom",
+        #[cfg(windows)]
+        LevelMode::TopmostAppBar => "topmost AppBar",
     }
 }
 
 fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::Launch => "launch",
+        #[cfg(target_os = "macos")]
         Phase::A => "phase A",
+        #[cfg(target_os = "macos")]
         Phase::B => "phase B",
         Phase::C => "phase C",
     }
@@ -279,11 +342,16 @@ pub fn probe_intro(json: &Path, text: &Path) -> String {
 }
 
 pub fn probe_header(report: &Report) -> String {
-    let mut out = format!(
-        "\nOS: {}\nDisplays have separate Spaces: {}\nDisplays:",
-        report.os,
-        yes_no(report.separate_spaces)
-    );
+    let mut out = format!("\nOS: {}", report.os);
+    // A macOS setting; Windows has no Spaces, so it has no line.
+    if report.separate_spaces.is_some() {
+        let _ = write!(
+            out,
+            "\nDisplays have separate Spaces: {}",
+            yes_no(report.separate_spaces)
+        );
+    }
+    out.push_str("\nDisplays:");
     for monitor in &report.monitors {
         let chosen = if report.chosen.as_ref() == Some(&monitor.id) {
             "*"
@@ -334,18 +402,20 @@ fn probe_event(event: &ProbeEvent) -> String {
             monitor,
             strip,
             frame,
-        } => format!(
-            "placed on [{}]: {}x scale, {}x{} px; frame at ({}, {}), {} x {} {}",
-            monitor.0,
-            strip.scale,
-            strip.width,
-            strip.height,
-            frame.x,
-            frame.y,
-            frame.width,
-            frame.height,
-            frame.unit
-        ),
+        } => {
+            format!(
+                "placed on [{}]: {}x scale, {}x{} px; frame at ({}, {}), {} x {} {}",
+                monitor.0,
+                strip.scale,
+                strip.width,
+                strip.height,
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height,
+                frame.unit
+            ) + &frame.appbar.as_ref().map_or_else(String::new, appbar_text)
+        }
         ProbeEvent::Level { mode, value } => {
             format!("level {}: {}", level_name(*mode), level_value(*value))
         }
@@ -377,7 +447,84 @@ fn probe_event(event: &ProbeEvent) -> String {
         ProbeEvent::Occluded { occluded: true } => "fully covered".to_owned(),
         ProbeEvent::Occluded { occluded: false } => "visible again".to_owned(),
         ProbeEvent::HotkeyUnavailable { error } => format!("no raise hotkey: {error}"),
+        ProbeEvent::Os(snapshot) => os_text(snapshot),
     }
+}
+
+fn rect_text(rect: &PxRect) -> String {
+    format!(
+        "({}, {})-({}, {})",
+        rect.left, rect.top, rect.right, rect.bottom
+    )
+}
+
+fn maybe_rect(rect: Option<&PxRect>) -> String {
+    rect.map_or_else(|| "unknown".to_owned(), rect_text)
+}
+
+fn appbar_text(appbar: &AppBarPlaced) -> String {
+    let mut out = format!(
+        "\n            {}: monitor {}, work area {} before and {} after; proposed {}, queried {}, \
+         granted {}, window {}",
+        if appbar.reserved {
+            "edge reserved"
+        } else {
+            "edge not reserved, a plain window"
+        },
+        rect_text(&appbar.monitor),
+        rect_text(&appbar.work_before),
+        maybe_rect(appbar.work_after.as_ref()),
+        rect_text(&appbar.proposal),
+        maybe_rect(appbar.queried.as_ref()),
+        rect_text(&appbar.set),
+        maybe_rect(appbar.window.as_ref()),
+    );
+    if appbar.unchanged {
+        out.push_str("; unchanged, nothing sent");
+    }
+    if appbar.height_mismatch {
+        out.push_str("; the granted height differs from the image's");
+    }
+    if let Some(stale) = &appbar.stale {
+        let _ = write!(
+            out,
+            "\n            old reservation: {} ({} taskbars explain a work area of {}){}",
+            if stale.suspected { "suspected" } else { "none" },
+            stale.taskbars,
+            rect_text(&stale.expected),
+            if stale.other_instance {
+                "; another strip is running, so nothing was cleared".to_owned()
+            } else if stale.cleared {
+                format!(
+                    "; cleared, work area now {}",
+                    maybe_rect(stale.work_after.as_ref())
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
+    out
+}
+
+fn os_text(snapshot: &OsSnapshot) -> String {
+    let flag = |on: bool, name: &str| format!("{}{name}", if on { "" } else { "not " });
+    let mut out = format!(
+        "window: {}, {}, {}, {}, {}; work area {}",
+        flag(snapshot.tool_window, "tool window"),
+        flag(snapshot.no_activate, "no-activate"),
+        flag(snapshot.app_window, "app window"),
+        flag(snapshot.topmost, "topmost"),
+        flag(snapshot.visible, "visible"),
+        maybe_rect(snapshot.work_area.as_ref())
+    );
+    if !snapshot.messages.is_empty() {
+        out.push_str("\n            messages (subclass/hook):");
+        for count in &snapshot.messages {
+            let _ = write!(out, " {} {}/{}", count.name, count.subclass, count.hook);
+        }
+    }
+    out
 }
 
 fn level_value(value: Option<isize>) -> String {
@@ -501,6 +648,7 @@ fn moves_text(moves: &MoveSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pinning::DEFAULT_LEVEL;
 
     /// Every string literal in a source file, tests included, so a string anywhere in this module
     /// is checked; a list of rendered strings would miss one nobody added to it.
@@ -564,7 +712,7 @@ mod tests {
 
     #[test]
     fn the_text_report_holds_every_step_note() {
-        let mut step = StepReport::new("b.stage-manager", LevelMode::AlwaysOnBottom);
+        let mut step = StepReport::new("b.stage-manager", DEFAULT_LEVEL);
         step.note = "strip stayed put".to_owned();
         step.frames = 3;
         let report = Report {
@@ -576,21 +724,19 @@ mod tests {
             monitors: Vec::new(),
             chosen: None,
             strip: None,
-            steps: vec![
-                step,
-                StepReport::new("c.dock", LevelMode::DesktopIconPlusOne),
-            ],
+            steps: vec![step, StepReport::new("c.dock", DEFAULT_LEVEL)],
             ended: Some(EndReason::Quit),
         };
         let text = probe_report_text(&report);
+        let level = level_name(DEFAULT_LEVEL);
         assert!(
-            text.contains("b.stage-manager (always-on-bottom)"),
+            text.contains(&format!("b.stage-manager ({level})")),
             "{text}"
         );
         assert!(text.contains("note: strip stayed put"), "{text}");
         assert!(text.contains("frames drawn: 3"), "{text}");
         assert!(
-            text.contains("c.dock (desktop-icon + 1)\n  note: (none)"),
+            text.contains(&format!("c.dock ({level})\n  note: (none)")),
             "{text}"
         );
         assert!(text.contains("Ended: quit from the menu"), "{text}");

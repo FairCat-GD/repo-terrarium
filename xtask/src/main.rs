@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod graph;
+mod probe_zip;
 mod verify;
 
 use std::path::Path;
@@ -14,10 +15,12 @@ fn main() -> ExitCode {
         .parent()
         .expect("xtask sits inside the workspace");
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args == ["verify"] {
-        verify::run(root)
-    } else {
-        eprintln!("usage: cargo xtask verify");
-        ExitCode::from(2)
+    match args.as_slice() {
+        [task] if task == "verify" => verify::run(root),
+        [task] if task == "probe-zip" => probe_zip::run(root),
+        _ => {
+            eprintln!("usage: cargo xtask verify | probe-zip");
+            ExitCode::from(2)
+        }
     }
 }

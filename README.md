@@ -6,8 +6,11 @@ and CI or local tests are the weather. It is built in Rust for macOS and Windows
 
 ## Status
 
-Pre-release, in a private repository. Version 0.2.0 shows the strip:
-- a borderless band along the bottom of a monitor, pinned below ordinary windows on macOS;
+Pre-release, in a private repository. Version 0.3.0 shows the strip:
+- a borderless band along the bottom of a monitor;
+- on macOS, pinned below ordinary windows;
+- on Windows, a topmost bar on a reserved edge, the way the taskbar is. It is untested on real
+  hardware yet;
 - a placeholder scene in the palette's colours;
 - a raise hotkey (Ctrl+Alt+T);
 - a right-click **Quit**.
@@ -27,6 +30,7 @@ cargo run -p terrarium-app                        # runs the strip; right-click 
 cargo run -p terrarium-app -- --version           # prints the version
 cargo run -p terrarium-app -- --probe pinning     # the pinning checklist, with a report
 cargo xtask verify                                # the gate: must be green before every commit
+cargo xtask probe-zip                             # the Windows probe zip for testers
 ```
 
 There is no CI. `cargo xtask verify` runs locally before every commit. It includes a clippy pass
@@ -35,7 +39,7 @@ for the Windows target, so Windows code is compiled and linted on a Mac.
 ## Layout
 
 - `crates/`: the eight crates, each with a `README.md` saying what it owns and why.
-- `xtask/`: development tasks (`cargo xtask verify`).
+- `xtask/`: development tasks (`cargo xtask verify`, `cargo xtask probe-zip`).
 - `art-assets/`: the art, byte for byte as delivered.
 - `tests/fixtures/`: fictional test data.
 

@@ -20,5 +20,11 @@ objc2-app-kit.workspace = true
 objc2-core-graphics.workspace = true
 objc2-core-foundation.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+# Only to install winit's message hook, so the `MSG` pointer it passes is read here and nowhere
+# else.
+winit.workspace = true
+
 [lints]
 workspace = true

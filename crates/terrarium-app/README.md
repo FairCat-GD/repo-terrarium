@@ -14,7 +14,8 @@ The `repo-terrarium` binary.
 - Hover in native pixels (`hover`), the raise hotkey and its timer (`hotkey`, `raise`), and the
   right-click menu (`menu`).
 - The OS half of the strip (`pinning`): the level, placement and system events, through
-  `terrarium-platform` on macOS.
+  `terrarium-platform`. On macOS the strip is a desktop-level window; on Windows it is an
+  `AppBar` on a reserved edge, sized to the band Windows grants.
 - `--probe pinning` (`probe`): the strip with a recorder, a guided checklist and a report.
 - Later: the egui windows (settings, time-lapse, debug panel).
 
@@ -38,6 +39,8 @@ that span crates, such as salt independence across engine and compose, live here
 - `repo-terrarium --probe pinning` runs the strip and walks through the pinning checklist on
   stdout. Each answer is a line on stdin: Enter moves on, and text typed first is kept as a
   note. The JSON and text reports are rewritten after every step, in the current directory.
+  On macOS it compares two window levels; on Windows it walks through the `AppBar` checks and
+  ends with a `taskkill` that stands in for a crash.
 
 ## Requirements
 

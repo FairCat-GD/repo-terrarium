@@ -1,0 +1,695 @@
+//! Windows: the strip as an `AppBar`. It reserves its edge of one monitor, so maximised windows
+//! stop above it. It stays out of the taskbar and Alt-Tab, is never activated by a click, stays
+//! topmost, and gives the edge back on every exit path it can see.
+//!
+//! - `subclass`: the window procedure that sees sent messages before winit does.
+//! - `exit`: the registered bar, and the handlers that remove it however the process ends.
+//! - The pure arithmetic is in `crate::appbar`, tested on every OS.
+//!
+//! Every public function is safe to call. The ones that act on the strip window check that
+//! they run on its thread.
+
+mod exit;
+mod subclass;
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::OnceLock;
+
+use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle};
+use windows::Wdk::System::SystemServices::RtlGetVersion;
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT,
+};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+};
+use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::UI::Shell::{ABM_NEW, ABM_QUERYPOS, ABM_SETPOS, APPBARDATA, SHAppBarMessage};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ChangeWindowMessageFilterEx, FindWindowExW, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
+    GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IsWindowVisible,
+    MONITORINFOF_PRIMARY, MSG, MSGFLT_ALLOW, RegisterWindowMessageW, SW_HIDE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos, ShowWindow,
+};
+use windows::core::{PCWSTR, w};
+use winit::event_loop::EventLoopBuilder;
+use winit::platform::windows::EventLoopBuilderExtWindows;
+
+use crate::SystemEvent;
+use crate::appbar::{self, PixelRect, Registered, band};
+use crate::geometry::Edge;
+use subclass::Seen;
+
+// The pure half keeps its own copies of these numbers, so it is tested on every OS. Each is
+// checked against the `windows` crate here, so a wrong one fails the Windows build.
+const _: () = {
+    use windows::Win32::UI::Shell as shell;
+    use windows::Win32::UI::WindowsAndMessaging as wm;
+    assert!(appbar::ABE_TOP == shell::ABE_TOP);
+    assert!(appbar::ABE_BOTTOM == shell::ABE_BOTTOM);
+    assert!(appbar::ABN_STATECHANGE == shell::ABN_STATECHANGE as usize);
+    assert!(appbar::ABN_POSCHANGED == shell::ABN_POSCHANGED as usize);
+    assert!(appbar::ABN_FULLSCREENAPP == shell::ABN_FULLSCREENAPP as usize);
+    assert!(appbar::ABN_WINDOWARRANGE == shell::ABN_WINDOWARRANGE as usize);
+    assert!(appbar::WA_INACTIVE == wm::WA_INACTIVE as usize);
+    assert!(appbar::GWL_EXSTYLE == wm::GWL_EXSTYLE.0 as isize);
+    assert!(appbar::SPI_SETWORKAREA == wm::SPI_SETWORKAREA.0 as usize);
+    assert!(appbar::WS_EX_TOPMOST == wm::WS_EX_TOPMOST.0);
+    assert!(appbar::WS_EX_TOOLWINDOW == wm::WS_EX_TOOLWINDOW.0);
+    assert!(appbar::WS_EX_APPWINDOW == wm::WS_EX_APPWINDOW.0);
+    assert!(appbar::WS_EX_NOACTIVATE == wm::WS_EX_NOACTIVATE.0);
+    assert!(appbar::WM_SHOWWINDOW == wm::WM_SHOWWINDOW);
+    assert!(appbar::WM_ACTIVATE == wm::WM_ACTIVATE);
+    assert!(appbar::WM_SETTINGCHANGE == wm::WM_SETTINGCHANGE);
+    assert!(appbar::WM_ACTIVATEAPP == wm::WM_ACTIVATEAPP);
+    assert!(appbar::WM_MOUSEACTIVATE == wm::WM_MOUSEACTIVATE);
+    assert!(appbar::WM_WINDOWPOSCHANGING == wm::WM_WINDOWPOSCHANGING);
+    assert!(appbar::WM_WINDOWPOSCHANGED == wm::WM_WINDOWPOSCHANGED);
+    assert!(appbar::WM_STYLECHANGING == wm::WM_STYLECHANGING);
+    assert!(appbar::WM_DISPLAYCHANGE == wm::WM_DISPLAYCHANGE);
+    assert!(appbar::WM_NCDESTROY == wm::WM_NCDESTROY);
+    assert!(appbar::WM_NCACTIVATE == wm::WM_NCACTIVATE);
+    assert!(appbar::WM_LBUTTONDOWN == wm::WM_LBUTTONDOWN);
+    assert!(appbar::WM_RBUTTONDOWN == wm::WM_RBUTTONDOWN);
+    assert!(appbar::WM_POWERBROADCAST == wm::WM_POWERBROADCAST);
+    assert!(appbar::WM_DPICHANGED == wm::WM_DPICHANGED);
+};
+
+/// Why the strip's window could not be attached. The app words it for people.
+#[derive(Debug)]
+pub enum PlatformError {
+    /// The window belongs to another thread. Subclassing works only from the window's own.
+    NotOwnerThread,
+    /// The window handle is unavailable.
+    Handle(HandleError),
+    /// The handle is not a Win32 window.
+    NotWin32,
+    /// comctl32 refused the subclass.
+    Subclass,
+}
+
+impl From<HandleError> for PlatformError {
+    fn from(err: HandleError) -> Self {
+        Self::Handle(err)
+    }
+}
+
+/// A Win32 structure's size, which the structure states about itself.
+pub(crate) fn struct_size<T>() -> u32 {
+    u32::try_from(size_of::<T>()).unwrap_or(u32::MAX)
+}
+
+/// Where the strip's bar is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bar {
+    /// Not registered yet; the first placement registers it.
+    New,
+    /// Registered: the edge is reserved.
+    Reserved,
+    /// Registration failed: a plain topmost window inside the work area.
+    Unreserved,
+    /// Given back on exit. Nothing is placed any more, so a placement racing an exit handler
+    /// cannot reserve the edge again.
+    Released,
+}
+
+/// The strip window as an `AppBar`. It can only exist on the window's thread, and cannot leave
+/// it.
+pub struct StripWindow {
+    hwnd: HWND,
+    registered: Registered,
+    subclass: subclass::Installed,
+    /// Held while this process may own a bar; `None` if it could not be created.
+    mutex: Option<HANDLE>,
+    /// Another running strip holds the mutex, so a short work area is its live bar, not a stale
+    /// one.
+    other_instance: bool,
+    bar: Cell<Bar>,
+    /// The rectangle last asked for and the one Explorer granted, so an unchanged placement
+    /// sends nothing.
+    last: Cell<Option<(PixelRect, PixelRect)>>,
+}
+
+impl StripWindow {
+    /// Takes winit's window and makes it a strip: subclassed, a tool window that never
+    /// activates, and covered by the exit handlers. Call it before the window is first shown:
+    /// a shown window keeps its taskbar button until it is hidden again.
+    pub fn attach(window: &impl HasWindowHandle) -> Result<Self, PlatformError> {
+        let hwnd = win32_hwnd(window)?;
+        // SAFETY: both calls only read. An unknown window yields thread 0, which is never the
+        // current thread.
+        let owned_here = unsafe { GetWindowThreadProcessId(hwnd, None) == GetCurrentThreadId() };
+        if !owned_here {
+            return Err(PlatformError::NotOwnerThread);
+        }
+        let registered = registered_messages();
+        let subclass = subclass::install(hwnd, registered).ok_or(PlatformError::Subclass)?;
+        set_tool_window(hwnd);
+        allow_messages(hwnd, registered);
+        let (mutex, other_instance) = instance_mutex();
+        exit::install_handlers();
+        Ok(Self {
+            hwnd,
+            registered,
+            subclass,
+            mutex,
+            other_instance,
+            bar: Cell::new(Bar::New),
+            last: Cell::new(None),
+        })
+    }
+
+    /// Calls `on_event` on this thread for each system event the window receives, for as long
+    /// as the strip window lives.
+    pub fn observe(&self, on_event: impl Fn(SystemEvent) + 'static) {
+        self.subclass.state.set_observer(Rc::new(on_event));
+    }
+
+    /// Reserves `edge` of `monitor` for the strip and moves the window onto exactly the
+    /// rectangle Explorer grants, topmost. `thickness_for_width` gives the strip's height for a
+    /// width, since the taskbar or another bar on a side can narrow the band.
+    ///
+    /// The first call registers the bar. Before that, it clears a reservation a crashed strip
+    /// left on this edge. `None` when the monitor is gone, or the bar was released.
+    pub fn place(
+        &self,
+        monitor: isize,
+        edge: Edge,
+        thickness_for_width: impl Fn(u32) -> u32,
+    ) -> Option<Placement> {
+        let rects = monitor_rects(monitor)?;
+        let thickness = |area: PixelRect| thickness_for_width(area.width().max(0).cast_unsigned());
+        let mut stale = None;
+        if self.bar.get() == Bar::New {
+            stale = Some(self.clear_stale(monitor, rects, edge, thickness(rects.monitor)));
+            self.bar.set(if self.register(edge) {
+                Bar::Reserved
+            } else {
+                Bar::Unreserved
+            });
+        }
+        if self.bar.get() == Bar::Reserved && !exit::is_registered(self.hwnd) {
+            // An exit handler gave the edge back; placing now would take it once more.
+            self.bar.set(Bar::Released);
+        }
+        let proposal = band(rects.monitor, edge, thickness(rects.monitor));
+        let (queried, wanted) = match self.bar.get() {
+            Bar::Reserved => {
+                let queried = self.ask(ABM_QUERYPOS, edge, proposal);
+                (Some(queried), band(queried, edge, thickness(queried)))
+            }
+            Bar::Unreserved => (None, band(rects.work, edge, thickness(rects.work))),
+            Bar::New | Bar::Released => return None,
+        };
+
+        // Asking again for what was granted, with the window still on it, changes nothing, so
+        // nothing is sent. That also ends any back-and-forth of `ABN_POSCHANGED` with another
+        // bar.
+        let window = window_rect(self.hwnd);
+        let unchanged = self
+            .last
+            .get()
+            .filter(|&(last_wanted, last_set)| last_wanted == wanted && window == Some(last_set));
+        let (set, window) = if let Some((_, set)) = unchanged {
+            (set, window)
+        } else {
+            let set = if self.bar.get() == Bar::Reserved {
+                self.ask(ABM_SETPOS, edge, wanted)
+            } else {
+                wanted
+            };
+            self.move_to(set);
+            let mut window = window_rect(self.hwnd);
+            if window != Some(set) {
+                // A move onto a monitor with another DPI makes winit resize the window
+                // itself, inside this move. The reserved rectangle wins.
+                self.move_to(set);
+                window = window_rect(self.hwnd);
+            }
+            self.last.set(Some((wanted, set)));
+            (set, window)
+        };
+        Some(Placement {
+            monitor: rects.monitor,
+            work_before: rects.work,
+            reserved: self.bar.get() == Bar::Reserved,
+            proposal,
+            queried,
+            set,
+            window,
+            work_after: monitor_rects(monitor).map(|after| after.work),
+            unchanged: unchanged.is_some(),
+            stale,
+        })
+    }
+
+    /// Clears a reservation a strip that died without removing its bar left on `edge`, if the
+    /// work area shows one. A temporary bar on this still-hidden window reserves and removes the
+    /// edge, which makes Explorer recompute the work area, dropping bars whose window is gone.
+    fn clear_stale(
+        &self,
+        monitor: isize,
+        rects: MonitorRects,
+        edge: Edge,
+        thickness: u32,
+    ) -> StaleCheck {
+        let taskbars = taskbar_rects();
+        let suspected = appbar::stale_suspected(rects.monitor, rects.work, &taskbars, edge);
+        let mut check = StaleCheck {
+            expected: appbar::expected_work_area(rects.monitor, &taskbars),
+            taskbars: taskbars.len(),
+            suspected,
+            other_instance: self.other_instance,
+            cleared: false,
+            work_after: None,
+        };
+        if suspected && !self.other_instance && self.register(edge) {
+            let queried = self.ask(ABM_QUERYPOS, edge, band(rects.monitor, edge, thickness));
+            self.ask(ABM_SETPOS, edge, band(queried, edge, thickness));
+            exit::remove_if_registered(self.hwnd);
+            check.cleared = true;
+            check.work_after = monitor_rects(monitor).map(|after| after.work);
+        }
+        check
+    }
+
+    /// Registers the bar. FALSE can mean this window is still registered (a removal that did not
+    /// take), so the bar is removed and asked for once more before giving up. The exit handlers
+    /// know the window before each request, so an exit in between still removes it.
+    fn register(&self, edge: Edge) -> bool {
+        for _ in 0..2 {
+            exit::mark_registered(self.hwnd);
+            let mut data = self.data(edge, PixelRect::default());
+            // SAFETY: `data` is a complete `APPBARDATA` for this window that outlives the call.
+            if unsafe { SHAppBarMessage(ABM_NEW, &raw mut data) } != 0 {
+                return true;
+            }
+            exit::remove_if_registered(self.hwnd);
+        }
+        false
+    }
+
+    /// Sends `message` for the bar with `rect`, and returns the rectangle Explorer answers with.
+    fn ask(&self, message: u32, edge: Edge, rect: PixelRect) -> PixelRect {
+        let mut data = self.data(edge, rect);
+        // SAFETY: `data` is a complete `APPBARDATA` for this window that outlives the call;
+        // Explorer writes only its rectangle.
+        unsafe { SHAppBarMessage(message, &raw mut data) };
+        from_rect(data.rc)
+    }
+
+    fn data(&self, edge: Edge, rect: PixelRect) -> APPBARDATA {
+        APPBARDATA {
+            cbSize: struct_size::<APPBARDATA>(),
+            hWnd: self.hwnd,
+            uCallbackMessage: self.registered.appbar,
+            uEdge: appbar::abe(edge),
+            rc: to_rect(rect),
+            lParam: LPARAM(0),
+        }
+    }
+
+    fn move_to(&self, rect: PixelRect) {
+        // SAFETY: moves a window this thread owns, without activating it or changing whether it
+        // is shown.
+        let _ = unsafe {
+            SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                rect.left,
+                rect.top,
+                rect.width(),
+                rect.height(),
+                SWP_NOACTIVATE,
+            )
+        };
+    }
+
+    /// Puts the strip back above ordinary windows, without activating it. Placement already
+    /// does this; it is only for the launch and the raise hotkey, since doing it more often
+    /// could cover the taskbar's flyouts, which open over the strip.
+    pub fn set_topmost(&self) {
+        // SAFETY: changes only the z-order of a window this thread owns.
+        let _ = unsafe {
+            SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        };
+    }
+
+    /// Gives the edge back and hides the strip. The app calls it as the event loop exits:
+    /// winit only posts its window's destruction, which is never handled once the loop has
+    /// ended, so no `WM_NCDESTROY` arrives then.
+    pub fn release(&self) {
+        exit::remove_if_registered(self.hwnd);
+        self.bar.set(Bar::Released);
+        // SAFETY: hides a window this thread owns.
+        let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
+    }
+
+    /// The work area of the monitor the strip is on, as it is now.
+    pub fn work_area(&self) -> Option<PixelRect> {
+        // SAFETY: looks up the monitor nearest a window; any window value is accepted.
+        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        monitor_info(monitor).map(|rects| rects.work)
+    }
+
+    /// The window's style as Windows reports it, to show whether winit changed it.
+    pub fn style(&self) -> StyleFlags {
+        // SAFETY: both calls only read the style of a window this thread owns.
+        let (ex, visible) = unsafe {
+            (
+                GetWindowLongW(self.hwnd, GWL_EXSTYLE).cast_unsigned(),
+                IsWindowVisible(self.hwnd).as_bool(),
+            )
+        };
+        StyleFlags {
+            tool_window: ex & appbar::WS_EX_TOOLWINDOW != 0,
+            no_activate: ex & appbar::WS_EX_NOACTIVATE != 0,
+            app_window: ex & appbar::WS_EX_APPWINDOW != 0,
+            topmost: ex & appbar::WS_EX_TOPMOST != 0,
+            visible,
+        }
+    }
+}
+
+impl Drop for StripWindow {
+    fn drop(&mut self) {
+        self.subclass.remove(self.hwnd);
+        exit::remove_if_registered(self.hwnd);
+        if let Some(mutex) = self.mutex.take() {
+            // SAFETY: the handle `CreateMutexW` returned, closed once.
+            let _ = unsafe { CloseHandle(mutex) };
+        }
+    }
+}
+
+/// What one placement did, for the probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub monitor: PixelRect,
+    /// The monitor's work area before this placement.
+    pub work_before: PixelRect,
+    /// Whether the edge is reserved, or the strip is the unreserved fallback.
+    pub reserved: bool,
+    /// The band proposed to `ABM_QUERYPOS`.
+    pub proposal: PixelRect,
+    /// What `ABM_QUERYPOS` answered; `None` for the fallback.
+    pub queried: Option<PixelRect>,
+    /// The rectangle `ABM_SETPOS` granted, which the window was moved to.
+    pub set: PixelRect,
+    /// The window's rectangle afterwards.
+    pub window: Option<PixelRect>,
+    /// The work area afterwards. Explorer may still change it after answering, so the probe
+    /// also records work-area changes as they arrive.
+    pub work_after: Option<PixelRect>,
+    /// Nothing changed, so nothing was sent.
+    pub unchanged: bool,
+    /// The stale-reservation check, on the placement that registered the bar.
+    pub stale: Option<StaleCheck>,
+}
+
+/// The check for a reservation a crashed strip left behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleCheck {
+    /// The work area the taskbars alone explain.
+    pub expected: PixelRect,
+    pub taskbars: usize,
+    pub suspected: bool,
+    /// Another strip was running, so nothing was cleared.
+    pub other_instance: bool,
+    pub cleared: bool,
+    pub work_after: Option<PixelRect>,
+}
+
+/// The extended style bits the strip depends on, and whether it is shown. Independent flags,
+/// as Windows reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct StyleFlags {
+    pub tool_window: bool,
+    pub no_activate: bool,
+    pub app_window: bool,
+    pub topmost: bool,
+    pub visible: bool,
+}
+
+/// A monitor's rectangles, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorRects {
+    /// `rcMonitor`: the whole monitor, never the primary's size (`SM_CXSCREEN`).
+    pub monitor: PixelRect,
+    /// `rcWork`: the monitor minus the taskbar and every `AppBar`.
+    pub work: PixelRect,
+    pub primary: bool,
+}
+
+/// The rectangles of the monitor with this `HMONITOR`, as winit's `MonitorHandle::hmonitor`
+/// gives it. `None` for a monitor that is gone.
+pub fn monitor_rects(monitor: isize) -> Option<MonitorRects> {
+    monitor_info(HMONITOR(std::ptr::without_provenance_mut(
+        monitor.cast_unsigned(),
+    )))
+}
+
+fn monitor_info(monitor: HMONITOR) -> Option<MonitorRects> {
+    let mut info = MONITORINFO {
+        cbSize: struct_size::<MONITORINFO>(),
+        ..MONITORINFO::default()
+    };
+    // SAFETY: `info` states its size and outlives the call; an unknown or stale monitor handle
+    // makes the call fail without writing.
+    let found = unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool();
+    found.then(|| MonitorRects {
+        monitor: from_rect(info.rcMonitor),
+        work: from_rect(info.rcWork),
+        primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+    })
+}
+
+/// The window rectangles of the taskbars: the primary one and one per other display.
+fn taskbar_rects() -> Vec<PixelRect> {
+    let mut rects = Vec::new();
+    for class in [w!("Shell_TrayWnd"), w!("Shell_SecondaryTrayWnd")] {
+        let mut after = None;
+        // Bounded, so a list that changes during the walk cannot keep it going.
+        for _ in 0..16 {
+            // SAFETY: searches top-level windows by class name; `after` is `None` or a window
+            // this walk returned.
+            let Ok(found) = (unsafe { FindWindowExW(None, after, class, PCWSTR::null()) }) else {
+                break;
+            };
+            rects.extend(window_rect(found));
+            after = Some(found);
+        }
+    }
+    rects
+}
+
+fn window_rect(hwnd: HWND) -> Option<PixelRect> {
+    let mut rect = RECT::default();
+    // SAFETY: `rect` outlives the call; an unknown window makes it fail.
+    unsafe { GetWindowRect(hwnd, &raw mut rect) }
+        .ok()
+        .map(|()| from_rect(rect))
+}
+
+fn from_rect(rect: RECT) -> PixelRect {
+    PixelRect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
+}
+
+fn to_rect(rect: PixelRect) -> RECT {
+    RECT {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
+}
+
+fn win32_hwnd(window: &impl HasWindowHandle) -> Result<HWND, PlatformError> {
+    let RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
+        return Err(PlatformError::NotWin32);
+    };
+    Ok(HWND(std::ptr::without_provenance_mut(
+        handle.hwnd.get().cast_unsigned(),
+    )))
+}
+
+/// Out of the taskbar and Alt-Tab, and never activated by a click. The subclass is already in
+/// place, so this write, like every later one winit makes, passes through its guard.
+fn set_tool_window(hwnd: HWND) {
+    // SAFETY: reads and writes the extended style of a window this thread owns, then applies it
+    // with a frame change that neither moves, sizes, orders nor activates the window.
+    unsafe {
+        let old = GetWindowLongW(hwnd, GWL_EXSTYLE).cast_unsigned();
+        SetWindowLongW(
+            hwnd,
+            GWL_EXSTYLE,
+            appbar::guard_ex_style(old, old).cast_signed(),
+        );
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Lets the `AppBar` callback and `TaskbarCreated` through the message filter an elevated
+/// process has, which would otherwise drop Explorer's messages.
+fn allow_messages(hwnd: HWND, registered: Registered) {
+    for message in [registered.appbar, registered.taskbar_created] {
+        if message != 0 {
+            // SAFETY: changes the message filter of a window this thread owns; no structure is
+            // passed.
+            let _ = unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None) };
+        }
+    }
+}
+
+/// Opens the named mutex a strip holds while it may own a bar, and whether another process
+/// already held it.
+fn instance_mutex() -> (Option<HANDLE>, bool) {
+    // SAFETY: creates or opens a named mutex with default security and no initial owner. The
+    // handle is closed when the strip window is dropped.
+    let mutex = unsafe {
+        CreateMutexW(
+            None,
+            false,
+            w!("Local\\io.github.faircat-gd.repo-terrarium.appbar"),
+        )
+    }
+    .ok();
+    // SAFETY: reads this thread's last error, which `CreateMutexW` has just set.
+    let existed = mutex.is_some() && unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    (mutex, existed)
+}
+
+/// The message ids registered for this session: the bar's callback and `TaskbarCreated`.
+fn registered_messages() -> Registered {
+    static REGISTERED: OnceLock<Registered> = OnceLock::new();
+    *REGISTERED.get_or_init(|| {
+        // SAFETY: registers message names from static strings; a failure returns 0, which is
+        // never matched.
+        unsafe {
+            Registered {
+                appbar: RegisterWindowMessageW(w!("io.github.faircat-gd.repo-terrarium.AppBar")),
+                taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+            }
+        }
+    })
+}
+
+/// Counts watched messages from here on, both in the subclass and in winit's message hook,
+/// which sees only posted messages. For the probe; set on the event loop before it runs.
+pub fn watch_messages<T: 'static>(builder: &mut EventLoopBuilder<T>) {
+    subclass::start_counting();
+    let registered = registered_messages();
+    builder.with_msg_hook(move |msg| {
+        // SAFETY: winit passes the `MSG` it has just taken from the queue, valid for this call.
+        if let Some(msg) = unsafe { msg.cast::<MSG>().as_ref() }
+            && let Some(name) = appbar::message_name(msg.message, msg.wParam.0, registered)
+        {
+            subclass::count(name, Seen::Hook);
+        }
+        false
+    });
+}
+
+/// How often one watched message reached the subclass and winit's message hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageCount {
+    pub name: &'static str,
+    pub subclass: u64,
+    pub hook: u64,
+}
+
+/// The counts since the last call. Empty unless `watch_messages` ran.
+pub fn take_message_counts() -> Vec<MessageCount> {
+    subclass::take_counts()
+        .into_iter()
+        .map(|(name, subclass, hook)| MessageCount {
+            name,
+            subclass,
+            hook,
+        })
+        .collect()
+}
+
+/// Whether the window the user is working in belongs to this process.
+pub fn foreground_is_this_process() -> bool {
+    let mut process = 0;
+    // SAFETY: all three only read; with no foreground window the process id stays 0.
+    unsafe {
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&raw mut process));
+        process != 0 && process == GetCurrentProcessId()
+    }
+}
+
+/// The window class of the window the user is working in. The class, not the title: a title
+/// can name a person's documents, and the probe report is sent to someone else.
+pub fn foreground_class() -> Option<String> {
+    let mut name = [0_u16; 256];
+    // SAFETY: the buffer is writable for its whole length, which the wrapper passes as the
+    // limit; with no foreground window the call returns 0.
+    let len = unsafe { GetClassNameW(GetForegroundWindow(), &mut name) };
+    let len = usize::try_from(len).ok().filter(|&len| len > 0)?;
+    name.get(..len).map(String::from_utf16_lossy)
+}
+
+/// The Windows version, read from the kernel, which does not shim it for old apps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OsVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub build: u32,
+}
+
+pub fn os_version() -> Option<OsVersion> {
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: struct_size::<OSVERSIONINFOW>(),
+        ..OSVERSIONINFOW::default()
+    };
+    // SAFETY: `info` states its size and outlives the call.
+    let status = unsafe { RtlGetVersion(&raw mut info) };
+    status.is_ok().then_some(OsVersion {
+        major: info.dwMajorVersion,
+        minor: info.dwMinorVersion,
+        build: info.dwBuildNumber,
+    })
+}
+
+/// Pops up `menu` at the pointer over `window`. Call it from the thread that owns the window
+/// (the event loop's); it returns when the menu closes.
+pub fn show_context_menu(menu: &muda::Menu, window: &impl HasWindowHandle) {
+    use muda::ContextMenu;
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: raw-window-handle 0.6 guarantees the HWND is a valid window while the handle is
+    // borrowed, which covers the whole call.
+    unsafe {
+        menu.show_context_menu_for_hwnd(handle.hwnd.get(), None);
+    }
+}

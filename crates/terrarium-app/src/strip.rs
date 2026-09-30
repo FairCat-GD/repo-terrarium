@@ -67,7 +67,7 @@ impl From<EventLoopError> for StripError {
 /// Runs the strip until it is quit. With a probe, it also records and reports.
 pub fn run(probe: Option<ProbeKind>) -> Result<(), StripError> {
     let mut builder = EventLoop::<UserEvent>::with_user_event();
-    pinning::configure_event_loop(&mut builder);
+    pinning::configure_event_loop(&mut builder, probe.is_some());
     let event_loop = builder.build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     // Both crates keep only the first handler they are given, so these come before any menu
@@ -170,26 +170,26 @@ impl Strip {
             .probe
             .is_some()
             .then(|| monitors.iter().map(|m| m.info.clone()).collect());
-        let (monitor, scale) = fit(monitors).ok_or(StripError::NoDisplay)?;
+        let monitor = choose(monitors).ok_or(StripError::NoDisplay)?;
         if let Some(probe) = &mut self.probe {
             probe.launched(Launch {
                 os: pinning::os_version(),
                 separate_spaces: pinning::separate_spaces(),
                 monitors: reported.unwrap_or_default(),
                 chosen: Some(monitor.info.id.clone()),
-                scale: Some(scale),
             });
         }
-        let view = View {
+        let mut view = View {
             window,
             pinning,
             presenter,
             menu,
             hotkey,
             _observers: observers,
-            scale,
+            // Until the placement says otherwise: on Windows the reserved band can be narrower.
+            scale: StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP),
         };
-        self.place(&view, &monitor);
+        self.place(&mut view, &monitor);
         self.apply_level(&view);
         view.pinning.show(&view.window);
         view.window.request_redraw();
@@ -198,6 +198,7 @@ impl Strip {
             at: "window shown",
             active,
         });
+        self.record_snapshot(&view);
         Ok(view)
     }
 
@@ -210,8 +211,13 @@ impl Strip {
         }
     }
 
-    fn place(&mut self, view: &View, monitor: &Monitor) {
-        let frame = view.pinning.place(&view.window, monitor, &view.scale, EDGE);
+    /// Moves the strip onto `monitor`, and takes the scale the placement gives.
+    fn place(&mut self, view: &mut View, monitor: &Monitor) {
+        let Some((scale, frame)) = view.pinning.place(&view.window, monitor, SIZE_STEP, EDGE)
+        else {
+            return;
+        };
+        view.scale = scale;
         self.record(ProbeEvent::Placed {
             monitor: monitor.info.id.clone(),
             strip: ScaleReport::from(&view.scale),
@@ -219,12 +225,21 @@ impl Strip {
         });
     }
 
-    /// Chooses the monitor again and moves the strip there, after a display change or a wake.
+    /// Chooses the monitor again and moves the strip there, after a display change, a wake or
+    /// a moved taskbar.
     fn replace(&mut self, view: &mut View) {
-        if let Some((monitor, scale)) = fit(view.pinning.monitors(&view.window)) {
-            view.scale = scale;
+        if let Some(monitor) = choose(view.pinning.monitors(&view.window)) {
             self.place(view, &monitor);
             view.window.request_redraw();
+        }
+    }
+
+    /// What the OS says about the strip now (Windows), recorded only while probing.
+    fn record_snapshot(&mut self, view: &View) {
+        if self.probe.is_some()
+            && let Some(snapshot) = view.pinning.snapshot()
+        {
+            self.record(ProbeEvent::Os(snapshot));
         }
     }
 
@@ -257,6 +272,10 @@ impl Strip {
     }
 
     fn end_probe(&mut self, reason: EndReason) {
+        if let Some(view) = self.view.take() {
+            self.record_snapshot(&view);
+            self.view = Some(view);
+        }
         let frames = self.gate.count();
         if let Some(probe) = &mut self.probe {
             probe.end(reason, frames);
@@ -264,6 +283,7 @@ impl Strip {
     }
 
     fn answer(&mut self, event_loop: &ActiveEventLoop, view: &View, note: &str) {
+        self.record_snapshot(view);
         let frames = self.gate.count();
         let Some(probe) = &mut self.probe else {
             return;
@@ -284,6 +304,7 @@ impl Strip {
     fn window_input(&mut self, event_loop: &ActiveEventLoop, view: &mut View, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
+                self.record_snapshot(view);
                 self.end_probe(EndReason::WindowClosed);
                 event_loop.exit();
             }
@@ -310,8 +331,15 @@ impl Strip {
                 mut inner_size_writer,
             } => {
                 // The answer is the exact physical size; the move itself waits until the
-                // handler has returned.
-                if let Some((_, scale)) = fit(view.pinning.monitors(&view.window)) {
+                // handler has returned. A reserved edge keeps the size it was granted.
+                let scale = if pinning::EDGE_RESERVED {
+                    Some(view.scale)
+                } else {
+                    choose(view.pinning.monitors(&view.window)).map(|monitor| {
+                        StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP)
+                    })
+                };
+                if let Some(scale) = scale {
                     let _ = inner_size_writer
                         .request_inner_size(PhysicalSize::new(scale.width, scale.height));
                 }
@@ -367,11 +395,10 @@ impl Strip {
     }
 }
 
-/// The monitor the strip belongs on, and the strip's scale there.
-fn fit(mut monitors: Vec<Monitor>) -> Option<(Monitor, StripScale)> {
-    let monitor = monitors.swap_remove(monitor::choose(&monitors, None)?);
-    let scale = StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP);
-    Some((monitor, scale))
+/// The monitor the strip belongs on.
+fn choose(mut monitors: Vec<Monitor>) -> Option<Monitor> {
+    let index = monitor::choose(&monitors, None)?;
+    Some(monitors.swap_remove(index))
 }
 
 impl ApplicationHandler<UserEvent> for Strip {
@@ -430,7 +457,11 @@ impl ApplicationHandler<UserEvent> for Strip {
                 });
                 if matches!(
                     event,
-                    SystemEvent::ScreensChanged | SystemEvent::Woke | SystemEvent::ScreensWoke
+                    SystemEvent::ScreensChanged
+                        | SystemEvent::Woke
+                        | SystemEvent::ScreensWoke
+                        | SystemEvent::AppBarPosChanged
+                        | SystemEvent::AppBarStateChanged
                 ) {
                     self.placement_pending = true;
                 }
@@ -469,5 +500,10 @@ impl ApplicationHandler<UserEvent> for Strip {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.end_probe(EndReason::WindowClosed);
+        // winit only posts its window's destruction, which the ended loop never handles, so
+        // the reserved edge is given back here.
+        if let Some(view) = &self.view {
+            view.pinning.release();
+        }
     }
 }

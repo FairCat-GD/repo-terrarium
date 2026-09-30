@@ -9,7 +9,6 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use terrarium_compose::scale::StripScale;
 use winit::event_loop::EventLoopProxy;
 
 use crate::copy;
@@ -17,7 +16,7 @@ use crate::hover::NativePoint;
 use crate::monitor::{MonitorId, MonitorInfo};
 use crate::pinning::LevelMode;
 use crate::strip::UserEvent;
-use report::{EndReason, ProbeEvent, Report, ScaleReport, StepReport, Timed};
+use report::{EndReason, ProbeEvent, Report, StepReport, Timed};
 use script::Step;
 
 /// What the strip does after an answer.
@@ -35,7 +34,6 @@ pub struct Launch {
     pub separate_spaces: Option<bool>,
     pub monitors: Vec<MonitorInfo>,
     pub chosen: Option<MonitorId>,
-    pub scale: Option<StripScale>,
 }
 
 pub struct Probe {
@@ -108,13 +106,17 @@ impl Probe {
         self.report.separate_spaces = launch.separate_spaces;
         self.report.monitors = launch.monitors;
         self.report.chosen = launch.chosen;
-        self.report.strip = launch.scale.as_ref().map(ScaleReport::from);
         println!("{}", copy::probe_header(&self.report));
         self.print_step();
         self.write();
     }
 
+    /// Records `event` in the open step. A placement also becomes the report's strip, so the
+    /// header shows the latest one.
     pub fn record(&mut self, event: ProbeEvent) {
+        if let ProbeEvent::Placed { strip, .. } = &event {
+            self.report.strip = Some(*strip);
+        }
         let ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         println!("{}", copy::probe_echo(ms, &event));
         if let Some(step) = self.open_step() {
@@ -236,6 +238,8 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::pinning::Placed;
+    use report::ScaleReport;
 
     /// A directory the test owns under the system temp dir, removed when dropped.
     struct TempDir(PathBuf);
@@ -316,6 +320,33 @@ mod tests {
         assert_eq!(probe.dir, dir.0);
         assert!(probe.json_path().is_file());
         assert!(probe.text_path().is_file());
+    }
+
+    #[test]
+    fn the_report_strip_follows_the_latest_placement() {
+        let dir = TempDir::new("strip");
+        let mut probe = probe(&dir.0);
+        let placed = |scale: u32| ProbeEvent::Placed {
+            monitor: MonitorId("M".to_owned()),
+            strip: ScaleReport {
+                scale,
+                width: 2560,
+                height: 74 * scale,
+                image_x: 0,
+            },
+            frame: Placed {
+                x: 0.0,
+                y: 0.0,
+                width: 2560.0,
+                height: f64::from(74 * scale),
+                unit: "px",
+                appbar: None,
+            },
+        };
+        assert_eq!(probe.report.strip, None);
+        probe.record(placed(4));
+        probe.record(placed(3));
+        assert_eq!(probe.report.strip.map(|strip| strip.scale), Some(3));
     }
 
     #[test]

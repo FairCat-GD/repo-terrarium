@@ -1,6 +1,7 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
+The tasks are `verify` and `probe-zip`.
 
 ## `verify`
 
@@ -32,3 +33,21 @@ tool is missing, or at another version, fails and names the install command.
   denies `clippy::undocumented_unsafe_blocks`, and truth denies `clippy::float_arithmetic`.
 - Every manifest inherits the workspace package fields and lints.
 - No dependency declares a `rust-version` above the workspace's.
+
+## `probe-zip`
+
+The Windows probe build for testers. There is no CI, so it is cross-built on the Mac for
+`x86_64-pc-windows-msvc`, the target `verify` lints and the release ships.
+
+- **Linker:** the `rust-lld` the toolchain ships, so no LLVM install is needed. The C runtime is
+  linked statically, so testers need no Visual C++ redistributable.
+- **Libraries:** the MSVC C runtime and the Windows SDK come from `xwin` 0.10.0
+  (`cargo install --locked xwin@0.10.0`). They are splatted once into
+  `~/Library/Caches/repo-terrarium/xwin`, or `$TERRARIUM_XWIN_DIR`.
+- **The license.** Getting the libraries downloads Microsoft's packages and accepts
+  Microsoft's license for them. That is a person's decision, so the task never runs it. When
+  the libraries are missing, it prints the one-time command.
+- **Output:** `target/probe/repo-terrarium-<version>-probe-windows-x64.zip`, holding:
+  - `repo-terrarium.exe`;
+  - `README.txt`, the tester's instructions, from `probe/README.txt`;
+  - `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder.

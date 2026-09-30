@@ -5,6 +5,36 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-30
+
+### Added
+
+- **On Windows the strip is an `AppBar`.** It reserves the bottom edge of its monitor the way the
+  taskbar does, so maximised windows stop above it. It sits above the taskbar when the two
+  share a display.
+  - It stays above other windows, and is never in the taskbar or Alt-Tab.
+  - Clicking it does not take focus from the app in use.
+  - When the taskbar or another bar moves, it asks for its edge again.
+  - It is sized to the band Windows grants, which can be narrower than the monitor.
+  - The edge is given back when the strip quits, panics, gets Ctrl-C or crashes on an
+    exception. A reservation left by a killed strip is cleared the next time it starts.
+  - If Windows refuses the reservation, the strip falls back to a plain window above the
+    taskbar and says so once on stderr.
+  - It is not yet tested on real Windows hardware.
+- **`--probe pinning` on Windows** walks through focus on click, maximising, Alt-Tab and the
+  taskbar, Win+D, full screen, display scale, the hotkey, idle CPU, a second display, and a
+  `taskkill` that stands in for a crash. It records:
+  - the work area before and after each placement;
+  - the window's style;
+  - which window messages arrived sent and which arrived posted.
+- **`cargo xtask probe-zip`** cross-builds the Windows exe on a Mac and zips it with the
+  tester's instructions and a double-click launcher.
+
+### Changed
+
+- On Windows the strip's corners are square, and the report names the foreground window's
+  class instead of leaving it unknown.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added

@@ -6,9 +6,11 @@ use crate::pinning::{DEFAULT_LEVEL, LevelMode};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Launch,
-    /// Each level-sensitive item at desktop-icon + 1.
+    /// Each level-sensitive item at desktop-icon + 1 (macOS, which has two levels to compare).
+    #[cfg(target_os = "macos")]
     A,
     /// The same items at always-on-bottom.
+    #[cfg(target_os = "macos")]
     B,
     /// Everything else, once, at the default level.
     C,
@@ -30,6 +32,7 @@ pub fn pinning() -> Vec<Step> {
         text: item.text,
     };
     let mut steps = vec![step("", Phase::Launch, DEFAULT_LEVEL, &copy::PROBE_LAUNCH)];
+    #[cfg(target_os = "macos")]
     for (prefix, phase, level) in [
         ("a.", Phase::A, LevelMode::DesktopIconPlusOne),
         ("b.", Phase::B, LevelMode::AlwaysOnBottom),
@@ -62,6 +65,7 @@ mod tests {
         assert!(steps.iter().all(|s| !s.text.trim().is_empty()));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn phases_a_and_b_repeat_the_same_items_at_the_two_levels() {
         let steps = pinning();
@@ -82,13 +86,17 @@ mod tests {
         }
     }
 
+    /// macOS ends by asking which level worked better. Windows ends with the taskkill, which
+    /// ends the process, so nothing can come after it.
     #[test]
-    fn the_probe_opens_at_launch_and_ends_by_asking_for_the_preferred_level() {
+    fn the_probe_opens_at_launch_and_ends_with_its_last_step() {
+        let last = if cfg!(windows) {
+            "c.taskkill"
+        } else {
+            "c.preferred-level"
+        };
         let steps = pinning();
         assert_eq!(steps.first().map(|s| s.phase), Some(Phase::Launch));
-        assert_eq!(
-            steps.last().map(|s| s.id.as_str()),
-            Some("c.preferred-level")
-        );
+        assert_eq!(steps.last().map(|s| s.id.as_str()), Some(last));
     }
 }

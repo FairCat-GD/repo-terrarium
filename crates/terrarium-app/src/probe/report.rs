@@ -6,7 +6,7 @@ use terrarium_compose::scale::StripScale;
 
 use crate::hover::NativePoint;
 use crate::monitor::{MonitorId, MonitorInfo};
-use crate::pinning::{LevelMode, Placed};
+use crate::pinning::{LevelMode, OsSnapshot, Placed};
 
 /// Events kept per step; a step that produces more counts the rest as dropped.
 pub const EVENTS_PER_STEP: usize = 200;
@@ -171,6 +171,8 @@ pub enum ProbeEvent {
     HotkeyUnavailable {
         error: String,
     },
+    /// What the OS says about the strip (Windows): at launch and whenever a step closes.
+    Os(OsSnapshot),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -187,9 +189,10 @@ pub enum EndReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pinning::{AppBarPlaced, DEFAULT_LEVEL, MessageCount, PxRect};
 
     fn report() -> Report {
-        let mut step = StepReport::new("a.hover-clicks", LevelMode::DesktopIconPlusOne);
+        let mut step = StepReport::new("a.hover-clicks", DEFAULT_LEVEL);
         step.note = "the other app kept focus".to_owned();
         step.push(Timed {
             ms: 1500,
@@ -222,7 +225,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&report().to_json().unwrap()).unwrap();
         let step = &json["steps"][0];
         assert_eq!(step["id"], "a.hover-clicks");
-        assert_eq!(step["level"], "desktop-icon-plus-one");
+        assert_eq!(step["level"], serde_json::to_value(DEFAULT_LEVEL).unwrap());
         assert_eq!(step["note"], "the other app kept focus");
         assert_eq!(step["events"][0]["event"], "click");
         assert_eq!(step["events"][0]["ms"], 1500);
@@ -234,7 +237,7 @@ mod tests {
 
     #[test]
     fn a_step_keeps_a_bounded_number_of_events() {
-        let mut step = StepReport::new("c.idle-cpu", LevelMode::AlwaysOnBottom);
+        let mut step = StepReport::new("c.idle-cpu", DEFAULT_LEVEL);
         for ms in 0..EVENTS_PER_STEP as u64 + 7 {
             step.push(Timed {
                 ms,
@@ -243,6 +246,85 @@ mod tests {
         }
         assert_eq!(step.events.len(), EVENTS_PER_STEP);
         assert_eq!(step.events_dropped, 7);
+    }
+
+    const RECT: PxRect = PxRect {
+        left: 0,
+        top: 1096,
+        right: 2560,
+        bottom: 1392,
+    };
+
+    fn placed(appbar: Option<AppBarPlaced>) -> ProbeEvent {
+        ProbeEvent::Placed {
+            monitor: MonitorId("M".to_owned()),
+            strip: ScaleReport {
+                scale: 4,
+                width: 2560,
+                height: 296,
+                image_x: 0,
+            },
+            frame: Placed {
+                x: 0.0,
+                y: 1096.0,
+                width: 2560.0,
+                height: 296.0,
+                unit: "px",
+                appbar,
+            },
+        }
+    }
+
+    #[test]
+    fn a_placement_without_an_appbar_carries_no_appbar_field() {
+        let json = serde_json::to_value(placed(None)).unwrap();
+        assert_eq!(json["event"], "placed");
+        assert!(json["frame"].get("appbar").is_none(), "{json}");
+    }
+
+    #[test]
+    fn an_appbar_placement_carries_its_rectangles_and_leaves_out_an_absent_stale_check() {
+        let appbar = AppBarPlaced {
+            monitor: RECT,
+            work_before: RECT,
+            reserved: true,
+            proposal: RECT,
+            queried: Some(RECT),
+            set: RECT,
+            window: None,
+            work_after: None,
+            unchanged: false,
+            height_mismatch: false,
+            stale: None,
+        };
+        let json = serde_json::to_value(placed(Some(appbar))).unwrap();
+        let appbar = &json["frame"]["appbar"];
+        assert_eq!(appbar["set"]["top"], 1096);
+        assert_eq!(appbar["reserved"], true);
+        assert_eq!(appbar["window"], serde_json::Value::Null);
+        assert!(appbar.get("stale").is_none(), "{appbar}");
+    }
+
+    #[test]
+    fn an_os_snapshot_is_tagged_and_lists_message_counts() {
+        let event = ProbeEvent::Os(OsSnapshot {
+            work_area: Some(RECT),
+            tool_window: true,
+            no_activate: true,
+            app_window: false,
+            topmost: true,
+            visible: true,
+            messages: vec![MessageCount {
+                name: "WM_ACTIVATE",
+                subclass: 2,
+                hook: 0,
+            }],
+        });
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(json["event"], "os");
+        assert_eq!(json["messages"][0]["name"], "WM_ACTIVATE");
+        assert_eq!(json["messages"][0]["subclass"], 2);
+        assert_eq!(json["tool_window"], true);
     }
 
     #[test]
