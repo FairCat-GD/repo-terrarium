@@ -54,6 +54,8 @@ const REQUIRED_ROOT_ATTRIBUTES: &[(&str, &str)] = &[
     (PLATFORM, "#![deny(clippy::undocumented_unsafe_blocks)]"),
     (TRUTH, "#![deny(clippy::float_arithmetic)]"),
     (TRUTH, "#![deny(clippy::as_conversions)]"),
+    (TRUTH, "#![deny(clippy::disallowed_types)]"),
+    (TRUTH, "#![deny(clippy::disallowed_methods)]"),
 ];
 
 /// Package fields every member inherits from `[workspace.package]`.
@@ -753,6 +755,23 @@ mod tests {
             &ws,
             "terrarium-truth library root lacks `#![deny(clippy::as_conversions)]`",
         );
+    }
+
+    #[test]
+    fn truth_denies_its_disallowed_lists() {
+        for attribute in [
+            "#![deny(clippy::disallowed_types)]",
+            "#![deny(clippy::disallowed_methods)]",
+        ] {
+            let mut ws = workspace();
+            member_mut(&mut ws, TRUTH).targets[0]
+                .inner_attributes
+                .remove(attribute);
+            fails_with(
+                &ws,
+                &format!("terrarium-truth library root lacks `{attribute}`"),
+            );
+        }
     }
 
     #[test]

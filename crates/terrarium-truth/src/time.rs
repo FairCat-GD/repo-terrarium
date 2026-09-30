@@ -35,21 +35,36 @@ impl Tick {
     }
 }
 
-/// Maps UTC seconds onto one terrarium's ticks.
+/// Maps UTC seconds onto one terrarium's ticks. It is encoded as its origin, and decoding
+/// refuses an origin that is not a whole hour.
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "i64", try_from = "i64")]
 pub struct TickGrid {
     /// UTC seconds at the start of tick 0, a whole hour.
     origin: i64,
 }
 
 impl TickGrid {
-    /// The grid whose tick 0 is the hour containing `earliest_utc_secs`.
+    /// The grid whose tick 0 is the hour containing `earliest_utc_secs`. Within the first
+    /// hour of `i64`, whose start is not representable, it is the first whole hour instead.
     pub const fn containing(earliest_utc_secs: i64) -> TickGrid {
-        TickGrid {
-            origin: earliest_utc_secs
-                .div_euclid(SECONDS_PER_TICK)
-                .saturating_mul(SECONDS_PER_TICK),
+        let hour = earliest_utc_secs.div_euclid(SECONDS_PER_TICK);
+        let origin = match hour.checked_mul(SECONDS_PER_TICK) {
+            Some(origin) => origin,
+            None => (hour + 1) * SECONDS_PER_TICK,
+        };
+        TickGrid { origin }
+    }
+
+    /// The grid whose tick 0 starts at `origin_secs`, which must be a whole hour.
+    pub const fn from_origin(origin_secs: i64) -> Option<TickGrid> {
+        if origin_secs.rem_euclid(SECONDS_PER_TICK) == 0 {
+            Some(TickGrid {
+                origin: origin_secs,
+            })
+        } else {
+            None
         }
     }
 
@@ -77,6 +92,20 @@ impl TickGrid {
     }
 }
 
+impl From<TickGrid> for i64 {
+    fn from(grid: TickGrid) -> i64 {
+        grid.origin
+    }
+}
+
+impl TryFrom<i64> for TickGrid {
+    type Error = &'static str;
+
+    fn try_from(origin_secs: i64) -> Result<TickGrid, Self::Error> {
+        TickGrid::from_origin(origin_secs).ok_or("a tick grid starts on a whole hour")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -92,8 +121,13 @@ mod tests {
         // Pre-1970 times floor too, rather than truncating toward zero.
         assert_eq!(TickGrid::containing(-1).origin_secs(), -3_600);
         assert_eq!(TickGrid::containing(-3_600).origin_secs(), -3_600);
-        let _ = TickGrid::containing(i64::MIN);
-        let _ = TickGrid::containing(i64::MAX);
+        for extreme in [i64::MIN, i64::MAX] {
+            let origin = TickGrid::containing(extreme).origin_secs();
+            assert_eq!(
+                TickGrid::from_origin(origin).map(TickGrid::origin_secs),
+                Some(origin)
+            );
+        }
     }
 
     #[test]
@@ -110,6 +144,21 @@ mod tests {
         assert_eq!(Tick::new(5).hours_since(Tick::new(2)), 3);
         assert_eq!(Tick::new(2).hours_since(Tick::new(5)), 0);
         assert_eq!(Tick::new(u32::MAX).saturating_add(1), Tick::new(u32::MAX));
+    }
+
+    #[test]
+    fn a_decoded_grid_starts_on_a_whole_hour() {
+        assert_eq!(TickGrid::from_origin(1_800), None);
+        assert_eq!(TickGrid::from_origin(-3_599), None);
+        assert_eq!(
+            TickGrid::from_origin(-3_600),
+            Some(TickGrid::containing(-3_600))
+        );
+        let grid = TickGrid::containing(1_700_000_000);
+        let bytes = postcard::to_allocvec(&grid).expect("encodes");
+        assert_eq!(postcard::from_bytes::<TickGrid>(&bytes), Ok(grid));
+        let off_hour = postcard::to_allocvec(&1_800_i64).expect("encodes");
+        assert!(postcard::from_bytes::<TickGrid>(&off_hour).is_err());
     }
 
     proptest! {

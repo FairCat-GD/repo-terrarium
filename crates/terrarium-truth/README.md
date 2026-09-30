@@ -25,15 +25,18 @@ dependencies and its own lint walls, purity is a compile-time property rather th
   git history, recorded observations, the seed, the default branch and `SIM_VERSION`.
 - It depends on no other workspace crate, and its external dependencies are limited to `serde`,
   `postcard`, `indexmap` and `sha2`. `cargo xtask verify` checks both.
-- `#![forbid(unsafe_code)]`, `#![deny(clippy::float_arithmetic)]` and
-  `#![deny(clippy::as_conversions)]`, so no numeric conversion is silent.
+- `#![forbid(unsafe_code)]`, and `deny` of `clippy::float_arithmetic`, `clippy::as_conversions`
+  (so no numeric conversion is silent), `clippy::disallowed_types` and
+  `clippy::disallowed_methods`, so the lists below are errors in every build, not only in
+  `verify`.
 - This directory's `clippy.toml` disallows:
   - the hash-ordered collections and std's hashers;
   - the float types;
   - the clock types and their readers;
   - the unstable sorts, whose order of equal elements may change between Rust releases.
-- `cargo xtask verify` scans every source file here for float literals, float type names, a
-  local `allow` of a wall lint, `include!` and `#[path]`. Truth is one library target, so its
+- `cargo xtask verify` scans every source file here for float literals, float type names (raw
+  identifiers included), a local `allow` of a wall lint or of `warnings`, `include!` and
+  `#[path]`. Truth is one library target, so its
   tests live in `src/` under the same walls.
 - Fixed point saturates and rounds half away from zero. Randomness is `PCG32` through
   `SplitMix64`, one stream per purpose; a stream's seed hashes the purpose's name, so a new

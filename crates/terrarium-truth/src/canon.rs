@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 
 use crate::fixed::{Q16, Q32};
 use crate::identity::{CommitId, RepoSeed, SimVersion};
-use crate::time::Tick;
+use crate::time::{Tick, TickGrid};
 
 /// A value with a canonical text form. Implement it with [`canonical_struct!`] or
 /// [`canonical_enum!`]; a hand-written impl destructures without `..` and matches
@@ -593,6 +593,20 @@ impl Canonical for Tick {
     }
 }
 
+/// A grid is its origin, in UTC seconds; only a whole hour parses.
+impl Canonical for TickGrid {
+    fn write(&self, w: &mut Writer) {
+        self.origin_secs().write(w);
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<Self, DumpError> {
+        r.parsed(
+            |text| TickGrid::from_origin(text.parse().ok()?),
+            |grid| grid.origin_secs().to_string(),
+        )
+    }
+}
+
 impl Canonical for SimVersion {
     fn write(&self, w: &mut Writer) {
         self.0.write(w);
@@ -728,6 +742,9 @@ mod tests {
         );
         assert!(round_trips(&species));
         assert!(round_trips(&Some(Some(1_u64))));
+        assert!(round_trips(&TickGrid::containing(1_700_000_000)));
+        assert_eq!(dump(TickGrid::containing(3_601)), "value = 3600\n");
+        assert!(parse::<TickGrid>("value = 1800\n").is_err());
         assert!(round_trips(&Some(None::<u64>)));
     }
 

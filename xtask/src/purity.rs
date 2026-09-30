@@ -13,7 +13,8 @@ use std::str::FromStr;
 
 use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 
-/// The lints that make up truth's walls, and the clippy groups that contain them.
+/// The lints that make up truth's walls, the clippy groups that contain them, and `warnings`,
+/// which silences any of them still at warn level.
 const WALL_LINTS: &[&str] = &[
     "float_arithmetic",
     "as_conversions",
@@ -22,6 +23,7 @@ const WALL_LINTS: &[&str] = &[
     "all",
     "style",
     "restriction",
+    "warnings",
 ];
 
 const FLOAT_TYPES: &[&str] = &["f16", "f32", "f64", "f128"];
@@ -58,14 +60,16 @@ fn scan_stream(tokens: TokenStream, findings: &mut Vec<Finding>) {
                 }
             }
             TokenTree::Ident(ident) => {
-                let name = ident.to_string();
-                if FLOAT_TYPES.contains(&name.as_str()) {
+                let text = ident.to_string();
+                // A raw identifier (`r#f64`) names the same thing as the plain one.
+                let name = text.strip_prefix("r#").unwrap_or(&text);
+                if FLOAT_TYPES.contains(&name) {
                     findings.push(Finding {
                         line,
                         what: format!("the float type `{name}`"),
                     });
                 }
-                if matches!(name.as_str(), "allow" | "expect" | "warn")
+                if matches!(name, "allow" | "expect" | "warn")
                     && let Some(TokenTree::Group(group)) = after
                     && group.delimiter() == Delimiter::Parenthesis
                     && let Some(lint) = names_a_wall_lint(group.stream())
@@ -136,8 +140,10 @@ fn is_tuple_index(
 
 fn names_a_wall_lint(tokens: TokenStream) -> Option<String> {
     tokens.into_iter().find_map(|token| match token {
-        TokenTree::Ident(ident) if WALL_LINTS.contains(&ident.to_string().as_str()) => {
-            Some(ident.to_string())
+        TokenTree::Ident(ident) => {
+            let text = ident.to_string();
+            let name = text.strip_prefix("r#").unwrap_or(&text);
+            WALL_LINTS.contains(&name).then(|| name.to_owned())
         }
         TokenTree::Group(group) => names_a_wall_lint(group.stream()),
         _ => None,
@@ -177,6 +183,10 @@ mod tests {
             ["1: the float type `f64`"]
         );
         assert_eq!(found("fn g(x: f32) {}"), ["1: the float type `f32`"]);
+        assert_eq!(
+            found("let bits = core::r#f64::consts::E.ln().to_bits();"),
+            ["1: the float type `f64`"]
+        );
     }
 
     #[test]
@@ -210,6 +220,10 @@ mod tests {
         assert_eq!(
             found("#![warn(clippy::restriction)]"),
             ["1: `warn` of the wall lint `restriction`"]
+        );
+        assert_eq!(
+            found("#[allow(warnings)]\nfn f() {}"),
+            ["1: `allow` of the wall lint `warnings`"]
         );
         assert_eq!(
             found("include!(\"other.rs\");"),

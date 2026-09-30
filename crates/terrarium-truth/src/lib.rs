@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::float_arithmetic)]
 #![deny(clippy::as_conversions)]
+#![deny(clippy::disallowed_types)]
+#![deny(clippy::disallowed_methods)]
 
 pub mod canon;
 pub mod domain;

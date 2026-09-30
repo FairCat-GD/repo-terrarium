@@ -30,8 +30,8 @@ tool is missing, or at another version, fails and names the install command.
 - `terrarium-truth` links no external crate except `serde`, `postcard`, `indexmap` and `sha2`.
 - `ureq` is reachable only through `terrarium-adapters`.
 - Every target root outside `terrarium-platform` carries `#![forbid(unsafe_code)]`. Platform
-  denies `clippy::undocumented_unsafe_blocks`, and truth denies `clippy::float_arithmetic` and
-  `clippy::as_conversions`.
+  denies `clippy::undocumented_unsafe_blocks`, and truth denies `clippy::float_arithmetic`,
+  `clippy::as_conversions`, `clippy::disallowed_types` and `clippy::disallowed_methods`.
 - Truth is a single library target. A test, bench, example or build script would be a crate of
   its own, outside the lint walls on truth's root.
 - Every manifest inherits the workspace package fields and lints.
@@ -45,10 +45,11 @@ arithmetic. `src/purity.rs` lexes every `.rs` file in `crates/terrarium-truth` w
 `proc-macro2` and fails on:
 
 - a float literal (`1.5`, `2.`, `1e3`, `1_f32`), though not a tuple index such as `pair.0.1`;
-- the names `f16`, `f32`, `f64` and `f128`, including module paths like `core::f64::consts`;
+- the names `f16`, `f32`, `f64` and `f128`, including module paths like `core::f64::consts`
+  and raw identifiers like `r#f64`;
 - an `allow`, `expect` or `warn` of a wall lint (`float_arithmetic`, `as_conversions`,
-  `disallowed_types`, `disallowed_methods`) or of a group holding one (`all`, `style`,
-  `restriction`);
+  `disallowed_types`, `disallowed_methods`), of a group holding one (`all`, `style`,
+  `restriction`), or of `warnings`;
 - `include!` and `#[path]`, which would bring code in from outside the scan.
 
 It reads tokens, so comments, strings and char literals never trigger it.

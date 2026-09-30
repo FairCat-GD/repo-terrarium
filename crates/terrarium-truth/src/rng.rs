@@ -9,6 +9,7 @@ use std::num::NonZeroU32;
 
 use sha2::{Digest, Sha256};
 
+use crate::canon::canonical_enum;
 use crate::identity::RepoSeed;
 
 /// Vigna's `SplitMix64`, used to spread one 64-bit seed over a generator's state.
@@ -40,10 +41,11 @@ pub struct Pcg32 {
 
 const PCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 
-/// A stream's purpose. Its name is hashed into the stream's seed, so each purpose draws from
-/// its own sequence and a new purpose never shifts another's draws. A variant may be added
-/// anywhere, but renaming one changes every draw from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A stream's purpose. Its `name()`, the variant's own name, is hashed into the stream's seed,
+/// so each purpose draws from its own sequence, no two purposes can share one, and a new
+/// purpose never shifts another's draws. A variant may be added anywhere, but renaming one
+/// changes every draw from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StreamTag {
     /// Which species a terrarium's seed picks.
     SpeciesPool,
@@ -51,15 +53,10 @@ pub enum StreamTag {
     EventSide,
 }
 
-impl StreamTag {
-    /// The bytes hashed into the stream seed.
-    pub const fn name(self) -> &'static str {
-        match self {
-            StreamTag::SpeciesPool => "SpeciesPool",
-            StreamTag::EventSide => "EventSide",
-        }
-    }
-}
+canonical_enum!(StreamTag {
+    SpeciesPool,
+    EventSide
+});
 
 /// Separates stream seeds from every other SHA-256 truth computes.
 const STREAM_DOMAIN: &[u8] = b"repo-terrarium rng stream v1\0";
