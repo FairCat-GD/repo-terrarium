@@ -1,7 +1,7 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify` and `probe-zip`.
+The tasks are `verify`, `assets`, `bench` and `probe-zip`.
 
 ## `verify`
 
@@ -16,6 +16,8 @@ summary. The stages:
 5. **doctest**: `cargo test --workspace --doc`, because nextest skips doctests.
 6. **deny**: `cargo deny check`, with the policy in `deny.toml`.
 7. **graph**: the crate-graph check below, including the scan of truth's sources.
+8. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
+   this stage.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
 tool is missing, or at another version, fails and names the install command.
@@ -53,6 +55,58 @@ arithmetic. `src/purity.rs` lexes every `.rs` file in `crates/terrarium-truth` w
 - `include!` and `#[path]`, which would bring code in from outside the scan.
 
 It reads tokens, so comments, strings and char literals never trigger it.
+
+## `assets`
+
+Validates the art package in `art-assets/`, then packs the runtime atlas and catalog that
+`terrarium-compose` embeds. The package is read into memory once; a biome's `references/` and
+Finder's `.DS_Store` files are never read (I-14). The checks:
+
+1. **Package contents.** Every file's SHA-256 matches `PACKAGE-CONTENTS.json`, and every file
+   is listed.
+2. **Manifests.** Only the manifests `active-manifests.json` lists are loaded.
+   - Their revisions, piece counts and the declared totals match what loads.
+   - IDs are unique and keep their `tmp.` prefix.
+   - Every cross-reference resolves.
+   - A key the parser does not know fails, naming it, rather than being dropped.
+3. **Pixels.** Every PNG is read as raw indices, never expanded.
+   - Every rect lies inside its atlas.
+   - The atlas holds exactly the individual PNG's pixels.
+   - The packed runtime atlas is read back against every sprite.
+4. **Palette**. Every index is at most 32. Every file's `PLTE` and `tRNS` are the biome palette:
+   index 0 the only transparent entry, 1..=32 the day colours. The palette PNG matches the
+   palette JSON.
+5. **Animations.** Every sequence has frames and durations.
+   - A creature routine's terminal names a routine of the same species that exists; the
+     destination is the leftmost match of the terminal regex.
+   - A terminal with no destination passes only if the routine loops or its text starts with
+     `hold`.
+6. **Variants.** Every `SceneInput` variant has art, as `terrarium_compose::variants` maps it.
+7. **Generated files.** The regenerated files equal the committed ones, byte for byte.
+
+Checks 1 to 6 all run, so a delivery shows every problem at once. The exception is a biome
+whose manifests fail check 2: checks 3 to 6 need its sprite table, so they are skipped.
+Packing and check 7 run only once 1 to 6 pass, so a broken package never writes output.
+
+- `cargo xtask assets --check` compares and writes nothing; verify runs this.
+- `cargo xtask assets` rewrites only the files whose bytes differ, so an unchanged run
+  rebuilds nothing.
+
+### The atlas
+
+Sprites with identical pixels share one place, and every ID keeps its own entry. The distinct
+images are ordered by the smallest ID that uses them. They are laid left to right into
+shelves 1024 wide, or 2048 wide when 1024 would need more than 2048 rows. Each byte is the raw
+PNG index.
+
+## `bench`
+
+The release-build budgets. Each is a `harness = false` bench target that prints its
+measurement and exits non-zero over budget. Cargo's bench profile inherits the release
+profile, so the timings are those of a shipped build.
+
+- `terrarium-compose` `catalog`: decoding the embedded catalog and checking it against its
+  atlas takes under 20 ms, measured cold, the way startup pays it.
 
 ## `probe-zip`
 

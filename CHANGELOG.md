@@ -5,6 +5,31 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-30
+
+Nothing changes on screen. This release checks the delivered art and packs it into the form
+the picture will be drawn from.
+
+### Added
+
+- **`cargo xtask assets` checks the art package** and refuses it on any failure:
+  - every file matches its SHA-256 in `PACKAGE-CONTENTS.json`;
+  - only the listed manifests load, with their counts and revisions;
+  - every ID is unique;
+  - every sprite's pixels match its atlas;
+  - no pixel falls outside the biome palette;
+  - every animation has frames and durations;
+  - every creature routine hands off to a routine that exists, or loops, or holds;
+  - every plant, resident, sky, ground, glass and event state the picture can be asked for
+    has art.
+- **The runtime atlas and catalog.** The art is repacked into one atlas of palette indices,
+  with a catalog of each sprite's metadata, and both are built into the app. Identical images
+  are stored once, and every sprite keeps its own entry.
+- **`cargo xtask verify` gains an `assets` stage.** It fails when the committed atlas or
+  catalog is not exactly what the art produces.
+- **`cargo xtask bench`** runs the release-build budgets. The first is loading the catalog in
+  under 20 ms.
+
 ## [0.4.0] - 2026-09-30
 
 Nothing changes on screen. This release lays truth's foundations, the deterministic core that

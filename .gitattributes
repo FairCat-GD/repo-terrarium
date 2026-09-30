@@ -8,6 +8,9 @@
 *.sqlite3 binary
 *.bin binary
 
+# The runtime atlas and catalog that `cargo xtask assets` generates, compared byte for byte.
+crates/terrarium-compose/assets/generated/** binary
+
 # Golden files are compared byte for byte.
 **/golden/** binary
 

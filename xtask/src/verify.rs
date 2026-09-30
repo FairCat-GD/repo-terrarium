@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
-use crate::graph;
+use crate::{assets, graph};
 
 /// The Windows target linted on macOS, since nothing else compiles the Windows code.
 const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
@@ -20,6 +20,8 @@ enum Step {
         tool: Option<Tool>,
     },
     Graph,
+    /// `cargo xtask assets --check`, in process.
+    Assets,
 }
 
 /// A third-party cargo subcommand, pinned to the exact version its configuration is written
@@ -108,6 +110,10 @@ const STAGES: &[Stage] = &[
         name: "graph",
         step: Step::Graph,
     },
+    Stage {
+        name: "assets",
+        step: Step::Assets,
+    },
 ];
 
 pub fn run(root: &Path) -> ExitCode {
@@ -121,6 +127,7 @@ pub fn run(root: &Path) -> ExitCode {
         let passed = match &stage.step {
             Step::Cargo { args, tool } => run_cargo(&cargo, root, args, tool.as_ref()),
             Step::Graph => run_graph(root),
+            Step::Assets => run_assets(root),
         };
         let seconds = started.elapsed().as_secs_f64();
         let verdict = if passed { "ok" } else { "FAILED" };
@@ -196,4 +203,13 @@ fn run_graph(root: &Path) -> bool {
         );
     }
     violations.is_empty()
+}
+
+/// A panic in the asset pipeline fails its stage; the stages after it and the summary still
+/// run.
+fn run_assets(root: &Path) -> bool {
+    std::panic::catch_unwind(|| assets::check(root)).unwrap_or_else(|_| {
+        println!("assets: the pipeline panicked");
+        false
+    })
 }

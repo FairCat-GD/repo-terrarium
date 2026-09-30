@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -87,6 +87,8 @@ windows = { version = "0.62.2", features = [
 ] }
 
 cargo_metadata = "0.23.1"
+# xtask's asset pipeline reads the indexed art without expanding it.
+png = "0.18.1"
 # The lexer behind xtask's scan of truth's sources; `span-locations` gives line numbers.
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["span-locations"] }
 toml = "1.1.6"

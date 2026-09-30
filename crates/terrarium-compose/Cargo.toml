@@ -10,6 +10,13 @@ publish.workspace = true
 
 [dependencies]
 terrarium-truth.workspace = true
+serde.workspace = true
+postcard.workspace = true
+
+# The release-build budget for loading the embedded catalog, run by `cargo xtask bench`.
+[[bench]]
+name = "catalog"
+harness = false
 
 [lints]
 workspace = true

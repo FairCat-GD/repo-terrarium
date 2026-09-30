@@ -8,12 +8,46 @@ Depiction: from `SceneInput` to pixels.
 - The integer scale policy and the upscaler that applies it with padding, shared by the
   presenter and, later, every export.
 - A placeholder frame in palette colours, until the compositor draws art.
-- The asset catalog.
+- The asset catalog (`catalog`): every delivered sprite under its semantic ID, with its
+  metadata and the atlas its pixels are packed into.
+- The variant table (`variants`): the art that depicts each `SceneInput` variant.
 - The composer, its tweens and animation.
 - Frame scheduling hints.
 - The CPU compositor, which draws a `Frame` into a 640×74 RGBA buffer.
 - Bitmap text, nine-slice panels and GIF encoding.
 - `InstallSalt`.
+
+## The embedded art
+
+`assets/generated/<biome>/` holds two files that `cargo xtask assets` writes from `art-assets/`
+. Both are committed, and `include_bytes!` embeds them:
+
+- `atlas.bin`: the runtime atlas, one byte per pixel, row-major. Each byte is the sprite's raw
+  PNG index: 0 is transparent, and 1..=32 is logical palette slot + 1.
+- `catalog.bin`: the catalog in postcard, after a magic value and a format version. It holds:
+  - every sprite's rect, anchor, layer, blend and opacity, its structured keys, pivots,
+    motion and event data;
+  - the animation sequences;
+  - the fonts' glyph maps and metrics;
+  - the UI metrics;
+  - the residents' motion budget;
+  - the day and night palette.
+
+`cargo xtask verify` regenerates both and fails unless they are byte-identical. After an art
+delivery, rewrite them with:
+
+```sh
+cargo xtask assets
+```
+
+A change to the catalog's types needs a `FORMAT` bump, so a stale file is refused rather than
+misread. xtask builds on this crate, and this crate embeds the two files, so they must exist
+for anything to compile. If they are ever lost, create them empty, then run `cargo xtask
+assets`.
+
+The variant table maps every `SceneInput` variant to its art. `variants::missing` is check 6
+of `cargo xtask assets`, and this crate's tests run it on the embedded art. The module's docs
+list where the art and the enums are not one to one.
 
 ## Why it is a crate of its own
 
