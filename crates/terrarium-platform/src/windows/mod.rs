@@ -22,7 +22,8 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW,
+    MonitorFromWindow,
 };
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId, GetCurrentThreadId};
@@ -179,6 +180,8 @@ impl StripWindow {
         edge: Edge,
         thickness_for_width: impl Fn(u32) -> u32,
     ) -> Option<Placement> {
+        // From the check that the bar is still registered to the move, an exit handler waits.
+        let _placing = exit::placing();
         let rects = monitor_rects(monitor)?;
         let thickness = |area: PixelRect| thickness_for_width(area.width().max(0).cast_unsigned());
         let mut stale = None;
@@ -359,7 +362,7 @@ impl StripWindow {
     pub fn work_area(&self) -> Option<PixelRect> {
         // SAFETY: looks up the monitor nearest a window; any window value is accepted.
         let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
-        monitor_info(monitor).map(|rects| rects.work)
+        monitor_info(monitor).map(|(rects, _)| rects.work)
     }
 
     /// The window's style as Windows reports it, to show whether winit changed it.
@@ -455,24 +458,41 @@ pub struct MonitorRects {
 /// The rectangles of the monitor with this `HMONITOR`, as winit's `MonitorHandle::hmonitor`
 /// gives it. `None` for a monitor that is gone.
 pub fn monitor_rects(monitor: isize) -> Option<MonitorRects> {
+    monitor_described(monitor).map(|(rects, _)| rects)
+}
+
+/// The monitor's rectangles and its device name (`\\.\DISPLAY1`), read in one call. `None` for
+/// a monitor that is gone. winit's own `MonitorHandle::size` and `name` panic then, so the
+/// strip reads monitors through this.
+pub fn monitor_described(monitor: isize) -> Option<(MonitorRects, String)> {
     monitor_info(HMONITOR(std::ptr::without_provenance_mut(
         monitor.cast_unsigned(),
     )))
 }
 
-fn monitor_info(monitor: HMONITOR) -> Option<MonitorRects> {
-    let mut info = MONITORINFO {
-        cbSize: struct_size::<MONITORINFO>(),
-        ..MONITORINFO::default()
+fn monitor_info(monitor: HMONITOR) -> Option<(MonitorRects, String)> {
+    let mut info = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: struct_size::<MONITORINFOEXW>(),
+            ..MONITORINFO::default()
+        },
+        ..MONITORINFOEXW::default()
     };
-    // SAFETY: `info` states its size and outlives the call; an unknown or stale monitor handle
+    // SAFETY: `info` is a `MONITORINFOEXW` whose size field says so, which the call accepts in
+    // place of a `MONITORINFO`, and it outlives the call; an unknown or stale monitor handle
     // makes the call fail without writing.
-    let found = unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool();
-    found.then(|| MonitorRects {
-        monitor: from_rect(info.rcMonitor),
-        work: from_rect(info.rcWork),
-        primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
-    })
+    let found = unsafe { GetMonitorInfoW(monitor, (&raw mut info).cast()) }.as_bool();
+    if !found {
+        return None;
+    }
+    let device = &info.szDevice;
+    let len = device.iter().position(|&c| c == 0).unwrap_or(device.len());
+    let rects = MonitorRects {
+        monitor: from_rect(info.monitorInfo.rcMonitor),
+        work: from_rect(info.monitorInfo.rcWork),
+        primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+    };
+    Some((rects, String::from_utf16_lossy(&device[..len])))
 }
 
 /// The window rectangles of the taskbars: the primary one and one per other display.
@@ -625,13 +645,6 @@ pub struct MessageCount {
 /// The counts since the last call. Empty unless `watch_messages` ran.
 pub fn take_message_counts() -> Vec<MessageCount> {
     subclass::take_counts()
-        .into_iter()
-        .map(|(name, subclass, hook)| MessageCount {
-            name,
-            subclass,
-            hook,
-        })
-        .collect()
 }
 
 /// Whether the window the user is working in belongs to this process.

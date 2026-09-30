@@ -47,7 +47,10 @@ The Windows probe build for testers. There is no CI, so it is cross-built on the
 - **The license.** Getting the libraries downloads Microsoft's packages and accepts
   Microsoft's license for them. That is a person's decision, so the task never runs it. When
   the libraries are missing, it prints the one-time command.
+- **The import check.** It fails an exe that imports `comctl32.dll` by name rather than by
+  ordinal, since such an exe may not start where comctl32 exports only ordinals.
 - **Output:** `target/probe/repo-terrarium-<version>-probe-windows-x64.zip`, holding:
   - `repo-terrarium.exe`;
-  - `README.txt`, the tester's instructions, from `probe/README.txt`;
+  - `README.txt`, the tester's instructions. They are app copy, so the task takes them from
+    `repo-terrarium --probe-readme`;
   - `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder.

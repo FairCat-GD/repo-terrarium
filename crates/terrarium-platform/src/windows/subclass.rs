@@ -248,7 +248,7 @@ pub(super) fn count(name: &'static str, seen: Seen) {
 }
 
 /// The counts since the last call, and a fresh start.
-pub(super) fn take_counts() -> Vec<(&'static str, u64, u64)> {
+pub(super) fn take_counts() -> Vec<super::MessageCount> {
     TALLY.with(|tally| {
         let Ok(mut tally) = tally.try_borrow_mut() else {
             return Vec::new();
@@ -256,7 +256,11 @@ pub(super) fn take_counts() -> Vec<(&'static str, u64, u64)> {
         tally.as_mut().map_or_else(Vec::new, |tally| {
             std::mem::take(tally)
                 .into_iter()
-                .map(|(name, (subclass, hook))| (name, subclass, hook))
+                .map(|(name, (subclass, hook))| super::MessageCount {
+                    name,
+                    subclass,
+                    hook,
+                })
                 .collect()
         })
     })

@@ -41,6 +41,8 @@ that span crates, such as salt independence across engine and compose, live here
   note. The JSON and text reports are rewritten after every step, in the current directory.
   On macOS it compares two window levels; on Windows it walks through the `AppBar` checks and
   ends with a `taskkill` that stands in for a crash.
+- `repo-terrarium --probe-readme` prints the Windows probe's instructions for testers, which
+  `cargo xtask probe-zip` ships as `README.txt`.
 
 ## Requirements
 

@@ -101,6 +101,11 @@ impl Probe {
         self.steps[self.current].level
     }
 
+    /// Until the report is final.
+    pub fn is_open(&self) -> bool {
+        self.report.ended.is_none()
+    }
+
     pub fn launched(&mut self, launch: Launch) {
         self.report.os = launch.os;
         self.report.separate_spaces = launch.separate_spaces;
@@ -303,7 +308,9 @@ mod tests {
         let dir = TempDir::new("early");
         let mut probe = probe(&dir.0);
         probe.answer("", 2);
+        assert!(probe.is_open());
         probe.end(EndReason::LaunchFailed, 10);
+        assert!(!probe.is_open());
         probe.record(ProbeEvent::Focused { focused: true });
         let step = &probe.report.steps[1];
         assert_eq!(step.frames, 8);

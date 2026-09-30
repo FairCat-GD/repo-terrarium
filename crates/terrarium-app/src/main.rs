@@ -28,6 +28,10 @@ fn main() -> ExitCode {
             println!("{}", copy::version_line());
             ExitCode::SUCCESS
         }
+        Ok(Command::ProbeReadme) => {
+            print!("{}", copy::PROBE_README);
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("{}", copy::usage_error(&err));
             ExitCode::from(USAGE_EXIT)

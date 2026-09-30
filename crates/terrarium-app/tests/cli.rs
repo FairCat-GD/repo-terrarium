@@ -49,3 +49,13 @@ fn an_unknown_probe_kind_exits_with_status_2() {
     assert!(out.stdout.is_empty());
     assert!(String::from_utf8(out.stderr).unwrap().contains("'weather'"));
 }
+
+#[test]
+fn the_probe_readme_is_printed_whole_and_opens_no_window() {
+    let out = repo_terrarium(&["--probe-readme"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("Repo Terrarium: the Windows pinning probe\n"));
+    assert!(text.contains("run-probe.cmd"));
+    assert!(out.stderr.is_empty());
+}

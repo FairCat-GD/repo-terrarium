@@ -17,8 +17,6 @@ const TARGET: &str = "x86_64-pc-windows-msvc";
 const XWIN_VERSION: &str = "0.10.0";
 /// Where the splatted libraries live unless `TERRARIUM_XWIN_DIR` says otherwise.
 const XWIN_DIR_ENV: &str = "TERRARIUM_XWIN_DIR";
-/// The tester's instructions, shipped in the zip as `README.txt`.
-const README: &str = include_str!("../probe/README.txt");
 
 pub fn run(root: &Path) -> ExitCode {
     let Some(xwin_dir) = xwin_dir() else {
@@ -64,7 +62,23 @@ pub fn run(root: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match package(root, &build_dir) {
+    // The tester's instructions are app copy, so the app prints them.
+    let readme = Command::new(&cargo)
+        .args(["run", "--quiet", "--locked", "-p", "terrarium-app", "--"])
+        .arg("--probe-readme")
+        .current_dir(root)
+        .output();
+    let readme = match readme {
+        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+        _ => {
+            println!("probe-zip: repo-terrarium --probe-readme failed");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match package(root, &build_dir, &readme) {
         Ok(zip) => {
             println!("probe-zip: {}", zip.display());
             ExitCode::SUCCESS
@@ -231,7 +245,7 @@ fn named_imports(image: &[u8], dll: &str) -> Option<Vec<String>> {
 }
 
 /// Zips the exe, the README and the launcher into `target/probe/`.
-fn package(root: &Path, build_dir: &Path) -> Result<PathBuf, String> {
+fn package(root: &Path, build_dir: &Path, readme: &str) -> Result<PathBuf, String> {
     let exe = build_dir.join(TARGET).join("release/repo-terrarium.exe");
     if !exe.is_file() {
         return Err(format!("no exe at {}", exe.display()));
@@ -244,7 +258,7 @@ fn package(root: &Path, build_dir: &Path) -> Result<PathBuf, String> {
         (staging.join("repo-terrarium.exe"), None),
         (
             staging.join("README.txt"),
-            Some(README.replace('\n', "\r\n")),
+            Some(readme.replace('\n', "\r\n")),
         ),
         (staging.join("run-probe.cmd"), Some(run_probe_cmd())),
     ];
@@ -368,13 +382,5 @@ mod tests {
                 "-Lnative=/a dir/xwin/sdk/lib/ucrt/x86_64",
             ]
         );
-    }
-
-    /// Testers get plain instructions, in the probe's own tone.
-    #[test]
-    fn the_readme_has_no_exclamation_marks_and_names_the_launcher() {
-        assert!(!README.contains('!'));
-        assert!(README.contains("run-probe.cmd"));
-        assert!(README.contains("repo-terrarium-probe-"));
     }
 }

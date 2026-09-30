@@ -294,7 +294,7 @@ mod tests {
             window: None,
             work_after: None,
             unchanged: false,
-            height_mismatch: false,
+            size_mismatch: false,
             stale: None,
         };
         let json = serde_json::to_value(placed(Some(appbar))).unwrap();

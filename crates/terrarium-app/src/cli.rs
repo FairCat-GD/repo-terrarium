@@ -11,6 +11,9 @@ pub enum Command {
     Version,
     /// `--probe <kind>`: run the strip with a recorder and write a report.
     Probe(ProbeKind),
+    /// `--probe-readme`: print the Windows probe's tester instructions, which
+    /// `cargo xtask probe-zip` puts in the zip beside the exe.
+    ProbeReadme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +43,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
     };
     let command = if first == "--version" {
         Command::Version
+    } else if first == "--probe-readme" {
+        Command::ProbeReadme
     } else if first == "--probe" {
         match args.next() {
             None => return Err(UsageError::MissingProbeKind),
@@ -103,6 +108,12 @@ mod tests {
             parse_strs(&["--probe", "pinning"]),
             Ok(Command::Probe(ProbeKind::Pinning))
         );
+    }
+
+    #[test]
+    fn the_probe_readme_is_a_command_of_its_own() {
+        assert_eq!(parse_strs(&["--probe-readme"]), Ok(Command::ProbeReadme));
+        assert_eq!(parse_strs(&["--probe-readme", "x"]), unexpected("x"));
     }
 
     #[test]

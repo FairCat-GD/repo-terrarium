@@ -29,6 +29,7 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
   - which window messages arrived sent and which arrived posted.
 - **`cargo xtask probe-zip`** cross-builds the Windows exe on a Mac and zips it with the
   tester's instructions and a double-click launcher.
+- **`repo-terrarium --probe-readme`** prints those instructions.
 
 ### Changed
 

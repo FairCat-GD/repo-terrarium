@@ -81,8 +81,9 @@ pub struct AppBarPlaced {
     pub work_after: Option<PxRect>,
     /// Nothing had changed, so nothing was sent.
     pub unchanged: bool,
-    /// The granted height is not the scaled image's, so the surface and the window differ.
-    pub height_mismatch: bool,
+    /// The granted band is not the strip's size: its height is not the scaled image's, or it
+    /// is narrower than the 1× image. The surface and the window then differ.
+    pub size_mismatch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale: Option<StaleReport>,
 }
@@ -296,6 +297,7 @@ mod imp {
     use winit::window::{Window, WindowAttributes};
 
     use super::{AppBarPlaced, LevelMode, MessageCount, OsSnapshot, Placed, PxRect, StaleReport};
+    use crate::copy;
     use crate::monitor::{MonitorId, MonitorInfo};
 
     pub use windows::PlatformError as AttachError;
@@ -341,27 +343,22 @@ mod imp {
             })
         }
 
-        /// winit's monitors, whose sizes are each monitor's own `rcMonitor`. The id is the
-        /// device name (`\\.\DISPLAY1`).
+        /// winit's monitors, each read through platform: its own `rcMonitor` and its device
+        /// name (`\\.\DISPLAY1`), which is the id. A monitor unplugged while the list is read
+        /// is left out, where winit's own `size` and `name` would panic.
         pub fn monitors(&self, window: &Window) -> Vec<Monitor> {
-            let primary = window.primary_monitor();
             window
                 .available_monitors()
                 .enumerate()
-                .map(|(index, handle)| {
-                    let name = handle.name().unwrap_or_default();
-                    let size = handle.size();
-                    let detail = windows::monitor_rects(handle.hmonitor()).map_or_else(
-                        || "rectangles unknown".to_owned(),
-                        |rects| {
-                            format!(
-                                "monitor {}, work area {} (px)",
-                                rect_text(rects.monitor),
-                                rect_text(rects.work)
-                            )
-                        },
+                .filter_map(|(index, handle)| {
+                    let (rects, name) = windows::monitor_described(handle.hmonitor())?;
+                    let size = |length: i32| u32::try_from(length).unwrap_or(0);
+                    let detail = format!(
+                        "monitor {}, work area {} (px)",
+                        copy::rect_text(&px(rects.monitor)),
+                        copy::rect_text(&px(rects.work))
                     );
-                    Monitor {
+                    Some(Monitor {
                         info: MonitorInfo {
                             id: MonitorId(if name.is_empty() {
                                 format!("monitor-{index}")
@@ -369,14 +366,14 @@ mod imp {
                                 name.clone()
                             }),
                             name,
-                            physical_width: size.width,
-                            physical_height: size.height,
+                            physical_width: size(rects.monitor.width()),
+                            physical_height: size(rects.monitor.height()),
                             scale: handle.scale_factor(),
-                            primary: primary.as_ref() == Some(&handle),
+                            primary: rects.primary,
                             detail,
                         },
                         handle,
-                    }
+                    })
                 })
                 .collect()
         }
@@ -395,7 +392,7 @@ mod imp {
             })?;
             // Said once, by the placement that tried to register the bar.
             if placement.stale.is_some() && !placement.reserved {
-                eprintln!("{}", crate::copy::edge_not_reserved());
+                eprintln!("{}", copy::edge_not_reserved());
             }
             let set = placement.set;
             let scale = StripScale::for_physical_width(set.width().max(0).cast_unsigned(), step);
@@ -477,13 +474,6 @@ mod imp {
         }
     }
 
-    fn rect_text(rect: PixelRect) -> String {
-        format!(
-            "({}, {})-({}, {})",
-            rect.left, rect.top, rect.right, rect.bottom
-        )
-    }
-
     fn appbar_placed(placement: &Placement, scale: &StripScale) -> AppBarPlaced {
         AppBarPlaced {
             monitor: px(placement.monitor),
@@ -495,7 +485,8 @@ mod imp {
             window: placement.window.map(px),
             work_after: placement.work_after.map(px),
             unchanged: placement.unchanged,
-            height_mismatch: u32::try_from(placement.set.height()) != Ok(scale.height),
+            size_mismatch: u32::try_from(placement.set.width()) != Ok(scale.width)
+                || u32::try_from(placement.set.height()) != Ok(scale.height),
             stale: placement.stale.as_ref().map(stale_report),
         }
     }

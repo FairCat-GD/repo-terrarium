@@ -234,9 +234,10 @@ impl Strip {
         }
     }
 
-    /// What the OS says about the strip now (Windows), recorded only while probing.
+    /// What the OS says about the strip now (Windows), recorded only while a probe report is
+    /// still open.
     fn record_snapshot(&mut self, view: &View) {
-        if self.probe.is_some()
+        if self.probe.as_ref().is_some_and(Probe::is_open)
             && let Some(snapshot) = view.pinning.snapshot()
         {
             self.record(ProbeEvent::Os(snapshot));
@@ -433,7 +434,10 @@ impl ApplicationHandler<UserEvent> for Strip {
         match event {
             UserEvent::HotKey(event) => self.with_view(|strip, view| {
                 if view.hotkey.as_ref().is_some_and(|h| h.is_pressed(event)) {
-                    strip.raise.press(Instant::now());
+                    // A reserved edge stays topmost, so there is nothing to restore later.
+                    if !pinning::EDGE_RESERVED {
+                        strip.raise.press(Instant::now());
+                    }
                     view.pinning.raise(&view.window);
                     strip.record(ProbeEvent::Raised {
                         value: view.pinning.level(),
