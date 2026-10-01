@@ -1,7 +1,8 @@
 //! Exact pixel snapshots: every blend mode at several opacities, day, night and a half mix,
-//! shear, text, the nine-slice, the upscaler, and each of the composer's presets by day and by
-//! night. Between them the presets and the storm show every sky state, day and night: clear,
-//! overcast, haze and storm, under neutral, dusk and sunburst light.
+//! shear, text, the nine-slice, the upscaler, each of the composer's presets by day and by
+//! night, and the terrarium in motion. Between them the presets and the storm show every sky
+//! state, day and night: clear, overcast, haze and storm, under neutral, dusk and sunburst
+//! light.
 //!
 //! Each picture is kept twice: as a PNG to look at, and as the SHA-256 of its raw pixels. A new
 //! `png` release that encodes differently fails only the PNGs; a pixel that changed fails both.
@@ -13,18 +14,20 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 use terrarium_compose::catalog::{Art, Blend, Catalog, Layer, SpriteId};
-use terrarium_compose::composer::Composer;
+use terrarium_compose::clock::LocalClock;
+use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
 use terrarium_compose::frame::{Area, Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Shear};
 use terrarium_compose::nine_slice::NineSlice;
+use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::palette::Slot;
 use terrarium_compose::scale::{SizeStep, StripScale, upscale_into};
 use terrarium_compose::text::{Face, Label, Text};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
 use terrarium_compose::{preset, sample, world};
-use terrarium_truth::scene::Weather;
+use terrarium_truth::scene::{Weather, Wind};
 
 fn art() -> &'static Art<'static> {
     Art::embedded()
@@ -180,6 +183,80 @@ fn a_storm_sky_by_day_and_night() {
         let frame = composer.frame(art(), &table, &scenery, mix, composer.settled_at());
         snapshot_frame(&format!("sky-storm-{when}"), &frame);
     }
+}
+
+/// The thriving terrarium, living, from its first update at `clock`, in `wind`, perhaps dimmed.
+fn living(clock: LocalClock, wind: Wind, dim: bool) -> (Composer, ArtTable) {
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    let mut input = preset::scene("thriving").unwrap();
+    input.wind = wind;
+    let overlay = OverlayInput {
+        dim,
+        ..OverlayInput::new(vec!["repo-terrarium".into()], clock)
+    };
+    let mut composer = Composer::new(&table, preset::SALT);
+    composer.update(&input, &overlay, Millis(0));
+    (composer, table)
+}
+
+/// The first moment, in 167 ms steps from the first turn that moves, at which `wanted` holds
+/// of the draws.
+fn first(
+    composer: &Composer,
+    table: &ArtTable,
+    mix: u8,
+    wanted: impl Fn(&[KeyedDraw]) -> bool,
+) -> Millis {
+    (24_000..900_000)
+        .step_by(167)
+        .map(Millis)
+        .find(|&now| wanted(&composer.draws(art(), table, mix, now)))
+        .expect("the moment comes")
+}
+
+fn routine(keyed: &KeyedDraw) -> Option<&'static str> {
+    catalog().sprite(keyed.draw.sprite).keys.state.as_deref()
+}
+
+/// Motion, each at the first moment it shows: a resident walking while a gale leans the
+/// plants; a firefly's lantern by night; the reflection crossing the glass; and dim mode.
+#[test]
+fn the_terrarium_in_motion() {
+    let (composer, table) = living(LocalClock::noon(preset::DATE), Wind::Gale, false);
+    let scenery = composer.scenery(art(), &table);
+    let walking = first(&composer, &table, 0, |draws| {
+        draws.iter().any(|k| routine(k) == Some("move"))
+            && draws.iter().any(|k| k.draw.shear.offset(0) == 2)
+    });
+    snapshot_frame(
+        "motion-day",
+        &composer.frame(art(), &table, &scenery, 0, walking),
+    );
+    let sweeping = first(&composer, &table, 0, |draws| {
+        draws
+            .iter()
+            .any(|k| k.key.subject == Subject::Sweep && (300..340).contains(&k.draw.x))
+    });
+    snapshot_frame(
+        "sweep",
+        &composer.frame(art(), &table, &scenery, 0, sweeping),
+    );
+
+    let (composer, table) = living(LocalClock::midnight(preset::DATE), Wind::Breezy, false);
+    let glowing = first(&composer, &table, 255, |draws| {
+        draws
+            .iter()
+            .any(|k| routine(k) == Some("signal-glow") && k.draw.opacity == 96)
+    });
+    snapshot_frame(
+        "motion-night",
+        &composer.frame(art(), &table, &scenery, 255, glowing),
+    );
+
+    let (composer, table) = living(LocalClock::noon(preset::DATE), Wind::Breezy, true);
+    let frame = composer.frame(art(), &table, &scenery, 0, composer.settled_at());
+    assert_eq!(frame.dim, 153);
+    snapshot_frame("dimmed", &frame);
 }
 
 #[test]

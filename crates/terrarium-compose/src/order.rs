@@ -16,6 +16,8 @@ pub enum Subject {
     Film(GlassFilm),
     /// Fixed scenery, by its place in the scenery list.
     Scenery(u16),
+    /// The soil band, its tiles and its top edge, drifting.
+    Soil,
     /// The weather band across the top of the sky.
     Weather,
     /// A cloud, by its path.
@@ -49,6 +51,12 @@ pub enum Subject {
         id: u32,
         cell: u8,
     },
+    /// A resident in its stretch of the strip. Like a plant's cell, the stretch is part of its
+    /// identity.
+    Resident {
+        id: u32,
+        spot: u8,
+    },
     /// A piece of litter, by its place along the ground.
     Litter(u8),
     /// A fungus, by its place along the ground.
@@ -57,6 +65,8 @@ pub enum Subject {
     Light,
     /// The label's text; the plate is scenery.
     Label,
+    /// The faint reflection that crosses the glass now and then.
+    Sweep,
 }
 
 impl Subject {

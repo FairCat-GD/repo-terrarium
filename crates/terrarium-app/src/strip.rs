@@ -1,12 +1,14 @@
 //! The strip: a borderless window along one edge of a monitor, below ordinary windows, showing
 //! the composed frame at an integer scale.
 //!
-//! The loop sleeps in `ControlFlow::Wait` and wakes only for OS events and for what other
-//! threads forward through the `EventLoopProxy`: hotkeys, menu choices, system notifications
-//! and probe answers. It waits until a deadline only while a raise is pending.
+//! The loop sleeps in `ControlFlow::Wait` and wakes only for OS events, for what other threads
+//! forward through the `EventLoopProxy` (hotkeys, menu choices, system notifications and probe
+//! answers), and at two deadlines: a raise ending, and the living strip's next change, which
+//! it never asks for sooner than a fifteenth of a second after the last frame (I-10). Nothing
+//! is drawn while the strip is covered.
 
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyEvent;
 use muda::MenuId;
@@ -14,6 +16,7 @@ use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NATIVE_HEIGHT, Rgba, Rgba640x74};
 use terrarium_compose::scale::{SizeStep, StripScale};
+use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
 use terrarium_compose::{sample, world};
 use terrarium_platform::SystemEvent;
@@ -25,6 +28,7 @@ use winit::event::{ElementState, MouseButton, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use crate::animate::Living;
 use crate::cli::ProbeKind;
 use crate::copy;
 use crate::hotkey::{self, RaiseHotkey};
@@ -41,14 +45,70 @@ use crate::raise::RaiseTimer;
 const EDGE: Edge = Edge::Bottom;
 const SIZE_STEP: SizeStep = SizeStep::Full;
 
-/// The sample scene by day, composed once: the strip is static until the composer draws the
-/// terrarium.
-fn sample_scene() -> (Rgba640x74, [Rgba; NATIVE_HEIGHT as usize]) {
-    let art = Art::embedded();
-    // `cargo xtask verify` checks the embedded art is complete, so this table always builds.
-    let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
-    let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
-    (composite(art, &frame), world::padding(art, 0, 0))
+/// What the strip shows: the sample, composed once and still, for the pinning probe, whose
+/// idle step counts on a strip that draws nothing; otherwise the thriving terrarium, living.
+enum Scene {
+    Still {
+        frame: Rgba640x74,
+        padding: Box<[Rgba; NATIVE_HEIGHT as usize]>,
+    },
+    Living {
+        living: Box<Living>,
+        /// The moment the composer's clock counts from.
+        origin: Instant,
+    },
+}
+
+impl Scene {
+    fn new(still: bool) -> Scene {
+        if still {
+            let art = Art::embedded();
+            // `cargo xtask verify` checks the embedded art is complete, so this table builds.
+            let table =
+                ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
+            let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
+            Scene::Still {
+                frame: composite(art, &frame),
+                padding: Box::new(world::padding(art, 0, 0)),
+            }
+        } else {
+            Scene::Living {
+                living: Box::new(Living::new(Millis(0))),
+                origin: Instant::now(),
+            }
+        }
+    }
+
+    /// The composer's clock at `instant`.
+    fn millis(origin: Instant, instant: Instant) -> Millis {
+        Millis(u64::try_from(instant.duration_since(origin).as_millis()).unwrap_or(u64::MAX))
+    }
+
+    /// When the living strip next wants a frame.
+    fn due(&self) -> Option<Instant> {
+        match self {
+            Scene::Still { .. } => None,
+            Scene::Living { living, origin } => {
+                let due = living.due()?;
+                origin.checked_add(Duration::from_millis(due.0))
+            }
+        }
+    }
+
+    /// Brings the scene to `now`; true if its pixels changed.
+    fn advance(&mut self, now: Instant) -> bool {
+        match self {
+            Scene::Still { .. } => false,
+            Scene::Living { living, origin } => living.advance(Self::millis(*origin, now)),
+        }
+    }
+
+    fn pixels(&self) -> (&Rgba640x74, &[Rgba; NATIVE_HEIGHT as usize]) {
+        match self {
+            Scene::Still { frame, padding } => (frame, padding),
+            Scene::Living { living, .. } => (living.image(), living.padding()),
+        }
+    }
 }
 
 /// What other threads send the event loop.
@@ -102,8 +162,10 @@ struct Strip {
     proxy: Option<EventLoopProxy<UserEvent>>,
     probe: Option<Probe>,
     view: Option<View>,
-    frame: Rgba640x74,
-    padding: [Rgba; NATIVE_HEIGHT as usize],
+    scene: Scene,
+    /// The redraw on its way was asked for by the living strip's schedule, not by the OS: it
+    /// is presented only if the pixels changed.
+    scheduled: bool,
     level: LevelMode,
     raise: RaiseTimer,
     hover: HoverTracker,
@@ -127,13 +189,13 @@ struct View {
 impl Strip {
     fn new(proxy: EventLoopProxy<UserEvent>, probe: Option<Probe>) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
-        let (frame, padding) = sample_scene();
+        let scene = Scene::new(probe.is_some());
         Self {
             proxy: Some(proxy),
             probe,
             view: None,
-            frame,
-            padding,
+            scene,
+            scheduled: false,
             level,
             raise: RaiseTimer::default(),
             hover: HoverTracker::default(),
@@ -324,11 +386,13 @@ impl Strip {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if self.gate.should_present() {
-                    match view
-                        .presenter
-                        .present(&self.frame, &view.scale, &self.padding)
-                    {
+                let now = Instant::now();
+                let changed = self.scene.advance(now);
+                // The OS's own requests always present; the schedule's only on a change.
+                let wanted = changed || !std::mem::take(&mut self.scheduled);
+                if wanted && self.gate.should_present() {
+                    let (frame, padding) = self.scene.pixels();
+                    match view.presenter.present(frame, &view.scale, padding) {
                         Ok(()) => self.gate.presented(),
                         Err(err) => eprintln!("{}", copy::present_failed(&err)),
                     }
@@ -364,7 +428,9 @@ impl Strip {
                 });
             }
             WindowEvent::Occluded(occluded) => {
-                if self.gate.set_occluded(occluded) {
+                // Uncovered, the living strip catches up at once.
+                let living = matches!(self.scene, Scene::Living { .. });
+                if self.gate.set_occluded(occluded) || (!occluded && living) {
                     view.window.request_redraw();
                 }
                 self.record(ProbeEvent::Occluded { occluded });
@@ -417,8 +483,17 @@ fn choose(mut monitors: Vec<Monitor>) -> Option<Monitor> {
 }
 
 impl ApplicationHandler<UserEvent> for Strip {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: StartCause) {
-        if !self.raise.restore_due(Instant::now()) {
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        let now = Instant::now();
+        if matches!(cause, StartCause::ResumeTimeReached { .. })
+            && !self.gate.occluded()
+            && self.scene.due().is_some_and(|due| due <= now)
+            && let Some(view) = &self.view
+        {
+            self.scheduled = true;
+            view.window.request_redraw();
+        }
+        if !self.raise.restore_due(now) {
             return;
         }
         self.with_view(|strip, view| {
@@ -510,7 +585,12 @@ impl ApplicationHandler<UserEvent> for Strip {
                 active,
             });
         }
-        event_loop.set_control_flow(match self.raise.deadline() {
+        // While covered, the living strip asks for nothing; it catches up when uncovered.
+        let living = (!self.gate.occluded() && self.view.is_some())
+            .then(|| self.scene.due())
+            .flatten();
+        let deadline = [self.raise.deadline(), living].into_iter().flatten().min();
+        event_loop.set_control_flow(match deadline {
             Some(deadline) => ControlFlow::WaitUntil(deadline),
             None => ControlFlow::Wait,
         });

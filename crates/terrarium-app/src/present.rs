@@ -74,8 +74,8 @@ fn zero_rgb([r, g, b, _]: Rgba) -> u32 {
 }
 
 /// Counts frames, and holds back those asked for while the strip is fully covered. Frames are
-/// asked for only on resize, re-placement and the OS's own expose requests, so a static strip
-/// presents none (I-10).
+/// asked for on resize, re-placement and the OS's own expose requests, and by the living
+/// strip only when its pixels change, so a still strip presents none (I-10).
 #[derive(Debug, Default)]
 pub struct FrameGate {
     occluded: bool,
@@ -100,6 +100,11 @@ impl FrameGate {
     pub fn set_occluded(&mut self, occluded: bool) -> bool {
         self.occluded = occluded;
         !occluded && std::mem::take(&mut self.held)
+    }
+
+    /// Whether the strip is fully covered.
+    pub fn occluded(&self) -> bool {
+        self.occluded
     }
 
     /// Frames presented since launch.

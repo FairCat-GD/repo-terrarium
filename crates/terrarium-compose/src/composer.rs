@@ -28,22 +28,29 @@ use std::collections::BTreeMap;
 
 use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{
-    FossilForm, GrowthStage, Light, MonumentAge, PlantSpecies, PlantState, PlantView, SceneInput,
-    Weather,
+    FossilForm, GrowthStage, LifeStage, Light, MonumentAge, PlantSpecies, PlantState, PlantView,
+    ResidentSpecies, ResidentView, SceneInput, Weather,
 };
 
+use crate::anim;
 use crate::catalog::{Art, Flags, SpriteId};
-use crate::frame::{Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y};
+use crate::clock::{DAY_MS, DayNight, LocalClock};
+use crate::drift::{self, BAND_MS_PER_PX, SOIL_MS_PER_PX, SOIL_PERIOD};
+use crate::frame::{Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Shear};
+use crate::motion::{Clock, Eras, Snapshot, motion_turn, turn, turn_start};
 use crate::order::{KeyedDraw, Place, Subject, merged};
 use crate::place::{Bands, FillForm, Placement, WeedForm, assign_spots, place};
 use crate::plant::shows_bloom;
+use crate::resident::{self, Enter, Resident, Segment, TRANSITION_MS, TurnPlan, Way};
 use crate::rules::dressing;
 use crate::salt::{InstallSalt, Purpose};
-use crate::sky::{self, CloudSize, LocalDate, MoonLook, moon_phase};
-use crate::slots::Layout;
+use crate::sky::{self, CloudSize, MoonLook, moon_phase};
+use crate::slots::{self, Layout};
+use crate::sway;
 use crate::text::{Label, fit};
 use crate::tween::durations::{
-    APPEAR_MS, FILL_MS, LABEL_CYCLE_MS, LABEL_FADE_MS, RESTYLE_MS, SKY_MS, VANISH_MS,
+    APPEAR_MS, CLOCK_FIX_MS, DIM_DOWN_MS, DIM_UP_MS, FILL_MS, LABEL_CYCLE_MS, LABEL_FADE_MS,
+    RESTYLE_MS, SKY_MS, VANISH_MS,
 };
 use crate::tween::{Millis, Tween};
 use crate::variants::{ArtTable, GlassFilm, PlantArt};
@@ -53,6 +60,7 @@ const SHOWN: u8 = u8::MAX;
 const HALF_RESTYLE: u32 = RESTYLE_MS / 2;
 const FRAME_WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const FRAME_HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
+const GROUND: i32 = GROUND_Y.cast_signed();
 
 /// What the composer is given beside the scene: not truth, but the app's.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,9 +68,29 @@ pub struct OverlayInput {
     /// The lines the label cycles through, already worded by the app's copy module (I-8). The
     /// composer only fits them to the plate.
     pub label: Vec<String>,
-    /// The local date, for the moon.
-    pub date: LocalDate,
+    /// The local wall time at the update: its date for the moon, its time of day for day and
+    /// night. Between updates the composer carries it forward on its own clock.
+    pub clock: LocalClock,
+    /// When the day and the night begin.
+    pub day_night: DayNight,
+    /// Whether the machine has gone without input past the dim timeout.
+    pub dim: bool,
 }
+
+impl OverlayInput {
+    /// The label's lines at a local time, with the default day and night and no dimming.
+    pub fn new(label: Vec<String>, clock: LocalClock) -> OverlayInput {
+        OverlayInput {
+            label,
+            clock,
+            day_night: DayNight::default(),
+            dim: false,
+        }
+    }
+}
+
+/// How far dim mode darkens the frame: to 40% of every colour value, 255 × 0.6.
+pub const DIM: u8 = 153;
 
 /// Which litter a scene drops: amber leaves while anything lives, bleached dead stems once
 /// the terrarium is dead.
@@ -120,6 +148,11 @@ pub enum Piece {
     Light(Light),
     /// A film at a level, 1 to `MAX_GLASS_LEVEL`.
     Film(GlassFilm, u8),
+    /// A resident as truth has it; which frame it shows is its turn's to say.
+    Resident {
+        species: ResidentSpecies,
+        stage: LifeStage,
+    },
 }
 
 /// How a part changes from one look to the next.
@@ -203,6 +236,7 @@ impl Piece {
             Piece::Star => pick(Kind::Star, &world.stars),
             Piece::Light(light) => table.light(light),
             Piece::Film(film, level) => table.glass(film, level),
+            Piece::Resident { .. } => None,
         }
     }
 }
@@ -218,14 +252,18 @@ fn item(subject: Subject) -> u64 {
         | Subject::Dressing(i)
         | Subject::Litter(i)
         | Subject::Fungus(i) => u64::from(i),
-        Subject::Monument { id, .. } | Subject::Fossil { id, .. } => u64::from(id),
+        Subject::Monument { id, .. }
+        | Subject::Fossil { id, .. }
+        | Subject::Resident { id, .. } => u64::from(id),
         Subject::Scenery(i) => u64::from(i),
         Subject::Film(_)
         | Subject::Weather
         | Subject::Sun
         | Subject::Moon
         | Subject::Light
-        | Subject::Label => 0,
+        | Subject::Label
+        | Subject::Soil
+        | Subject::Sweep => 0,
     }
 }
 
@@ -233,6 +271,8 @@ fn item(subject: Subject) -> u64 {
 const PARTS: usize = 5;
 const STEM: usize = 0;
 const FOLIAGE: usize = 1;
+/// The foliage's part, as a draw's key counts it.
+const FOLIAGE_PART: u8 = 1;
 const BLOOM: usize = 2;
 const PLANT_GLOW: usize = 3;
 const STONE: usize = 0;
@@ -266,6 +306,16 @@ fn plant_pieces(view: &PlantView) -> Pieces {
         pieces[PLANT_GLOW] = Some(Piece::PlantGlow { species, stage });
     }
     pieces
+}
+
+/// Whether a plant sways in wind: only living plants past seedlings. A dormant plant is still
+/// (constraint 4), a dead one has nothing to sway, and a seedling's single image has no pivot.
+pub fn sways(growth: GrowthStage, health: PlantState) -> bool {
+    growth != GrowthStage::Seedling
+        && matches!(
+            health,
+            PlantState::Thriving | PlantState::Pale | PlantState::Wilting
+        )
 }
 
 /// Whether a plant glows at night: only young and mature thriving plants. A glow is a sign of
@@ -424,6 +474,21 @@ impl LabelLook {
             vec![(index(step - 1), SHOWN - rising), (index(step), rising)]
         }
     }
+
+    /// When the lines showing next change after `now`: a step of the crossfade running, or
+    /// the first step of the next one. `None` for a set of one line, which never cycles.
+    fn next_change(&self, now: Millis) -> Option<Millis> {
+        if self.lines.len() <= 1 {
+            return None;
+        }
+        let cycle = u64::from(LABEL_CYCLE_MS);
+        let step = now.0.saturating_sub(self.since.0) / cycle;
+        let fade =
+            |step: u64| Tween::new(0, SHOWN, Millis(self.since.0 + step * cycle), LABEL_FADE_MS);
+        let running = (step > 0).then(|| fade(step).next_step(now)).flatten();
+        let next = Millis(self.since.0 + (step + 1) * cycle);
+        running.or_else(|| fade(step + 1).next_step(next))
+    }
 }
 
 /// One look as drawn: the depicted state, without where the salt put it.
@@ -444,11 +509,44 @@ pub struct Composer {
     world: WorldLayout,
     light_ms: u32,
     label_capacity: usize,
+    sweep_width: i32,
     placement: Placement,
     monuments: BTreeMap<u32, u8>,
     fossils: BTreeMap<u32, u8>,
     entries: BTreeMap<Subject, Entry>,
     label: Vec<LabelLook>,
+    /// The local clock of the last update, and when on the composer's clock it was read.
+    clock: Option<(LocalClock, Millis)>,
+    day_night: DayNight,
+    /// An update whose clock disagreed with the time carried forward eases the palette from
+    /// where it stood to the new time's.
+    mix_fix: Option<MixFix>,
+    dim: Tween,
+    /// What each turn of motion reads of the scene.
+    eras: Eras,
+    /// Each resident's stretch of the strip, by id, kept while it stays.
+    resident_spots: BTreeMap<u32, u8>,
+    /// Each resident drawn or fading, by id.
+    residents: BTreeMap<u32, Shown>,
+    /// When the changes of rest an update brought at the next turn are over.
+    residents_settle: Millis,
+}
+
+/// A resident as drawn: how visible it is, what it was when last in the scene, and, through
+/// the turn it arrived in, what it arrived as and the scene it arrived with, which is how it
+/// rests until the next turn reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Shown {
+    opacity: Tween,
+    last: Resident,
+    arrival: Option<(u64, Resident, Snapshot)>,
+}
+
+/// The palette mix an update found standing, and how far the new clock's mix has taken over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MixFix {
+    from: u8,
+    weight: Tween,
 }
 
 impl Composer {
@@ -461,11 +559,20 @@ impl Composer {
             world: WorldLayout::new(salt, table.world()),
             light_ms: table.world().light_ms,
             label_capacity: table.world().label_capacity,
+            sweep_width: table.world().sweep_width,
             placement: Placement::default(),
             monuments: BTreeMap::new(),
             fossils: BTreeMap::new(),
             entries: BTreeMap::new(),
             label: Vec::new(),
+            clock: None,
+            day_night: DayNight::default(),
+            mix_fix: None,
+            dim: Tween::at(0),
+            eras: Eras::default(),
+            resident_spots: BTreeMap::new(),
+            residents: BTreeMap::new(),
+            residents_settle: Millis(0),
         }
     }
 
@@ -536,6 +643,326 @@ impl Composer {
             entry.show(pieces, now, rise, timing.change);
         }
         self.update_label(&overlay.label, now);
+        self.update_clock(overlay, now);
+        let residents = self.update_residents(input, now);
+        let snapshot = self.snapshot(input, overlay, now, residents);
+        let running = turn(now);
+        self.note_arrivals(&snapshot, running);
+        if resident::pending(self.eras.at(running), &snapshot, running, &self.arrivals()) {
+            let settles = turn_start(running + 1).plus(resident::CHANGE_SETTLES_MS);
+            self.residents_settle = self.residents_settle.max(settles);
+        }
+        self.eras.record(now, snapshot);
+        let dim = if overlay.dim { DIM } else { 0 };
+        if self.dim.target() != dim {
+            let ms = if overlay.dim { DIM_DOWN_MS } else { DIM_UP_MS };
+            self.dim = Tween::new(self.dim.value(now), dim, now, ms);
+        }
+    }
+
+    /// Gives each resident its stretch and home, fades in the arrivals and fades out those
+    /// that left; returns the residents drawn, by id.
+    fn update_residents(&mut self, input: &SceneInput, now: Millis) -> Vec<Resident> {
+        // A resident still fading out keeps its stretch, so one that comes back finds it
+        // again and no newcomer stands in its place while it goes.
+        let fading = self
+            .residents
+            .iter()
+            .filter(|(_, shown)| now < shown.opacity.end() || shown.opacity.target() == SHOWN)
+            .map(|(&id, _)| id);
+        self.resident_spots = assign_spots(
+            &self.resident_spots,
+            input.residents.iter().map(|r| r.id).chain(fading),
+            world::RESIDENTS,
+        );
+        let mut records: Vec<Resident> = input
+            .residents
+            .iter()
+            .filter_map(|view| {
+                let spot = *self.resident_spots.get(&view.id)?;
+                Some(self.home(*view, spot))
+            })
+            .collect();
+        records.sort_by_key(|record| record.view.id);
+        for shown in self.residents.values_mut() {
+            if shown.opacity.target() == SHOWN
+                && !records.iter().any(|r| r.view.id == shown.last.view.id)
+            {
+                shown.opacity = Tween::new(shown.opacity.value(now), 0, now, TRANSITION_MS);
+            }
+        }
+        self.residents
+            .retain(|_, shown| shown.opacity.target() == SHOWN || now < shown.opacity.end());
+        for record in &records {
+            let shown = self.residents.entry(record.view.id).or_insert(Shown {
+                opacity: Tween::new(0, 0, now, 0),
+                last: *record,
+                arrival: None,
+            });
+            shown.last = *record;
+            if shown.opacity.target() != SHOWN {
+                shown.opacity = Tween::new(shown.opacity.value(now), SHOWN, now, TRANSITION_MS);
+            }
+        }
+        records
+    }
+
+    /// What each resident arrived as, with the scene it arrived with, by id.
+    fn arrivals(&self) -> BTreeMap<u32, (&Resident, &Snapshot)> {
+        self.residents
+            .iter()
+            .filter_map(|(&id, shown)| {
+                let (_, record, scene) = shown.arrival.as_ref()?;
+                Some((id, (record, scene)))
+            })
+            .collect()
+    }
+
+    /// Freezes what each resident the running turn does not read arrived as, with the scene
+    /// it arrived with: a later update in the same turn changes it only from the next.
+    fn note_arrivals(&mut self, snapshot: &Snapshot, running: u64) {
+        let read = self.eras.at(running);
+        for record in &snapshot.residents {
+            let id = record.view.id;
+            let in_turn = read.is_some_and(|era| era.residents.iter().any(|r| r.view.id == id));
+            if let Some(shown) = self.residents.get_mut(&id)
+                && !in_turn
+                && shown
+                    .arrival
+                    .as_ref()
+                    .is_none_or(|&(turn, ..)| turn != running)
+            {
+                shown.arrival = Some((running, *record, snapshot.clone()));
+            }
+        }
+    }
+
+    /// Where a resident lives in its stretch: beside the first vigorous plant there, in cell
+    /// order, where it feeds; otherwise at the stretch's own place. Which plant is in which
+    /// stretch, and which way there is more room, go by the cells' places before the salt
+    /// moves them, so only where it stands is the salt's.
+    fn home(&self, view: ResidentView, spot: u8) -> Resident {
+        let (from, to) = world::resident_stretch(usize::from(spot));
+        let vigorous = self
+            .placement
+            .plants
+            .values()
+            .filter(|placed| {
+                placed.view.stage != GrowthStage::Seedling
+                    && placed.view.state == PlantState::Thriving
+                    && (from..to).contains(&slots::centre(usize::from(placed.cell)))
+            })
+            .map(|placed| placed.cell)
+            .min();
+        let (home, base) = match vigorous {
+            Some(cell) => (self.layout.slot(cell).x, slots::centre(usize::from(cell))),
+            None => (self.world.resident(spot), i32::midpoint(from, to)),
+        };
+        let (left, right) = (base - from, to - base);
+        let out = if right > left || (right == left && base < FRAME_WIDTH / 2) {
+            1
+        } else {
+            -1
+        };
+        Resident {
+            view,
+            spot,
+            home,
+            plant: vigorous,
+            out,
+        }
+    }
+
+    /// What the turns after `now` read of this scene.
+    fn snapshot(
+        &self,
+        input: &SceneInput,
+        overlay: &OverlayInput,
+        now: Millis,
+        residents: Vec<Resident>,
+    ) -> Snapshot {
+        let swaying = self
+            .placement
+            .plants
+            .iter()
+            .filter(|(_, placed)| sways(placed.view.stage, placed.view.state))
+            .map(|(&id, placed)| Subject::Plant {
+                id,
+                cell: placed.cell,
+            })
+            .collect();
+        Snapshot {
+            state: input.presentation.state,
+            weather: input.weather,
+            wind: input.wind,
+            dim: overlay.dim,
+            clock: Clock {
+                local: overlay.clock,
+                at: now,
+                day_night: overlay.day_night,
+            },
+            swaying,
+            residents,
+        }
+    }
+
+    /// What every resident does in turn `w`, by id. It never reads the salt (I-2).
+    pub fn turn_plans(&self, art: &Art, table: &ArtTable, w: u64) -> Vec<TurnPlan> {
+        self.resident_plans(art, table, w)
+            .into_values()
+            .map(|(plan, _)| plan)
+            .collect()
+    }
+
+    /// Every resident's plan in turn `w`: those the turn reads, and those that arrived or
+    /// left in it, resting.
+    fn resident_plans(
+        &self,
+        art: &Art,
+        table: &ArtTable,
+        w: u64,
+    ) -> BTreeMap<u32, (TurnPlan, Resident)> {
+        let catalog = &art.catalog;
+        let mut plans: BTreeMap<u32, (TurnPlan, Resident)> = BTreeMap::new();
+        let before = self.eras.at(w.saturating_sub(1)).filter(|_| w > 0);
+        if let Some(now) = self.eras.at(w) {
+            for plan in resident::plans(catalog, table, w, before, now, &self.arrivals()) {
+                if let Some(record) = now.residents.iter().find(|r| r.view.id == plan.id) {
+                    plans.insert(plan.id, (plan, *record));
+                }
+            }
+        }
+        for (&id, shown) in &self.residents {
+            if plans.contains_key(&id) {
+                continue;
+            }
+            // An arrival rests as it arrived; one fading out after leaving rests as it did in
+            // the turn before.
+            let earlier = before.and_then(|era| {
+                let record = era.residents.iter().find(|r| r.view.id == id)?;
+                Some((record, era, w - 1))
+            });
+            let arrived = shown
+                .arrival
+                .as_ref()
+                .map(|(turn, record, scene)| (record, scene, (*turn).min(w)));
+            let plan = arrived
+                .filter(|&(_, _, turn)| turn == w)
+                .or(earlier)
+                .or(arrived)
+                .and_then(|(record, scene, read)| {
+                    Some((
+                        resident::resting(catalog, table, w, record, scene, read)?,
+                        *record,
+                    ))
+                });
+            if let Some(plan) = plan {
+                plans.insert(id, plan);
+            }
+        }
+        plans
+    }
+
+    /// How many pixels downwind a plant's crown leans at `now`: only in a turn it gusts in.
+    fn crown(&self, subject: Subject, now: Millis) -> i32 {
+        let w = turn(now);
+        let Some(snapshot) = self.eras.at(w) else {
+            return 0;
+        };
+        let (Some(cell), Some(j)) = (subject.cell(), motion_turn(w, snapshot.dim)) else {
+            return 0;
+        };
+        if !snapshot.swaying.contains(&subject) || !sway::gusts(cell, j) {
+            return 0;
+        }
+        sway::crown(snapshot.wind, cell, now.0 - turn_start(w).0)
+    }
+
+    /// How a look of a plant leans at `now`: its foliage about the foliage's pivot, and a
+    /// bloom with the foliage it sits on, row for row. Nothing else leans.
+    fn lean(
+        &self,
+        art: &Art,
+        table: &ArtTable,
+        subject: Subject,
+        piece: Piece,
+        now: Millis,
+    ) -> Shear {
+        let crown = self.crown(subject, now);
+        if crown == 0 {
+            return Shear::NONE;
+        }
+        let catalog = &art.catalog;
+        let pivot = |foliage: SpriteId| catalog.sprite(foliage).shear_pivot.map(|p| p.y);
+        match piece {
+            Piece::Foliage { .. } => piece
+                .sprite(table, self.salt, subject, FOLIAGE_PART)
+                .and_then(pivot)
+                .map_or(Shear::NONE, |pivot| sway::shear(pivot, crown)),
+            Piece::Bloom { species } => {
+                let PlantArt::Parts { foliage, .. } =
+                    table.plant(species, GrowthStage::Mature, PlantState::Thriving)
+                else {
+                    return Shear::NONE;
+                };
+                let Some(host) = pivot(foliage) else {
+                    return Shear::NONE;
+                };
+                // Both stand on the same ground point: the foliage's pivot row, counted from
+                // the bloom's top.
+                let bloom = catalog.sprite(table.bloom(species)).anchor.y;
+                let leaning = sway::shear(host, crown);
+                Shear {
+                    pivot_y: bloom - catalog.sprite(foliage).anchor.y + host,
+                    slope: leaning.slope,
+                }
+            }
+            _ => Shear::NONE,
+        }
+    }
+
+    /// Takes the overlay's clock and day and night times. Where they put the palette
+    /// somewhere other than it stands, it eases over rather than jumping: after a sleep, a
+    /// change of time zone or the first update.
+    fn update_clock(&mut self, overlay: &OverlayInput, now: Millis) {
+        let before = self.palette_mix(now);
+        self.clock = Some((overlay.clock, now));
+        self.day_night = overlay.day_night;
+        let after = self.clock_mix(now);
+        self.mix_fix = (before != after).then(|| MixFix {
+            from: before,
+            weight: Tween::new(0, SHOWN, now, CLOCK_FIX_MS),
+        });
+    }
+
+    /// The local time of day at `now`, carried forward from the last update's clock.
+    fn ms_of_day(&self, now: Millis) -> Option<u32> {
+        let (clock, at) = self.clock?;
+        let carried = u64::from(clock.ms_of_day) + now.0.saturating_sub(at.0);
+        u32::try_from(carried % u64::from(DAY_MS)).ok()
+    }
+
+    /// The palette mix the clock alone gives at `now`: day until a clock arrives.
+    fn clock_mix(&self, now: Millis) -> u8 {
+        self.ms_of_day(now).map_or(0, |ms| self.day_night.mix(ms))
+    }
+
+    /// The palette mix at `now`, 0 by day and 255 by night.
+    pub fn palette_mix(&self, now: Millis) -> u8 {
+        let mix = self.clock_mix(now);
+        match self.mix_fix {
+            Some(fix) => {
+                let weight = u32::from(fix.weight.value(now));
+                let blended = u32::from(fix.from) * (255 - weight) + u32::from(mix) * weight;
+                u8::try_from((blended + 127) / 255).unwrap_or(mix)
+            }
+            None => mix,
+        }
+    }
+
+    /// How far the frame is dimmed at `now`: 0, or [`DIM`] in dim mode, with fades between.
+    pub fn dim(&self, now: Millis) -> u8 {
+        self.dim.value(now)
     }
 
     /// Every subject the scene holds, with the pieces of its parts.
@@ -614,7 +1041,7 @@ impl Composer {
             if quiet.sun {
                 wanted.insert(Subject::Sun, one(Piece::Sun));
             }
-            if let Some(look) = moon_phase(overlay.date).look() {
+            if let Some(look) = moon_phase(overlay.clock.date).look() {
                 wanted.insert(Subject::Moon, one(Piece::Moon(look)));
             }
         }
@@ -669,15 +1096,90 @@ impl Composer {
         }
     }
 
-    /// When the last tween ends. From then on only the clouds' drift and the label's cycle
-    /// move until the next update.
+    /// The first moment after `now` at which the frame may change, or `None` if nothing will
+    /// until the next update. Every source of change answers here; the frame is the same at
+    /// every moment before it (I-10).
+    pub fn next_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
+        let mut next = Earliest::default();
+        for (&subject, entry) in &self.entries {
+            for look in entry.looks() {
+                next.take(look.opacity.next_step(now));
+            }
+            let shown = entry.looks().any(|look| look.opacity.value(now) > 0);
+            match subject {
+                Subject::Cloud(i) if shown => next.take(Some(self.world.cloud(i).next_step(now))),
+                Subject::Weather if shown => next.take(Some(drift::next_step(now, BAND_MS_PER_PX))),
+                _ => {}
+            }
+        }
+        next.take(Some(drift::next_step(now, SOIL_MS_PER_PX)));
+        next.take(Some(drift::sweep_next(self.salt, now, self.sweep_width)));
+        for look in &self.label {
+            next.take(look.opacity.next_step(now));
+            if look.opacity.value(now) > 0 || look.opacity.target() == SHOWN {
+                next.take(look.next_change(now));
+            }
+        }
+        if let Some(fix) = self.mix_fix {
+            next.take(fix.weight.next_step(now));
+        }
+        if let Some(ms) = self.ms_of_day(now) {
+            next.take(self.day_night.next_change(ms).map(|ahead| now.plus(ahead)));
+        }
+        next.take(self.dim.next_step(now));
+        for shown in self.residents.values() {
+            next.take(shown.opacity.next_step(now));
+        }
+        next.take(self.motion_change(art, table, now));
+        next.0
+    }
+
+    /// The first moment after `now` at which a turn's motion changes the frame. Turns to come
+    /// are searched until one moves; in dim mode three in four are still, so five suffice.
+    fn motion_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
+        let running = turn(now);
+        for w in running..running + 5 {
+            let start = turn_start(w);
+            // Into the running turn; any moment of a turn to come is after `now`.
+            let since = now.0.saturating_sub(start.0);
+            let at = |ms: u64| Millis(start.0 + ms);
+            let mut next = Earliest::default();
+            if let Some(snapshot) = self.eras.at(w)
+                && let Some(j) = motion_turn(w, snapshot.dim)
+            {
+                for subject in &snapshot.swaying {
+                    if let Some(cell) = subject.cell()
+                        && sway::gusts(cell, j)
+                    {
+                        next.take(sway::next_move(snapshot.wind, cell, since).map(at));
+                    }
+                }
+            }
+            let end = turn_start(w + 1);
+            for (plan, _) in self.resident_plans(art, table, w).values() {
+                next.take(plan_next(&art.catalog, plan, now, start).filter(|&moment| moment < end));
+            }
+            if next.0.is_some() {
+                return next.0;
+            }
+        }
+        None
+    }
+
+    /// When the last tween ends, and the changes of rest an update brought are over. From
+    /// then on only motion moves until the next update: drift, the label's cycle, sway and the
+    /// residents' turns.
     pub fn settled_at(&self) -> Millis {
         self.entries
             .values()
             .flat_map(Entry::looks)
             .map(|look| look.opacity)
             .chain(self.label.iter().map(|look| look.opacity))
+            .chain(self.mix_fix.map(|fix| fix.weight))
+            .chain([self.dim])
+            .chain(self.residents.values().map(|shown| shown.opacity))
             .map(Tween::end)
+            .chain([self.residents_settle])
             .max()
             .unwrap_or_default()
     }
@@ -686,6 +1188,24 @@ impl Composer {
     /// which reads no salt, is not among them.
     pub fn depicted(&self, now: Millis) -> Vec<Depicted> {
         let mut depicted = Vec::new();
+        for (&id, shown) in &self.residents {
+            let opacity = shown.opacity.value(now);
+            if opacity > 0 {
+                let view = shown.last.view;
+                depicted.push(Depicted {
+                    subject: Subject::Resident {
+                        id,
+                        spot: shown.last.spot,
+                    },
+                    part: 0,
+                    piece: Piece::Resident {
+                        species: view.species,
+                        stage: view.stage,
+                    },
+                    opacity,
+                });
+            }
+        }
         for (&subject, entry) in &self.entries {
             for (part, looks) in (0_u8..).zip(&entry.parts) {
                 for look in looks {
@@ -728,8 +1248,82 @@ impl Composer {
             }
         }
         self.push_label(art, now, &mut keyed);
+        self.push_drifts(art, table, now, &mut keyed);
+        self.push_residents(art, table, palette_mix, now, &mut keyed);
         keyed.sort_by_key(|keyed| keyed.key);
         keyed
+    }
+
+    /// Every resident at `now`: its turn's pose, a cover or a move over the one before while
+    /// it plays, and a firefly's lantern while it signals.
+    fn push_residents(
+        &self,
+        art: &Art,
+        table: &ArtTable,
+        palette_mix: u8,
+        now: Millis,
+        out: &mut Vec<KeyedDraw>,
+    ) {
+        let w = turn(now);
+        let plans = self.resident_plans(art, table, w);
+        let before = self.eras.at(w.saturating_sub(1));
+        for (&id, shown) in &self.residents {
+            let visible = shown.opacity.value(now);
+            let Some((plan, record)) = plans.get(&id).filter(|_| visible > 0) else {
+                continue;
+            };
+            let subject = Subject::Resident {
+                id,
+                spot: record.spot,
+            };
+            // Where it stood the turn before, for a move's pose fading out there: in the scene
+            // that turn read, or as it arrived.
+            let old_home = before
+                .and_then(|era| era.residents.iter().find(|r| r.view.id == id))
+                .or_else(|| shown.arrival.as_ref().map(|(_, arrived, _)| arrived))
+                .map_or(record.home, |r| r.home);
+            // Until it moves, it stands where it stood.
+            let moves = plan.segments.iter().position(|s| s.enter == Enter::Moved);
+            for (look, index, segment, opacity) in poses(plan, now) {
+                let home = if moves.is_some_and(|moves| index < moves) {
+                    old_home
+                } else {
+                    record.home
+                };
+                let lit = Lit {
+                    value: times_opacity(opacity, visible),
+                    palette_mix,
+                };
+                push_creature(
+                    art,
+                    place_of(subject, look),
+                    &segment,
+                    home,
+                    record.out,
+                    lit,
+                    now,
+                    out,
+                );
+            }
+        }
+    }
+
+    /// The soil band at its drift, and the reflection while one crosses the glass.
+    fn push_drifts(&self, art: &Art, table: &ArtTable, now: Millis, out: &mut Vec<KeyedDraw>) {
+        let catalog = &art.catalog;
+        let offset = drift::offset(now, SOIL_MS_PER_PX, SOIL_PERIOD);
+        for (part, item, draw) in world::soil(catalog, FRAME_WIDTH, offset) {
+            // Keyed at the band's origin, so the tiles paint before anything lying on them.
+            let place = Place::new(Subject::Soil, part, 0).item(item);
+            out.push(KeyedDraw::at(place, (0, GROUND), draw));
+        }
+        let world = table.world();
+        if let Some(x) = drift::sweep_x(self.salt, now, world.sweep_width) {
+            let draw = Draw::new(catalog, world.sweep, x, 0);
+            // Keyed past the frame's far corner: it paints over all the rest of the glass.
+            let place = Place::new(Subject::Sweep, 0, 0);
+            out.push(KeyedDraw::at(place, (FRAME_WIDTH, FRAME_HEIGHT), draw));
+        }
     }
 
     /// One look's draws, positioned for its subject.
@@ -765,11 +1359,16 @@ impl Composer {
         match place.subject {
             Subject::Weather => {
                 // A whole look paints together at the band's origin, so a new weather covers
-                // the old in every column, whatever the two tiles' widths.
-                let step = usize::from(rect.w).max(1);
-                for (tile, x) in (0_u16..).zip((0..FRAME_WIDTH).step_by(step)) {
-                    let draw = Draw::new(catalog, sprite, x, 0);
-                    push(place.item(tile), Some((0, 0)), draw);
+                // the old in every column, whatever the two tiles' widths. The band drifts
+                // right; a tile keeps its item as it drifts, entering and leaving at an edge.
+                let step = i32::from(rect.w);
+                let offset = drift::offset(now, BAND_MS_PER_PX, step);
+                for (tile, x) in drift::columns(offset, step, 1, FRAME_WIDTH) {
+                    push(
+                        place.item(tile),
+                        Some((0, 0)),
+                        Draw::new(catalog, sprite, x, 0),
+                    );
                 }
             }
             Subject::Cloud(i) => {
@@ -804,17 +1403,10 @@ impl Composer {
                 let x = self.world.monument(spot);
                 let draw = match piece {
                     Piece::Mark { age } => {
-                        let Some(stone) = table.monument(age).first() else {
+                        let Some(draw) = mark(catalog, table, age, place.part, sprite, x) else {
                             return;
                         };
-                        let stone = catalog.sprite(*stone);
-                        let mark = usize::from(place.part) - FIRST_MARK;
-                        let Some(point) = table.world().mark_points.get(mark) else {
-                            return;
-                        };
-                        let left = x - i32::from(stone.anchor.x) + i32::from(point.x);
-                        let top = PLANT_GROUND_Y - i32::from(stone.anchor.y) + i32::from(point.y);
-                        Draw::new(catalog, sprite, left, top)
+                        draw
                     }
                     _ => ground(x),
                 };
@@ -840,12 +1432,17 @@ impl Composer {
                     }
                     _ => ground(x),
                 };
-                push(place, None, draw);
+                let shear = self.lean(art, table, place.subject, piece, now);
+                push(place, None, Draw { shear, ..draw });
             }
             Subject::Dressing(i) => push(place, None, ground(self.world.dressing(i))),
             Subject::Litter(i) => push(place, None, ground(self.world.litter(i))),
             Subject::Fungus(i) => push(place, None, ground(self.world.fungus(i))),
-            Subject::Scenery(_) | Subject::Label => {}
+            Subject::Scenery(_)
+            | Subject::Label
+            | Subject::Soil
+            | Subject::Sweep
+            | Subject::Resident { .. } => {}
         }
     }
 
@@ -891,9 +1488,172 @@ impl Composer {
         Frame {
             draws: merged(&self.draws(art, table, palette_mix, now), scenery.keyed()),
             palette_mix,
-            dim: 0,
+            dim: self.dim(now),
         }
     }
+}
+
+/// The earliest of several moments, each perhaps none.
+#[derive(Clone, Copy, Debug, Default)]
+struct Earliest(Option<Millis>);
+
+impl Earliest {
+    fn take(&mut self, moment: Option<Millis>) {
+        if let Some(moment) = moment {
+            self.0 = Some(self.0.map_or(moment, |earliest| earliest.min(moment)));
+        }
+    }
+}
+
+/// One look of a resident: its frame, facing and standing where its segment has it, and
+/// its lantern while the segment is a signal.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a creature's look needs where it is, what it plays and how lit, each its own"
+)]
+fn push_creature(
+    art: &Art,
+    place: Place,
+    segment: &Segment,
+    home: i32,
+    out_way: i32,
+    lit: Lit,
+    now: Millis,
+    out: &mut Vec<KeyedDraw>,
+) {
+    let catalog = &art.catalog;
+    let animation = catalog.animation(segment.routine);
+    let elapsed = if segment.still {
+        0
+    } else {
+        now.0.saturating_sub(segment.anchor.0)
+    };
+    let pose = anim::pose(catalog, animation, elapsed);
+    let (offset, facing_out) = match segment.way {
+        Way::Out => (segment.from + pose.dx, true),
+        Way::In => (segment.from - pose.dx, false),
+    };
+    let x = home + out_way * offset;
+    let right = facing_out == (out_way > 0);
+    let face = |draw: Draw| if right { draw } else { draw.mirrored(catalog) };
+    let draw = face(Draw::anchored(catalog, pose.frame, x, PLANT_GROUND_Y));
+    if let Some(draw) = lit.apply(art, draw) {
+        out.push(KeyedDraw::placed(catalog, place, draw));
+    }
+    // A firefly's lantern plays in step with its signal, on the same anchor.
+    let lantern = catalog
+        .animations
+        .iter()
+        .find(|effect| effect.sync == Some(segment.routine));
+    if let Some(effect) = lantern {
+        let glow = anim::pose(catalog, effect, now.0.saturating_sub(segment.start.0));
+        if !glow.done {
+            let draw = face(Draw::anchored(catalog, glow.frame, x, PLANT_GROUND_Y));
+            if let Some(draw) = lit.apply(art, draw) {
+                let place = Place { part: 1, ..place };
+                out.push(KeyedDraw::placed(catalog, place, draw));
+            }
+        }
+    }
+}
+
+/// The looks of a resident's plan at `now`: the segment playing, and while it enters by a
+/// cover or a move, the one before it under it, each with its look (0 under, 1 over), its
+/// place in the plan, and its opacity.
+fn poses(plan: &TurnPlan, now: Millis) -> Vec<(u16, usize, Segment, u8)> {
+    let Some(i) = plan
+        .segments
+        .iter()
+        .rposition(|segment| segment.start <= now)
+    else {
+        return plan
+            .segments
+            .first()
+            .map(|&first| vec![(1, 0, first, SHOWN)])
+            .unwrap_or_default();
+    };
+    let current = plan.segments[i];
+    let Some((rise, fall)) = fades(&current) else {
+        return vec![(1, i, current, SHOWN)];
+    };
+    let mut looks = vec![(1, i, current, rise.value(now))];
+    if let Some(&under) = i.checked_sub(1).and_then(|j| plan.segments.get(j)) {
+        let value = fall.value(now);
+        if value > 0 {
+            looks.insert(0, (0, i - 1, under, value));
+        }
+    }
+    looks
+}
+
+/// The first moment after `after` at which a resident's plan for the turn starting at `start`
+/// changes what it draws: a segment beginning (but not the first, which carries on from the
+/// turn before), a frame of a look playing, a step of a cover or a move, or of a lantern.
+fn plan_next(
+    catalog: &crate::catalog::Catalog,
+    plan: &TurnPlan,
+    after: Millis,
+    start: Millis,
+) -> Option<Millis> {
+    let mut next = Earliest::default();
+    for segment in plan.segments.iter().skip(1) {
+        if segment.start > after {
+            next.take(Some(segment.start));
+        }
+    }
+    // For a turn to come, its first moments count: from just before it begins.
+    let from = after.max(Millis(start.0.saturating_sub(1)));
+    let at = from.max(start);
+    for (_, _, segment, _) in poses(plan, at) {
+        if !segment.still {
+            let animation = catalog.animation(segment.routine);
+            let elapsed = from.0.saturating_sub(segment.anchor.0);
+            let frame = anim::next_frame_at(animation, elapsed);
+            next.take(frame.map(|ms| Millis(segment.anchor.0 + ms).max(Millis(from.0 + 1))));
+        }
+        if let Some(effect) = catalog
+            .animations
+            .iter()
+            .find(|effect| effect.sync == Some(segment.routine))
+        {
+            let elapsed = from.0.saturating_sub(segment.start.0);
+            let glow = anim::next_frame_at(effect, elapsed);
+            next.take(glow.map(|ms| Millis(segment.start.0 + ms).max(Millis(from.0 + 1))));
+        }
+    }
+    if let Some((rise, fall)) = plan
+        .segments
+        .iter()
+        .rfind(|segment| segment.start <= at)
+        .and_then(fades)
+    {
+        next.take(rise.next_step(from));
+        next.take(fall.next_step(from));
+    }
+    next.0.filter(|&moment| moment > after)
+}
+
+/// How a segment that does not enter straight takes over: its own pose rising and the one
+/// before it falling. A cover holds the old pose until the new has risen, so nothing shows
+/// through; a move fades one place into the other.
+fn fades(segment: &Segment) -> Option<(Tween, Tween)> {
+    let half = TRANSITION_MS / 2;
+    match segment.enter {
+        Enter::Straight => None,
+        Enter::Cover => Some((
+            Tween::new(0, SHOWN, segment.start, half),
+            Tween::new(SHOWN, 0, segment.start.plus(half), half),
+        )),
+        Enter::Moved => Some((
+            Tween::new(0, SHOWN, segment.start, TRANSITION_MS),
+            Tween::new(SHOWN, 0, segment.start, TRANSITION_MS),
+        )),
+    }
+}
+
+/// Where a resident's look is keyed: the creature as part 0, its lantern as part 1.
+fn place_of(subject: Subject, look: u16) -> Place {
+    Place::new(subject, 0, look)
 }
 
 /// The places a kind of piece has, as subject indices.
@@ -919,16 +1679,40 @@ fn timing(subject: Subject, light_ms: u32) -> Timing {
         | Subject::Dressing(_)
         | Subject::Litter(_)
         | Subject::Fungus(_)
-        // Never entries: the label keeps its own looks, timed by `update_label`, and the
-        // scenery never changes. They are here only to keep the match whole.
+        // Never entries: the label keeps its own looks, timed by `update_label`, the scenery
+        // never changes, the soil and the sweep move with the clock alone, and residents keep
+        // their own looks. They are here only to keep the match whole.
         | Subject::Label
-        | Subject::Scenery(_) => (FILL_MS, FILL_MS, HALF_RESTYLE),
+        | Subject::Scenery(_)
+        | Subject::Soil
+        | Subject::Sweep
+        | Subject::Resident { .. } => (FILL_MS, FILL_MS, HALF_RESTYLE),
     };
     Timing {
         arrive,
         leave,
         change,
     }
+}
+
+/// A carved mark on a stone of `age` standing at `x`: at its part's point on the stone's face,
+/// counted from the stone's top-left.
+fn mark(
+    catalog: &crate::catalog::Catalog,
+    table: &ArtTable,
+    age: MonumentAge,
+    part: u8,
+    sprite: SpriteId,
+    x: i32,
+) -> Option<Draw> {
+    let stone = catalog.sprite(*table.monument(age).first()?);
+    let point = table
+        .world()
+        .mark_points
+        .get(usize::from(part).checked_sub(FIRST_MARK)?)?;
+    let left = x - i32::from(stone.anchor.x) + i32::from(point.x);
+    let top = PLANT_GROUND_Y - i32::from(stone.anchor.y) + i32::from(point.y);
+    Some(Draw::new(catalog, sprite, left, top))
 }
 
 /// The centre of a thriving plant's foliage, standing at `x`: where its night glow sits.
@@ -983,6 +1767,10 @@ fn times_opacity(own: u8, look: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use terrarium_truth::scene::Wind;
+
     use super::*;
     use crate::catalog::Layer;
     use crate::preset;
@@ -996,14 +1784,21 @@ mod tests {
     }
 
     fn overlay(lines: &[&str]) -> OverlayInput {
-        OverlayInput {
-            label: lines.iter().map(|line| (*line).to_owned()).collect(),
-            date: preset::DATE,
-        }
+        OverlayInput::new(
+            lines.iter().map(|line| (*line).to_owned()).collect(),
+            LocalClock::noon(preset::DATE),
+        )
     }
 
+    /// The draws by day that come and go: every one but the soil's, which, like the scenery,
+    /// is always there.
     fn visible(composer: &Composer, table: &ArtTable, now: Millis) -> Vec<Draw> {
-        visible_at(composer, table, 0, now)
+        composer
+            .draws(Art::embedded(), table, 0, now)
+            .into_iter()
+            .filter(|keyed| keyed.key.subject != Subject::Soil)
+            .map(|keyed| keyed.draw)
+            .collect()
     }
 
     fn visible_at(composer: &Composer, table: &ArtTable, mix: u8, now: Millis) -> Vec<Draw> {
@@ -1035,7 +1830,8 @@ mod tests {
         // No label: its fade is the quickest, and would have finished by the middle.
         composer.update(&scene("thriving"), &overlay(&[]), Millis(1000));
         assert!(visible(&composer, &table, Millis(1000)).is_empty());
-        let middle = visible(&composer, &table, Millis(3000));
+        // Within the residents' quicker fade too.
+        let middle = visible(&composer, &table, Millis(1600));
         let art = Art::embedded();
         assert!(!middle.is_empty());
         assert!(
@@ -1455,21 +2251,477 @@ mod tests {
     }
 
     #[test]
+    fn the_palette_follows_the_clock_and_names_each_of_its_steps() {
+        let table = table();
+        let mut composer = Composer::new(&table, preset::SALT);
+        let input = preset::bare(PresentationState::Thriving, Vec::new());
+        let evening = OverlayInput::new(Vec::new(), LocalClock::new(preset::DATE, 19 * 3_600_000));
+        composer.update(&input, &evening, Millis(0));
+        assert_eq!(composer.palette_mix(Millis(0)), 0);
+        // Carried forward on the composer's clock: night 45 minutes into the evening.
+        assert_eq!(composer.palette_mix(Millis(45 * 60_000)), u8::MAX);
+        let mut now = Millis(0);
+        let mut steps = 0;
+        while let Some(next) = composer.next_change(Art::embedded(), &table, now) {
+            if next > Millis(46 * 60_000) {
+                break;
+            }
+            // The scene fading in names its own changes too; the palette holds between them.
+            let mix = composer.palette_mix(now);
+            assert_eq!(composer.palette_mix(Millis(next.0 - 1)), mix, "{next:?}");
+            steps += usize::from(composer.palette_mix(next) != mix);
+            now = next;
+        }
+        assert_eq!(steps, 255, "every step of the mix is named");
+    }
+
+    #[test]
+    fn a_clock_that_disagrees_eases_the_palette_over() {
+        let table = table();
+        let mut composer = Composer::new(&table, preset::SALT);
+        let input = preset::bare(PresentationState::Thriving, Vec::new());
+        let at = |ms| OverlayInput::new(Vec::new(), LocalClock::new(preset::DATE, ms));
+        composer.update(&input, &at(12 * 3_600_000), Millis(0));
+        // Woken at midnight: the palette eases to night rather than jumping.
+        let woke = Millis(5000);
+        composer.update(&input, &at(0), woke);
+        assert_eq!(composer.palette_mix(woke), 0);
+        let mut last = 0;
+        for ms in (0..=CLOCK_FIX_MS).step_by(10) {
+            let mix = composer.palette_mix(woke.plus(ms));
+            assert!(mix >= last && mix - last <= 2, "{ms}: {last} → {mix}");
+            last = mix;
+        }
+        assert_eq!(last, u8::MAX);
+        assert_eq!(composer.settled_at(), woke.plus(CLOCK_FIX_MS));
+    }
+
+    #[test]
+    fn dim_mode_settles_in_slowly_and_lifts_quickly() {
+        let table = table();
+        let mut composer = Composer::new(&table, preset::SALT);
+        let input = preset::bare(PresentationState::Thriving, Vec::new());
+        let noon = OverlayInput::new(Vec::new(), LocalClock::noon(preset::DATE));
+        let dimmed = OverlayInput {
+            dim: true,
+            ..noon.clone()
+        };
+        composer.update(&input, &dimmed, Millis(0));
+        assert_eq!(composer.dim(Millis(0)), 0);
+        assert_eq!(composer.dim(Millis(u64::from(DIM_DOWN_MS))), DIM);
+        let scenery = composer.scenery(Art::embedded(), &table);
+        let frame = composer.frame(Art::embedded(), &table, &scenery, 0, Millis(20_000));
+        assert_eq!(frame.dim, DIM);
+        composer.update(&input, &noon, Millis(20_000));
+        assert_eq!(composer.dim(Millis(20_000)), DIM);
+        assert_eq!(composer.dim(Millis(20_000 + u64::from(DIM_UP_MS))), 0);
+    }
+
+    /// The plants whose foliage leans at `now`, and every leaning draw's part.
+    fn leaning(composer: &Composer, table: &ArtTable, now: Millis) -> (Vec<Subject>, Vec<u8>) {
+        let draws = composer.draws(Art::embedded(), table, 0, now);
+        let leaning: Vec<&KeyedDraw> = draws
+            .iter()
+            .filter(|keyed| keyed.draw.shear != Shear::NONE)
+            .collect();
+        let mut subjects: Vec<Subject> = leaning.iter().map(|keyed| keyed.key.subject).collect();
+        subjects.dedup();
+        (
+            subjects,
+            leaning.iter().map(|keyed| keyed.key.part).collect(),
+        )
+    }
+
+    #[test]
+    fn wind_sways_at_most_six_plants_their_foliage_and_blooms_only() {
+        let table = table();
+        let mut thriving = scene("thriving");
+        for (wind, most) in [(Wind::Breezy, 1), (Wind::Gale, 2)] {
+            thriving.wind = wind;
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.update(&thriving, &overlay(&[]), Millis(0));
+            assert!(
+                leaning(&composer, &table, Millis(20_000)).0.is_empty(),
+                "the first turn is still"
+            );
+            let mut seen = BTreeSet::new();
+            // Every cell gusts once in five turns.
+            for ms in (24_000..144_000).step_by(100) {
+                let (subjects, parts) = leaning(&composer, &table, Millis(ms));
+                assert!(subjects.len() <= sway::MOST_SWAYING);
+                assert!(
+                    parts.iter().all(|&part| part == 1 || part == 2),
+                    "{parts:?}"
+                );
+                for keyed in composer.draws(Art::embedded(), &table, 0, Millis(ms)) {
+                    let top = keyed.draw.shear.offset(0);
+                    if keyed.key.part == 1 {
+                        assert!(top.abs() <= most, "{top}");
+                    }
+                }
+                seen.extend(subjects);
+            }
+            let living: BTreeSet<Subject> = composer
+                .placement()
+                .plants
+                .iter()
+                .filter(|(_, placed)| sways(placed.view.stage, placed.view.state))
+                .map(|(&id, placed)| Subject::Plant {
+                    id,
+                    cell: placed.cell,
+                })
+                .collect();
+            assert!(living.len() > sway::MOST_SWAYING);
+            assert_eq!(seen, living, "every living plant takes its turn");
+        }
+        thriving.wind = Wind::Calm;
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&thriving, &overlay(&[]), Millis(0));
+        for ms in (24_000..72_000).step_by(100) {
+            assert!(leaning(&composer, &table, Millis(ms)).0.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_wind_change_waits_for_the_next_turn_and_dim_quarters_the_gusts() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.wind = Wind::Gale;
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &overlay(&[]), Millis(0));
+        // Calm arrives mid-turn: the gusts of the running turn play out.
+        let moving =
+            (24_000..48_000).find(|&ms| !leaning(&composer, &table, Millis(ms)).0.is_empty());
+        let moving = Millis(moving.expect("a gust in the first turn that moves"));
+        let calm = SceneInput {
+            wind: Wind::Calm,
+            ..scene.clone()
+        };
+        composer.update(&calm, &overlay(&[]), moving);
+        assert!(!leaning(&composer, &table, moving).0.is_empty());
+        assert!((48_000..96_000).all(|ms| leaning(&composer, &table, Millis(ms)).0.is_empty()));
+        // Dimmed, only every fourth turn gusts.
+        let mut composer = Composer::new(&table, preset::SALT);
+        let dimmed = OverlayInput {
+            dim: true,
+            ..overlay(&[])
+        };
+        composer.update(&scene, &dimmed, Millis(0));
+        for w in 1..9_u64 {
+            let gusting = (0..24_000).step_by(100).any(|ms| {
+                !leaning(&composer, &table, Millis(w * 24_000 + ms))
+                    .0
+                    .is_empty()
+            });
+            assert_eq!(gusting, w % 4 == 0, "turn {w}");
+        }
+    }
+
+    use terrarium_truth::scene::Energy;
+
+    fn resident(id: u32, species: ResidentSpecies, stage: LifeStage) -> ResidentView {
+        ResidentView {
+            id,
+            species,
+            stage,
+            energy: Energy::High,
+        }
+    }
+
+    /// What a resident's draw shows: its art's life stage and routine, and where it stands.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Seen {
+        stage: String,
+        routine: String,
+        x: i32,
+    }
+
+    impl Seen {
+        fn name(&self) -> String {
+            format!("{}.{}", self.stage, self.routine)
+        }
+    }
+
+    /// Each resident's draws at `now`, by id, in draw order: the top look last.
+    fn creatures(
+        composer: &Composer,
+        table: &ArtTable,
+        mix: u8,
+        now: Millis,
+    ) -> BTreeMap<u32, Vec<Seen>> {
+        let catalog = &Art::embedded().catalog;
+        let mut creatures: BTreeMap<u32, Vec<Seen>> = BTreeMap::new();
+        for keyed in composer.draws(Art::embedded(), table, mix, now) {
+            if let Subject::Resident { id, .. } = keyed.key.subject
+                && keyed.key.part == 0
+            {
+                let keys = &catalog.sprite(keyed.draw.sprite).keys;
+                creatures.entry(id).or_default().push(Seen {
+                    stage: keys.life_stage.clone().unwrap_or_default(),
+                    routine: keys.state.clone().unwrap_or_default(),
+                    x: keyed.key.x,
+                });
+            }
+        }
+        creatures
+    }
+
+    /// The residents walking, flying, hopping or signalling at `now`, and of those, in the air
+    /// or signalling.
+    fn moving(composer: &Composer, table: &ArtTable, mix: u8, now: Millis) -> (usize, usize) {
+        let creatures = creatures(composer, table, mix, now);
+        let doing = |names: &[&str]| {
+            creatures
+                .values()
+                .filter(|looks| {
+                    looks
+                        .iter()
+                        .any(|look| names.contains(&look.routine.as_str()))
+                })
+                .count()
+        };
+        (
+            doing(&["move", "takeoff", "flight", "land", "hop", "signal"]),
+            doing(&["takeoff", "flight", "land", "hop", "signal"]),
+        )
+    }
+
+    /// The top look of each resident at every step of `range`, each change of it once.
+    fn story(
+        composer: &Composer,
+        table: &ArtTable,
+        mix: u8,
+        range: std::ops::Range<u64>,
+    ) -> BTreeMap<u32, Vec<String>> {
+        let mut seen: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for ms in range.step_by(50) {
+            for (id, looks) in creatures(composer, table, mix, Millis(ms)) {
+                let Some(top) = looks.last().map(Seen::name) else {
+                    continue;
+                };
+                let names = seen.entry(id).or_default();
+                if names.last() != Some(&top) {
+                    names.push(top);
+                }
+            }
+        }
+        seen
+    }
+
+    fn six() -> Vec<ResidentView> {
+        use ResidentSpecies::{Beetle, Firefly, Harvestman, Ladybird, Snail, Springtail};
+        [Snail, Ladybird, Beetle, Firefly, Springtail, Harvestman]
+            .into_iter()
+            .zip(1..)
+            .map(|(species, id)| resident(id, species, LifeStage::Adult))
+            .collect()
+    }
+
+    #[test]
+    fn at_most_three_residents_move_and_one_flies_and_each_rests_at_home() {
+        let table = table();
+        for (clock, mix) in [
+            (LocalClock::noon(preset::DATE), 0),
+            (LocalClock::midnight(preset::DATE), 255),
+        ] {
+            let mut scene = scene("thriving");
+            scene.residents = six();
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.update(&scene, &OverlayInput::new(Vec::new(), clock), Millis(0));
+            let (mut most, mut flew, mut walked) = (0, false, BTreeSet::new());
+            for ms in (24_000..240_000).step_by(83) {
+                let (moving, flying) = moving(&composer, &table, mix, Millis(ms));
+                assert!(moving <= resident::MOST_MOVING, "{moving} moving at {ms}");
+                assert!(flying <= resident::MOST_FLYING, "{flying} flying at {ms}");
+                most = most.max(moving);
+                flew |= flying > 0;
+                for (id, looks) in creatures(&composer, &table, mix, Millis(ms)) {
+                    if looks.iter().any(|look| look.routine == "move") {
+                        walked.insert(id);
+                    }
+                }
+            }
+            assert_eq!(most, resident::MOST_MOVING, "three move together at times");
+            assert!(walked.len() >= 3, "{walked:?}");
+            // By night the firefly takes to the air or signals; by day nothing flies but a
+            // springtail's hop.
+            if mix == 255 {
+                assert!(flew);
+            }
+            // At every turn's start each resident stands at home.
+            let homes = creatures(&composer, &table, mix, Millis(24_000));
+            for w in 2..10 {
+                let at = creatures(&composer, &table, mix, Millis(w * 24_000));
+                for (id, looks) in &at {
+                    assert_eq!(
+                        looks.last().map(|look| look.x),
+                        homes[id].last().map(|look| look.x),
+                        "{id} in turn {w}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn of_many_fireflies_and_springtails_one_at_most_takes_to_the_air() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.residents = [
+            ResidentSpecies::Firefly,
+            ResidentSpecies::Firefly,
+            ResidentSpecies::Springtail,
+            ResidentSpecies::Firefly,
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|(species, id)| resident(id, species, LifeStage::Adult))
+        .collect();
+        let night = OverlayInput::new(Vec::new(), LocalClock::midnight(preset::DATE));
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &night, Millis(0));
+        let mut flew = 0;
+        for ms in (24_000..480_000).step_by(83) {
+            let (_, flying) = moving(&composer, &table, 255, Millis(ms));
+            assert!(
+                flying <= resident::MOST_FLYING,
+                "{flying} in the air at {ms}"
+            );
+            flew += flying;
+        }
+        assert!(flew > 0);
+    }
+
+    #[test]
+    fn a_resident_hatches_ecloses_and_dies_through_its_own_art() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.residents = vec![
+            resident(1, ResidentSpecies::Snail, LifeStage::Egg),
+            resident(2, ResidentSpecies::Ladybird, LifeStage::Pupa),
+            resident(3, ResidentSpecies::Beetle, LifeStage::Adult),
+        ];
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &overlay(&[]), Millis(0));
+        let at = |composer: &Composer, ms| creatures(composer, &table, 0, Millis(ms));
+        assert_eq!(at(&composer, 30_000)[&1][0].name(), "egg.egg");
+        assert_eq!(at(&composer, 30_000)[&2][0].name(), "pupa.pupa");
+        // The next update steps each one on; the step plays at the next turn.
+        scene.residents = vec![
+            resident(1, ResidentSpecies::Snail, LifeStage::Juvenile),
+            resident(2, ResidentSpecies::Ladybird, LifeStage::Adult),
+            resident(3, ResidentSpecies::Beetle, LifeStage::Dying),
+        ];
+        composer.update(&scene, &overlay(&[]), Millis(30_000));
+        assert_eq!(
+            at(&composer, 47_000)[&1][0].name(),
+            "egg.egg",
+            "the running turn holds"
+        );
+        // The snail feeds at a plant's foot: hatching hands it to its idle, and the feed rises
+        // over that.
+        let seen = story(&composer, &table, 0, 48_000..72_000);
+        assert_eq!(
+            seen[&1],
+            ["egg.egg", "egg.hatch", "juvenile.idle", "juvenile.feed"].map(String::from)
+        );
+        assert_eq!(
+            seen[&2][..2],
+            ["pupa.pupa", "pupa.eclose"].map(String::from)
+        );
+        assert!(seen[&2][2].starts_with("adult."), "{:?}", seen[&2]);
+        assert_eq!(seen[&3].last().map(String::as_str), Some("adult.death"));
+        let at_hatch = (48_000..72_000)
+            .step_by(50)
+            .flat_map(|ms| at(&composer, ms).remove(&1).unwrap_or_default())
+            .map(|look| look.stage);
+        assert!(
+            at_hatch.into_iter().all(|stage| stage != "adult"),
+            "juveniles never use adult art"
+        );
+        // Death holds its last frame until truth removes the resident.
+        let held = at(&composer, 200_000)[&3].clone();
+        assert_eq!(held, at(&composer, 300_000)[&3]);
+        assert!(
+            composer.settled_at() >= Millis(48_000),
+            "the steps are part of settling"
+        );
+    }
+
+    #[test]
+    fn a_storm_sends_adults_into_hiding_and_juveniles_still() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.residents = vec![
+            resident(1, ResidentSpecies::Snail, LifeStage::Adult),
+            resident(2, ResidentSpecies::Woodlouse, LifeStage::Adult),
+            resident(3, ResidentSpecies::Ladybird, LifeStage::Adult),
+            resident(4, ResidentSpecies::Beetle, LifeStage::Juvenile),
+        ];
+        let night = OverlayInput::new(Vec::new(), LocalClock::midnight(preset::DATE));
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &night, Millis(0));
+        scene.weather = Weather::Storm;
+        composer.update(&scene, &night, Millis(30_000));
+        let seen = story(&composer, &table, 255, 48_000..96_000);
+        // The snail feeds at a plant's foot, and draws in from there.
+        assert_eq!(
+            seen[&1][1..],
+            ["adult.withdraw", "adult.hide"].map(String::from)
+        );
+        assert_eq!(
+            seen[&2][1..],
+            ["adult.curl", "adult.hide"].map(String::from)
+        );
+        // The ladybird keeps day hours: asleep at midnight, it covers its sleep with its hide.
+        assert_eq!(seen[&3], ["adult.sleep", "adult.hide"].map(String::from));
+        // The young beetle stops feeding and shelters on its idle's first frame, never moving.
+        assert_eq!(seen[&4].last().map(String::as_str), Some("juvenile.idle"));
+        assert!(!seen[&4].contains(&"juvenile.move".to_owned()));
+        let still = creatures(&composer, &table, 255, Millis(80_000))[&4].clone();
+        assert_eq!(still, creatures(&composer, &table, 255, Millis(90_000))[&4]);
+    }
+
+    #[test]
+    fn a_firefly_signals_by_night_with_its_lantern_and_never_by_day() {
+        let table = table();
+        let catalog = &Art::embedded().catalog;
+        let mut scene = scene("thriving");
+        scene.residents = vec![resident(7, ResidentSpecies::Firefly, LifeStage::Adult)];
+        let lanterns = |clock: LocalClock, mix: u8| {
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.update(&scene, &OverlayInput::new(Vec::new(), clock), Millis(0));
+            (24_000..600_000)
+                .step_by(100)
+                .filter(|&ms| {
+                    composer
+                        .draws(Art::embedded(), &table, mix, Millis(ms))
+                        .iter()
+                        .any(|keyed| {
+                            keyed.key.part == 1
+                                && catalog.sprite(keyed.draw.sprite).keys.state.as_deref()
+                                    == Some("signal-glow")
+                        })
+                })
+                .count()
+        };
+        assert!(lanterns(LocalClock::midnight(preset::DATE), 255) > 0);
+        assert_eq!(lanterns(LocalClock::noon(preset::DATE), 255), 0);
+    }
+
+    #[test]
     fn the_moon_shows_its_phase_and_new_moon_shows_none() {
         let table = table();
         let mut composer = Composer::new(&table, preset::SALT);
         let input = preset::bare(PresentationState::Thriving, Vec::new());
         let at =
             |composer: &Composer| of(composer, &table, 255, composer.settled_at(), Subject::Moon);
-        let date = |date| OverlayInput {
-            label: Vec::new(),
-            date,
-        };
-        composer.update(&input, &date(LocalDate::new(2026, 3, 19)), Millis(0));
+        let date = |date| OverlayInput::new(Vec::new(), LocalClock::noon(date));
+        composer.update(&input, &date(sky::LocalDate::new(2026, 3, 19)), Millis(0));
         assert!(at(&composer).is_empty());
         composer.update(
             &input,
-            &date(LocalDate::new(2026, 3, 15)),
+            &date(sky::LocalDate::new(2026, 3, 15)),
             composer.settled_at(),
         );
         let waning = at(&composer);

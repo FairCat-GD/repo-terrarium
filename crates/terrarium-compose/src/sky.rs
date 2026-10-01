@@ -162,6 +162,12 @@ impl Drift {
         let at = (i64::from(self.start) + moved).rem_euclid(CLOUD_SPAN);
         i32::try_from(at).unwrap_or(0) - CLOUD_MARGIN
     }
+
+    /// When the cloud next moves a pixel after `now`.
+    pub fn next_step(self, now: crate::tween::Millis) -> crate::tween::Millis {
+        let ms = u64::from(self.ms_per_px.max(1));
+        crate::tween::Millis((now.0 / ms + 1) * ms)
+    }
 }
 
 #[cfg(test)]

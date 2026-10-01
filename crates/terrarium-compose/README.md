@@ -26,7 +26,19 @@ Depiction: from `SceneInput` to pixels.
   the padding (`world`); the sky's rules, from the moon's phase to the clouds a weather brings
   (`sky`); and the one-message table (`rules`).
 - `InstallSalt` (`salt`).
-- Animation, frame scheduling hints and GIF encoding, still to come.
+- Motion (`motion`): global turns of 24 s, and the scene each turn reads, recorded by update
+  so a change takes effect at the next turn and never cuts motion in progress.
+- The animation player (`anim`): where an authored routine stands a given time after it
+  began, its `rootDelta` applied once per elapsed frame.
+- Residents (`resident`): homes in six stretches of the strip, the day and night schedule,
+  storms, lifecycle steps through the art's own hand-offs, and each turn's plan: at most three
+  travelling, one of them in the air.
+- Sway (`sway`): stepped shears of living foliage, six cells in thirty each turn.
+- Day and night on the local clock, and dim mode (`clock`); the drifts of the sky band and the
+  soil, and the reflection sweep (`drift`).
+- The frame scheduler: `Composer::next_change` names the next moment the picture may change,
+  and `schedule::Pacer` keeps every composition to 15 a second.
+- GIF encoding, still to come.
 
 ## The embedded art
 

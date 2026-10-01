@@ -353,6 +353,9 @@ pub struct WorldArt {
     pub light_ms: u32,
     /// How many characters a line of the label holds.
     pub label_capacity: usize,
+    /// The faint reflection that sweeps across the glass, and its width.
+    pub sweep: SpriteId,
+    pub sweep_width: i32,
 }
 
 impl WorldArt {
@@ -446,6 +449,7 @@ fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
     let fungus_bodies = get("fungus", &FUNGUS.map(|(body, _)| body));
     let fungus_glows = get("fungus glows", &FUNGUS.map(|(_, glow)| glow));
     let plant_glow = get("the plant glow", &["tmp.plant.night-glow"]);
+    let sweep = get("the reflection sweep", &["tmp.glass.reflection-sweep"]);
     let fungus: Vec<(SpriteId, SpriteId)> = fungus_bodies.into_iter().zip(fungus_glows).collect();
     for &(body, glow) in &fungus {
         if let Err(gap) = paired(catalog, glow, body) {
@@ -466,11 +470,12 @@ fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
             Vec::new()
         }
     };
-    let (Ok(corners), Ok(moons), [sun], [plant_glow]) = (
+    let (Ok(corners), Ok(moons), [sun], [plant_glow], [sweep]) = (
         <[SpriteId; 4]>::try_from(corners),
         <[SpriteId; 4]>::try_from(moons),
         sun.as_slice(),
         plant_glow.as_slice(),
+        sweep.as_slice(),
     ) else {
         return Err(gaps);
     };
@@ -518,6 +523,8 @@ fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
         mark_points,
         light_ms,
         label_capacity,
+        sweep: *sweep,
+        sweep_width: i32::from(catalog.sprite(*sweep).rect.w),
     })
 }
 

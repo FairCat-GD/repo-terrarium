@@ -34,6 +34,12 @@ pub mod durations {
     pub const LABEL_CYCLE_MS: u32 = 20_000;
     /// The label's crossfade between lines, and between one set of lines and the next.
     pub const LABEL_FADE_MS: u32 = 1500;
+    /// Dim mode settling in, slowly, once the machine has been idle.
+    pub const DIM_DOWN_MS: u32 = 10_000;
+    /// Dim mode lifting when someone is back: quick, but still a fade.
+    pub const DIM_UP_MS: u32 = 3000;
+    /// The palette easing to a clock that disagrees with the time carried forward.
+    pub const CLOCK_FIX_MS: u32 = 6000;
 }
 
 /// One value easing from `from` to `to` with smoothstep, starting at `start` and lasting `ms`.
@@ -90,6 +96,28 @@ impl Tween {
         // Rounded to nearest; the sum is never negative, so the shift floors correctly.
         u8::try_from((scaled + (ONE / 2).cast_signed()) >> 16).unwrap_or(self.to)
     }
+
+    /// The first moment after `after` at which the value differs from its value at `after`,
+    /// or `None` if it never will. The value only ever moves toward its target, so the moment
+    /// is found by halving.
+    pub fn next_step(self, after: Millis) -> Option<Millis> {
+        let now = self.value(after);
+        let end = self.end();
+        if after >= end || now == self.to {
+            return None;
+        }
+        // `value(end)` is the target, which differs from `now`: the step lies in (lo, hi].
+        let (mut lo, mut hi) = (after.0.max(self.start.0), end.0);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if self.value(Millis(mid)) == now {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        Some(Millis(hi))
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +147,8 @@ mod tests {
             durations::FILL_MS,
             durations::SKY_MS,
             durations::LABEL_FADE_MS,
+            durations::DIM_UP_MS,
+            durations::CLOCK_FIX_MS,
             // The light overlays' delivered crossfade.
             1200,
         ] {
@@ -138,6 +168,29 @@ mod tests {
                 assert_eq!(last, to);
             }
         }
+    }
+
+    #[test]
+    fn the_next_step_is_the_first_millisecond_the_value_moves() {
+        // Against stepping one millisecond at a time, from every moment of several tweens.
+        for (from, to, start, ms) in [
+            (0, 255, 500, durations::RESTYLE_MS / 2),
+            (255, 0, 0, durations::LABEL_FADE_MS),
+            (17, 140, 40, 1200),
+            (200, 199, 10, 3000),
+            (9, 9, 0, 400),
+        ] {
+            let tween = Tween::new(from, to, Millis(start), ms);
+            let last = start + u64::from(ms) + 5;
+            for t in 0..=last {
+                let after = Millis(t);
+                let expected = (t + 1..=last)
+                    .find(|&s| tween.value(Millis(s)) != tween.value(after))
+                    .map(Millis);
+                assert_eq!(tween.next_step(after), expected, "{from}→{to} at {t}");
+            }
+        }
+        assert_eq!(Tween::at(4).next_step(Millis(0)), None);
     }
 
     #[test]

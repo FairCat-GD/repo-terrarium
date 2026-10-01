@@ -1695,14 +1695,14 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "terrarium-truth",
 ]
 
 [[package]]
 name = "terrarium-app"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "global-hotkey",
  "muda",
@@ -1720,7 +1720,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "insta",
  "png",
@@ -1733,7 +1733,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "terrarium-adapters",
  "terrarium-store",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "block2 0.6.2",
  "muda",
@@ -1758,14 +1758,14 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "terrarium-truth",
 ]
 
 [[package]]
 name = "terrarium-truth"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -2490,7 +2490,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "cargo_metadata",
  "png",

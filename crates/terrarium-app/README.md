@@ -8,9 +8,12 @@ The `repo-terrarium` binary.
   edge of the chosen monitor, below ordinary windows, and never in the Dock or the app
   switcher.
 - The monitor choice (`monitor`): the setting, else a non-primary monitor, else the primary.
+- The living strip (`animate`): the thriving preset through the composer, kept by day until
+  the live terrarium arrives, composed only when the composer says the picture changes and at
+  most 15 times a second.
 - The `Presenter` that puts composed pixels on screen (`present`), with softbuffer as the first
-  backend. It presents on resize, re-placement and the OS's expose requests only, so a still
-  strip draws no frames.
+  backend. It presents on resize, re-placement and the OS's expose requests, and when the
+  living strip's pixels change; a still strip draws no frames.
 - Hover in native pixels (`hover`), the raise hotkey and its timer (`hotkey`, `raise`), and the
   right-click menu (`menu`).
 - The OS half of the strip (`pinning`): the level, placement and system events, through
@@ -29,8 +32,10 @@ that span crates, such as salt independence across engine and compose, live here
 - `#![forbid(unsafe_code)]`: all FFI goes through `terrarium-platform`.
 - The version has one source, the workspace manifest, read through `CARGO_PKG_VERSION`.
 - User-facing strings live in the `copy` module (I-8).
-- The event loop sleeps in `ControlFlow::Wait`. It waits until a deadline only while a raise is
-  pending, and other threads wake it only through the `EventLoopProxy`.
+- The event loop sleeps in `ControlFlow::Wait`. It waits until a deadline only for a raise
+  ending or the living strip's next change, never while the strip is covered, and other threads
+  wake it only through the `EventLoopProxy`.
+- `--probe pinning` shows the still sample, so its idle step can count on no frames.
 
 ## Command line
 

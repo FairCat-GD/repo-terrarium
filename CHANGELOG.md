@@ -5,6 +5,32 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-01
+
+The terrarium moves. The strip now shows a living preview: the thriving terrarium, with its
+residents, by day, until the live terrarium reaches it. It draws only when the picture changes,
+and never more than 15 times a second.
+
+### Added
+
+- **Residents.** Snails, ladybirds, beetles, fireflies, woodlice, springtails, earthworms and
+  harvestmen live in the terrarium, each about a home beside a healthy plant, where it feeds.
+  - They breathe in their idle, feeding and sleeping poses all the time.
+  - Now and then one walks out from home and back. At most three are out at once, and at most
+    one of them is flying or signalling.
+  - By night a firefly flies or signals with its lantern. A springtail sometimes hops.
+  - Day creatures sleep at night, night creatures by day, and snails keep both hours.
+  - A storm sends them into hiding: the snail into its shell, the woodlouse curled up.
+  - They hatch, emerge from the pupa and die through their own animations.
+  - A busy terrarium is lively, a mature one calm, a dead one nearly still, and in a dormant
+    one everything sleeps.
+- **Wind.** Plants lean in a breeze, further in a gale, a few at a time.
+- **Day and night** follow the local clock: night falls over 45 minutes from 19:00, and day
+  returns from 07:00.
+- **Dim mode** fades the strip to 40% brightness, and only a quarter as much moves.
+- **Slow motion against burn-in.** A faint reflection sweeps across the glass every four to
+  seven minutes, the sky band drifts, and the soil's texture creeps a pixel every few minutes.
+
 ## [0.8.0] - 2026-10-01
 
 The composer now draws the whole terrarium around its plants: the sky, the ground, the glass and

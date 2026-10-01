@@ -14,6 +14,8 @@ pub enum Purpose {
     WorldPlace,
     /// Which of a world piece's equivalent sprites it shows.
     WorldVariant,
+    /// When in its slot a reflection sweep crosses the glass.
+    Sweep,
 }
 
 impl Purpose {
@@ -23,6 +25,7 @@ impl Purpose {
             Purpose::FillVariant => 2,
             Purpose::WorldPlace => 3,
             Purpose::WorldVariant => 4,
+            Purpose::Sweep => 5,
         }
     }
 }

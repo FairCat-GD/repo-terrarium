@@ -1,15 +1,18 @@
 //! Fictional scenes, one per key state, drawn by the composer for `cargo xtask render --preset`
 //! and pinned by exact snapshots, by day and by night. Every preset grows from one seeded pool
 //! of eight species, as truth's would: two far, three mid and three near. Each holds what such
-//! a terrarium would: its weather and light, ground cover, glass, monuments and fossils.
+//! a terrarium would: its weather and light, ground cover, glass, monuments, fossils and
+//! residents.
 
 use terrarium_truth::scene::{
-    FossilForm, FossilView, GrowthStage, Light, MonumentAge, MonumentView, PlantSpecies,
-    PlantState, PlantView, Presentation, SceneInput, Weather, Wind,
+    Energy, FossilForm, FossilView, GrowthStage, LifeStage, Light, MonumentAge, MonumentView,
+    PlantSpecies, PlantState, PlantView, Presentation, ResidentSpecies, ResidentView, SceneInput,
+    Weather, Wind,
 };
 use terrarium_truth::{PresentationState, Tick};
 
 use crate::catalog::Art;
+use crate::clock::{LocalClock, NIGHT_FROM};
 use crate::composer::{Composer, OverlayInput};
 use crate::frame::Frame;
 use crate::salt::InstallSalt;
@@ -165,6 +168,21 @@ const RECOVERING: &[Plant] = &[
     (Foxglove, S, Thriving, false),
 ];
 
+use Energy::{High, Low, Mid};
+use LifeStage::{Adult, Dying, Egg, Juvenile, Pupa};
+use ResidentSpecies::{Beetle, Firefly, Ladybird, Snail, Woodlouse};
+
+/// A seeded pool of five, as truth's would be: day and night species, one flyer.
+type Dweller = (ResidentSpecies, LifeStage, Energy);
+
+const BUSY: &[Dweller] = &[
+    (Snail, Adult, High),
+    (Ladybird, Adult, High),
+    (Beetle, Adult, Mid),
+    (Firefly, Adult, Mid),
+    (Woodlouse, Adult, High),
+];
+
 use FossilForm::{Bone, LeafPrint, Shell};
 use MonumentAge::{Ancient, Lichened, Young};
 
@@ -182,6 +200,7 @@ struct World {
     /// Each monument's age and carved marks.
     monuments: &'static [(MonumentAge, u8)],
     fossils: &'static [FossilForm],
+    residents: &'static [Dweller],
     date: LocalDate,
 }
 
@@ -195,6 +214,7 @@ const DEFAULT: World = World {
     glass: (0, 0),
     monuments: &[],
     fossils: &[],
+    residents: &[],
     date: DATE,
 };
 
@@ -203,6 +223,7 @@ fn world(name: &str) -> Option<World> {
         "thriving" => World {
             plants: THRIVING,
             wind: Wind::Breezy,
+            residents: BUSY,
             cover: (0, 1, 0),
             monuments: &[(Young, 0)],
             ..DEFAULT
@@ -210,6 +231,11 @@ fn world(name: &str) -> Option<World> {
         "struggling-low-light" => World {
             state: PresentationState::Struggling,
             plants: LOW_LIGHT,
+            residents: &[
+                (Snail, Adult, Mid),
+                (Ladybird, Adult, Low),
+                (Woodlouse, Juvenile, Mid),
+            ],
             weather: Weather::Overcast,
             light: Light::Dusk,
             cover: (1, 2, 0),
@@ -220,6 +246,11 @@ fn world(name: &str) -> Option<World> {
         "struggling-poor-soil" => World {
             state: PresentationState::Struggling,
             plants: POOR_SOIL,
+            residents: &[
+                (Woodlouse, Adult, Mid),
+                (Beetle, Adult, Low),
+                (Snail, Egg, Low),
+            ],
             weather: Weather::Overcast,
             cover: (6, 4, 2),
             monuments: &[(Lichened, 0)],
@@ -229,6 +260,12 @@ fn world(name: &str) -> Option<World> {
         "mature" => World {
             state: PresentationState::Mature,
             plants: MATURE,
+            residents: &[
+                (Snail, Adult, Low),
+                (Ladybird, Adult, Low),
+                (Beetle, Adult, Low),
+                (Woodlouse, Adult, Low),
+            ],
             cover: (0, 2, 1),
             monuments: &[(Lichened, 2), (Ancient, 3)],
             fossils: &[LeafPrint],
@@ -237,6 +274,11 @@ fn world(name: &str) -> Option<World> {
         "dormant" => World {
             state: PresentationState::Dormant,
             plants: DORMANT,
+            residents: &[
+                (Snail, Adult, Low),
+                (Beetle, Adult, Low),
+                (Woodlouse, Adult, Low),
+            ],
             cover: (0, 2, 0),
             glass: (1, 0),
             monuments: &[(Lichened, 1)],
@@ -248,6 +290,7 @@ fn world(name: &str) -> Option<World> {
         "dead" => World {
             state: PresentationState::Dead,
             plants: DEAD,
+            residents: &[(Woodlouse, Adult, Low), (Snail, Dying, Low)],
             weather: Weather::Haze,
             cover: (2, 8, 4),
             glass: (0, 1),
@@ -260,6 +303,12 @@ fn world(name: &str) -> Option<World> {
         "recovering" => World {
             state: PresentationState::Recovering,
             plants: RECOVERING,
+            residents: &[
+                (Ladybird, Juvenile, High),
+                (Snail, Egg, Mid),
+                (Woodlouse, Juvenile, Mid),
+                (Beetle, Pupa, Mid),
+            ],
             light: Light::Sunburst,
             wind: Wind::Breezy,
             cover: (1, 4, 1),
@@ -300,6 +349,15 @@ pub fn scene(name: &str) -> Option<SceneInput> {
         .zip(world.fossils)
         .map(|(i, &form)| FossilView { id: 20 + i, form })
         .collect();
+    let residents = (0_u32..)
+        .zip(world.residents)
+        .map(|(i, &(species, stage, energy))| ResidentView {
+            id: 30 + i,
+            species,
+            stage,
+            energy,
+        })
+        .collect();
     Some(SceneInput {
         presentation: Presentation {
             state: world.state,
@@ -310,6 +368,7 @@ pub fn scene(name: &str) -> Option<SceneInput> {
         fungus,
         monuments,
         fossils,
+        residents,
         weather: world.weather,
         light: world.light,
         wind: world.wind,
@@ -319,12 +378,22 @@ pub fn scene(name: &str) -> Option<SceneInput> {
     })
 }
 
-/// The named preset's overlay: its label reading `label`, on its date.
+/// The named preset's overlay: its label reading `label`, at noon on its date.
 pub fn overlay(name: &str, label: &str) -> Option<OverlayInput> {
-    Some(OverlayInput {
-        label: vec![label.to_owned()],
-        date: world(name)?.date,
-    })
+    Some(OverlayInput::new(
+        vec![label.to_owned()],
+        LocalClock::noon(world(name)?.date),
+    ))
+}
+
+/// The local time a picture at `palette_mix` is taken at: noon by day, midnight by night, so
+/// the residents keep the hours the palette shows.
+pub fn clock(date: LocalDate, palette_mix: u8) -> LocalClock {
+    if palette_mix >= NIGHT_FROM {
+        LocalClock::midnight(date)
+    } else {
+        LocalClock::noon(date)
+    }
 }
 
 /// A scene of these plants and nothing else: no ground cover, residents, monuments or marks,
@@ -363,7 +432,11 @@ pub fn frame(
 ) -> Option<Frame> {
     let input = scene(name)?;
     let mut composer = Composer::new(table, SALT);
-    composer.update(&input, &overlay(name, label)?, Millis(0));
+    let overlay = OverlayInput::new(
+        vec![label.to_owned()],
+        clock(world(name)?.date, palette_mix),
+    );
+    composer.update(&input, &overlay, Millis(0));
     let scenery = composer.scenery(art, table);
     Some(composer.frame(art, table, &scenery, palette_mix, composer.settled_at()))
 }
@@ -416,7 +489,7 @@ mod tests {
     #[test]
     fn the_preset_dates_show_three_moons() {
         use crate::sky::{MoonPhase, moon_phase};
-        let phase = |name| moon_phase(overlay(name, "").unwrap().date);
+        let phase = |name| moon_phase(overlay(name, "").unwrap().clock.date);
         assert_eq!(phase("mature"), MoonPhase::Full);
         assert_eq!(phase("dormant"), MoonPhase::WaxingCrescent);
         assert_eq!(phase("dead"), MoonPhase::LastQuarter);

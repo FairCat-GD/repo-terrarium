@@ -18,9 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 use terrarium_compose::catalog::{Art, Blend, Flags, Layer};
+use terrarium_compose::clock::LocalClock;
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite;
-use terrarium_compose::frame::{Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba};
+use terrarium_compose::frame::{Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Rgba};
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::palette::Slot;
 use terrarium_compose::place::{CEILING, FLOOR};
@@ -33,10 +34,11 @@ use terrarium_compose::tween::durations::{
     APPEAR_MS, LABEL_CYCLE_MS, LABEL_FADE_MS, RESTYLE_MS, SHORTEST_MS,
 };
 use terrarium_compose::variants::{ArtTable, art_key};
+use terrarium_compose::world::Scenery;
 use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{
-    FossilForm, FossilView, GrowthStage, Light, MonumentAge, MonumentView, PlantSpecies,
-    PlantState, PlantView, SceneInput, Weather,
+    Energy, FossilForm, FossilView, GrowthStage, LifeStage, Light, MonumentAge, MonumentView,
+    PlantSpecies, PlantState, PlantView, ResidentSpecies, ResidentView, SceneInput, Weather, Wind,
 };
 
 fn config(cases: u32) -> ProptestConfig {
@@ -156,9 +158,45 @@ fn fossil(bits: u64) -> FossilView {
     }
 }
 
-/// The world of a scene from two words: its sky, cover, glass, monuments and fossils.
+/// A resident from 64 bits: an id in 0..12, so scenes share ids; any species and stage, a
+/// pupa only where the species has one.
+fn resident(bits: u64) -> ResidentView {
+    let species = pick(ResidentSpecies::ALL, field(bits, 4, 8));
+    let mut stage = pick(LifeStage::ALL, field(bits, 8, 5));
+    if stage == LifeStage::Pupa && !species.has_pupa() {
+        stage = LifeStage::Juvenile;
+    }
+    ResidentView {
+        id: u32::try_from(field(bits, 0, 12)).unwrap(),
+        species,
+        stage,
+        energy: pick(Energy::ALL, field(bits, 12, 3)),
+    }
+}
+
+/// The stage after a resident's, as truth would step it on.
+fn grown(view: ResidentView) -> ResidentView {
+    let stage = match view.stage {
+        LifeStage::Egg => LifeStage::Juvenile,
+        LifeStage::Juvenile if view.species.has_pupa() => LifeStage::Pupa,
+        LifeStage::Juvenile | LifeStage::Pupa => LifeStage::Adult,
+        LifeStage::Adult | LifeStage::Dying => LifeStage::Dying,
+    };
+    ResidentView { stage, ..view }
+}
+
+/// The world of a scene from two words: its sky, cover, glass, monuments, fossils and
+/// residents.
 fn dress(scene: &mut SceneInput, world: u64, things: u64) {
     scene.weather = pick(Weather::ALL, field(world, 0, 4));
+    scene.wind = pick(Wind::ALL, field(world, 32, 3));
+    let residents = usize::try_from(field(world, 36, 8)).unwrap();
+    scene.residents = unique(
+        (0..residents)
+            .map(|i| resident(things.rotate_left(u32::try_from(i * 11 + 5).unwrap()) ^ world))
+            .collect(),
+        |r| r.id,
+    );
     scene.light = pick(&LIGHTS, field(world, 2, 4));
     scene.weeds = small(world, 4, 13);
     scene.litter = small(world, 8, 13);
@@ -225,6 +263,24 @@ fn nudge(scene: &mut SceneInput, bits: u64) {
         scene.fossils.push(fossil(bits >> 59));
         scene.fossils = unique(std::mem::take(&mut scene.fossils), |f| f.id);
     }
+    // Residents grow, tire or liven, now and then leave or arrive; the wind changes.
+    for (i, resident) in scene.residents.iter_mut().enumerate() {
+        match field(bits.rotate_left(u32::try_from(i * 5).unwrap()), 0, 6) {
+            0 => *resident = grown(*resident),
+            1 => resident.energy = pick(Energy::ALL, field(bits, 10, 3)),
+            _ => {}
+        }
+    }
+    if field(bits, 61, 3) == 0 {
+        scene.residents.pop();
+    }
+    if field(bits, 1, 5) == 0 {
+        scene.residents.push(resident(bits.rotate_right(23)));
+        scene.residents = unique(std::mem::take(&mut scene.residents), |r| r.id);
+    }
+    if field(bits, 3, 4) == 0 {
+        scene.wind = pick(Wind::ALL, field(bits, 7, 3));
+    }
 }
 
 /// A monument a tier older, or as old as it gets.
@@ -245,17 +301,26 @@ const LINES: [&str; 6] = [
     "",
 ];
 
+/// Local times well clear of the hours when day and night take over, so a history never
+/// crosses one: noon, midnight, mid-afternoon and the small hours.
+const TIMES: [u32; 4] = [12 * HOUR, 0, 15 * HOUR, 3 * HOUR];
+const HOUR: u32 = 3_600_000;
+
 fn overlay(bits: u64) -> OverlayInput {
     let lines = usize::try_from(field(bits, 0, 4)).unwrap();
+    let date = LocalDate::new(
+        2020 + i32::try_from(field(bits, 16, 11)).unwrap(),
+        1 + small(bits, 24, 12),
+        1 + small(bits, 32, 28),
+    );
     OverlayInput {
-        label: (0..lines)
-            .map(|i| pick(&LINES, bits >> (2 + 3 * i)).to_owned())
-            .collect(),
-        date: LocalDate::new(
-            2020 + i32::try_from(field(bits, 16, 11)).unwrap(),
-            1 + small(bits, 24, 12),
-            1 + small(bits, 32, 28),
-        ),
+        dim: field(bits, 40, 5) == 0,
+        ..OverlayInput::new(
+            (0..lines)
+                .map(|i| pick(&LINES, bits >> (2 + 3 * i)).to_owned())
+                .collect(),
+            LocalClock::new(date, pick(&TIMES, bits >> 45)),
+        )
     }
 }
 
@@ -373,6 +438,8 @@ impl Next {
                 next.dust = scene.dust;
                 next.monuments.clone_from(&scene.monuments);
                 next.fossils.clone_from(&scene.fossils);
+                next.residents.clone_from(&scene.residents);
+                next.wind = scene.wind;
                 nudge(&mut next, *world);
                 let overlay = new_overlay.map_or_else(|| overlay_before.clone(), overlay);
                 (next, overlay)
@@ -399,8 +466,10 @@ fn after() -> impl Strategy<Value = After> {
         RESTYLE_MS - 1,
         APPEAR_MS,
         LABEL_CYCLE_MS + 500,
+        // Into the turns after, where residents and plants move.
+        2 * TURN_MS_U32 + 700,
     ];
-    (0_usize..9).prop_map(move |i| gaps.get(i).map_or(After::Settled, |&ms| After::Ms(ms)))
+    (0_usize..10).prop_map(move |i| gaps.get(i).map_or(After::Settled, |&ms| After::Ms(ms)))
 }
 
 fn salt() -> impl Strategy<Value = InstallSalt> {
@@ -616,9 +685,9 @@ fn check_subset(draws: &[KeyedDraw], scenes: &[&SceneInput]) -> Result<(), TestC
 
 /// Constraint 4 on the draws: the composer never brings a colour the art does not. Each draw
 /// keeps its sprite's blend, is never more opaque than its sprite, and only glyphs are tinted,
-/// in the label's ink; nothing is dimmed.
-fn check_palette_discipline(frame: &Frame) -> Result<(), TestCaseError> {
-    prop_assert_eq!(frame.dim, 0);
+/// in the label's ink; the frame is dimmed only in dim mode, to 40% of every colour.
+fn check_palette_discipline(frame: &Frame, dim: bool) -> Result<(), TestCaseError> {
+    prop_assert_eq!(frame.dim, if dim { 153 } else { 0 });
     for draw in &frame.draws {
         let sprite = art().catalog.sprite(draw.sprite);
         prop_assert_eq!(draw.blend, sprite.blend, "{} blends", &sprite.id);
@@ -694,7 +763,7 @@ fn check_one_message(
         count(day, |s| s == Subject::Sun),
         usize::from(lets_bodies && quiet.sun)
     );
-    let moon = lets_bodies && moon_phase(overlay.date) != MoonPhase::New;
+    let moon = lets_bodies && moon_phase(overlay.clock.date) != MoonPhase::New;
     prop_assert_eq!(count(night, |s| s == Subject::Moon), usize::from(moon));
     let stars = if weather == Weather::Clear && quiet.stars {
         STARS
@@ -815,9 +884,69 @@ fn check_settled(
         prop_assert!(species.len() == 1 || species[0] != species[1]);
     }
     check_one_message(&day, &night, input, overlay, placement.plants.len())?;
+    check_residents_settled(&day, input)?;
     let scenery = composer.scenery(art(), table());
     for mix in [0, 255] {
-        check_palette_discipline(&composer.frame(art(), table(), &scenery, mix, now))?;
+        check_palette_discipline(
+            &composer.frame(art(), table(), &scenery, mix, now),
+            overlay.dim,
+        )?;
+    }
+    Ok(())
+}
+
+/// The art's life stages for a resident's: an egg is a brood or a cocoon for some species,
+/// and a dying resident plays its adult death.
+fn art_stages(stage: LifeStage) -> &'static [&'static str] {
+    match stage {
+        LifeStage::Egg => &["egg", "brood", "cocoon"],
+        LifeStage::Juvenile => &["juvenile"],
+        LifeStage::Pupa => &["pupa"],
+        LifeStage::Adult | LifeStage::Dying => &["adult"],
+    }
+}
+
+/// Once settled, residents show what truth says they are: only the scene's own, each in art
+/// of its own species and stage (a juvenile never in adult art), a dying one in its death;
+/// none travelling in a dormant scene, and every adult in hiding in a storm.
+fn check_residents_settled(day: &[KeyedDraw], input: &SceneInput) -> Result<(), TestCaseError> {
+    let views: BTreeMap<u32, &ResidentView> = input.residents.iter().map(|r| (r.id, r)).collect();
+    for keyed in day {
+        let Subject::Resident { id, .. } = keyed.key.subject else {
+            continue;
+        };
+        let view = views.get(&id);
+        prop_assert!(view.is_some(), "resident {} is not in the scene", id);
+        let view = view.unwrap();
+        if keyed.key.part != 0 {
+            continue;
+        }
+        let keys = &art().catalog.sprite(keyed.draw.sprite).keys;
+        let routine = keys.state.as_deref().unwrap_or("");
+        let species = art_key(view.species.name());
+        prop_assert_eq!(keys.species.as_deref(), Some(species.as_str()));
+        let stage = keys.life_stage.as_deref().unwrap_or("");
+        prop_assert!(
+            art_stages(view.stage).contains(&stage),
+            "{:?} shown as {}",
+            view,
+            stage
+        );
+        if view.stage == LifeStage::Dying {
+            prop_assert_eq!(routine, "death");
+        }
+        let travelling = matches!(routine, "move" | "takeoff" | "flight" | "land" | "hop");
+        if input.presentation.state == PresentationState::Dormant {
+            prop_assert!(!travelling, "{:?} travels while dormant", view);
+        }
+        if input.weather == Weather::Storm && view.stage == LifeStage::Adult {
+            prop_assert!(
+                matches!(routine, "hide" | "withdraw" | "curl" | "retreat"),
+                "{:?} out in a storm: {}",
+                view,
+                routine
+            );
+        }
     }
     Ok(())
 }
@@ -836,6 +965,21 @@ fn fastest_ms(subject: Subject) -> u64 {
 const CLOUD_MS_PER_PX: u64 = 2600;
 /// The positions a cloud's path runs through before it starts again.
 const CLOUD_PATH: i32 = 673;
+/// The sky band drifts a pixel right every 12 s, the soil's texture every 3 min, its pattern
+/// repeating every 24 pixels; the sweep moves 2 pixels every 100 ms.
+const BAND_MS_PER_PX: u64 = 12_000;
+const SOIL_MS_PER_PX: u64 = 180_000;
+const SOIL_PERIOD: i32 = 24;
+const SWEEP_PX_PER_100_MS: u64 = 2;
+/// Motion comes in turns of 24 s; an update moves things from the turn after its own.
+const TURN_MS: u64 = 24_000;
+const TURN_MS_U32: u32 = 24_000;
+
+/// Whether a tile `w` wide at `x` stands at an edge of the frame, where a drifting tile may
+/// enter or leave.
+fn at_edge(x: i32, w: i32) -> bool {
+    x + w <= w.max(1) || x >= WIDTH - w
+}
 
 /// I-15 between two moments with no update between them: no draw's opacity jumps further
 /// than its fastest tween can move it, a cloud drifts no faster than its pace and wraps only
@@ -854,10 +998,22 @@ fn check_continuity(
             })
             .collect()
     };
+    check_residents_continuity(before, after, elapsed)?;
     let (old, new) = (index(before), index(after));
     for key in old.keys().chain(new.keys()) {
+        if matches!(key.0, Subject::Resident { .. }) {
+            continue;
+        }
         let [a, b] = [old.get(key), new.get(key)];
-        let own = u64::from(art().catalog.sprite(a.or(b).unwrap().sprite).opacity);
+        let drawn = a.or(b).unwrap();
+        let width = i32::from(art().catalog.sprite(drawn.sprite).rect.w);
+        // A drifting tile, or the sweep, may come and go at an edge of the frame; anywhere
+        // else it fades like any other draw.
+        let drifting = matches!(key.0, Subject::Weather | Subject::Soil | Subject::Sweep);
+        if drifting && (a.is_none() || b.is_none()) && at_edge(drawn.x, width) {
+            continue;
+        }
+        let own = u64::from(art().catalog.sprite(drawn.sprite).opacity);
         // Smoothstep's steepest slope is 1.5 times the average.
         let bound = own * 3 * elapsed / (2 * fastest_ms(key.0)) + 1;
         let opacity = |draw: Option<&Draw>| u64::from(draw.map_or(0, |d| d.opacity));
@@ -869,19 +1025,138 @@ fn check_continuity(
                 "{:?} changed",
                 key
             );
-            if let Subject::Cloud(_) = key.0 {
-                // Forward along its path, which wraps out of sight (the sky module's tests hold
-                // that), no further than its pace allows.
-                let drift = u64::try_from((b.x - a.x).rem_euclid(CLOUD_PATH)).unwrap();
+            // How far a drift has carried a draw: forward along its path, which wraps out of
+            // sight, no further than its pace allows.
+            let drift = |period: i32, ms_per_px: u64| -> Result<(), TestCaseError> {
+                let moved = u64::try_from((b.x - a.x).rem_euclid(period)).unwrap();
                 prop_assert!(
-                    drift <= elapsed / CLOUD_MS_PER_PX + 1,
+                    moved <= elapsed / ms_per_px + 1,
                     "{:?} drifted from {} to {}",
                     key,
                     a.x,
                     b.x
                 );
-            } else {
-                prop_assert_eq!(a.x, b.x, "{:?} moved", key);
+                Ok(())
+            };
+            match key.0 {
+                Subject::Cloud(_) => drift(CLOUD_PATH, CLOUD_MS_PER_PX)?,
+                Subject::Weather => drift(width, BAND_MS_PER_PX)?,
+                Subject::Soil => drift(SOIL_PERIOD, SOIL_MS_PER_PX)?,
+                Subject::Sweep => {
+                    let moved = u64::try_from(b.x - a.x).unwrap_or(u64::MAX);
+                    prop_assert!(moved <= SWEEP_PX_PER_100_MS * (elapsed / 100 + 1));
+                }
+                _ => prop_assert_eq!(a.x, b.x, "{:?} moved", key),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The widest step a creature's frame carries it, in pixels (the art's), and the shortest
+/// frame, in milliseconds.
+const MOST_ROOT_DELTA: u64 = 4;
+const SHORTEST_FRAME_MS: u64 = 167;
+/// A resident's cover rises and falls over half the art's 1200 ms each.
+const RESIDENT_FADE_MS: u64 = 600;
+
+/// I-15 for residents, which play their art: between two moments a resident's frames may
+/// change, but only to frames of its own species, on the ground or in the air; it never
+/// rises or sinks; it moves along the ground no faster than its frames carry it; and its
+/// strongest look never jumps, so a cover or a move never shows a gap or a pop.
+fn check_residents_continuity(
+    before: &[KeyedDraw],
+    after: &[KeyedDraw],
+    elapsed: u64,
+) -> Result<(), TestCaseError> {
+    let looks = |draws: &[KeyedDraw]| -> BTreeMap<Subject, Vec<Draw>> {
+        let mut looks: BTreeMap<Subject, Vec<Draw>> = BTreeMap::new();
+        for keyed in draws {
+            if matches!(keyed.key.subject, Subject::Resident { .. }) && keyed.key.part == 0 {
+                looks.entry(keyed.key.subject).or_default().push(keyed.draw);
+            }
+        }
+        looks
+    };
+    let (old, new) = (looks(before), looks(after));
+    let fade = 255 * 3 * elapsed / (2 * RESIDENT_FADE_MS) + 1;
+    let reach = i32::try_from((elapsed / SHORTEST_FRAME_MS + 1) * MOST_ROOT_DELTA + 1).unwrap();
+    for subject in old.keys().chain(new.keys()) {
+        let [a, b] = [old.get(subject), new.get(subject)];
+        let strongest = |draws: Option<&Vec<Draw>>| {
+            u64::from(
+                draws
+                    .and_then(|d| d.iter().map(|d| d.opacity).max())
+                    .unwrap_or(0),
+            )
+        };
+        prop_assert!(
+            strongest(a).abs_diff(strongest(b)) <= fade,
+            "{:?} jumped from {} to {} in {} ms: {:?}",
+            subject,
+            strongest(a),
+            strongest(b),
+            elapsed,
+            a.or(b).map(|d| d
+                .iter()
+                .map(|d| art().catalog.sprite(d.sprite).id.clone())
+                .collect::<Vec<_>>())
+        );
+        for draw in a.into_iter().chain(b).flatten() {
+            let sprite = art().catalog.sprite(draw.sprite);
+            prop_assert!(matches!(
+                draw.layer,
+                Layer::ResidentsGround | Layer::ResidentsAir
+            ));
+            prop_assert_eq!(
+                draw.y,
+                PLANT_GROUND_Y - i32::from(sprite.anchor.y),
+                "{:?} left the ground line",
+                subject
+            );
+        }
+        if let (Some(a), Some(b)) = (a, b) {
+            let species = |draws: &Vec<Draw>| -> BTreeSet<Option<String>> {
+                draws
+                    .iter()
+                    .map(|d| art().catalog.sprite(d.sprite).keys.species.clone())
+                    .collect()
+            };
+            // An id that becomes another species crossfades: the two overlap while it does.
+            prop_assert!(
+                !species(a).is_disjoint(&species(b)),
+                "{:?} changed species",
+                subject
+            );
+            // The top looks, compared at their anchors: mirrored or not, the ground point.
+            let point = |draw: &Draw| {
+                let sprite = art().catalog.sprite(draw.sprite);
+                let anchor = if draw.flip_x {
+                    i32::from(sprite.rect.w) - 1 - i32::from(sprite.anchor.x)
+                } else {
+                    i32::from(sprite.anchor.x)
+                };
+                draw.x + anchor
+            };
+            let (from, to) = (point(a.last().unwrap()), point(b.last().unwrap()));
+            // A move of home crossfades between two places; anything else walks.
+            if a.len() == 1 && b.len() == 1 {
+                let sprites = |draws: &Vec<Draw>| -> Vec<String> {
+                    draws
+                        .iter()
+                        .map(|d| format!("{}@{}", art().catalog.sprite(d.sprite).id, d.opacity))
+                        .collect()
+                };
+                prop_assert!(
+                    (to - from).abs() <= reach,
+                    "{:?} slid from {} to {} in {} ms: {:?} → {:?}",
+                    subject,
+                    from,
+                    to,
+                    elapsed,
+                    sprites(a),
+                    sprites(b)
+                );
             }
         }
     }
@@ -917,6 +1192,11 @@ fn moments(update: Millis, until: Millis, raised: &[Millis]) -> Vec<Millis> {
     .into_iter()
     .map(|ms| update.plus(ms))
     .collect();
+    // Through the start of the first turn the update moves in, where changes of rest play.
+    let moving = (update.0 / TURN_MS + 1) * TURN_MS;
+    for offset in (0..=7000).step_by(500).chain([1, 20_000]) {
+        moments.push(Millis(moving + offset));
+    }
     let cycle = u64::from(LABEL_CYCLE_MS);
     for &since in raised {
         for step in 1..=2 {
@@ -954,6 +1234,9 @@ fn play(composer: &mut Composer, history: &History) -> Result<[Millis; 3], TestC
             updated.update(scene, overlay, now);
             let after = drawn(&updated, mix, now);
             prop_assert_eq!(plain(&before), plain(&after), "the update at {:?} cut", now);
+            // Nor does it move the palette or the dimming at that moment.
+            prop_assert_eq!(composer.palette_mix(now), updated.palette_mix(now));
+            prop_assert_eq!(composer.dim(now), updated.dim(now));
         }
         composer.update(scene, overlay, now);
         check_placement(composer, scene)?;
@@ -992,7 +1275,9 @@ proptest! {
                 let draws = drawn(&replay, mix, moment);
                 check_subset(&draws, &showing)?;
                 if let Some((then, before)) = &previous {
-                    check_continuity(before, &draws, moment.0 - then.0)?;
+                    check_continuity(before, &draws, moment.0 - then.0).map_err(|err| {
+                        TestCaseError::fail(format!("{err} from {then:?} to {moment:?}; updates at {times:?}"))
+                    })?;
                 }
                 previous = Some((moment, draws));
             }
@@ -1014,6 +1299,190 @@ proptest! {
         let end = one.settled_at().max(two.settled_at());
         for moment in moments(times[2], end.plus(1), &[]).into_iter().chain([end]) {
             prop_assert_eq!(one.depicted(moment), two.depicted(moment));
+        }
+    }
+}
+
+/// Where two frames first differ, for a failure's message.
+fn difference(a: &Frame, b: &Frame) -> String {
+    let name = |draw: Option<&Draw>| {
+        draw.map(|draw| format!("{} {:?}", art().catalog.sprite(draw.sprite).id, draw))
+    };
+    if (a.palette_mix, a.dim) != (b.palette_mix, b.dim) {
+        return format!(
+            "mix and dim {:?} → {:?}",
+            (a.palette_mix, a.dim),
+            (b.palette_mix, b.dim)
+        );
+    }
+    let at = (0..a.draws.len().max(b.draws.len())).find(|&i| a.draws.get(i) != b.draws.get(i));
+    at.map_or_else(String::new, |i| {
+        format!("{:?} → {:?}", name(a.draws.get(i)), name(b.draws.get(i)))
+    })
+}
+
+/// The whole frame at `now`, as the app draws it: in the composer's own palette and dim.
+fn live_frame(composer: &Composer, scenery: &Scenery, now: Millis) -> Frame {
+    composer.frame(art(), table(), scenery, composer.palette_mix(now), now)
+}
+
+proptest! {
+    #![proptest_config(config(300))]
+
+    /// I-10: the composer names every moment its frame may change, so the app can sleep until
+    /// then. Between a moment and the next change it names, the frame holds.
+    #[test]
+    fn the_frame_holds_until_the_next_change(history in history(), salt in salt()) {
+        let mut composer = Composer::new(table(), salt);
+        let scenery = composer.scenery(art(), table());
+        let mut now = Millis(500);
+        for (i, (scene, overlay)) in history.scenes.iter().enumerate() {
+            if i > 0 {
+                now = match history.gaps[i - 1] {
+                    After::Ms(ms) => now.plus(ms),
+                    After::Settled => composer.settled_at().max(now),
+                };
+            }
+            composer.update(scene, overlay, now);
+            // From the update, mid-tween, once settled and past a step of the label's cycle,
+            // walk the changes the composer names, checking each span.
+            let settled = composer.settled_at().max(now);
+            // And into the first turn this scene moves in, where gusts and walks begin.
+            let moving = Millis((now.0 / TURN_MS + 1) * TURN_MS);
+            let starts = [
+                now,
+                now.plus(1500),
+                settled,
+                settled.plus(LABEL_CYCLE_MS + 700),
+                moving.plus(900),
+                moving.plus(9900),
+            ];
+            for start in starts {
+                let mut moment = start;
+                for _ in 0..12 {
+                    let Some(next) = composer.next_change(art(), table(), moment) else {
+                        break;
+                    };
+                    prop_assert!(next > moment, "{:?} named {:?}", moment, next);
+                    let frame = live_frame(&composer, &scenery, moment);
+                    for inside in [moment.0 + 1, moment.0 + (next.0 - moment.0) / 2, next.0 - 1] {
+                        if inside > moment.0 && inside < next.0 {
+                            let later = live_frame(&composer, &scenery, Millis(inside));
+                            prop_assert!(
+                                later == frame,
+                                "changed at {} before {:?}: {}",
+                                inside,
+                                next,
+                                difference(&frame, &later)
+                            );
+                        }
+                    }
+                    moment = next;
+                }
+            }
+        }
+    }
+}
+
+/// The motion budget, as the art proposes it: at most three residents travelling at once, at
+/// most one of them flying or signalling; at most six plants leaning, none in still air; and in
+/// dim mode, travel and sway only in every fourth turn.
+const MOST_TRAVELLING: usize = 3;
+const MOST_AIRBORNE: usize = 1;
+const MOST_SWAYING: usize = 6;
+
+/// How many residents travel at a moment, and how many of them fly or signal; and how many
+/// plants lean.
+fn motion_at(draws: &[KeyedDraw]) -> (usize, usize, usize) {
+    let mut travelling = BTreeSet::new();
+    let mut airborne = BTreeSet::new();
+    let mut leaning = BTreeSet::new();
+    for keyed in draws {
+        match keyed.key.subject {
+            Subject::Resident { id, .. } if keyed.key.part == 0 => {
+                let routine = art().catalog.sprite(keyed.draw.sprite).keys.state.clone();
+                match routine.as_deref() {
+                    Some("move") => {
+                        travelling.insert(id);
+                    }
+                    Some("takeoff" | "flight" | "land" | "hop" | "signal") => {
+                        travelling.insert(id);
+                        airborne.insert(id);
+                    }
+                    _ => {}
+                }
+            }
+            Subject::Plant { id, .. } if keyed.draw.shear.slope != 0 => {
+                leaning.insert(id);
+            }
+            _ => {}
+        }
+    }
+    (travelling.len(), airborne.len(), leaning.len())
+}
+
+proptest! {
+    #![proptest_config(config(300))]
+
+    #[test]
+    fn the_motion_budget_holds(history in history(), salt in salt()) {
+        let mut composer = Composer::new(table(), salt);
+        let times = play(&mut composer, &history)?;
+        // Then everyone livened: as much travel as the scene's residents could want, by day
+        // or by night as the salt falls, so the caps are pressed.
+        let (scene, overlay) = &history.scenes[2];
+        let mut scene = scene.clone();
+        for resident in &mut scene.residents {
+            resident.energy = Energy::High;
+        }
+        if scene.presentation.state != PresentationState::Dormant {
+            scene.presentation.state = PresentationState::Thriving;
+        }
+        if scene.weather == Weather::Storm {
+            scene.weather = Weather::Clear;
+        }
+        let hours = if salt.bytes()[1] % 2 == 0 { 0 } else { 12 * HOUR };
+        let overlay = OverlayInput {
+            clock: LocalClock::new(overlay.clock.date, hours),
+            ..overlay.clone()
+        };
+        let livened = times[2].plus(1);
+        composer.update(&scene, &overlay, livened);
+        let scene = &scene;
+        let overlay = &overlay;
+        // Three turns after the update stands, every frame duration apart.
+        let from = (livened.0 / TURN_MS + 1) * TURN_MS;
+        for ms in (from..from + 3 * TURN_MS).step_by(167) {
+            let draws = drawn(&composer, 255, Millis(ms));
+            let (travelling, airborne, leaning) = motion_at(&draws);
+            prop_assert!(travelling <= MOST_TRAVELLING, "{} travel at {}", travelling, ms);
+            prop_assert!(airborne <= MOST_AIRBORNE, "{} fly at {}", airborne, ms);
+            prop_assert!(leaning <= MOST_SWAYING, "{} lean at {}", leaning, ms);
+            if scene.wind == Wind::Calm {
+                prop_assert_eq!(leaning, 0, "still air at {}", ms);
+            }
+            let fourth = (ms / TURN_MS).is_multiple_of(4);
+            if overlay.dim && !fourth {
+                prop_assert_eq!((travelling, leaning), (0, 0), "dimmed, at {}", ms);
+            }
+            if scene.presentation.state == PresentationState::Dormant {
+                prop_assert_eq!(travelling, 0, "dormant, at {}", ms);
+            }
+        }
+    }
+
+    /// I-2 for motion: what every resident does in every turn is the same on every install.
+    #[test]
+    fn the_salt_never_times_motion(history in history(), salts in (salt(), salt())) {
+        let mut one = Composer::new(table(), salts.0);
+        let mut two = Composer::new(table(), salts.1);
+        let times = play(&mut one, &history)?;
+        play(&mut two, &history)?;
+        let last = times[2].0 / TURN_MS;
+        for w in last..last + 3 {
+            let (a, b) = (one.turn_plans(art(), table(), w), two.turn_plans(art(), table(), w));
+            let differ = a.iter().zip(&b).find(|(a, b)| a != b);
+            prop_assert!(a.len() == b.len() && differ.is_none(), "turn {}: {:?}", w, differ);
         }
     }
 }
@@ -1116,6 +1585,8 @@ proptest! {
         (scene, overlay) in scene(),
         salt in salt(),
     ) {
+        // Undimmed: dim mode darkens every value alike, which would only shrink the margins.
+        let overlay = OverlayInput { dim: false, ..overlay };
         let mut composer = Composer::new(table(), salt);
         composer.update(&scene, &overlay, Millis(0));
         let now = composer.settled_at();
@@ -1185,10 +1656,10 @@ fn the_generator_reaches_the_edges() {
             form: FossilForm::Bone,
         })
         .collect();
-    let overlay = OverlayInput {
-        label: LINES.iter().map(|line| (*line).to_owned()).collect(),
-        date: preset::DATE,
-    };
+    let overlay = OverlayInput::new(
+        LINES.iter().map(|line| (*line).to_owned()).collect(),
+        LocalClock::noon(preset::DATE),
+    );
     for scene in [empty, crowd] {
         let mut composer = Composer::new(table(), InstallSalt::new([7; 16]));
         composer.update(&scene, &overlay, Millis(0));

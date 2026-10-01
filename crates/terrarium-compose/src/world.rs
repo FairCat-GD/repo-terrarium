@@ -8,6 +8,7 @@
 
 use crate::catalog::{Art, Catalog, SpriteId};
 use crate::compositor::composite_area;
+use crate::drift::{self, SOIL_PERIOD};
 use crate::frame::{Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba640x74};
 use crate::order::{KeyedDraw, Subject};
 use crate::salt::{InstallSalt, Purpose};
@@ -34,6 +35,11 @@ pub const DRESSING: usize = 6;
 pub const LITTER: usize = 8;
 pub const FUNGUS: usize = 6;
 pub const STARS: usize = 7;
+/// Six stretches of the strip, one per resident (at most six).
+pub const RESIDENTS: usize = 6;
+/// The stretch the residents share: inside the glass, with room for a creature's half width.
+const RESIDENTS_FROM: i32 = 24;
+const RESIDENTS_TO: i32 = WIDTH - 24;
 
 /// The cell boundaries the monuments stand at, one per third: each between a mid and a near
 /// cell, clear of the tree cells.
@@ -60,6 +66,7 @@ pub enum Kind {
     Weed,
     Fungus,
     Mark,
+    Resident,
 }
 
 impl Kind {
@@ -77,6 +84,7 @@ impl Kind {
             Kind::Weed => 10,
             Kind::Fungus => 11,
             Kind::Mark => 12,
+            Kind::Resident => 13,
         }
     }
 
@@ -120,6 +128,8 @@ pub struct WorldLayout {
     moon: (i32, i32),
     stars: [(i32, i32); STARS],
     clouds: [Drift; sky::MAX_CLOUDS],
+    /// Where a resident lives in each stretch when no vigorous plant grows there.
+    residents: [i32; RESIDENTS],
     /// The art's sizes the places keep clear by: the sun and moon's side, and a star's.
     body_side: i32,
     star_side: i32,
@@ -179,6 +189,10 @@ impl WorldLayout {
                         y
                     },
                 )
+            }),
+            residents: std::array::from_fn(|i| {
+                let (from, to) = resident_stretch(i);
+                from + 12 + place(salt, Kind::Resident, i, 0, to - from - 24)
             }),
             clouds: std::array::from_fn(|i| Drift {
                 start: place(salt, Kind::Cloud, i, 0, 673),
@@ -240,6 +254,11 @@ impl WorldLayout {
         self.stars[usize::from(i) % STARS]
     }
 
+    /// A stretch's resident home when no vigorous plant grows there.
+    pub fn resident(&self, spot: u8) -> i32 {
+        self.residents[usize::from(spot) % RESIDENTS]
+    }
+
     pub fn cloud(&self, i: u8) -> Drift {
         self.clouds[usize::from(i) % sky::MAX_CLOUDS]
     }
@@ -247,6 +266,14 @@ impl WorldLayout {
     pub fn pebbles(&self) -> &[(i32, i32); PEBBLES] {
         &self.pebbles
     }
+}
+
+/// Where resident stretch `i` begins and ends: the same on every install.
+pub fn resident_stretch(i: usize) -> (i32, i32) {
+    (
+        stratum(RESIDENTS_FROM, RESIDENTS_TO, RESIDENTS, i),
+        stratum(RESIDENTS_FROM, RESIDENTS_TO, RESIDENTS, i + 1),
+    )
 }
 
 /// The left edge of stratum `i` of `n` spanning `from..to`.
@@ -258,8 +285,8 @@ fn stratum(from: i32, to: i32, n: usize, i: usize) -> i32 {
     from + (to - from) * i / n
 }
 
-/// The draws that never change between frames, keyed and sorted once: the soil band and its
-/// pebbles, the glass edges and corners, and the label plate.
+/// The draws that never change between frames, keyed and sorted once: the pebbles, the glass
+/// edges and corners, and the label plate. The soil band drifts, so the composer draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scenery {
     keyed: Vec<KeyedDraw>,
@@ -273,7 +300,7 @@ impl Scenery {
     pub fn new(art: &Art, table: &ArtTable, layout: &WorldLayout) -> Scenery {
         let catalog = &art.catalog;
         let world = table.world();
-        let mut draws = soil_and_glass(catalog, WIDTH);
+        let mut draws = glass_edges(catalog).to_vec();
         for (i, &(x, y)) in layout.pebbles.iter().enumerate() {
             let item = u64::try_from(i).unwrap_or(0);
             if let Some(pebble) = pick(layout.salt, Kind::Pebble, item, &world.pebbles) {
@@ -340,6 +367,19 @@ pub fn padding(art: &Art, palette_mix: u8, dim: u8) -> Padding {
 
 /// The soil band and its top edge from the left edge to `width`, then both glass edges.
 pub(crate) fn soil_and_glass(catalog: &Catalog, width: i32) -> Vec<Draw> {
+    let mut draws: Vec<Draw> = soil(catalog, width, 0)
+        .into_iter()
+        .map(|(_, _, draw)| draw)
+        .collect();
+    draws.extend(glass_edges(catalog));
+    draws
+}
+
+/// The soil band's tiles (part 0) and its top edge (part 1) from the left edge to `width`, the
+/// texture drifted `offset` pixels right, each with its column's index. A column keeps its
+/// index as the texture drifts, so a tile only ever moves a pixel at a time, and only enters
+/// or leaves at an edge of the frame.
+pub(crate) fn soil(catalog: &Catalog, width: i32, offset: i32) -> Vec<(u8, u16, Draw)> {
     let tiles = [
         sprite(catalog, "tmp.soil.tile.01"),
         sprite(catalog, "tmp.soil.tile.02"),
@@ -348,30 +388,36 @@ pub(crate) fn soil_and_glass(catalog: &Catalog, width: i32) -> Vec<Draw> {
         sprite(catalog, "tmp.soil.edge.01"),
         sprite(catalog, "tmp.soil.edge.02"),
     ];
-    let step = usize::from(catalog.sprite(tiles[0]).rect.w).max(1);
+    let step = i32::from(catalog.sprite(tiles[0]).rect.w).max(1);
     // Every third tile is the second variant, offset between tile and edge, so the band does
-    // not repeat every tile.
-    let variant = |i: usize| usize::from(i % 3 == 2);
-    let columns: Vec<(usize, i32)> = (0..width).step_by(step).enumerate().collect();
-    let mut draws: Vec<Draw> = columns
+    // not repeat every tile. The pattern's period is three tiles, so the drift wraps there.
+    let variant = |column: u16, shift: u16| usize::from((column + shift) % 3 == 2);
+    let columns = drift::columns(offset, step, SOIL_PERIOD / step, width);
+    let mut draws: Vec<(u8, u16, Draw)> = columns
         .iter()
-        .map(|&(i, x)| Draw::new(catalog, tiles[variant(i)], x, GROUND))
+        .map(|&(column, x)| {
+            (
+                0,
+                column,
+                Draw::new(catalog, tiles[variant(column, 0)], x, GROUND),
+            )
+        })
         .collect();
-    draws.extend(
-        columns
-            .iter()
-            .map(|&(i, x)| Draw::new(catalog, edges[variant(i + 1)], x, GROUND)),
-    );
+    draws.extend(columns.iter().map(|&(column, x)| {
+        let edge = edges[variant(column, 1)];
+        (1, column, Draw::new(catalog, edge, x, GROUND))
+    }));
+    draws
+}
+
+/// The left and right glass edges.
+fn glass_edges(catalog: &Catalog) -> [Draw; 2] {
     let right = sprite(catalog, "tmp.glass.edge.right");
     let right_x = WIDTH - i32::from(catalog.sprite(right).rect.w);
-    draws.push(Draw::new(
-        catalog,
-        sprite(catalog, "tmp.glass.edge.left"),
-        0,
-        0,
-    ));
-    draws.push(Draw::new(catalog, right, right_x, 0));
-    draws
+    [
+        Draw::new(catalog, sprite(catalog, "tmp.glass.edge.left"), 0, 0),
+        Draw::new(catalog, right, right_x, 0),
+    ]
 }
 
 /// A sprite the delivered art is known to hold, by its ID.
@@ -434,6 +480,7 @@ mod tests {
             Kind::Weed,
             Kind::Fungus,
             Kind::Mark,
+            Kind::Resident,
         ];
         let codes: std::collections::BTreeSet<u64> = kinds.iter().map(|k| k.code()).collect();
         assert_eq!(codes.len(), kinds.len());

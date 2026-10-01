@@ -2,4 +2,4 @@
 source: crates/terrarium-compose/tests/pixels.rs
 expression: "format!(\"{width}x{height} RGBA8, SHA-256 {hex}\")"
 ---
-640x74 RGBA8, SHA-256 40fd81f33f839b482275f8d2bd9ba1480a87547adfeef69447a996f714e1d220
+640x74 RGBA8, SHA-256 3477b7fed1542701c97f5c66a906b5ffc5250191b0c2881479a64690e1918d7c
