@@ -76,36 +76,10 @@ fn beside(out: &Path, scale: u32) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// A directory the test owns under the system temp dir, removed when dropped.
-    struct TempDir(PathBuf);
+    use crate::test_support::TempDir;
 
-    impl TempDir {
-        fn new(name: &str) -> TempDir {
-            let path = std::env::temp_dir().join(format!(
-                "terrarium-render-test-{}-{name}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).expect("the temp dir is writable");
-            TempDir(path)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn decode(path: &Path) -> (u32, u32, Vec<[u8; 3]>) {
-        let file = std::fs::File::open(path).unwrap();
-        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
-            .read_info()
-            .unwrap();
-        let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut buffer).unwrap();
-        let (rgb, _) = buffer[..info.buffer_size()].as_chunks::<3>();
-        (info.width, info.height, rgb.to_vec())
+    fn decode(path: &Path) -> (u32, u32, Vec<[u8; 4]>) {
+        export::read_png(&std::fs::read(path).unwrap()).expect("an RGB PNG")
     }
 
     #[test]
@@ -119,7 +93,7 @@ mod tests {
 
     #[test]
     fn the_demo_is_written_at_1x_and_3x_with_the_composited_pixels() {
-        let dir = TempDir::new("demo");
+        let dir = TempDir::new("render-demo");
         let [small, large] = render_demo(&dir.0.join("demo.png")).unwrap();
         assert_eq!(large, dir.0.join("demo@3x.png"));
 
@@ -128,15 +102,13 @@ mod tests {
         let image = composite(art, &sample::frame(art, &table, SAMPLE_LABEL, 0, 0));
         let (w, h, pixels) = decode(&small);
         assert_eq!((w, h), (640, 74));
-        for (got, want) in pixels.iter().zip(image.pixels()) {
-            assert_eq!(got[..], want[..3]);
-        }
+        assert_eq!(pixels, image.pixels());
         let (w, h, pixels) = decode(&large);
         assert_eq!((w, h), (1920, 222));
         // Native (x, y) fills the 3×3 block at (3x, 3y).
         for (x, y) in [(0, 0), (100, 40), (639, 73)] {
             let block = pixels[(3 * y * 1920 + 3 * x + 2 * 1920 + 2) as usize];
-            assert_eq!(block[..], image.pixel(x, y)[..3]);
+            assert_eq!(block, image.pixel(x, y));
         }
     }
 }

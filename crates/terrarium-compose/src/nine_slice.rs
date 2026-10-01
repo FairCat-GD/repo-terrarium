@@ -95,8 +95,8 @@ fn steps(from: i32, to: i32, tile: i32) -> impl Iterator<Item = i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blend::blend;
     use crate::catalog::{Art, Blend};
-    use crate::compositor::blend;
     use crate::compositor::composite;
     use crate::frame::Frame;
     use crate::palette::{Lut, Slot};

@@ -533,6 +533,14 @@ impl Catalog {
                 font.name
             ));
         }
+        // Text steps by the advance and panels by the tile, so a zero would divide by zero or
+        // never finish laying out.
+        if let Some(font) = self.fonts.iter().find(|font| font.advance == 0) {
+            return invalid(format!("{}'s advance is 0", font.name));
+        }
+        if self.ui.nine_slice.tile_size == 0 {
+            return invalid("the nine-slice tile size is 0".into());
+        }
         let glyphs = self
             .fonts
             .iter()
@@ -673,6 +681,22 @@ mod tests {
         assert!(matches!(
             Catalog::decode(&catalog.encode(), EMBEDDED_ATLAS),
             Err(DecodeError::Invalid(what)) if what.contains("glyphs are not sorted")
+        ));
+    }
+
+    #[test]
+    fn a_zero_advance_or_tile_size_is_refused() {
+        let mut catalog = Art::embedded().catalog.clone();
+        catalog.fonts[0].advance = 0;
+        assert!(matches!(
+            Catalog::decode(&catalog.encode(), EMBEDDED_ATLAS),
+            Err(DecodeError::Invalid(what)) if what.contains("advance is 0")
+        ));
+        let mut catalog = Art::embedded().catalog.clone();
+        catalog.ui.nine_slice.tile_size = 0;
+        assert!(matches!(
+            Catalog::decode(&catalog.encode(), EMBEDDED_ATLAS),
+            Err(DecodeError::Invalid(what)) if what.contains("tile size is 0")
         ));
     }
 

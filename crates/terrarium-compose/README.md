@@ -8,7 +8,8 @@ Depiction: from `SceneInput` to pixels.
 - The integer scale policy and the upscaler that applies it with padding, shared by the
   presenter and, later, every export.
 - The CPU compositor (`compositor`), which paints a `Frame` of sprite draws into the 640×74
-  RGBA image, and the palette crossfade it paints with (`palette`).
+  RGBA image, the one blend rule it and the palette share (`blend`), and the palette
+  crossfade it paints with (`palette`).
 - Bitmap text and the label plate (`text`), and the nine-slice panel (`nine_slice`).
 - Damage: rewriting only what changed, equal to a full redraw (`scale::Damage`).
 - The one PNG encoder (`export`), for exports, `cargo xtask render` and the snapshot tests.

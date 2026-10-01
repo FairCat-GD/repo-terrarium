@@ -8,6 +8,7 @@
 use serde_json::Value;
 
 use super::*;
+use crate::test_support::TempDir;
 
 const ACTIVE: &str = "biome-temperate/active-manifests.json";
 const SKY: &str = "biome-temperate/sky/exports/batch-02/sky-batch-02.json";
@@ -465,30 +466,9 @@ fn check_5_fails_on_an_effect_frame_hosted_outside_its_routine() {
     );
 }
 
-/// A directory the test owns under the system temp dir, removed when dropped.
-struct TempDir(std::path::PathBuf);
-
-impl TempDir {
-    fn new(name: &str) -> TempDir {
-        let path = std::env::temp_dir().join(format!(
-            "terrarium-assets-test-{}-{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("the temp dir is writable");
-        TempDir(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn write_mode_rewrites_what_changed_and_removes_what_is_no_longer_generated() {
-    let dir = TempDir::new("write");
+    let dir = TempDir::new("assets-write");
     std::fs::create_dir_all(dir.0.join("old")).unwrap();
     std::fs::write(dir.0.join("old/atlas.bin"), [1]).unwrap();
     std::fs::write(dir.0.join(".DS_Store"), [0]).unwrap();

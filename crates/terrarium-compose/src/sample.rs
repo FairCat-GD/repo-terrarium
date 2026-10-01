@@ -5,8 +5,8 @@
 use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState};
 
 use crate::catalog::{Art, Catalog, SpriteId};
-use crate::compositor::composite;
-use crate::frame::{Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH};
+use crate::compositor::composite_area;
+use crate::frame::{Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba640x74};
 use crate::scale::Padding;
 use crate::text::Label;
 use crate::variants::{ArtTable, PlantArt};
@@ -121,7 +121,14 @@ pub fn padding(art: &Art, palette_mix: u8, dim: u8) -> Padding {
         palette_mix,
         dim,
     };
-    let image = composite(art, &frame);
+    let column = Area {
+        x: 0,
+        y: 0,
+        w: 1,
+        h: HEIGHT,
+    };
+    let mut image = Rgba640x74::filled([0; 4]);
+    composite_area(art, &frame, &mut image, column);
     std::array::from_fn(|y| image.pixel(0, u32::try_from(y).unwrap_or(0)))
 }
 
@@ -190,8 +197,9 @@ fn sprite(catalog: &Catalog, name: &str) -> SpriteId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blend::dim;
     use crate::catalog::Layer;
-    use crate::compositor::dim;
+    use crate::compositor::composite;
 
     fn sample(mix: u8, dim: u8) -> Frame {
         let art = Art::embedded();

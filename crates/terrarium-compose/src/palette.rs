@@ -4,8 +4,8 @@
 //! day and night rows and blends the two by its `palette_mix`, so night swaps the slots before
 //! anything is composited, and nothing is ever quantized back into the palette.
 
+use crate::blend::mix;
 use crate::catalog::{PALETTE_SLOTS, Palette, Rgb};
-use crate::compositor::mix;
 
 /// A logical palette slot, 0..=31. Its atlas byte is the slot + 1, because 0 is transparent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

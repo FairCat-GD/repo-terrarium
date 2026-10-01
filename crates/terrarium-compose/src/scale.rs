@@ -156,7 +156,8 @@ pub fn upscale_into<T: Copy>(
     upscale_damage_into(frame, scale, padding, pack, dst, &Damage::FULL).map(|_| ())
 }
 
-/// As [`upscale_into`], but writes only what `damage` covers, and returns that area of `dst`.
+/// As [`upscale_into`], but writes only what `damage` covers, and returns that area of `dst`,
+/// or `None` when it covers nothing.
 /// Over a destination that holds the image the damage was measured from, the result equals a
 /// full redraw. A damage reaching past the frame is cut at its edge.
 pub fn upscale_damage_into<T: Copy>(
@@ -166,7 +167,7 @@ pub fn upscale_damage_into<T: Copy>(
     pack: impl Fn(Rgba) -> T,
     dst: &mut [T],
     damage: &Damage,
-) -> Result<PhysicalRect, SizeMismatch> {
+) -> Result<Option<PhysicalRect>, SizeMismatch> {
     if dst.len() != scale.pixel_count() {
         return Err(SizeMismatch {
             expected: scale.pixel_count(),
@@ -215,12 +216,13 @@ pub fn upscale_damage_into<T: Copy>(
             row[span.clone()].copy_from_slice(&first[span.clone()]);
         }
     }
-    Ok(PhysicalRect {
+    let written = PhysicalRect {
         x: span_start,
         y: top * k,
         w: span_end - span_start,
         h: (bottom - top) * k,
-    })
+    };
+    Ok((written.w > 0 && written.h > 0).then_some(written))
 }
 
 #[cfg(test)]
@@ -412,12 +414,12 @@ mod tests {
         let area = upscale_damage_into(&frame, &scale, &padding(), |c| c, &mut dst, &damage);
         assert_eq!(
             area,
-            Ok(PhysicalRect {
+            Ok(Some(PhysicalRect {
                 x: 10 + 10,
                 y: 4,
                 w: 6,
                 h: 8
-            })
+            }))
         );
         let rows = Damage {
             padding: true,
@@ -426,13 +428,20 @@ mod tests {
         let area = upscale_damage_into(&frame, &scale, &padding(), |c| c, &mut dst, &rows);
         assert_eq!(
             area,
-            Ok(PhysicalRect {
+            Ok(Some(PhysicalRect {
                 x: 0,
                 y: 4,
                 w: 1301,
                 h: 8
-            })
+            }))
         );
+        // Nothing to write, or only past the frame: no area.
+        let empty = Damage { w: 0, ..damage };
+        let past = Damage { y: 80, ..damage };
+        for nothing in [empty, past] {
+            let area = upscale_damage_into(&frame, &scale, &padding(), |c| c, &mut dst, &nothing);
+            assert_eq!(area, Ok(None));
+        }
     }
 
     fn redraw(frame: &Rgba640x74, scale: &StripScale, pad: &Padding) -> Vec<Rgba> {

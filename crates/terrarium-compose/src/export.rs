@@ -34,6 +34,22 @@ pub fn png(width: u32, height: u32, pixels: &[Rgba]) -> Vec<u8> {
     out
 }
 
+/// Reads back what [`png`] writes: an 8-bit RGB PNG, as its size and opaque pixels. `None`
+/// for anything else.
+pub fn read_png(bytes: &[u8]) -> Option<(u32, u32, Vec<Rgba>)> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    if (info.color_type, info.bit_depth) != (png::ColorType::Rgb, png::BitDepth::Eight) {
+        return None;
+    }
+    let (rgb, _) = buffer.get(..info.buffer_size())?.as_chunks::<3>();
+    let pixels = rgb.iter().map(|&[r, g, b]| [r, g, b, 255]).collect();
+    Some((info.width, info.height, pixels))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,16 +58,22 @@ mod tests {
     fn an_image_round_trips_through_its_png() {
         let pixels: Vec<Rgba> = (0..6_u8).map(|i| [i, 2 * i, 3 * i, 255]).collect();
         let bytes = png(3, 2, &pixels);
-        let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
-        let mut reader = decoder.read_info().unwrap();
-        let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
-        let info = reader.next_frame(&mut buffer).unwrap();
-        assert_eq!((info.width, info.height), (3, 2));
-        assert_eq!(info.color_type, png::ColorType::Rgb);
-        let (rgb, _) = buffer[..info.buffer_size()].as_chunks::<3>();
-        let read: Vec<Rgba> = rgb.iter().map(|&[r, g, b]| [r, g, b, 255]).collect();
-        assert_eq!(read, pixels);
+        assert_eq!(read_png(&bytes), Some((3, 2, pixels.clone())));
         assert_eq!(png(3, 2, &pixels), bytes, "the same pixels, the same bytes");
+    }
+
+    #[test]
+    fn anything_but_its_own_format_reads_as_none() {
+        assert_eq!(read_png(b"not a png"), None);
+        let mut gray = Vec::new();
+        let mut encoder = png::Encoder::new(&mut gray, 1, 1);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[7])
+            .unwrap();
+        assert_eq!(read_png(&gray), None);
     }
 
     #[test]

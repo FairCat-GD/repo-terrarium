@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::fmt::Write as _;
+
 use sha2::{Digest, Sha256};
 use terrarium_compose::catalog::{Art, Blend, Catalog, Layer, SpriteId};
 use terrarium_compose::compositor::composite;
@@ -18,7 +20,6 @@ use terrarium_compose::sample;
 use terrarium_compose::scale::{SizeStep, StripScale, upscale_into};
 use terrarium_compose::text::{Face, Label, Text};
 use terrarium_compose::variants::ArtTable;
-use terrarium_truth::canon::to_hex;
 
 fn art() -> &'static Art<'static> {
     Art::embedded()
@@ -33,7 +34,12 @@ fn id(name: &str) -> SpriteId {
 }
 
 fn snapshot(name: &str, width: u32, height: u32, pixels: &[Rgba]) {
-    let hex = to_hex(&Sha256::digest(pixels.as_flattened()));
+    let hex = Sha256::digest(pixels.as_flattened())
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
     insta::assert_snapshot!(
         format!("{name}-pixels"),
         format!("{width}x{height} RGBA8, SHA-256 {hex}")

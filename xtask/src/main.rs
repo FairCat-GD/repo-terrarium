@@ -7,6 +7,8 @@ mod graph;
 mod probe_zip;
 mod purity;
 mod render;
+#[cfg(test)]
+mod test_support;
 mod verify;
 
 use std::path::Path;
