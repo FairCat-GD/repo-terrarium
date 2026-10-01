@@ -1,6 +1,6 @@
-//! The install salt: 16 random bytes per install, stored beside the terrarium. It moves the
-//! slots within their cells and picks between equivalent sprites, and nothing else (I-2). Truth
-//! never sees it, so two installs may look different but never disagree.
+//! The install salt: 16 random bytes per install, stored beside the terrarium. It
+//! moves the slots within their cells, places the world's dressing, and picks between
+//! equivalent sprites, and nothing else (I-2). Truth never sees it, so two installs may look different but never disagree.
 
 /// What a salted value is for. Each purpose draws an independent value from the same salt, so
 /// adding a purpose never moves an existing one.
@@ -10,6 +10,10 @@ pub enum Purpose {
     SlotJitter,
     /// Which of a filler's equivalent sprites a cell shows.
     FillVariant,
+    /// Where one of the world's pieces stands: a spot, a cloud's path, a star.
+    WorldPlace,
+    /// Which of a world piece's equivalent sprites it shows.
+    WorldVariant,
 }
 
 impl Purpose {
@@ -17,6 +21,8 @@ impl Purpose {
         match self {
             Purpose::SlotJitter => 1,
             Purpose::FillVariant => 2,
+            Purpose::WorldPlace => 3,
+            Purpose::WorldVariant => 4,
         }
     }
 }

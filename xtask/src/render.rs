@@ -13,7 +13,7 @@ use terrarium_compose::export;
 use terrarium_compose::frame::{Frame, NATIVE_HEIGHT, NATIVE_WIDTH};
 use terrarium_compose::scale::{StripScale, upscale_into};
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::{preset, sample};
+use terrarium_compose::{preset, sample, world};
 
 /// The label every picture shows: the binary's name, as the app's copy module gives it to the
 /// strip.
@@ -55,7 +55,7 @@ pub fn render_demo(out: &Path) -> Result<[PathBuf; 2], String> {
 pub fn render_preset(name: &str, out: &Path) -> Result<[PathBuf; 2], String> {
     let art = Art::embedded();
     let table = table(art)?;
-    let frame = preset::frame(art, &table, name, SAMPLE_LABEL).ok_or_else(|| {
+    let frame = preset::frame(art, &table, name, SAMPLE_LABEL, 0).ok_or_else(|| {
         format!(
             "no preset is called `{name}`; the presets are {}",
             preset::NAMES.join(", ")
@@ -71,7 +71,7 @@ fn table(art: &Art) -> Result<ArtTable, String> {
 /// Composites `frame` and writes it at 1× to `out` and at 3× beside it.
 fn write(art: &Art, frame: &Frame, out: &Path) -> Result<[PathBuf; 2], String> {
     let image = composite(art, frame);
-    let padding = sample::padding(art, 0, 0);
+    let padding = world::padding(art, 0, 0);
     let large = StripScale::exact(LARGE_SCALE);
     let mut pixels = vec![[0; 4]; large.pixel_count()];
     upscale_into(&image, &large, &padding, |colour| colour, &mut pixels).map_err(|err| {
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(large, dir.0.join("dormant@3x.png"));
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).unwrap();
-        let frame = preset::frame(art, &table, "dormant", SAMPLE_LABEL).unwrap();
+        let frame = preset::frame(art, &table, "dormant", SAMPLE_LABEL, 0).unwrap();
         let (w, h, pixels) = decode(&small);
         assert_eq!((w, h), (640, 74));
         assert_eq!(pixels, composite(art, &frame).pixels());

@@ -5,6 +5,37 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-01
+
+The composer now draws the whole terrarium around its plants: the sky, the ground, the glass and
+the label. The strip still shows the sample scene until the live terrarium reaches it. The
+preset scenes now show the whole world, by day and by night.
+
+### Added
+
+- **The sky.**
+  - A weather band across the top: clear, overcast, storm or haze.
+  - Clouds drift slowly to the right. A clear sky has a few small ones, an overcast sky more and
+    larger ones, a storm none.
+  - The sun by day; by night, the moon in the real phase of the local date, and stars.
+  - The dusk and sunburst light washes, fading in and out.
+- **The ground.**
+  - Pebbles in the soil band, fossils lying in it, and small decorative tufts between the
+    plants.
+  - Monuments as standing stones that grow lichen with age, glow faintly at night, and carry up
+    to three carved marks.
+  - Weeds between the plants, merging into weed patches when there are many.
+  - Fallen leaves, or dead stems once the terrarium is dead, and fungus that glows at night.
+  - Healthy plants glow softly at night.
+- **The glass:** corners on the frame, and condensation and dust when the terrarium calls for
+  them.
+- **The label** now sits at the top left, as in the art's reference scene, clear of the plants.
+  It cycles through its lines every 20 seconds and crossfades between them.
+- **One message at a time.** Each state of the terrarium quiets the composer's own sky and
+  ground decoration so its main signal stands out. Examples: no sun or drifting clouds over a
+  dormant or dead terrarium, and no decorative tufts while it struggles. Nothing the terrarium
+  reports is ever hidden.
+
 ## [0.7.0] - 2026-10-01
 
 The terrarium's plants are now composed from the state truth hands over, though the strip still

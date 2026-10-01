@@ -13,9 +13,9 @@ use muda::MenuId;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NATIVE_HEIGHT, Rgba, Rgba640x74};
-use terrarium_compose::sample;
 use terrarium_compose::scale::{SizeStep, StripScale};
 use terrarium_compose::variants::ArtTable;
+use terrarium_compose::{sample, world};
 use terrarium_platform::SystemEvent;
 use terrarium_platform::geometry::Edge;
 use winit::application::ApplicationHandler;
@@ -48,7 +48,7 @@ fn sample_scene() -> (Rgba640x74, [Rgba; NATIVE_HEIGHT as usize]) {
     // `cargo xtask verify` checks the embedded art is complete, so this table always builds.
     let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
     let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
-    (composite(art, &frame), sample::padding(art, 0, 0))
+    (composite(art, &frame), world::padding(art, 0, 0))
 }
 
 /// What other threads send the event loop.

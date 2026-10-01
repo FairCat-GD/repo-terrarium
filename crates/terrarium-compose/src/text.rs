@@ -138,17 +138,24 @@ impl<'a> Label<'a> {
     /// The plate with its top-left at `(x, y)`, and `line` fitted to its capacity and centred
     /// in its inset. Descenders land one row below the inset, still on the plate.
     pub fn draws(&self, line: &str, x: i32, y: i32) -> Vec<Draw> {
+        let mut draws = vec![self.plate(x, y)];
+        draws.extend(self.text_draws(line, x, y));
+        draws
+    }
+
+    /// The plate alone, its top-left at `(x, y)`.
+    pub fn plate(&self, x: i32, y: i32) -> Draw {
+        Draw::in_layer(self.text.catalog, self.plate, Layer::Label, x, y)
+    }
+
+    /// The text alone, as [`Label::draws`] lays it on a plate whose top-left is `(x, y)`.
+    pub fn text_draws(&self, line: &str, x: i32, y: i32) -> Vec<Draw> {
         let line = fit(line, self.capacity());
         let spare = i32::from(self.inset.w) - self.text.width(&line);
         let text_x = x + i32::from(self.inset.x) + spare / 2;
         let text_y = y + i32::from(self.inset.y);
-        let catalog = self.text.catalog;
-        let mut draws = vec![Draw::in_layer(catalog, self.plate, Layer::Label, x, y)];
-        draws.extend(
-            self.text
-                .draws(&line, text_x, text_y, Slot::SOIL_DEEP, Layer::Label),
-        );
-        draws
+        self.text
+            .draws(&line, text_x, text_y, Slot::SOIL_DEEP, Layer::Label)
     }
 }
 

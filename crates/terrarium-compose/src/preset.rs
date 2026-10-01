@@ -1,25 +1,26 @@
 //! Fictional scenes, one per key state, drawn by the composer for `cargo xtask render --preset`
-//! and pinned by exact snapshots. Every preset grows from one seeded pool of eight species, as
-//! truth's would: two far, three mid and three near.
-//!
-//! Only the plants and the presentation state reach the picture so far. The weather, ground
-//! cover and glass counts are what such a terrarium would hold, ready for the world to draw.
+//! and pinned by exact snapshots, by day and by night. Every preset grows from one seeded pool
+//! of eight species, as truth's would: two far, three mid and three near. Each holds what such
+//! a terrarium would: its weather and light, ground cover, glass, monuments and fossils.
 
 use terrarium_truth::scene::{
-    GrowthStage, Light, PlantSpecies, PlantState, PlantView, Presentation, SceneInput, Weather,
-    Wind,
+    FossilForm, FossilView, GrowthStage, Light, MonumentAge, MonumentView, PlantSpecies,
+    PlantState, PlantView, Presentation, SceneInput, Weather, Wind,
 };
 use terrarium_truth::{PresentationState, Tick};
 
 use crate::catalog::Art;
-use crate::composer::{Composer, Scenery};
+use crate::composer::{Composer, OverlayInput};
 use crate::frame::Frame;
 use crate::salt::InstallSalt;
+use crate::sky::LocalDate;
 use crate::tween::Millis;
 use crate::variants::ArtTable;
 
 /// The salt every preset and snapshot is drawn with.
 pub const SALT: InstallSalt = InstallSalt::new(*b"terrarium-preset");
+/// The date most presets are drawn on: a full moon.
+pub const DATE: LocalDate = LocalDate::new(2026, 3, 3);
 
 pub const NAMES: [&str; 7] = [
     "thriving",
@@ -164,84 +165,108 @@ const RECOVERING: &[Plant] = &[
     (Foxglove, S, Thriving, false),
 ];
 
+use FossilForm::{Bone, LeafPrint, Shell};
+use MonumentAge::{Ancient, Lichened, Young};
+
 /// What a preset's terrarium holds beyond its plants.
 struct World {
     state: PresentationState,
     plants: &'static [Plant],
     weather: Weather,
+    light: Light,
     wind: Wind,
     /// Weeds, litter and fungus.
     cover: (u8, u8, u8),
     /// Condensation and dust.
     glass: (u8, u8),
+    /// Each monument's age and carved marks.
+    monuments: &'static [(MonumentAge, u8)],
+    fossils: &'static [FossilForm],
+    date: LocalDate,
 }
 
+const DEFAULT: World = World {
+    state: PresentationState::Thriving,
+    plants: &[],
+    weather: Weather::Clear,
+    light: Light::Neutral,
+    wind: Wind::Calm,
+    cover: (0, 0, 0),
+    glass: (0, 0),
+    monuments: &[],
+    fossils: &[],
+    date: DATE,
+};
+
 fn world(name: &str) -> Option<World> {
-    let world = |state, plants, weather, wind, cover, glass| World {
-        state,
-        plants,
-        weather,
-        wind,
-        cover,
-        glass,
-    };
     Some(match name {
-        "thriving" => world(
-            PresentationState::Thriving,
-            THRIVING,
-            Weather::Clear,
-            Wind::Breezy,
-            (0, 1, 0),
-            (0, 0),
-        ),
-        "struggling-low-light" => world(
-            PresentationState::Struggling,
-            LOW_LIGHT,
-            Weather::Overcast,
-            Wind::Calm,
-            (1, 2, 0),
-            (0, 0),
-        ),
-        "struggling-poor-soil" => world(
-            PresentationState::Struggling,
-            POOR_SOIL,
-            Weather::Overcast,
-            Wind::Calm,
-            (6, 4, 2),
-            (0, 0),
-        ),
-        "mature" => world(
-            PresentationState::Mature,
-            MATURE,
-            Weather::Clear,
-            Wind::Calm,
-            (0, 2, 1),
-            (0, 0),
-        ),
-        "dormant" => world(
-            PresentationState::Dormant,
-            DORMANT,
-            Weather::Clear,
-            Wind::Calm,
-            (0, 2, 0),
-            (1, 0),
-        ),
-        "dead" => world(
-            PresentationState::Dead,
-            DEAD,
-            Weather::Haze,
-            Wind::Calm,
-            (2, 8, 4),
-            (0, 1),
-        ),
-        "recovering" => world(
-            PresentationState::Recovering,
-            RECOVERING,
-            Weather::Clear,
-            Wind::Breezy,
-            (1, 4, 1),
-            (0, 0),
-        ),
+        "thriving" => World {
+            plants: THRIVING,
+            wind: Wind::Breezy,
+            cover: (0, 1, 0),
+            monuments: &[(Young, 0)],
+            ..DEFAULT
+        },
+        "struggling-low-light" => World {
+            state: PresentationState::Struggling,
+            plants: LOW_LIGHT,
+            weather: Weather::Overcast,
+            light: Light::Dusk,
+            cover: (1, 2, 0),
+            monuments: &[(Lichened, 1)],
+            fossils: &[Shell],
+            ..DEFAULT
+        },
+        "struggling-poor-soil" => World {
+            state: PresentationState::Struggling,
+            plants: POOR_SOIL,
+            weather: Weather::Overcast,
+            cover: (6, 4, 2),
+            monuments: &[(Lichened, 0)],
+            fossils: &[Bone, LeafPrint],
+            ..DEFAULT
+        },
+        "mature" => World {
+            state: PresentationState::Mature,
+            plants: MATURE,
+            cover: (0, 2, 1),
+            monuments: &[(Lichened, 2), (Ancient, 3)],
+            fossils: &[LeafPrint],
+            ..DEFAULT
+        },
+        "dormant" => World {
+            state: PresentationState::Dormant,
+            plants: DORMANT,
+            cover: (0, 2, 0),
+            glass: (1, 0),
+            monuments: &[(Lichened, 1)],
+            fossils: &[Shell],
+            // A waxing crescent.
+            date: LocalDate::new(2026, 3, 21),
+            ..DEFAULT
+        },
+        "dead" => World {
+            state: PresentationState::Dead,
+            plants: DEAD,
+            weather: Weather::Haze,
+            cover: (2, 8, 4),
+            glass: (0, 1),
+            monuments: &[(Ancient, 3), (Ancient, 1), (Lichened, 0)],
+            fossils: &[Bone, Shell, LeafPrint],
+            // A last quarter.
+            date: LocalDate::new(2026, 3, 11),
+            ..DEFAULT
+        },
+        "recovering" => World {
+            state: PresentationState::Recovering,
+            plants: RECOVERING,
+            light: Light::Sunburst,
+            wind: Wind::Breezy,
+            cover: (1, 4, 1),
+            monuments: &[(Ancient, 2)],
+            fossils: &[Bone],
+            ..DEFAULT
+        },
         _ => return None,
     })
 }
@@ -263,6 +288,18 @@ pub fn scene(name: &str) -> Option<SceneInput> {
         .collect();
     let (weeds, litter, fungus) = world.cover;
     let (condensation, dust) = world.glass;
+    let monuments = (0_u32..)
+        .zip(world.monuments)
+        .map(|(i, &(age, marks))| MonumentView {
+            id: 10 + i,
+            age,
+            marks,
+        })
+        .collect();
+    let fossils = (0_u32..)
+        .zip(world.fossils)
+        .map(|(i, &form)| FossilView { id: 20 + i, form })
+        .collect();
     Some(SceneInput {
         presentation: Presentation {
             state: world.state,
@@ -271,11 +308,22 @@ pub fn scene(name: &str) -> Option<SceneInput> {
         weeds,
         litter,
         fungus,
+        monuments,
+        fossils,
         weather: world.weather,
+        light: world.light,
         wind: world.wind,
         condensation,
         dust,
         ..bare(world.state, plants)
+    })
+}
+
+/// The named preset's overlay: its label reading `label`, on its date.
+pub fn overlay(name: &str, label: &str) -> Option<OverlayInput> {
+    Some(OverlayInput {
+        label: vec![label.to_owned()],
+        date: world(name)?.date,
     })
 }
 
@@ -304,13 +352,20 @@ pub fn bare(state: PresentationState, plants: Vec<PlantView>) -> SceneInput {
     }
 }
 
-/// The named preset composed from nothing and settled, by day, with its label reading `label`.
-pub fn frame(art: &Art, table: &ArtTable, name: &str, label: &str) -> Option<Frame> {
+/// The named preset composed from nothing and settled, at `palette_mix` (0 by day, 255 by
+/// night), with its label reading `label`.
+pub fn frame(
+    art: &Art,
+    table: &ArtTable,
+    name: &str,
+    label: &str,
+    palette_mix: u8,
+) -> Option<Frame> {
     let input = scene(name)?;
     let mut composer = Composer::new(table, SALT);
-    composer.update(&input, Millis(0));
-    let scenery = Scenery::new(art, label);
-    Some(composer.frame(art, table, &scenery, 0, composer.settled_at()))
+    composer.update(&input, &overlay(name, label)?, Millis(0));
+    let scenery = composer.scenery(art, table);
+    Some(composer.frame(art, table, &scenery, palette_mix, composer.settled_at()))
 }
 
 #[cfg(test)]
@@ -345,14 +400,25 @@ mod tests {
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).unwrap();
         for name in NAMES {
-            let frame = frame(art, &table, name, "repo-terrarium").unwrap();
-            assert!(frame.draws.len() > 20, "{name}");
-            assert!(
-                frame
-                    .draws
-                    .windows(2)
-                    .all(|pair| pair[0].layer <= pair[1].layer)
-            );
+            for mix in [0, 255] {
+                let frame = frame(art, &table, name, "repo-terrarium", mix).unwrap();
+                assert!(frame.draws.len() > 20, "{name}");
+                assert!(
+                    frame
+                        .draws
+                        .windows(2)
+                        .all(|pair| pair[0].layer <= pair[1].layer)
+                );
+            }
         }
+    }
+
+    #[test]
+    fn the_preset_dates_show_three_moons() {
+        use crate::sky::{MoonPhase, moon_phase};
+        let phase = |name| moon_phase(overlay(name, "").unwrap().date);
+        assert_eq!(phase("mature"), MoonPhase::Full);
+        assert_eq!(phase("dormant"), MoonPhase::WaxingCrescent);
+        assert_eq!(phase("dead"), MoonPhase::LastQuarter);
     }
 }

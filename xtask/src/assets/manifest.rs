@@ -153,6 +153,8 @@ struct SpriteJson {
     weed_opacity_at_frame_start: Option<f64>,
     fresh_soil_opacity_at_frame_start: Option<f64>,
     text_inset: Option<RectJson>,
+    /// Prose, except where it names a carved mark's points: `local top-left (3,6), …`.
+    placement: Option<String>,
     font: Option<String>,
     codepoint: Option<u32>,
     character: Option<String>,
@@ -173,7 +175,6 @@ struct SpriteJson {
     opaque_pixels: Option<IgnoredAny>,
     palette_group: Option<IgnoredAny>,
     pivot_space: Option<IgnoredAny>,
-    placement: Option<IgnoredAny>,
     placement_mode: Option<IgnoredAny>,
     replaces_foliage_family: Option<IgnoredAny>,
     replaces_individual_weeds: Option<IgnoredAny>,
@@ -446,6 +447,7 @@ pub struct SpriteDraft {
     pub envelope: Option<Envelope>,
     pub burnoff: Option<BurnoffKeys>,
     pub text_inset: Option<Rect>,
+    pub placement: Vec<Point>,
     /// A glyph cell's font and codepoint.
     pub glyph: Option<(String, u32)>,
 }
@@ -1077,6 +1079,12 @@ fn sprite(manifest: &str, atlas: usize, mut json: SpriteJson) -> Result<SpriteDr
         envelope: json.transition.as_ref().map(envelope).transpose()?,
         burnoff: burnoff(&json)?,
         text_inset,
+        placement: json
+            .placement
+            .as_deref()
+            .map(placement)
+            .transpose()?
+            .unwrap_or_default(),
         glyph: glyph(&mut json)?,
         paired_with: json.paired_with.take(),
         attachment: json.attachment.take(),
@@ -1091,6 +1099,43 @@ fn sprite(manifest: &str, atlas: usize, mut json: SpriteJson) -> Result<SpriteDr
         },
         id: json.name,
     })
+}
+
+/// What prose introduces a carved mark's points on its stone.
+const MARK_POINTS: &str = "local top-left ";
+
+/// A placement's points, if it names any: `local top-left (3,6), (3,11), or (3,16); fit onto
+/// opaque stone face` gives the three points, each a mark's top-left in its stone's pixels.
+/// Prose that names no points (fungus, the plant glow) gives none. Prose that starts naming
+/// points and then fails to is refused, so a mark can never lose its places silently.
+fn placement(prose: &str) -> Result<Vec<Point>, String> {
+    let Some(list) = prose.strip_prefix(MARK_POINTS) else {
+        return Ok(Vec::new());
+    };
+    let list = list.split_once(';').map_or(list, |(points, _)| points);
+    let refused =
+        || format!("placement `{prose}` does not list points as `(x,y), (x,y), or (x,y)`");
+    let mut points = Vec::new();
+    let mut rest = list.trim_end();
+    loop {
+        let (inside, after) = rest
+            .strip_prefix('(')
+            .and_then(|r| r.split_once(')'))
+            .ok_or_else(refused)?;
+        let (x, y) = inside.split_once(',').ok_or_else(refused)?;
+        let coordinate = |n: &str| n.parse::<i16>().map_err(|_| refused());
+        points.push(Point {
+            x: coordinate(x)?,
+            y: coordinate(y)?,
+        });
+        if after.is_empty() {
+            return Ok(points);
+        }
+        rest = after
+            .strip_prefix(", or ")
+            .or_else(|| after.strip_prefix(", "))
+            .ok_or_else(refused)?;
+    }
 }
 
 /// The layer, blend and opacity; a missing blend is normal and a missing opacity is 255.
@@ -1340,6 +1385,30 @@ mod tests {
             png_beside("biome-t/palettes/p.JSON"),
             "biome-t/palettes/p.png"
         );
+    }
+
+    #[test]
+    fn a_carved_mark_s_placement_lists_its_points_and_other_prose_lists_none() {
+        let p = |x, y| Point { x, y };
+        assert_eq!(
+            placement("local top-left (3,6), (3,11), or (3,16); fit onto opaque stone face"),
+            Ok(vec![p(3, 6), p(3, 11), p(3, 16)])
+        );
+        assert_eq!(placement("local top-left (0,-2)"), Ok(vec![p(0, -2)]));
+        assert_eq!(placement("on litter"), Ok(Vec::new()));
+        assert_eq!(
+            placement("foliage centre; renderer may scale by class"),
+            Ok(Vec::new())
+        );
+        for broken in [
+            "local top-left (3,6), (3,x); fit",
+            "local top-left (3,6) (3,11)",
+            "local top-left 3,6",
+            "local top-left (3,6), or",
+            "local top-left ; fit",
+        ] {
+            assert!(placement(broken).is_err(), "{broken}");
+        }
     }
 
     #[test]

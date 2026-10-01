@@ -15,10 +15,17 @@
 //! - **Ceiling.** At most [`CEILING`] plants are placed, 70% of the cells. Above it a terrarium
 //!   grows taller and fuller, not into more sprites: the waiting plants are placed mature
 //!   first, and the rest are not drawn, which never adds health (I-7).
+//! - **Weeds.** Truth's weeds stand in free cells, at most [`WEED_CELLS`] and never past the
+//!   ceiling, and they count toward the window: real ground cover, not invented. Above the
+//!   cap they merge, a cell at a time, into patches. Plants are placed first and never wait
+//!   for a weed.
 //! - **Floor.** Filler brings the occupied cells up to [`FLOOR`], 35%. Its form follows the
 //!   scene's state and is never a thriving, pale or wilting plant: ground tufts in a living
 //!   scene, the terrarium's own species dormant or dead in a dormant or dead one, else dead-stem
 //!   litter in a dead one.
+//!
+//! Litter, fungus and the decorative tufts take no cell and are never counted. Monuments and
+//! fossils keep spots of their own ([`assign_spots`]).
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +47,12 @@ const _: () = assert!(CEILING * 100 <= 70 * CELLS && (CEILING + 1) * 100 > 70 * 
 /// Steps through the cells when choosing filler, so it spreads along the strip. Coprime with
 /// [`CELLS`], so it reaches every cell.
 const FILL_STRIDE: usize = 11;
+/// The most cells weeds take; above it they merge into patches.
+pub const WEED_CELLS: usize = 4;
+/// Steps through the cells when choosing weed cells, from [`WEED_START`]: one near each
+/// third and the middle, apart from the filler's walk. Coprime with [`CELLS`].
+const WEED_STRIDE: usize = 7;
+const WEED_START: usize = 4;
 
 /// Each species' band, read once from the art.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,16 +106,24 @@ impl FillForm {
     pub const STAGE: GrowthStage = GrowthStage::Young;
 }
 
+/// What a weed cell shows: one weed, or a patch merged from several.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum WeedForm {
+    Single,
+    Patch,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Placement {
     pub plants: BTreeMap<u32, Placed>,
+    pub weeds: BTreeMap<u8, WeedForm>,
     pub fill: BTreeMap<u8, FillForm>,
 }
 
 impl Placement {
-    /// The cells holding a plant or filler.
+    /// The cells holding a plant, weeds or filler.
     pub fn occupied(&self) -> usize {
-        self.plants.len() + self.fill.len()
+        self.plants.len() + self.weeds.len() + self.fill.len()
     }
 
     /// The species standing in each cell, plants and filler plants alike.
@@ -149,8 +170,72 @@ pub fn place(prev: &Placement, input: &SceneInput, bands: &Bands) -> Placement {
             plants.insert(view.id, Placed { cell, view: *view });
         }
     }
-    let fill = filler(cells, plants.len(), input, bands);
-    Placement { plants, fill }
+    let mut taken = cells.map(|species| species.is_some());
+    let weeds = weeds(&mut taken, plants.len(), input.weeds);
+    let fill = filler(cells, taken, plants.len() + weeds.len(), input, bands);
+    Placement {
+        plants,
+        weeds,
+        fill,
+    }
+}
+
+/// The weed cells for `count` weeds: as many cells as the cap and the ceiling allow, and above
+/// the cap, patches in place of single weeds, one cell at a time in cell order.
+fn weeds(taken: &mut [bool; CELLS], plants: usize, count: u8) -> BTreeMap<u8, WeedForm> {
+    let count = usize::from(count);
+    let cells = count.min(WEED_CELLS).min(CEILING.saturating_sub(plants));
+    let chosen: BTreeSet<u8> = (0..CELLS)
+        .map(|i| (WEED_START + i * WEED_STRIDE) % CELLS)
+        .filter(|&cell| !taken[cell])
+        .take(cells)
+        .filter_map(|cell| u8::try_from(cell).ok())
+        .collect();
+    let patches = cells.min(count - cells);
+    chosen
+        .into_iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            taken[usize::from(cell)] = true;
+            let form = if i < patches {
+                WeedForm::Patch
+            } else {
+                WeedForm::Single
+            };
+            (cell, form)
+        })
+        .collect()
+}
+
+/// Each id's spot among `n`: kept while the id stays, a new id preferring `id × stride mod n`
+/// and probing on from there, as plants take cells. Ids past the free spots wait undrawn. A
+/// pure function of the previous assignment and the ids, so the salt never touches it.
+pub fn assign_spots(
+    prev: &BTreeMap<u32, u8>,
+    ids: impl IntoIterator<Item = u32>,
+    n: usize,
+) -> BTreeMap<u32, u8> {
+    let ids: BTreeSet<u32> = ids.into_iter().collect();
+    let mut used = vec![false; n];
+    let mut spots = BTreeMap::new();
+    for (&id, &spot) in prev {
+        if ids.contains(&id) && usize::from(spot) < n {
+            used[usize::from(spot)] = true;
+            spots.insert(id, spot);
+        }
+    }
+    for id in ids {
+        if spots.contains_key(&id) {
+            continue;
+        }
+        let start = usize::try_from(id).unwrap_or(0) % n.max(1) * stride(n) % n.max(1);
+        let free = (0..n).map(|k| (start + k) % n).find(|&spot| !used[spot]);
+        if let Some(spot) = free.and_then(|spot| u8::try_from(spot).ok()) {
+            used[usize::from(spot)] = true;
+            spots.insert(id, spot);
+        }
+    }
+    spots
 }
 
 /// The first acceptable cell of the band, probing from the plant's preferred one.
@@ -195,17 +280,19 @@ const fn gcd(mut a: usize, mut b: usize) -> usize {
     a
 }
 
-/// The filler that brings the occupied cells up to the floor.
+/// The filler that brings the occupied cells up to the floor. `cells` holds the species
+/// standing in each cell, for the neighbour rule; `taken` also marks the weed cells.
 fn filler(
     mut cells: [Option<PlantSpecies>; CELLS],
-    placed: usize,
+    taken: [bool; CELLS],
+    occupied: usize,
     input: &SceneInput,
     bands: &Bands,
 ) -> BTreeMap<u8, FillForm> {
-    let needed = FLOOR.saturating_sub(placed);
+    let needed = FLOOR.saturating_sub(occupied);
     let chosen: BTreeSet<u8> = (0..CELLS)
         .map(|i| i * FILL_STRIDE % CELLS)
-        .filter(|&cell| cells[cell].is_none())
+        .filter(|&cell| !taken[cell])
         .take(needed)
         .filter_map(|cell| u8::try_from(cell).ok())
         .collect();
@@ -481,11 +568,91 @@ mod tests {
     }
 
     #[test]
+    fn weeds_take_free_cells_up_to_the_cap_then_merge_into_patches() {
+        let forms = |weeds: u8| {
+            let mut input = scene(PresentationState::Struggling, Vec::new());
+            input.weeds = weeds;
+            fresh(&input)
+                .weeds
+                .values()
+                .copied()
+                .collect::<Vec<WeedForm>>()
+        };
+        let singles = |n| vec![WeedForm::Single; n];
+        assert_eq!(forms(0), singles(0));
+        assert_eq!(forms(3), singles(3));
+        assert_eq!(forms(4), singles(4));
+        // Each weed past the cap merges one more cell into a patch, in cell order.
+        assert_eq!(
+            forms(6),
+            [
+                WeedForm::Patch,
+                WeedForm::Patch,
+                WeedForm::Single,
+                WeedForm::Single
+            ]
+        );
+        assert_eq!(forms(8), [WeedForm::Patch; 4]);
+        assert_eq!(forms(200), [WeedForm::Patch; 4]);
+    }
+
+    #[test]
+    fn weeds_count_toward_the_floor_and_never_pass_the_ceiling() {
+        let mut input = scene(PresentationState::Struggling, Vec::new());
+        input.weeds = 3;
+        let placement = fresh(&input);
+        assert_eq!(placement.occupied(), FLOOR);
+        assert_eq!(placement.fill.len(), FLOOR - 3);
+        assert!(
+            placement
+                .fill
+                .keys()
+                .all(|cell| !placement.weeds.contains_key(cell))
+        );
+        // A crowd at the ceiling leaves no room for weeds; a placed plant never waits for one.
+        let crowd: Vec<PlantView> = (0..40_u16)
+            .map(|i| {
+                let species = PlantSpecies::ALL[usize::from(i) % PlantSpecies::ALL.len()];
+                view(u32::from(i), species, GrowthStage::Mature, i)
+            })
+            .collect();
+        let mut full = scene(PresentationState::Thriving, crowd.clone());
+        let bare = fresh(&full);
+        full.weeds = 8;
+        let weedy = fresh(&full);
+        assert_eq!(weedy.plants, bare.plants);
+        assert!(weedy.occupied() <= CEILING);
+        assert_eq!(weedy.weeds.len(), CEILING - weedy.plants.len());
+    }
+
+    #[test]
+    fn spots_are_kept_by_id_and_new_ids_probe_from_their_own() {
+        let first = assign_spots(&BTreeMap::new(), [4, 9], 3);
+        assert_eq!(first.len(), 2);
+        assert_ne!(first[&4], first[&9]);
+        // 9 leaves, 4 stays where it was, and two newcomers take what is free.
+        let next = assign_spots(&first, [4, 1, 2], 3);
+        assert_eq!(next[&4], first[&4]);
+        let spots: BTreeSet<u8> = next.values().copied().collect();
+        assert_eq!(spots.len(), 3);
+        // Past the spots, the rest wait.
+        let crowded = assign_spots(&next, [4, 1, 2, 7], 3);
+        assert_eq!(crowded.len(), 3);
+        assert!(!crowded.contains_key(&7));
+        // The same ids from nothing land in the same spots: the order they come in is not read.
+        assert_eq!(
+            assign_spots(&BTreeMap::new(), [2, 1], 6),
+            assign_spots(&BTreeMap::new(), [1, 2], 6)
+        );
+    }
+
+    #[test]
     fn strides_are_coprime_and_spread() {
         for n in 1..=30 {
             assert_eq!(gcd(stride(n), n), 1, "{n}");
         }
         assert_eq!([stride(6), stride(10), stride(14)], [5, 7, 9]);
         assert_eq!(gcd(FILL_STRIDE, CELLS), 1);
+        assert_eq!(gcd(WEED_STRIDE, CELLS), 1);
     }
 }

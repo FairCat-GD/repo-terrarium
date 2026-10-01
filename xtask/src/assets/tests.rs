@@ -17,6 +17,7 @@ const SUN: &str = "biome-temperate/sky/exports/batch-02/individual/tmp.sky.sun.p
 const WEEDS: &str =
     "biome-temperate/weeds-litter-fungus/exports/batch-03/weeds-litter-fungus-batch-03.json";
 const PLANTS: &str = "biome-temperate/plants/exports/batch-01/plants-batch-01.json";
+const MONUMENTS: &str = "biome-temperate/monuments/exports/batch-03/monuments-batch-03.json";
 const CREATURES_06: &str = "biome-temperate/creatures/exports/batch-06/creatures-batch-06.json";
 const CREATURES_07: &str = "biome-temperate/creatures/exports/batch-07/creatures-batch-07.json";
 const PALETTE: &str = "biome-temperate/palettes/exports/palette-temperate.json";
@@ -210,6 +211,22 @@ fn check_2_fails_on_a_key_the_parser_does_not_know() {
         messages
             .iter()
             .any(|m| m.contains("sprite tmp.sky.sun: unknown field `sparkle`")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn check_2_fails_on_a_carved_mark_whose_points_do_not_parse() {
+    let mut package = delivered();
+    edit_json(&mut package, MONUMENTS, |monuments| {
+        sprite(monuments, "tmp.monument.carved-mark.02")["placement"] =
+            "local top-left (3,6), (3,eleven), or (3,16); fit onto opaque stone face".into();
+    });
+    let messages = only(&build(&package), Check::Manifests);
+    assert!(
+        messages.iter().any(
+            |m| m.contains("tmp.monument.carved-mark.02") && m.contains("does not list points")
+        ),
         "{messages:?}"
     );
 }

@@ -22,10 +22,18 @@ pub mod durations {
     pub const VANISH_MS: u32 = 4000;
     /// A new look replacing an old one: it rises for the first half, then the old falls.
     pub const RESTYLE_MS: u32 = 6000;
-    /// Filler fading in or out.
+    /// Filler, weeds, litter, fungus and the decorative tufts fading in or out.
     pub const FILL_MS: u32 = 3000;
-    /// The shortest of them, which bounds how fast any opacity moves.
+    /// The weather band, a cloud, the sun, the moon, a star or a glass film fading in or out.
+    pub const SKY_MS: u32 = 6000;
+    /// The shortest change of a plant or the ground, which bounds how fast their opacity moves.
+    /// The light's crossfade is the art's own and shorter, over a faint overlay, and the
+    /// label's is its own.
     pub const SHORTEST_MS: u32 = RESTYLE_MS / 2;
+    /// How long the label shows a line before the next.
+    pub const LABEL_CYCLE_MS: u32 = 20_000;
+    /// The label's crossfade between lines, and between one set of lines and the next.
+    pub const LABEL_FADE_MS: u32 = 1500;
 }
 
 /// One value easing from `from` to `to` with smoothstep, starting at `start` and lasting `ms`.
@@ -109,6 +117,10 @@ mod tests {
             durations::VANISH_MS,
             durations::RESTYLE_MS / 2,
             durations::FILL_MS,
+            durations::SKY_MS,
+            durations::LABEL_FADE_MS,
+            // The light overlays' delivered crossfade.
+            1200,
         ] {
             for (from, to) in [(0, 255), (255, 0), (17, 140), (200, 3)] {
                 let tween = Tween::new(from, to, Millis(500), ms);

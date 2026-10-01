@@ -5,25 +5,68 @@
 
 use crate::catalog::{Catalog, Layer};
 use crate::frame::Draw;
+use crate::variants::GlassFilm;
 
-/// What a draw belongs to: its stable id within a layer.
+/// What a draw belongs to: its stable id within a layer. Variant order breaks ties between
+/// draws at one point: a glass film paints under the glass edges, and a plant over a filler
+/// fading out where it now stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Subject {
+    /// A film on the glass: condensation or dust.
+    Film(GlassFilm),
     /// Fixed scenery, by its place in the scenery list.
     Scenery(u16),
+    /// The weather band across the top of the sky.
+    Weather,
+    /// A cloud, by its path.
+    Cloud(u8),
+    Sun,
+    Moon,
+    Star(u8),
+    /// A monument at its spot. Like a plant's cell, the spot is part of its identity.
+    Monument {
+        id: u32,
+        spot: u8,
+    },
+    /// A fossil at its spot in the soil band.
+    Fossil {
+        id: u32,
+        spot: u8,
+    },
+    /// A decorative tuft between the slots: dressing, never filler.
+    Dressing(u8),
+    /// The weeds in a cell.
+    Weed {
+        cell: u8,
+    },
     /// The filler in a cell.
-    Fill { cell: u8 },
+    Fill {
+        cell: u8,
+    },
     /// A plant in a cell. The cell is part of its identity, so a plant that ever stood
     /// elsewhere is another subject, fading in while the old one fades out.
-    Plant { id: u32, cell: u8 },
+    Plant {
+        id: u32,
+        cell: u8,
+    },
+    /// A piece of litter, by its place along the ground.
+    Litter(u8),
+    /// A fungus, by its place along the ground.
+    Fungus(u8),
+    /// The dusk or sunburst light over the scene.
+    Light,
+    /// The label's text; the plate is scenery.
+    Label,
 }
 
 impl Subject {
-    /// The cell a filler or plant stands in.
+    /// The cell a plant, a filler or a weed stands in.
     pub const fn cell(self) -> Option<u8> {
         match self {
-            Subject::Scenery(_) => None,
-            Subject::Fill { cell } | Subject::Plant { cell, .. } => Some(cell),
+            Subject::Weed { cell } | Subject::Fill { cell } | Subject::Plant { cell, .. } => {
+                Some(cell)
+            }
+            _ => None,
         }
     }
 }
@@ -39,6 +82,8 @@ pub struct DrawKey {
     pub part: u8,
     /// The look within the part, oldest first, so a new look covers the one it replaces.
     pub look: u16,
+    /// One draw of a look that has several: a weather tile, a glyph. 0 otherwise.
+    pub item: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,23 +92,62 @@ pub struct KeyedDraw {
     pub draw: Draw,
 }
 
+/// Where a keyed draw belongs: its subject, part, look and item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub subject: Subject,
+    pub part: u8,
+    pub look: u16,
+    pub item: u16,
+}
+
+impl Place {
+    pub const fn new(subject: Subject, part: u8, look: u16) -> Place {
+        Place {
+            subject,
+            part,
+            look,
+            item: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn item(self, item: u16) -> Place {
+        Place { item, ..self }
+    }
+}
+
 impl KeyedDraw {
     /// `draw`, keyed by its layer and the world point its anchor lands on.
     pub fn new(catalog: &Catalog, subject: Subject, part: u8, look: u16, draw: Draw) -> Self {
+        KeyedDraw::placed(catalog, Place::new(subject, part, look), draw)
+    }
+
+    /// As [`KeyedDraw::new`], with an item for a look that has several draws.
+    pub fn placed(catalog: &Catalog, place: Place, draw: Draw) -> Self {
         let sprite = catalog.sprite(draw.sprite);
         let anchor_x = if draw.flip_x {
             i32::from(sprite.rect.w) - 1 - i32::from(sprite.anchor.x)
         } else {
             i32::from(sprite.anchor.x)
         };
+        let point = (draw.x + anchor_x, draw.y + i32::from(sprite.anchor.y));
+        KeyedDraw::at(place, point, draw)
+    }
+
+    /// `draw`, keyed at a world point of the caller's: a subject whose parts must sort
+    /// together, like a stone and the marks carved on it, shares one point. The layer is
+    /// always the draw's own, so the depth order can never go backwards.
+    pub fn at(place: Place, (x, y): (i32, i32), draw: Draw) -> Self {
         KeyedDraw {
             key: DrawKey {
                 layer: draw.layer,
-                y: draw.y + i32::from(sprite.anchor.y),
-                x: draw.x + anchor_x,
-                subject,
-                part,
-                look,
+                y,
+                x,
+                subject: place.subject,
+                part: place.part,
+                look: place.look,
+                item: place.item,
             },
             draw,
         }

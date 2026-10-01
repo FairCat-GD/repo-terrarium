@@ -16,7 +16,7 @@ pub const PALETTE_SLOTS: usize = 32;
 /// The largest atlas side the packer may produce.
 pub const MAX_ATLAS_SIDE: u16 = 2048;
 /// Bumped whenever the encoded layout changes, so a stale file is refused, not misread.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 const MAGIC: [u8; 4] = *b"TRCA";
 
 const EMBEDDED_CATALOG: &[u8] = include_bytes!("../assets/generated/temperate/catalog.bin");
@@ -274,6 +274,10 @@ pub struct Sprite {
     pub burnoff: Option<BurnoffKeys>,
     /// A plate's text area.
     pub text_inset: Option<Rect>,
+    /// Where a carved mark may sit on its stone: each point is the mark's top-left in the
+    /// stone's own pixels, parsed from the manifest's placement prose. Empty for every other
+    /// sprite.
+    pub placement: Vec<Point>,
 }
 
 /// What follows an animation's last frame.

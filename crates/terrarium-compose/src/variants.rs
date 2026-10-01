@@ -22,8 +22,10 @@
 //! Some enums have no art by design; [`NO_ART`] lists them with the reason.
 //!
 //! The table also holds what the composer draws beyond the variants: each species' plant layer,
-//! which is its depth band, and the filler that keeps the slots from standing empty (ground
-//! tufts and dead-stem litter).
+//! which is its depth band, the filler that keeps the slots from standing empty (ground tufts
+//! and dead-stem litter), and the world's own art ([`WorldArt`]). Check 6 also holds the world
+//! to what the composer relies on: every glow is paired with the sprite it lights, and every
+//! carved mark lists the same [`MAX_MARKS`] points on its stone.
 //!
 //! [`ArtTable`] resolves every variant once, so the composer reads maps instead of scanning the
 //! catalog. [`missing`], the gaps it finds, is check 6 of `cargo xtask assets`.
@@ -36,7 +38,8 @@ use terrarium_truth::scene::{
     MonumentAge, PlantSpecies, PlantState, ResidentSpecies, Weather, Wind,
 };
 
-use crate::catalog::{AnimationId, Catalog, Layer, Sprite, SpriteId};
+use crate::catalog::{AnimationId, Catalog, Layer, Point, Sprite, SpriteId};
+use crate::sky::CloudSize;
 
 /// Art a variant needs that the catalog lacks, or holds more than once.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,7 +251,11 @@ fn monument(catalog: &Catalog, age: MonumentAge) -> Result<Vec<SpriteId>, Missin
             "tmp.monument.lichen-glow.ancient",
         ],
     };
-    named(catalog, &format!("MonumentAge::{}", age.name()), ids)
+    let found = named(catalog, &format!("MonumentAge::{}", age.name()), ids)?;
+    if let [stone, glow] = found[..] {
+        paired(catalog, glow, stone)?;
+    }
+    Ok(found)
 }
 
 /// The carved-mark designs: four of them, for the stone's three placement points.
@@ -314,8 +321,247 @@ pub const TUFTS: [&str; 4] = [
 /// The dead-stem litter that fills a dead scene's empty slots when it has no species to show.
 pub const DEAD_STEMS: [&str; 2] = ["tmp.litter.dead-stems.01", "tmp.litter.dead-stems.02"];
 
+/// The world's own art, by name: what the composer draws around the plants.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldArt {
+    pub soil_tiles: [SpriteId; 2],
+    pub soil_edges: [SpriteId; 2],
+    pub pebbles: Vec<SpriteId>,
+    pub glass_left: SpriteId,
+    pub glass_right: SpriteId,
+    /// Top-left, top-right, bottom-left, bottom-right. The glass has no top or bottom edge.
+    pub corners: [SpriteId; 4],
+    pub sun: SpriteId,
+    /// `tmp.sky.moon.phase.1` to `.4`.
+    pub moons: [SpriteId; 4],
+    pub stars: Vec<SpriteId>,
+    /// Small, medium and large, each a list of equivalent clouds.
+    pub clouds: [Vec<SpriteId>; 3],
+    /// The single weeds, all equivalent.
+    pub weeds: Vec<SpriteId>,
+    /// The merged patches that stand in for several weeds.
+    pub weed_patches: Vec<SpriteId>,
+    /// The amber litter of a living or dormant scene; a dead one's is the dead stems.
+    pub amber_litter: Vec<SpriteId>,
+    /// Each cap cluster with the night glow paired with it.
+    pub fungus: Vec<(SpriteId, SpriteId)>,
+    pub plant_glow: SpriteId,
+    /// Where each carved mark may sit: its top-left in its stone's pixels.
+    pub mark_points: Vec<Point>,
+    /// How long the dusk and sunburst overlays take to fade, as the art sets it.
+    pub light_ms: u32,
+}
+
+impl WorldArt {
+    pub fn clouds(&self, size: CloudSize) -> &[SpriteId] {
+        match size {
+            CloudSize::Small => &self.clouds[0],
+            CloudSize::Medium => &self.clouds[1],
+            CloudSize::Large => &self.clouds[2],
+        }
+    }
+}
+
+const PEBBLES: [&str; 4] = [
+    "tmp.ground.pebble.01",
+    "tmp.ground.pebble.02",
+    "tmp.ground.pebble.03",
+    "tmp.ground.pebble.04",
+];
+const CORNERS: [&str; 4] = [
+    "tmp.glass.corner.top-left",
+    "tmp.glass.corner.top-right",
+    "tmp.glass.corner.bottom-left",
+    "tmp.glass.corner.bottom-right",
+];
+const MOONS: [&str; 4] = [
+    "tmp.sky.moon.phase.1",
+    "tmp.sky.moon.phase.2",
+    "tmp.sky.moon.phase.3",
+    "tmp.sky.moon.phase.4",
+];
+const STARS: [&str; 3] = ["tmp.sky.star.1", "tmp.sky.star.2", "tmp.sky.star.3"];
+const CLOUDS: [&[&str]; 3] = [
+    &[
+        "tmp.sky.cloud.small.01",
+        "tmp.sky.cloud.small.02",
+        "tmp.sky.cloud.small.03",
+    ],
+    &[
+        "tmp.sky.cloud.medium.01",
+        "tmp.sky.cloud.medium.02",
+        "tmp.sky.cloud.medium.03",
+    ],
+    &["tmp.sky.cloud.large.01", "tmp.sky.cloud.large.02"],
+];
+const WEEDS: [&str; 6] = [
+    "tmp.weed.creeping.01",
+    "tmp.weed.creeping.02",
+    "tmp.weed.tall.01",
+    "tmp.weed.tall.02",
+    "tmp.weed.burr.01",
+    "tmp.weed.burr.02",
+];
+const WEED_PATCHES: [&str; 2] = ["tmp.weed.patch.01", "tmp.weed.patch.02"];
+const AMBER_LITTER: [&str; 4] = [
+    "tmp.litter.leaf-pile.01",
+    "tmp.litter.leaf-pile.02",
+    "tmp.litter.fallen-leaf.01",
+    "tmp.litter.fallen-leaf.02",
+];
+/// Each cap cluster and its glow. The bracket fungus waits for dead wood to grow on.
+const FUNGUS: [(&str, &str); 2] = [
+    (
+        "tmp.fungus.cap-cluster.01",
+        "tmp.fungus.cap-cluster.01.glow",
+    ),
+    (
+        "tmp.fungus.cap-cluster.02",
+        "tmp.fungus.cap-cluster.02.glow",
+    ),
+];
+
+/// The world's art, or every gap in it.
+fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
+    let mut gaps = Vec::new();
+    let mut get = |what: &str, ids: &[&str]| match named(catalog, what, ids) {
+        Ok(found) => found,
+        Err(gap) => {
+            gaps.push(gap);
+            Vec::new()
+        }
+    };
+    let soil_tiles = get("the soil band", &["tmp.soil.tile.01", "tmp.soil.tile.02"]);
+    let soil_edges = get("the soil edge", &["tmp.soil.edge.01", "tmp.soil.edge.02"]);
+    let pebbles = get("pebbles", &PEBBLES);
+    let glass = get(
+        "the glass edges",
+        &["tmp.glass.edge.left", "tmp.glass.edge.right"],
+    );
+    let corners = get("the glass corners", &CORNERS);
+    let sun = get("the sun", &["tmp.sky.sun"]);
+    let moons = get("the moon", &MOONS);
+    let stars = get("the stars", &STARS);
+    let clouds = CLOUDS.map(|ids| get("the clouds", ids));
+    let weeds = get("weeds", &WEEDS);
+    let weed_patches = get("weed patches", &WEED_PATCHES);
+    let amber_litter = get("amber litter", &AMBER_LITTER);
+    let fungus_bodies = get("fungus", &FUNGUS.map(|(body, _)| body));
+    let fungus_glows = get("fungus glows", &FUNGUS.map(|(_, glow)| glow));
+    let plant_glow = get("the plant glow", &["tmp.plant.night-glow"]);
+    let fungus: Vec<(SpriteId, SpriteId)> = fungus_bodies.into_iter().zip(fungus_glows).collect();
+    for &(body, glow) in &fungus {
+        if let Err(gap) = paired(catalog, glow, body) {
+            gaps.push(gap);
+        }
+    }
+    let light_ms = match light_ms(catalog) {
+        Ok(ms) => ms,
+        Err(gap) => {
+            gaps.push(gap);
+            0
+        }
+    };
+    let mark_points = match mark_points(catalog) {
+        Ok(points) => points,
+        Err(gap) => {
+            gaps.push(gap);
+            Vec::new()
+        }
+    };
+    let (
+        Ok(soil_tiles),
+        Ok(soil_edges),
+        Ok(corners),
+        Ok(moons),
+        [glass_left, glass_right],
+        [sun],
+        [plant_glow],
+    ) = (
+        <[SpriteId; 2]>::try_from(soil_tiles),
+        <[SpriteId; 2]>::try_from(soil_edges),
+        <[SpriteId; 4]>::try_from(corners),
+        <[SpriteId; 4]>::try_from(moons),
+        glass.as_slice(),
+        sun.as_slice(),
+        plant_glow.as_slice(),
+    )
+    else {
+        return Err(gaps);
+    };
+    if !gaps.is_empty() {
+        return Err(gaps);
+    }
+    Ok(WorldArt {
+        soil_tiles,
+        soil_edges,
+        pebbles,
+        glass_left: *glass_left,
+        glass_right: *glass_right,
+        corners,
+        sun: *sun,
+        moons,
+        stars,
+        clouds,
+        weeds,
+        weed_patches,
+        amber_litter,
+        fungus,
+        plant_glow: *plant_glow,
+        mark_points,
+        light_ms,
+    })
+}
+
+/// The light overlays' crossfade: one `transitionMs` for both.
+fn light_ms(catalog: &Catalog) -> Result<u32, MissingArt> {
+    let ms: Vec<Option<u16>> = [Light::Dusk, Light::Sunburst]
+        .iter()
+        .map(|&kind| light(catalog, kind).ok().flatten())
+        .map(|id| id.and_then(|id| catalog.sprite(id).transition_ms))
+        .collect();
+    match ms[..] {
+        [Some(dusk), Some(sunburst)] if dusk == sunburst && dusk > 0 => Ok(u32::from(dusk)),
+        _ => Err(MissingArt {
+            variant: "Light".into(),
+            wanted: "one transitionMs on both light overlays".into(),
+        }),
+    }
+}
+
+/// A night glow must be paired with the sprite it lights, since it is drawn where that sprite
+/// stands.
+fn paired(catalog: &Catalog, glow: SpriteId, host: SpriteId) -> Result<(), MissingArt> {
+    if catalog.sprite(glow).paired_with == Some(host) {
+        Ok(())
+    } else {
+        Err(MissingArt {
+            variant: catalog.sprite(glow).id.clone(),
+            wanted: format!("paired with `{}`", catalog.sprite(host).id),
+        })
+    }
+}
+
+/// The points every carved-mark design lists: exactly one per mark a stone can hold, the same
+/// on each design.
+fn mark_points(catalog: &Catalog) -> Result<Vec<Point>, MissingArt> {
+    let marks = carved_marks(catalog)?;
+    let first = catalog.sprite(marks[0]).placement.clone();
+    let agreed = marks
+        .iter()
+        .all(|&id| catalog.sprite(id).placement == first);
+    if first.len() == usize::from(MAX_MARKS) && agreed {
+        Ok(first)
+    } else {
+        Err(MissingArt {
+            variant: "MonumentView.marks".into(),
+            wanted: format!("{MAX_MARKS} placement points, the same on every design"),
+        })
+    }
+}
+
 /// The two films the glass can carry, each in levels 1 to `MAX_GLASS_LEVEL`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GlassFilm {
     Condensation,
     Dust,
@@ -467,6 +713,7 @@ pub struct ArtTable {
     events: BTreeMap<EventKind, Vec<SpriteId>>,
     tufts: Vec<SpriteId>,
     dead_stems: Vec<SpriteId>,
+    world: Option<WorldArt>,
 }
 
 impl ArtTable {
@@ -488,6 +735,7 @@ impl ArtTable {
             events: BTreeMap::new(),
             tufts: Vec::new(),
             dead_stems: Vec::new(),
+            world: None,
         }
     }
 
@@ -598,6 +846,10 @@ impl ArtTable {
         }
         keep(named(catalog, "filler tufts", &TUFTS).map(|ids| table.tufts = ids));
         keep(named(catalog, "filler dead stems", &DEAD_STEMS).map(|ids| table.dead_stems = ids));
+        match world(catalog) {
+            Ok(world) => table.world = Some(world),
+            Err(found) => gaps.extend(found),
+        }
         if gaps.is_empty() {
             Ok(table)
         } else {
@@ -643,6 +895,16 @@ impl ArtTable {
     /// The dead-stem litter that fills a dead scene's empty slots, all equivalent.
     pub fn dead_stems(&self) -> &[SpriteId] {
         &self.dead_stems
+    }
+
+    /// The world's own art.
+    ///
+    /// # Panics
+    /// Never once `new` succeeded, which resolves it.
+    pub fn world(&self) -> &WorldArt {
+        self.world
+            .as_ref()
+            .expect("a table that built has its world art")
     }
 
     /// The scorched foliage that stands in for a mature plant's while lightning's scorch plays.
@@ -802,7 +1064,7 @@ fn group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::Art;
+    use crate::catalog::{Art, Flags};
 
     fn catalog() -> &'static Catalog {
         &Art::embedded().catalog
@@ -1071,6 +1333,100 @@ mod tests {
             gaps.contains("ResidentSpecies::Woodlouse × LifeStage::Pupa: no pupa art"),
             "{gaps}"
         );
+    }
+
+    #[test]
+    fn the_world_art_resolves_with_its_glows_paired_and_its_light_time() {
+        let table = ArtTable::new(catalog()).unwrap();
+        let world = table.world();
+        assert_eq!(world.weeds.len(), 6);
+        assert_eq!(world.weed_patches.len(), 2);
+        assert_eq!(world.amber_litter.len(), 4);
+        assert_eq!(world.fungus.len(), 2);
+        assert_eq!(world.light_ms, 1200);
+        for &(body, glow) in &world.fungus {
+            assert_eq!(catalog().sprite(glow).paired_with, Some(body));
+        }
+        let flags = |id: SpriteId| catalog().sprite(id).flags;
+        assert!(flags(world.sun).contains(Flags::DAY_ONLY));
+        assert!(
+            world
+                .moons
+                .iter()
+                .all(|&id| flags(id).contains(Flags::NIGHT_ONLY))
+        );
+        assert!(
+            world
+                .stars
+                .iter()
+                .all(|&id| flags(id).contains(Flags::NIGHT_ONLY))
+        );
+        assert!(flags(world.plant_glow).contains(Flags::NIGHT_ONLY));
+    }
+
+    #[test]
+    fn a_glow_that_lost_its_pairing_is_a_gap() {
+        let mut broken = catalog().clone();
+        let glow = broken.id("tmp.fungus.cap-cluster.02.glow").unwrap();
+        broken.sprites[glow.index()].paired_with = None;
+        assert_eq!(
+            lines(&missing(&broken)),
+            "tmp.fungus.cap-cluster.02.glow: paired with `tmp.fungus.cap-cluster.02`"
+        );
+        let mut broken = catalog().clone();
+        let glow = broken.id("tmp.monument.lichen-glow.ancient").unwrap();
+        let young = broken.id("tmp.monument.stone.young");
+        broken.sprites[glow.index()].paired_with = young;
+        assert_eq!(
+            lines(&missing(&broken)),
+            "tmp.monument.lichen-glow.ancient: paired with `tmp.monument.stone.ancient`"
+        );
+    }
+
+    #[test]
+    fn every_carved_mark_lists_the_three_prose_points() {
+        let table = ArtTable::new(catalog()).unwrap();
+        let p = |x, y| Point { x, y };
+        assert_eq!(table.world().mark_points, [p(3, 6), p(3, 11), p(3, 16)]);
+        let mut broken = catalog().clone();
+        let mark = broken.id("tmp.monument.carved-mark.04").unwrap();
+        broken.sprites[mark.index()].placement.pop();
+        assert_eq!(
+            lines(&missing(&broken)),
+            "MonumentView.marks: 3 placement points, the same on every design"
+        );
+    }
+
+    #[test]
+    fn every_mark_lands_on_opaque_stone_at_every_point_and_age() {
+        // The prose says to fit the marks onto the opaque stone face: each opaque mark pixel,
+        // with the mark's top-left on a point, covers an opaque pixel of the stone.
+        let art = Art::embedded();
+        let table = ArtTable::new(catalog()).unwrap();
+        let opaque = |id: SpriteId| -> Vec<Vec<bool>> {
+            art.rows(id)
+                .map(|row| row.iter().map(|&index| index != 0).collect())
+                .collect()
+        };
+        for &age in MonumentAge::ALL {
+            let stone = opaque(table.monument(age)[0]);
+            for &mark in table.carved_marks() {
+                let mark_pixels = opaque(mark);
+                for point in &table.world().mark_points {
+                    for (dy, row) in mark_pixels.iter().enumerate() {
+                        for (dx, &inked) in row.iter().enumerate() {
+                            let x = usize::try_from(point.x).unwrap() + dx;
+                            let y = usize::try_from(point.y).unwrap() + dy;
+                            assert!(
+                                !inked || stone[y][x],
+                                "{age:?} {} at {point:?}",
+                                catalog().sprite(mark).id
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn lines(gaps: &[MissingArt]) -> String {

@@ -14,7 +14,7 @@ Depiction: from `SceneInput` to pixels.
 - Damage: rewriting only what changed, equal to a full redraw (`scale::Damage`).
 - The one PNG encoder (`export`), for exports, `cargo xtask render` and the snapshot tests.
 - A sample scene assembled by hand (`sample`), shown until the live terrarium reaches the
-  strip. Its soil, glass and label are the scenery the composer draws in for now.
+  strip. It keeps its own bottom-right label, so its pictures never move.
 - The asset catalog (`catalog`): every delivered sprite under its semantic ID, with its
   metadata and the atlas its pixels are packed into.
 - The variant table (`variants`, `ArtTable`): the art that depicts each `SceneInput` variant,
@@ -22,6 +22,9 @@ Depiction: from `SceneInput` to pixels.
 - The composer (`composer`), with its slots (`slots`), placement (`place`), plant assembly
   (`plant`), tweens (`tween`) and draw order (`order`), and the presets it is shown with
   (`preset`).
+- The world around the plants: where each piece stands on an install, the fixed scenery and
+  the padding (`world`); the sky's rules, from the moon's phase to the clouds a weather brings
+  (`sky`); and the one-message table (`rules`).
 - `InstallSalt` (`salt`).
 - Animation, frame scheduling hints and GIF encoding, still to come.
 
@@ -61,8 +64,10 @@ are not one to one.
 
 ## The composer
 
-`Composer::update(&SceneInput, now)` moves the depiction toward a scene from `now`, and
-`Composer::frame` draws it at any moment. The clock is always passed in.
+`Composer::update(&SceneInput, &OverlayInput, now)` moves the depiction toward a scene from
+`now`, and `Composer::frame` draws it at any moment and palette mix. The clock is always passed
+in. `OverlayInput` is what the app gives beside truth: the label's lines, already worded, and
+the local date, for the moon.
 
 - **Slots** (`slots`). Thirty cells cross the strip, ten per third, each in a depth band: far,
   mid or near. The bands step tall, medium, small, and each third has two tree cells, spaced
@@ -78,15 +83,39 @@ are not one to one.
   - **floor:** filler brings the occupied cells to at least 11.
 
   Filler follows the scene's state and is never a living plant: grass tufts, the terrarium's
-  own species dormant or dead, or dead-stem litter.
-- **Looks** (`composer`). Each plant or filler has a stem, a foliage and a bloom part. A part
-  that changes look raises the new look over the old one before the old one falls, so a change
-  never shows the sky through it. An update never changes the frame at its own moment.
+  own species dormant or dead, or dead-stem litter. Truth's weeds also take free cells, at most
+  four, and above that merge into patches; they count toward the window, real cover before
+  invented filler. Litter, fungus and the decorative tufts take no cell.
+- **The world** (`world`, `sky`).
+  - The sky: a 13-row weather band, drifting clouds, the sun by day, and the moon (in the
+    local date's phase) and stars by night, with dusk and sunburst light over everything.
+  - The ground: the soil band, pebbles, fossils, monuments with lichen glow and carved marks,
+    weeds, litter, fungus and decorative tufts.
+  - The glass: edges, corners, condensation and dust.
+  - The label plate at the top left, cycling its lines every 20 s.
+
+  Each kind of piece has a fixed set of places on an install, and piece `i` always stands in
+  place `i`, so a count that changes never moves another piece. Night-only art fades with the
+  palette mix, day-only art the other way.
+- **One message** (`rules`). Each presentation state quiets the composer's own dressing
+  (clouds, sun, stars, decorative tufts) so its dominant visual stands out. Truth's signals are
+  never quieted.
+- **Looks** (`composer`). Each subject has up to five parts: a plant's stem, foliage, bloom and
+  night glow, or a monument's stone, three marks and lichen glow. A part that changes look
+  follows its art: opaque art raises the new look over the old one before the old one falls,
+  so a change never shows the sky through it; translucent and glowing art crossfades. An update
+  never changes the frame at its own moment.
 - **Order** (`order`). Within a layer, draws are sorted by their world point (where the anchor
-  lands), then by subject, so a foliage always follows its stem.
+  lands), then by subject, so a foliage always follows its stem. A subject whose parts must
+  sort together, like a stone and its marks, is keyed at one point, and a look of several draws
+  (the weather tiles, the label's glyphs) numbers them.
 
 The constraints are property-tested over generated histories in `tests/composer.rs`:
-occupancy, rhythm, the healthy subset, no cuts, and salt independence.
+occupancy, rhythm, palette discipline, one message, the healthy subset, no cuts, and salt
+independence. A second property renders settled frames by day and by night: the soil band is
+always the darkest, by day the plants sit between it and the sky, and with every translucent
+draw left out each pixel is a palette colour. The crate is built at `opt-level = 1` in dev
+builds, so these run in seconds.
 
 ## The compositor
 

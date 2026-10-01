@@ -1,21 +1,19 @@
 //! A scene assembled by hand from the delivered art: a few plants on the soil band, the glass
-//! edges and the label. The strip shows it, and `cargo xtask render --demo` writes it, until the
-//! live terrarium reaches the strip. Its soil, glass and label are also the fixed scenery the
-//! composer draws its plants in, until the composer draws the world.
+//! edges and the label at the bottom right. The strip shows it, and `cargo xtask render --demo`
+//! writes it, until the live terrarium reaches the strip. The composer draws its own world; this
+//! one stays as it was, so its pictures never move.
 
 use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState};
 
 use crate::catalog::{Art, Catalog, SpriteId};
-use crate::compositor::composite_area;
-use crate::frame::{Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba640x74};
+use crate::frame::{Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH};
 use crate::plant::Parts;
-use crate::scale::Padding;
 use crate::text::Label;
 use crate::variants::ArtTable;
+use crate::world::soil_and_glass;
 
 const WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
-const GROUND: i32 = GROUND_Y.cast_signed();
 /// The gap between the label plate and the right glass edge.
 const LABEL_MARGIN: i32 = 4;
 
@@ -122,62 +120,6 @@ pub fn scenery(art: &Art, label: &str) -> Vec<Draw> {
     draws
 }
 
-/// Each row's colour beyond the image: the outer column of the glass and the soil alone,
-/// whatever the scene draws beside them, so nothing in the scene is ever stretched across the
-/// monitor's spare width.
-pub fn padding(art: &Art, palette_mix: u8, dim: u8) -> Padding {
-    let frame = Frame {
-        draws: soil_and_glass(&art.catalog, 1),
-        palette_mix,
-        dim,
-    };
-    let column = Area {
-        x: 0,
-        y: 0,
-        w: 1,
-        h: HEIGHT,
-    };
-    let mut image = Rgba640x74::filled([0; 4]);
-    composite_area(art, &frame, &mut image, column);
-    std::array::from_fn(|y| image.pixel(0, u32::try_from(y).unwrap_or(0)))
-}
-
-/// The soil band and its top edge from the left edge to `width`, then both glass edges.
-fn soil_and_glass(catalog: &Catalog, width: i32) -> Vec<Draw> {
-    let tiles = [
-        sprite(catalog, "tmp.soil.tile.01"),
-        sprite(catalog, "tmp.soil.tile.02"),
-    ];
-    let edges = [
-        sprite(catalog, "tmp.soil.edge.01"),
-        sprite(catalog, "tmp.soil.edge.02"),
-    ];
-    let step = usize::from(catalog.sprite(tiles[0]).rect.w).max(1);
-    // Every third tile is the second variant, offset between tile and edge, so the band does
-    // not repeat every tile.
-    let variant = |i: usize| usize::from(i % 3 == 2);
-    let columns: Vec<(usize, i32)> = (0..width).step_by(step).enumerate().collect();
-    let mut draws: Vec<Draw> = columns
-        .iter()
-        .map(|&(i, x)| Draw::new(catalog, tiles[variant(i)], x, GROUND))
-        .collect();
-    draws.extend(
-        columns
-            .iter()
-            .map(|&(i, x)| Draw::new(catalog, edges[variant(i + 1)], x, GROUND)),
-    );
-    let right = sprite(catalog, "tmp.glass.edge.right");
-    let right_x = WIDTH - i32::from(catalog.sprite(right).rect.w);
-    draws.push(Draw::new(
-        catalog,
-        sprite(catalog, "tmp.glass.edge.left"),
-        0,
-        0,
-    ));
-    draws.push(Draw::new(catalog, right, right_x, 0));
-    draws
-}
-
 fn sprite(catalog: &Catalog, name: &str) -> SpriteId {
     catalog
         .id(name)
@@ -191,6 +133,7 @@ mod tests {
     use crate::catalog::Layer;
     use crate::compositor::composite;
     use crate::frame::PLANT_GROUND_Y;
+    use crate::world::padding;
 
     fn sample(mix: u8, dim: u8) -> Frame {
         let art = Art::embedded();

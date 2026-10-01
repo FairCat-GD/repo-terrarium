@@ -104,6 +104,13 @@ pub fn centre(cell: usize) -> i32 {
     LEFT + (SPAN * doubled + cells / 2) / cells
 }
 
+/// The x where cell `k` begins, which is where cell `k − 1` ends: the points between slots.
+pub fn boundary(k: usize) -> i32 {
+    let k = i32::try_from(k).unwrap_or(0);
+    let cells = i32::try_from(CELLS).unwrap_or(1);
+    LEFT + SPAN * k / cells
+}
+
 /// A band's cells, left to right. Neighbours in this list are neighbours in the band.
 pub fn band_cells(band: Band) -> &'static [u8] {
     static CELLS_BY_BAND: OnceLock<[Vec<u8>; 3]> = OnceLock::new();

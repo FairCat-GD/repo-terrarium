@@ -1,5 +1,7 @@
 //! Exact pixel snapshots: every blend mode at several opacities, day, night and a half mix,
-//! shear, text, the nine-slice, the upscaler, and each of the composer's presets.
+//! shear, text, the nine-slice, the upscaler, and each of the composer's presets by day and by
+//! night. Between them the presets and the storm show every sky state, day and night: clear,
+//! overcast, haze and storm, under neutral, dusk and sunburst light.
 //!
 //! Each picture is kept twice: as a PNG to look at, and as the SHA-256 of its raw pixels. A new
 //! `png` release that encodes differently fails only the PNGs; a pixel that changed fails both.
@@ -11,6 +13,7 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 use terrarium_compose::catalog::{Art, Blend, Catalog, Layer, SpriteId};
+use terrarium_compose::composer::Composer;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
 use terrarium_compose::frame::{Area, Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Shear};
@@ -18,8 +21,10 @@ use terrarium_compose::nine_slice::NineSlice;
 use terrarium_compose::palette::Slot;
 use terrarium_compose::scale::{SizeStep, StripScale, upscale_into};
 use terrarium_compose::text::{Face, Label, Text};
+use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::{preset, sample};
+use terrarium_compose::{preset, sample, world};
+use terrarium_truth::scene::Weather;
 
 fn art() -> &'static Art<'static> {
     Art::embedded()
@@ -146,8 +151,34 @@ fn the_sample_by_night() {
 fn the_composer_s_presets() {
     let table = ArtTable::new(catalog()).expect("the embedded art is complete");
     for name in preset::NAMES {
-        let frame = preset::frame(art(), &table, name, "repo-terrarium").expect(name);
+        let frame = preset::frame(art(), &table, name, "repo-terrarium", 0).expect(name);
         snapshot_frame(&format!("preset-{name}"), &frame);
+    }
+}
+
+/// Each preset by night: the night palette, the moon and stars, and every glow.
+#[test]
+fn the_composer_s_presets_by_night() {
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    for name in preset::NAMES {
+        let frame = preset::frame(art(), &table, name, "repo-terrarium", 255).expect(name);
+        snapshot_frame(&format!("preset-{name}-night"), &frame);
+    }
+}
+
+/// The one sky state no preset holds: the mature terrarium under a storm, by day and night.
+#[test]
+fn a_storm_sky_by_day_and_night() {
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    let mut input = preset::scene("mature").unwrap();
+    input.weather = Weather::Storm;
+    let overlay = preset::overlay("mature", "main - storm").unwrap();
+    let mut composer = Composer::new(&table, preset::SALT);
+    composer.update(&input, &overlay, Millis(0));
+    let scenery = composer.scenery(art(), &table);
+    for (mix, when) in [(0, "day"), (255, "night")] {
+        let frame = composer.frame(art(), &table, &scenery, mix, composer.settled_at());
+        snapshot_frame(&format!("sky-storm-{when}"), &frame);
     }
 }
 
@@ -272,7 +303,7 @@ fn nine_slice_panels_at_and_past_the_minimum() {
 #[test]
 fn the_sample_upscaled_2x_with_odd_padding() {
     let image = composite(art(), &sample_frame(0));
-    let padding = sample::padding(art(), 0, 0);
+    let padding = world::padding(art(), 0, 0);
     // 1301 is 2 × 640 plus 21: 10 columns of padding on the left and 11 on the right.
     let scale = StripScale::for_physical_width(1301, SizeStep::Full);
     assert_eq!((scale.scale, scale.image_x), (2, 10));

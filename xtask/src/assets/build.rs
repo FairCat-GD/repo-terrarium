@@ -190,5 +190,6 @@ fn convert(draft: &SpriteDraft, ids: &Resolver) -> Sprite {
         scorch,
         burnoff: draft.burnoff,
         text_inset: draft.text_inset,
+        placement: draft.placement.clone(),
     }
 }
