@@ -19,13 +19,13 @@ use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
 use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Rgba640x74};
-use terrarium_compose::scale::{StripScale, upscale_into};
 use terrarium_compose::synthetic::{self, Cell};
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::world;
+use terrarium_truth::canon::to_hex;
+
+use crate::render::large_png;
 
 const LABEL: &str = "repo-terrarium";
-const LARGE_SCALE: u32 = 3;
 /// The contact sheet's gutter between cells, and between a cell's day and night.
 const GUTTER: u32 = 4;
 const GAP: u32 = 2;
@@ -83,11 +83,11 @@ pub fn render() -> Result<Files, String> {
         let night = compose(art, &table, cell, 255, false);
         files.push((
             format!("states/{shown:02}-day.png"),
-            large(art, &day, 0, false)?,
+            large_png(art, &day, 0, 0)?,
         ));
         files.push((
             format!("states/{shown:02}-night.png"),
-            large(art, &night, 255, false)?,
+            large_png(art, &night, 255, 0)?,
         ));
         let activity = cell
             .activity
@@ -106,7 +106,7 @@ pub fn render() -> Result<Files, String> {
             let image = composite(art, &frame);
             files.push((
                 format!("named/{name}-{suffix}.png"),
-                large(art, &image, mix, dim)?,
+                large_png(art, &image, frame.palette_mix, frame.dim)?,
             ));
         }
     }
@@ -115,13 +115,7 @@ pub fn render() -> Result<Files, String> {
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut sums = String::new();
     for (name, bytes) in &files {
-        let hex = Sha256::digest(bytes)
-            .iter()
-            .fold(String::new(), |mut hex, byte| {
-                let _ = write!(hex, "{byte:02x}");
-                hex
-            });
-        let _ = writeln!(sums, "{hex}  {name}");
+        let _ = writeln!(sums, "{}  {name}", to_hex(&Sha256::digest(bytes)));
     }
     files.push(("SHA256SUMS".to_owned(), sums.into_bytes()));
     Ok(files)
@@ -133,28 +127,6 @@ fn compose(art: &Art, table: &ArtTable, cell: &Cell, mix: u8, dim: bool) -> Rgba
         art,
         &synthetic::frame(art, table, &cell.knobs, LABEL, mix, dim),
     )
-}
-
-/// `image` at 3×, padded as the strip pads it at that mix and dim, as a PNG.
-fn large(art: &Art, image: &Rgba640x74, mix: u8, dim: bool) -> Result<Vec<u8>, String> {
-    let scale = StripScale::exact(LARGE_SCALE);
-    let padding = world::padding(
-        art,
-        mix,
-        if dim {
-            terrarium_compose::composer::DIM
-        } else {
-            0
-        },
-    );
-    let mut pixels = vec![[0; 4]; scale.pixel_count()];
-    upscale_into(image, &scale, &padding, |colour| colour, &mut pixels).map_err(|err| {
-        format!(
-            "the 3× image is {} pixels, not {}",
-            err.actual, err.expected
-        )
-    })?;
-    Ok(export::png(scale.width, scale.height, &pixels))
 }
 
 /// The grid at 1×: each cell's day above its night, in grid order.

@@ -32,8 +32,8 @@ allow = [
 ]
 confidence-threshold = 0.93
 # egui's bundled fonts, approved for this crate alone: Ubuntu under the Ubuntu Font Licence, and
-# Hack and the emoji fonts under OFL-1.1. Both free font licences allow bundling; the release
-# notices carry their attribution.
+# Hack and the emoji fonts under OFL-1.1. Both free font licences allow bundling, with
+# attribution in the release notices.
 exceptions = [
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
 ]

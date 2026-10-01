@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
-use terrarium_compose::frame::{Frame, NATIVE_HEIGHT, NATIVE_WIDTH};
+use terrarium_compose::frame::{Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba640x74};
 use terrarium_compose::scale::{StripScale, upscale_into};
 use terrarium_compose::variants::ArtTable;
 use terrarium_compose::{preset, sample, world};
@@ -71,15 +71,6 @@ fn table(art: &Art) -> Result<ArtTable, String> {
 /// Composites `frame` and writes it at 1× to `out` and at 3× beside it.
 fn write(art: &Art, frame: &Frame, out: &Path) -> Result<[PathBuf; 2], String> {
     let image = composite(art, frame);
-    let padding = world::padding(art, 0, 0);
-    let large = StripScale::exact(LARGE_SCALE);
-    let mut pixels = vec![[0; 4]; large.pixel_count()];
-    upscale_into(&image, &large, &padding, |colour| colour, &mut pixels).map_err(|err| {
-        format!(
-            "the 3× image is {} pixels, not {}",
-            err.actual, err.expected
-        )
-    })?;
     let outputs = [
         (
             out.to_path_buf(),
@@ -87,13 +78,32 @@ fn write(art: &Art, frame: &Frame, out: &Path) -> Result<[PathBuf; 2], String> {
         ),
         (
             beside(out, LARGE_SCALE),
-            export::png(large.width, large.height, &pixels),
+            large_png(art, &image, frame.palette_mix, frame.dim)?,
         ),
     ];
     for (path, bytes) in &outputs {
         std::fs::write(path, bytes).map_err(|err| format!("{}: {err}", path.display()))?;
     }
     Ok(outputs.map(|(path, _)| path))
+}
+
+/// `image` at 3×, padded as the strip pads it at `palette_mix` and `dim`, as a PNG.
+pub fn large_png(
+    art: &Art,
+    image: &Rgba640x74,
+    palette_mix: u8,
+    dim: u8,
+) -> Result<Vec<u8>, String> {
+    let padding = world::padding(art, palette_mix, dim);
+    let large = StripScale::exact(LARGE_SCALE);
+    let mut pixels = vec![[0; 4]; large.pixel_count()];
+    upscale_into(image, &large, &padding, |colour| colour, &mut pixels).map_err(|err| {
+        format!(
+            "the 3× image is {} pixels, not {}",
+            err.actual, err.expected
+        )
+    })?;
+    Ok(export::png(large.width, large.height, &pixels))
 }
 
 /// `dir/name.png` becomes `dir/name@3x.png`.

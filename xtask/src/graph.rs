@@ -59,7 +59,8 @@ const REQUIRED_ROOT_ATTRIBUTES: &[(&str, &str)] = &[
 ];
 
 /// The feature that builds the debug window, which never ships in release builds: no member may
-/// enable it by default.
+/// enable it by default, directly or through another feature, and no member may turn it on in a
+/// workspace crate it depends on.
 const DEV_FEATURE: &str = "dev";
 
 /// Package fields every member inherits from `[workspace.package]`.
@@ -83,6 +84,8 @@ pub enum Kind {
 pub struct Dep {
     pub name: String,
     pub kind: Kind,
+    /// The features the member turns on in it.
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,8 +107,8 @@ pub struct Member {
     /// Fields of `INHERITED_FIELDS` the manifest sets with `.workspace = true`.
     pub inherited: BTreeSet<String>,
     pub lints_from_workspace: bool,
-    /// The features `default` enables.
-    pub default_features: Vec<String>,
+    /// The `[features]` table: each feature and what it turns on.
+    pub features: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,13 +192,41 @@ fn check_manifest(member: &Member, out: &mut Vec<String>) {
             member.name
         ));
     }
-    if member.default_features.iter().any(|f| f == DEV_FEATURE) {
+    let enables_dev = |entry: &String| {
+        entry == DEV_FEATURE
+            || entry
+                .rsplit_once('/')
+                .is_some_and(|(_, feature)| feature == DEV_FEATURE)
+    };
+    if default_features(&member.features).iter().any(enables_dev) {
         out.push(format!(
             "{} must not enable `{DEV_FEATURE}` by default: the debug window never ships in \
              release builds",
             member.name
         ));
     }
+    for dep in &member.deps {
+        if dep.features.iter().any(enables_dev) {
+            out.push(format!(
+                "{} must not turn on `{DEV_FEATURE}` in {}: the debug window never ships in \
+                 release builds",
+                member.name, dep.name
+            ));
+        }
+    }
+}
+
+/// Every feature `default` turns on, followed through the features it names.
+fn default_features(features: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+    let mut on = BTreeSet::new();
+    let mut next = vec!["default".to_owned()];
+    while let Some(feature) = next.pop() {
+        if let Some(enables) = features.get(&feature) {
+            next.extend(enables.iter().filter(|f| !on.contains(*f)).cloned());
+        }
+        on.insert(feature);
+    }
+    on
 }
 
 fn check_roots(member: &Member, out: &mut Vec<String>) {
@@ -416,6 +447,7 @@ fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
                 DependencyKind::Build => Kind::Build,
                 _ => Kind::Normal,
             },
+            features: d.features.clone(),
         })
         .collect();
 
@@ -450,7 +482,11 @@ fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
         targets,
         inherited,
         lints_from_workspace,
-        default_features: package.features.get("default").cloned().unwrap_or_default(),
+        features: package
+            .features
+            .iter()
+            .map(|(name, enables)| (name.clone(), enables.clone()))
+            .collect(),
     })
 }
 
@@ -554,6 +590,7 @@ mod tests {
                 .map(|(n, k)| Dep {
                     name: (*n).to_owned(),
                     kind: *k,
+                    features: Vec::new(),
                 })
                 .collect(),
             targets: vec![TargetRoot {
@@ -564,7 +601,7 @@ mod tests {
             }],
             inherited: INHERITED_FIELDS.iter().map(|f| (*f).to_owned()).collect(),
             lints_from_workspace: true,
-            default_features: Vec::new(),
+            features: BTreeMap::new(),
         }
     }
 
@@ -662,6 +699,7 @@ mod tests {
         member_mut(&mut ws, TRUTH).deps.push(Dep {
             name: COMPOSE.into(),
             kind: Kind::Dev,
+            features: Vec::new(),
         });
         fails_with(&ws, "terrarium-truth must not depend on terrarium-compose");
     }
@@ -672,6 +710,7 @@ mod tests {
         member_mut(&mut ws, COMPOSE).deps.push(Dep {
             name: STORE.into(),
             kind: Kind::Normal,
+            features: Vec::new(),
         });
         fails_with(&ws, "terrarium-compose must not depend on terrarium-store");
     }
@@ -690,16 +729,19 @@ mod tests {
             Dep {
                 name: "serde".into(),
                 kind: Kind::Normal,
+                features: Vec::new(),
             },
             Dep {
                 name: "proptest".into(),
                 kind: Kind::Dev,
+                features: Vec::new(),
             },
         ]);
         assert_eq!(check(&ws), Vec::<String>::new());
         member_mut(&mut ws, TRUTH).deps.push(Dep {
             name: "rand".into(),
             kind: Kind::Normal,
+            features: Vec::new(),
         });
         fails_with(&ws, "terrarium-truth must not depend on rand");
     }
@@ -836,13 +878,50 @@ mod tests {
         fails_with(&ws, "terrarium-engine must set `[lints] workspace = true`");
     }
 
+    fn features(entries: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+        entries
+            .iter()
+            .map(|(name, on)| {
+                (
+                    (*name).to_owned(),
+                    on.iter().map(|f| (*f).to_owned()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    const DEV_BY_DEFAULT: &str = "terrarium-app must not enable `dev` by default: the debug window never ships in \
+         release builds";
+
     #[test]
     fn no_member_builds_the_debug_window_by_default() {
         let mut ws = workspace();
-        member_mut(&mut ws, APP).default_features = vec!["dev".to_owned()];
+        member_mut(&mut ws, APP).features = features(&[("default", &[]), ("dev", &["dep:egui"])]);
+        assert_eq!(check(&ws), Vec::<String>::new());
+        member_mut(&mut ws, APP).features = features(&[("default", &["dev"]), ("dev", &[])]);
+        fails_with(&ws, DEV_BY_DEFAULT);
+    }
+
+    #[test]
+    fn nor_through_another_feature_or_a_dependency() {
+        let mut ws = workspace();
+        member_mut(&mut ws, APP).features =
+            features(&[("default", &["ui"]), ("ui", &["dev"]), ("dev", &[])]);
+        fails_with(&ws, DEV_BY_DEFAULT);
+
+        let mut ws = workspace();
+        member_mut(&mut ws, APP).features = features(&[("default", &["terrarium-compose/dev"])]);
+        fails_with(&ws, DEV_BY_DEFAULT);
+
+        let mut ws = workspace();
+        member_mut(&mut ws, XTASK).deps.push(Dep {
+            name: APP.to_owned(),
+            kind: Kind::Normal,
+            features: vec!["dev".to_owned()],
+        });
         fails_with(
             &ws,
-            "terrarium-app must not enable `dev` by default: the debug window never ships in \
+            "xtask must not turn on `dev` in terrarium-app: the debug window never ships in \
              release builds",
         );
     }

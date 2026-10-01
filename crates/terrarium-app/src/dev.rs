@@ -93,19 +93,27 @@ impl Dev {
         &mut self,
         id: WindowId,
         event: &WindowEvent,
-        readout: &Readout,
+        readout: Option<&Readout>,
     ) -> Option<(Feed, Overrides)> {
         let Dev { host, panel, .. } = self;
         let host = host.as_mut()?;
         host.window_event(id, event, &mut |kind, ui| match kind {
             WindowKind::Debug => {
-                if let Some(panel) = panel.as_mut() {
+                if let (Some(panel), Some(readout)) = (panel.as_mut(), readout) {
                     panel.ui(ui, readout);
                 }
             }
         });
         self.drop_empty_host();
         self.panel.as_mut().and_then(DebugPanel::take_change)
+    }
+
+    /// Whether the probe has a step due by `now`.
+    pub fn probe_due(&self, now: Instant) -> bool {
+        self.probe
+            .as_ref()
+            .and_then(EguiProbe::due)
+            .is_some_and(|due| due <= now)
     }
 
     /// The probe's step due by `now`, carried out. True when the probe has finished and the

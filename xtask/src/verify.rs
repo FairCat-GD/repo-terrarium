@@ -104,6 +104,19 @@ const STAGES: &[Stage] = &[
             }),
         },
     },
+    // The release build's own features: what only a build without `dev` does, such as refusing
+    // `--probe egui`. Only the app has features, so only its tests run again.
+    Stage {
+        name: "nextest (release)",
+        step: Step::Cargo {
+            args: &["nextest", "run", "--package", "terrarium-app"],
+            tool: Some(Tool {
+                subcommand: "nextest",
+                package: "cargo-nextest",
+                version: "0.9.146",
+            }),
+        },
+    },
     // nextest does not run doctests.
     Stage {
         name: "doctest",

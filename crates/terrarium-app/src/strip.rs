@@ -737,6 +737,9 @@ impl Strip {
     /// The loop woke: egui windows due a repaint redraw, and the egui probe takes its step.
     fn dev_woke(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
         self.dev.woke(now);
+        if !self.dev.probe_due(now) {
+            return;
+        }
         let Some((feed, overrides)) = self.scene.shown() else {
             return;
         };
@@ -751,10 +754,13 @@ impl Strip {
             return;
         }
         let now = Instant::now();
-        let Some(readout) = self.readout(now) else {
-            return;
+        // Only a repaint shows the readout, and reading memory costs a call into the OS.
+        let readout = if matches!(event, WindowEvent::RedrawRequested) {
+            self.readout(now)
+        } else {
+            None
         };
-        if let Some((feed, overrides)) = self.dev.window_event(id, event, &readout) {
+        if let Some((feed, overrides)) = self.dev.window_event(id, event, readout.as_ref()) {
             self.scene.choose(feed, overrides, now);
         }
     }

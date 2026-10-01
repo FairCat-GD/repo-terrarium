@@ -15,11 +15,13 @@ summary. The stages:
 4. **clippy (windows)**: `--all-features` for `x86_64-pc-windows-msvc`. There is no CI, so
    this is what compiles and lints the Windows code.
 5. **nextest**: `cargo nextest run --workspace --all-features`.
-6. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
-7. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
-8. **graph**: the crate-graph check below, including the scan of truth's sources.
-9. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
-   this stage.
+6. **nextest (release)**: `cargo nextest run --package terrarium-app`, the app's tests again
+   without `dev`, for what only a release build does. The app is the only crate with features.
+7. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
+8. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
+9. **graph**: the crate-graph check below, including the scan of truth's sources.
+10. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
+    this stage.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
 tool is missing, or at another version, fails and names the install command.
@@ -39,7 +41,8 @@ targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the 
 - Truth is a single library target. A test, bench, example or build script would be a crate of
   its own, outside the lint walls on truth's root.
 - Every manifest inherits the workspace package fields and lints.
-- No member enables `dev` by default: the debug window never ships in release builds.
+- No member enables `dev` by default, directly or through another feature, and none turns it
+  on in a workspace crate it depends on: the debug window never ships in release builds.
 - No dependency declares a `rust-version` above the workspace's.
 
 ### The scan of truth's sources
