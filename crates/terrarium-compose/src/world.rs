@@ -15,7 +15,7 @@ use crate::scale::Padding;
 use crate::sky::{self, Drift};
 use crate::slots::boundary;
 use crate::text::Label;
-use crate::variants::ArtTable;
+use crate::variants::{ArtTable, WorldArt};
 
 const WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
@@ -40,12 +40,10 @@ pub const STARS: usize = 7;
 const MONUMENT_BOUNDARIES: [usize; MONUMENTS] = [9, 15, 24];
 /// Each cloud path's pace: different, so the clouds pass one another.
 const CLOUD_MS_PER_PX: [u32; sky::MAX_CLOUDS] = [3000, 3700, 2600, 4300];
-/// The sun and the moon are 5 pixels square.
-const BODY: i32 = 5;
 /// The stars' left edge: right of the label plate.
 const STARS_FROM: i32 = 106;
-/// A star that would touch the sun or the moon drops to this row, below them.
-const STAR_LOW_ROW: i32 = 9;
+/// The row the sun and the moon stand on.
+const BODY_ROW: i32 = 3;
 
 /// What a salted world value is for, so each kind of piece draws its own values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +81,10 @@ impl Kind {
     }
 
     /// The salt index of item `item` of this kind, `part` telling apart two values one item
-    /// needs.
+    /// needs. The kind holds bits 40 and up, so kinds never meet. Within a kind, a place's
+    /// item is a small count and its part sits at bit 32; a sprite choice uses part 0 and an
+    /// item below 2^40 (a carved mark's is its monument id × 4 + the mark), so it reaches the
+    /// part's bits only in kinds that never take a place.
     const fn index(self, item: u64, part: u64) -> u64 {
         self.code() << 40 | part << 32 | item
     }
@@ -119,17 +120,28 @@ pub struct WorldLayout {
     moon: (i32, i32),
     stars: [(i32, i32); STARS],
     clouds: [Drift; sky::MAX_CLOUDS],
+    /// The art's sizes the places keep clear by: the sun and moon's side, and a star's.
+    body_side: i32,
+    star_side: i32,
 }
 
 impl WorldLayout {
-    pub fn new(salt: InstallSalt) -> WorldLayout {
+    /// The places of one install, kept clear of one another by the art's own sizes.
+    pub fn new(salt: InstallSalt, art: &WorldArt) -> WorldLayout {
+        let (body, star) = (art.body_side, art.star_side);
         let fossils = std::array::from_fn(|i| {
             stratum(24, 616, FOSSILS, i) + place(salt, Kind::Fossil, i, 0, 91)
         });
-        let sun = (480 + place(salt, Kind::Sun, 0, 0, 101), 3);
-        let moon = (150 + place(salt, Kind::Moon, 0, 0, 111), 3);
+        let sun = (480 + place(salt, Kind::Sun, 0, 0, 101), BODY_ROW);
+        let moon = (150 + place(salt, Kind::Moon, 0, 0, 111), BODY_ROW);
+        // A star stands anywhere in the body rows, or drops to the lowest of them, below the
+        // sun and the moon, where it would touch either.
+        let lowest = *sky::BODY_ROWS.end() - star + 1;
+        let star_rows = lowest - *sky::BODY_ROWS.start() + 1;
         WorldLayout {
             salt,
+            body_side: body,
+            star_side: star,
             monuments: std::array::from_fn(|i| {
                 boundary(MONUMENT_BOUNDARIES[i]) + place(salt, Kind::Monument, i, 0, 5) - 2
             }),
@@ -155,14 +167,14 @@ impl WorldLayout {
             moon,
             stars: std::array::from_fn(|i| {
                 let x = stratum(STARS_FROM, 630, STARS, i) + place(salt, Kind::Star, i, 0, 71);
-                let y = *sky::BODY_ROWS.start() + place(salt, Kind::Star, i, 1, 9);
+                let y = *sky::BODY_ROWS.start() + place(salt, Kind::Star, i, 1, star_rows);
                 let touches = |(bx, by): (i32, i32)| {
-                    x + 3 >= bx - 1 && x <= bx + BODY && y + 3 >= by - 1 && y <= by + BODY
+                    x + star >= bx - 1 && x <= bx + body && y + star >= by - 1 && y <= by + body
                 };
                 (
                     x,
                     if touches(sun) || touches(moon) {
-                        STAR_LOW_ROW
+                        lowest
                     } else {
                         y
                     },
@@ -170,7 +182,9 @@ impl WorldLayout {
             }),
             clouds: std::array::from_fn(|i| Drift {
                 start: place(salt, Kind::Cloud, i, 0, 673),
-                y: 14 + 4 * i32::try_from(i).unwrap_or(0) + place(salt, Kind::Cloud, i, 1, 2),
+                y: sky::CLOUD_TOP
+                    + sky::CLOUD_PATH_STEP * i32::try_from(i).unwrap_or(0)
+                    + place(salt, Kind::Cloud, i, 1, 2),
                 ms_per_px: CLOUD_MS_PER_PX[i],
             }),
         }
@@ -178,6 +192,11 @@ impl WorldLayout {
 
     pub fn salt(&self) -> InstallSalt {
         self.salt
+    }
+
+    /// The side of the sun and the moon, and of a star.
+    pub fn sides(&self) -> (i32, i32) {
+        (self.body_side, self.star_side)
     }
 
     /// A monument spot's ground point x.
@@ -355,7 +374,11 @@ pub(crate) fn soil_and_glass(catalog: &Catalog, width: i32) -> Vec<Draw> {
     draws
 }
 
-fn sprite(catalog: &Catalog, name: &str) -> SpriteId {
+/// A sprite the delivered art is known to hold, by its ID.
+///
+/// # Panics
+/// If the catalog lacks it.
+pub(crate) fn sprite(catalog: &Catalog, name: &str) -> SpriteId {
     catalog
         .id(name)
         .unwrap_or_else(|| panic!("the delivered {name}"))
@@ -397,9 +420,37 @@ mod tests {
     }
 
     #[test]
+    fn salt_indices_of_different_kinds_never_meet() {
+        let kinds = [
+            Kind::Monument,
+            Kind::Fossil,
+            Kind::Pebble,
+            Kind::Dressing,
+            Kind::Litter,
+            Kind::Sun,
+            Kind::Moon,
+            Kind::Star,
+            Kind::Cloud,
+            Kind::Weed,
+            Kind::Fungus,
+            Kind::Mark,
+        ];
+        let codes: std::collections::BTreeSet<u64> = kinds.iter().map(|k| k.code()).collect();
+        assert_eq!(codes.len(), kinds.len());
+        // The largest item any sprite choice draws: the last mark of the largest monument id.
+        let largest = (u64::from(u32::MAX) << 2) | 3;
+        for kind in kinds {
+            assert_eq!(kind.index(largest, 0) >> 40, kind.code());
+            assert_eq!(kind.index(15, 1) >> 40, kind.code());
+        }
+        // A place never shares an index with another place or a part of the same item.
+        assert_ne!(Kind::Star.index(3, 0), Kind::Star.index(3, 1));
+    }
+
+    #[test]
     fn every_place_stays_inside_the_glass_and_monuments_keep_one_per_third() {
         for salt in salts() {
-            let layout = WorldLayout::new(salt);
+            let layout = WorldLayout::new(salt, table().world());
             for spot in 0..3_u8 {
                 let x = layout.monument(spot);
                 assert_eq!(screen_third(x), i32::from(spot), "{x}");
@@ -424,20 +475,25 @@ mod tests {
 
     #[test]
     fn stars_never_touch_the_sun_the_moon_or_the_label() {
+        let table = table();
         for salt in salts() {
-            let layout = WorldLayout::new(salt);
-            let body = |(x, y): (i32, i32)| (x, y, BODY, BODY);
+            let layout = WorldLayout::new(salt, table.world());
+            let (side, star_side) = layout.sides();
+            let body = |(x, y): (i32, i32)| (x, y, side, side);
             let label = (LABEL_X, LABEL_Y, 90, 9);
             for i in 0..7_u8 {
                 let (x, y) = layout.star(i);
-                let star = (x, y, 3, 3);
+                let star = (x, y, star_side, star_side);
                 assert!(!touch(star, body(layout.sun())), "{salt:?} {i}");
                 assert!(!touch(star, body(layout.moon())), "{salt:?} {i}");
                 assert!(!touch(star, label));
-                assert!(sky::BODY_ROWS.contains(&y) && sky::BODY_ROWS.contains(&(y + 2)));
+                assert!(
+                    sky::BODY_ROWS.contains(&y) && sky::BODY_ROWS.contains(&(y + star_side - 1))
+                );
             }
             for body in [layout.sun(), layout.moon()] {
-                assert!(!touch((body.0, body.1, BODY, BODY), label));
+                assert!(!touch((body.0, body.1, side, side), label));
+                assert!(sky::BODY_ROWS.contains(&(body.1 + side - 1)));
             }
         }
     }
@@ -445,7 +501,7 @@ mod tests {
     #[test]
     fn no_pebble_lies_over_a_fossil_spot() {
         for salt in salts() {
-            let layout = WorldLayout::new(salt);
+            let layout = WorldLayout::new(salt, table().world());
             for &(x, _) in layout.pebbles() {
                 for spot in 0..6_u8 {
                     let fossil = layout.fossil(spot);
@@ -461,7 +517,7 @@ mod tests {
     #[test]
     fn clouds_keep_rows_of_their_own_below_the_band() {
         for salt in salts() {
-            let layout = WorldLayout::new(salt);
+            let layout = WorldLayout::new(salt, table().world());
             let rows: Vec<i32> = (0..4_u8).map(|i| layout.cloud(i).y).collect();
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?}");
             assert!(rows.iter().all(|&y| y >= sky::BAND_HEIGHT));
@@ -472,7 +528,11 @@ mod tests {
     fn the_corners_paint_over_the_edges_and_the_films_under_both() {
         let art = Art::embedded();
         let table = table();
-        let scenery = Scenery::new(art, &table, &WorldLayout::new(crate::preset::SALT));
+        let scenery = Scenery::new(
+            art,
+            &table,
+            &WorldLayout::new(crate::preset::SALT, table.world()),
+        );
         let glass: Vec<&KeyedDraw> = scenery
             .keyed()
             .iter()

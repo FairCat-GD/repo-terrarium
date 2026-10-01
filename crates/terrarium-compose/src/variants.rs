@@ -40,6 +40,7 @@ use terrarium_truth::scene::{
 
 use crate::catalog::{AnimationId, Catalog, Layer, Point, Sprite, SpriteId};
 use crate::sky::CloudSize;
+use crate::text::Label;
 
 /// Art a variant needs that the catalog lacks, or holds more than once.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,17 +325,17 @@ pub const DEAD_STEMS: [&str; 2] = ["tmp.litter.dead-stems.01", "tmp.litter.dead-
 /// The world's own art, by name: what the composer draws around the plants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorldArt {
-    pub soil_tiles: [SpriteId; 2],
-    pub soil_edges: [SpriteId; 2],
     pub pebbles: Vec<SpriteId>,
-    pub glass_left: SpriteId,
-    pub glass_right: SpriteId,
     /// Top-left, top-right, bottom-left, bottom-right. The glass has no top or bottom edge.
     pub corners: [SpriteId; 4],
     pub sun: SpriteId,
     /// `tmp.sky.moon.phase.1` to `.4`.
     pub moons: [SpriteId; 4],
     pub stars: Vec<SpriteId>,
+    /// The side of the sun and of every moon, which are squares of one size.
+    pub body_side: i32,
+    /// The side of every star, all squares of one size.
+    pub star_side: i32,
     /// Small, medium and large, each a list of equivalent clouds.
     pub clouds: [Vec<SpriteId>; 3],
     /// The single weeds, all equivalent.
@@ -350,6 +351,8 @@ pub struct WorldArt {
     pub mark_points: Vec<Point>,
     /// How long the dusk and sunburst overlays take to fade, as the art sets it.
     pub light_ms: u32,
+    /// How many characters a line of the label holds.
+    pub label_capacity: usize,
 }
 
 impl WorldArt {
@@ -431,13 +434,7 @@ fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
             Vec::new()
         }
     };
-    let soil_tiles = get("the soil band", &["tmp.soil.tile.01", "tmp.soil.tile.02"]);
-    let soil_edges = get("the soil edge", &["tmp.soil.edge.01", "tmp.soil.edge.02"]);
     let pebbles = get("pebbles", &PEBBLES);
-    let glass = get(
-        "the glass edges",
-        &["tmp.glass.edge.left", "tmp.glass.edge.right"],
-    );
     let corners = get("the glass corners", &CORNERS);
     let sun = get("the sun", &["tmp.sky.sun"]);
     let moons = get("the moon", &MOONS);
@@ -469,39 +466,49 @@ fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
             Vec::new()
         }
     };
-    let (
-        Ok(soil_tiles),
-        Ok(soil_edges),
-        Ok(corners),
-        Ok(moons),
-        [glass_left, glass_right],
-        [sun],
-        [plant_glow],
-    ) = (
-        <[SpriteId; 2]>::try_from(soil_tiles),
-        <[SpriteId; 2]>::try_from(soil_edges),
+    let (Ok(corners), Ok(moons), [sun], [plant_glow]) = (
         <[SpriteId; 4]>::try_from(corners),
         <[SpriteId; 4]>::try_from(moons),
-        glass.as_slice(),
         sun.as_slice(),
         plant_glow.as_slice(),
-    )
-    else {
+    ) else {
+        return Err(gaps);
+    };
+    let body_side = side(
+        catalog,
+        "the sun and the moons",
+        [*sun].iter().chain(&moons),
+    );
+    let star_side = side(catalog, "the stars", stars.iter());
+    let label_capacity = Label::new(catalog).map(|label| label.capacity());
+    if label_capacity.is_none() {
+        gaps.push(MissingArt {
+            variant: "the label".into(),
+            wanted: "a plate with a text inset, and the body font".into(),
+        });
+    }
+    let (body_side, star_side) = match (body_side, star_side) {
+        (Ok(body), Ok(star)) => (body, star),
+        (body, star) => {
+            gaps.extend(body.err());
+            gaps.extend(star.err());
+            return Err(gaps);
+        }
+    };
+    let Some(label_capacity) = label_capacity else {
         return Err(gaps);
     };
     if !gaps.is_empty() {
         return Err(gaps);
     }
     Ok(WorldArt {
-        soil_tiles,
-        soil_edges,
         pebbles,
-        glass_left: *glass_left,
-        glass_right: *glass_right,
         corners,
         sun: *sun,
         moons,
         stars,
+        body_side,
+        star_side,
         clouds,
         weeds,
         weed_patches,
@@ -510,15 +517,42 @@ fn world(catalog: &Catalog) -> Result<WorldArt, Vec<MissingArt>> {
         plant_glow: *plant_glow,
         mark_points,
         light_ms,
+        label_capacity,
     })
 }
 
-/// The light overlays' crossfade: one `transitionMs` for both.
+/// The side shared by sprites that must be squares of one size: the sky places them by it.
+fn side<'a>(
+    catalog: &Catalog,
+    what: &str,
+    mut ids: impl Iterator<Item = &'a SpriteId>,
+) -> Result<i32, MissingArt> {
+    let gap = || MissingArt {
+        variant: what.into(),
+        wanted: "squares of one size".into(),
+    };
+    let first = catalog.sprite(*ids.next().ok_or_else(gap)?).rect;
+    let square = |rect: crate::catalog::Rect| rect.w == rect.h && rect.w == first.w;
+    if square(first) && ids.all(|&id| square(catalog.sprite(id).rect)) {
+        Ok(i32::from(first.w))
+    } else {
+        Err(gap())
+    }
+}
+
+/// The light overlays' crossfade: one `transitionMs` for both. A missing overlay is the
+/// `Light` variant's gap, reported there, not again here.
 fn light_ms(catalog: &Catalog) -> Result<u32, MissingArt> {
-    let ms: Vec<Option<u16>> = [Light::Dusk, Light::Sunburst]
+    let mut ids = Vec::new();
+    for kind in [Light::Dusk, Light::Sunburst] {
+        let Ok(Some(id)) = light(catalog, kind) else {
+            return Ok(0);
+        };
+        ids.push(id);
+    }
+    let ms: Vec<Option<u16>> = ids
         .iter()
-        .map(|&kind| light(catalog, kind).ok().flatten())
-        .map(|id| id.and_then(|id| catalog.sprite(id).transition_ms))
+        .map(|&id| catalog.sprite(id).transition_ms)
         .collect();
     match ms[..] {
         [Some(dusk), Some(sunburst)] if dusk == sunburst && dusk > 0 => Ok(u32::from(dusk)),
@@ -543,9 +577,11 @@ fn paired(catalog: &Catalog, glow: SpriteId, host: SpriteId) -> Result<(), Missi
 }
 
 /// The points every carved-mark design lists: exactly one per mark a stone can hold, the same
-/// on each design.
+/// on each design. A missing design is the marks variant's gap, reported there, not again here.
 fn mark_points(catalog: &Catalog) -> Result<Vec<Point>, MissingArt> {
-    let marks = carved_marks(catalog)?;
+    let Ok(marks) = carved_marks(catalog) else {
+        return Ok(Vec::new());
+    };
     let first = catalog.sprite(marks[0]).placement.clone();
     let agreed = marks
         .iter()
@@ -1381,6 +1417,27 @@ mod tests {
             lines(&missing(&broken)),
             "tmp.monument.lichen-glow.ancient: paired with `tmp.monument.stone.ancient`"
         );
+    }
+
+    #[test]
+    fn the_light_time_and_the_sky_sizes_are_one_gap_each() {
+        let mut broken = catalog().clone();
+        let dusk = broken.id("tmp.sky.light.dusk").unwrap();
+        broken.sprites[dusk.index()].transition_ms = None;
+        assert_eq!(
+            lines(&missing(&broken)),
+            "Light: one transitionMs on both light overlays"
+        );
+        let mut broken = catalog().clone();
+        let moon = broken.id("tmp.sky.moon.phase.2").unwrap();
+        broken.sprites[moon.index()].rect.w += 1;
+        assert_eq!(
+            lines(&missing(&broken)),
+            "the sun and the moons: squares of one size"
+        );
+        let table = ArtTable::new(catalog()).unwrap();
+        assert_eq!((table.world().body_side, table.world().star_side), (5, 3));
+        assert_eq!(table.world().label_capacity, 18);
     }
 
     #[test]

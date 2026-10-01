@@ -41,7 +41,7 @@ use crate::rules::dressing;
 use crate::salt::{InstallSalt, Purpose};
 use crate::sky::{self, CloudSize, LocalDate, MoonLook, moon_phase};
 use crate::slots::Layout;
-use crate::text::Label;
+use crate::text::{Label, fit};
 use crate::tween::durations::{
     APPEAR_MS, FILL_MS, LABEL_CYCLE_MS, LABEL_FADE_MS, RESTYLE_MS, SKY_MS, VANISH_MS,
 };
@@ -395,6 +395,7 @@ struct Timing {
 /// The label's text: one set of lines, cycling from when it arrived.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LabelLook {
+    /// Fitted to the plate once, when the set arrives.
     lines: Vec<String>,
     since: Millis,
     opacity: Tween,
@@ -442,6 +443,7 @@ pub struct Composer {
     layout: Layout,
     world: WorldLayout,
     light_ms: u32,
+    label_capacity: usize,
     placement: Placement,
     monuments: BTreeMap<u32, u8>,
     fossils: BTreeMap<u32, u8>,
@@ -456,8 +458,9 @@ impl Composer {
             salt,
             bands: Bands::new(table),
             layout: Layout::new(salt),
-            world: WorldLayout::new(salt),
+            world: WorldLayout::new(salt, table.world()),
             light_ms: table.world().light_ms,
+            label_capacity: table.world().label_capacity,
             placement: Placement::default(),
             monuments: BTreeMap::new(),
             fossils: BTreeMap::new(),
@@ -634,8 +637,13 @@ impl Composer {
         wanted
     }
 
-    /// Raises a new set of label lines when they change, crossfading from the old.
+    /// Raises a new set of label lines when they change, crossfading from the old. The lines
+    /// are fitted to the plate here, once, rather than on every frame.
     fn update_label(&mut self, lines: &[String], now: Millis) {
+        let lines: Vec<String> = lines
+            .iter()
+            .map(|line| fit(line, self.label_capacity))
+            .collect();
         self.label
             .retain(|look| look.opacity.target() == SHOWN || now < look.opacity.end());
         let current = self
@@ -654,7 +662,7 @@ impl Composer {
         }
         if !lines.is_empty() {
             self.label.push(LabelLook {
-                lines: lines.to_vec(),
+                lines,
                 since: now,
                 opacity: Tween::new(0, SHOWN, now, LABEL_FADE_MS),
             });
@@ -858,7 +866,7 @@ impl Composer {
                     continue;
                 };
                 let part = u8::try_from(line).unwrap_or(u8::MAX);
-                for (item, glyph) in (0_u16..).zip(label.text_draws(text, LABEL_X, LABEL_Y)) {
+                for (item, glyph) in (0_u16..).zip(label.fitted_draws(text, LABEL_X, LABEL_Y)) {
                     let opacity = times_opacity(glyph.opacity, opacity);
                     if opacity == 0 {
                         continue;
@@ -906,12 +914,14 @@ fn timing(subject: Subject, light_ms: u32) -> Timing {
         | Subject::Star(_)
         | Subject::Film(_) => (SKY_MS, SKY_MS, HALF_RESTYLE),
         Subject::Light => (light_ms, light_ms, light_ms),
-        Subject::Label => (LABEL_FADE_MS, LABEL_FADE_MS, LABEL_FADE_MS),
         Subject::Fill { .. }
         | Subject::Weed { .. }
         | Subject::Dressing(_)
         | Subject::Litter(_)
         | Subject::Fungus(_)
+        // Never entries: the label keeps its own looks, timed by `update_label`, and the
+        // scenery never changes. They are here only to keep the match whole.
+        | Subject::Label
         | Subject::Scenery(_) => (FILL_MS, FILL_MS, HALF_RESTYLE),
     };
     Timing {

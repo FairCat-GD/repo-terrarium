@@ -12,8 +12,10 @@ use terrarium_truth::scene::Weather;
 pub const BAND_HEIGHT: i32 = 13;
 /// The rows the sun, the moon and the stars may use: inside the band, above the clouds.
 pub const BODY_ROWS: std::ops::RangeInclusive<i32> = 1..=11;
-/// The rows the clouds drift through, below the band.
-pub const CLOUD_ROWS: std::ops::RangeInclusive<i32> = 14..=30;
+/// The top row of the highest cloud path, just below the band. Each further path is
+/// [`CLOUD_PATH_STEP`] rows lower, so no two paths share a top row.
+pub const CLOUD_TOP: i32 = BAND_HEIGHT + 1;
+pub const CLOUD_PATH_STEP: i32 = 4;
 
 /// A calendar date on the local clock. Day and night, and the moon, are the composer's, never
 /// truth's.

@@ -5,12 +5,12 @@
 
 use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState};
 
-use crate::catalog::{Art, Catalog, SpriteId};
+use crate::catalog::Art;
 use crate::frame::{Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH};
 use crate::plant::Parts;
 use crate::text::Label;
 use crate::variants::ArtTable;
-use crate::world::soil_and_glass;
+use crate::world::{soil_and_glass, sprite};
 
 const WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
@@ -118,12 +118,6 @@ pub fn scenery(art: &Art, label: &str) -> Vec<Draw> {
     let label_art = Label::new(catalog).expect("the delivered label plate");
     draws.extend(label_art.draws(label, plate_x, plate_y));
     draws
-}
-
-fn sprite(catalog: &Catalog, name: &str) -> SpriteId {
-    catalog
-        .id(name)
-        .unwrap_or_else(|| panic!("the delivered {name}"))
 }
 
 #[cfg(test)]
