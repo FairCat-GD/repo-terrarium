@@ -25,6 +25,17 @@ global-hotkey.workspace = true
 muda.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+egui = { workspace = true, optional = true }
+egui-winit = { workspace = true, optional = true }
+egui-wgpu = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+
+# `dev` builds add the debug window and the egui memory probe. Never a default feature: the
+# debug window never ships in release builds (`cargo xtask verify`'s graph check).
+[features]
+default = []
+dev = ["dep:egui", "dep:egui-winit", "dep:egui-wgpu", "dep:wgpu", "dep:pollster"]
 
 [lints]
 workspace = true

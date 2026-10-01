@@ -8,9 +8,11 @@ The `repo-terrarium` binary.
   edge of the chosen monitor, below ordinary windows, and never in the Dock or the app
   switcher.
 - The monitor choice (`monitor`): the setting, else a non-primary monitor, else the primary.
-- The living strip (`animate`): the thriving preset through the composer, kept by day until
-  the live terrarium arrives, composed only when the composer says the picture changes and at
-  most 15 times a second.
+- The living strip (`animate`): a scene through the composer, composed only when the composer
+  says the picture changes and at most 15 times a second.
+- What it shows (`feed`): the thriving preset, or `--demo`'s cycle (`demo`), always on the
+  local clock, taken again every hour and after a wake, and dimmed after 30 minutes without
+  input (`idle`).
 - The `Presenter` that puts composed pixels on screen (`present`), with softbuffer as the first
   backend. It presents on resize, re-placement and the OS's expose requests, and when the
   living strip's pixels change; a still strip draws no frames.
@@ -20,7 +22,9 @@ The `repo-terrarium` binary.
   `terrarium-platform`. On macOS the strip is a desktop-level window; on Windows it is an
   `AppBar` on a reserved edge, sized to the band Windows grants.
 - `--probe pinning` (`probe`): the strip with a recorder, a guided checklist and a report.
-- Later: the egui windows (settings, time-lapse, debug panel).
+- In dev builds (`--features dev`): the egui windows (`egui_host`), on one wgpu device made with
+  the first window and dropped with the last, painted only when egui asks (`repaint`); the debug
+  window (`debug`); and `--probe egui` (`egui_probe`).
 
 ## Why it is a crate of its own
 
@@ -33,13 +37,17 @@ that span crates, such as salt independence across engine and compose, live here
 - The version has one source, the workspace manifest, read through `CARGO_PKG_VERSION`.
 - User-facing strings live in the `copy` module (I-8).
 - The event loop sleeps in `ControlFlow::Wait`. It waits until a deadline only for a raise
-  ending or the living strip's next change, never while the strip is covered, and other threads
-  wake it only through the `EventLoopProxy`.
+  ending, the living strip's next change, the feed's next look, or an open egui window's next
+  repaint; the strip asks for none while it is covered, and other threads wake it only through
+  the `EventLoopProxy`.
+- The debug window and `--probe egui` exist only with the `dev` feature, which no build enables
+  by default (`cargo xtask verify`'s graph check).
 - `--probe pinning` shows the still sample, so its idle step can count on no frames.
 
 ## Command line
 
 - `repo-terrarium` runs the strip. Right-click it and choose **Quit** to close it.
+- `repo-terrarium --demo` runs the strip through the named looks, a quarter of an hour each.
 - `repo-terrarium --version` prints the version.
 - `repo-terrarium --probe pinning` runs the strip and walks through the pinning checklist on
   stdout. Each answer is a line on stdin: Enter moves on, and text typed first is kept as a
@@ -48,6 +56,9 @@ that span crates, such as salt independence across engine and compose, live here
   ends with a `taskkill` that stands in for a crash.
 - `repo-terrarium --probe-readme` prints the Windows probe's instructions for testers, which
   `cargo xtask probe-zip` ships as `README.txt`.
+- In dev builds, `repo-terrarium --probe egui` opens and closes the debug window five times on
+  timers and writes `egui-memory-<time>.txt` to the current directory: memory, loop wakes and
+  focus per phase. Run it on a release build.
 
 ## Requirements
 

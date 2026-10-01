@@ -26,6 +26,7 @@ pub mod schedule;
 pub mod sky;
 pub mod slots;
 pub mod sway;
+pub mod synthetic;
 pub mod text;
 pub mod tween;
 pub mod variants;

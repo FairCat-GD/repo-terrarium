@@ -8,6 +8,8 @@ pub use imp::{
     AttachError, Monitor, Observers, Pinning, app_is_active, configure_event_loop, frontmost_app,
     os_version, separate_spaces, window_attributes,
 };
+#[cfg(feature = "dev")]
+pub use imp::{PreviousApp, activate};
 
 #[cfg(not(any(target_os = "macos", windows)))]
 compile_error!("repo-terrarium runs on macOS and Windows");
@@ -268,6 +270,17 @@ mod imp {
         Some(macos::app_is_active())
     }
 
+    /// Gives `window` the keyboard. An accessory app is not activated by a new window, so it
+    /// is activated here; winit does that through `activateIgnoringOtherApps`.
+    #[cfg(feature = "dev")]
+    pub fn activate(window: &Window) {
+        window.focus_window();
+    }
+
+    /// The app the user was in, to give the keyboard back to when the last window closes.
+    #[cfg(feature = "dev")]
+    pub use macos::PreviousApp;
+
     pub fn frontmost_app() -> Option<String> {
         macos::frontmost_app()
     }
@@ -504,6 +517,25 @@ mod imp {
 
     pub fn app_is_active() -> Option<bool> {
         Some(windows::foreground_is_this_process())
+    }
+
+    /// A window created active already has the keyboard. winit's `focus_window` would fake
+    /// an Alt key press to get it, which is not needed.
+    #[cfg(feature = "dev")]
+    pub fn activate(_window: &Window) {}
+
+    /// Windows activates the next window in the stack when one closes, and the strip is never
+    /// activated, so focus goes back by itself: there is nothing to keep.
+    #[cfg(feature = "dev")]
+    pub struct PreviousApp;
+
+    #[cfg(feature = "dev")]
+    impl PreviousApp {
+        pub fn frontmost() -> Option<PreviousApp> {
+            None
+        }
+
+        pub fn restore(&self) {}
     }
 
     /// The foreground window's class, which never carries a document's name.

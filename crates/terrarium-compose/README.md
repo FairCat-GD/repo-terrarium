@@ -19,6 +19,10 @@ Depiction: from `SceneInput` to pixels.
   metadata and the atlas its pixels are packed into.
 - The variant table (`variants`, `ArtTable`): the art that depicts each `SceneInput` variant,
   each species' depth band, and the filler art.
+- The synthetic climate (`synthetic`): a scene from a few knobs (light, soil, rain, wind,
+  weather, idle days, age), by truth's rules at a single moment. It stands in for truth's
+  projection in `--demo`, the debug window, `cargo xtask gallery` and the synthetic snapshots,
+  and holds the named looks and the gallery's health × activity grid.
 - The composer (`composer`), with its slots (`slots`), placement (`place`), plant assembly
   (`plant`), tweens (`tween`) and draw order (`order`), and the presets it is shown with
   (`preset`).

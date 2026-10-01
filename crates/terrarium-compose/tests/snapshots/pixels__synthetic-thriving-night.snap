@@ -1,0 +1,6 @@
+---
+source: crates/terrarium-compose/tests/pixels.rs
+expression: "export::png(width, height, pixels)"
+extension: png
+snapshot_kind: binary
+---

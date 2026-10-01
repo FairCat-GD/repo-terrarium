@@ -3,9 +3,12 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod appbar;
+pub mod clock;
 pub mod geometry;
+pub mod idle;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod memory;
 #[cfg(windows)]
 pub mod windows;
 

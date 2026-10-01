@@ -3,9 +3,10 @@
 //!
 //! The loop sleeps in `ControlFlow::Wait` and wakes only for OS events, for what other threads
 //! forward through the `EventLoopProxy` (hotkeys, menu choices, system notifications and probe
-//! answers), and at two deadlines: a raise ending, and the living strip's next change, which
-//! it never asks for sooner than a fifteenth of a second after the last frame (I-10). Nothing
-//! is drawn while the strip is covered.
+//! answers), and at three deadlines: a raise ending, the living strip's next change, which it
+//! never asks for sooner than a fifteenth of a second after the last frame (I-10), and the
+//! feed's next look at the clock, the idle time or `--demo`'s cycle. Nothing is drawn, and
+//! nothing asked for, while the strip is covered.
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -31,6 +32,13 @@ use winit::window::{Window, WindowId};
 use crate::animate::Living;
 use crate::cli::ProbeKind;
 use crate::copy;
+#[cfg(feature = "dev")]
+use crate::debug::Readout;
+#[cfg(feature = "dev")]
+use crate::dev::Dev;
+#[cfg(feature = "dev")]
+use crate::feed::Overrides;
+use crate::feed::{Feed, Feeder, Os};
 use crate::hotkey::{self, RaiseHotkey};
 use crate::hover::HoverTracker;
 use crate::menu::{self, StripMenu};
@@ -45,8 +53,15 @@ use crate::raise::RaiseTimer;
 const EDGE: Edge = Edge::Bottom;
 const SIZE_STEP: SizeStep = SizeStep::Full;
 
+/// What the strip runs as.
+pub enum Mode {
+    /// The living strip, shown from this feed.
+    Live(Feed),
+    Probe(ProbeKind),
+}
+
 /// What the strip shows: the sample, composed once and still, for the pinning probe, whose
-/// idle step counts on a strip that draws nothing; otherwise the thriving terrarium, living.
+/// idle step counts on a strip that draws nothing; otherwise a feed, living.
 enum Scene {
     Still {
         frame: Rgba640x74,
@@ -54,28 +69,36 @@ enum Scene {
     },
     Living {
         living: Box<Living>,
+        feeder: Box<Feeder>,
         /// The moment the composer's clock counts from.
         origin: Instant,
     },
 }
 
 impl Scene {
-    fn new(still: bool) -> Scene {
-        if still {
-            let art = Art::embedded();
-            // `cargo xtask verify` checks the embedded art is complete, so this table builds.
-            let table =
-                ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
-            let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
-            Scene::Still {
-                frame: composite(art, &frame),
-                padding: Box::new(world::padding(art, 0, 0)),
+    fn new(mode: &Mode) -> Scene {
+        let feed = match mode {
+            Mode::Live(feed) => feed.clone(),
+            #[cfg(feature = "dev")]
+            Mode::Probe(ProbeKind::Egui) => Feed::Thriving,
+            Mode::Probe(ProbeKind::Pinning) => {
+                let art = Art::embedded();
+                // `cargo xtask verify` checks the embedded art is complete, so this table
+                // builds.
+                let table =
+                    ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
+                let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
+                return Scene::Still {
+                    frame: composite(art, &frame),
+                    padding: Box::new(world::padding(art, 0, 0)),
+                };
             }
-        } else {
-            Scene::Living {
-                living: Box::new(Living::new(Millis(0))),
-                origin: Instant::now(),
-            }
+        };
+        let feeder = Box::new(Feeder::new(feed, Millis(0), &Os::read()));
+        Scene::Living {
+            living: Box::new(Living::new(feeder.scene(), &feeder.overlay(), Millis(0))),
+            feeder,
+            origin: Instant::now(),
         }
     }
 
@@ -84,22 +107,75 @@ impl Scene {
         Millis(u64::try_from(instant.duration_since(origin).as_millis()).unwrap_or(u64::MAX))
     }
 
+    fn instant(origin: Instant, at: Millis) -> Option<Instant> {
+        origin.checked_add(Duration::from_millis(at.0))
+    }
+
     /// When the living strip next wants a frame.
+    fn frame_due(&self) -> Option<Instant> {
+        match self {
+            Scene::Still { .. } => None,
+            Scene::Living { living, origin, .. } => Self::instant(*origin, living.due()?),
+        }
+    }
+
+    /// When the living strip next wants anything: a frame, or a look by its feed.
     fn due(&self) -> Option<Instant> {
         match self {
             Scene::Still { .. } => None,
-            Scene::Living { living, origin } => {
-                let due = living.due()?;
-                origin.checked_add(Duration::from_millis(due.0))
+            Scene::Living { feeder, origin, .. } => {
+                let look = Self::instant(*origin, feeder.due());
+                [self.frame_due(), look].into_iter().flatten().min()
+            }
+        }
+    }
+
+    /// Lets the feed look at the OS if it is due to, or at once with `force`, and moves the
+    /// composer toward what it then shows.
+    fn look(&mut self, now: Instant, force: bool) {
+        if let Scene::Living {
+            living,
+            feeder,
+            origin,
+        } = self
+        {
+            let at = Self::millis(*origin, now);
+            if (force || feeder.due() <= at) && feeder.tick(at, &Os::read(), force) {
+                living.update(feeder.scene(), &feeder.overlay(), at);
             }
         }
     }
 
     /// Brings the scene to `now`; true if its pixels changed.
     fn advance(&mut self, now: Instant) -> bool {
+        self.look(now, false);
         match self {
             Scene::Still { .. } => false,
-            Scene::Living { living, origin } => living.advance(Self::millis(*origin, now)),
+            Scene::Living { living, origin, .. } => living.advance(Self::millis(*origin, now)),
+        }
+    }
+
+    /// Shows `feed` with `overrides` from `now`, as the debug window chose.
+    #[cfg(feature = "dev")]
+    fn choose(&mut self, feed: Feed, overrides: Overrides, now: Instant) {
+        if let Scene::Living {
+            living,
+            feeder,
+            origin,
+        } = self
+        {
+            let at = Self::millis(*origin, now);
+            feeder.choose(feed, overrides, at, &Os::read());
+            living.update(feeder.scene(), &feeder.overlay(), at);
+        }
+    }
+
+    /// What the living strip shows, for the debug window to start from.
+    #[cfg(feature = "dev")]
+    fn shown(&self) -> Option<(&Feed, Overrides)> {
+        match self {
+            Scene::Still { .. } => None,
+            Scene::Living { feeder, .. } => Some((feeder.feed(), feeder.overrides())),
         }
     }
 
@@ -138,17 +214,18 @@ impl From<EventLoopError> for StripError {
 }
 
 /// Runs the strip until it is quit. With a probe, it also records and reports.
-pub fn run(probe: Option<ProbeKind>) -> Result<(), StripError> {
+pub fn run(mode: &Mode) -> Result<(), StripError> {
+    let pinning_probe = matches!(mode, Mode::Probe(ProbeKind::Pinning));
     let mut builder = EventLoop::<UserEvent>::with_user_event();
-    pinning::configure_event_loop(&mut builder, probe.is_some());
+    pinning::configure_event_loop(&mut builder, pinning_probe);
     let event_loop = builder.build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     // Both crates keep only the first handler they are given, so these come before any menu
     // or hotkey exists. Each consumer gets its own proxy, made once.
     menu::forward_events(event_loop.create_proxy());
     hotkey::forward_events(event_loop.create_proxy());
-    let probe = probe.map(|ProbeKind::Pinning| Probe::start(event_loop.create_proxy()));
-    let mut strip = Strip::new(event_loop.create_proxy(), probe);
+    let probe = pinning_probe.then(|| Probe::start(event_loop.create_proxy()));
+    let mut strip = Strip::new(event_loop.create_proxy(), probe, mode);
     event_loop.run_app(&mut strip)?;
     match strip.failed {
         Some(err) => Err(err),
@@ -173,6 +250,8 @@ struct Strip {
     placement_pending: bool,
     idle_seen: bool,
     failed: Option<StripError>,
+    #[cfg(feature = "dev")]
+    dev: Dev,
 }
 
 /// Everything that exists once the window does.
@@ -187,9 +266,9 @@ struct View {
 }
 
 impl Strip {
-    fn new(proxy: EventLoopProxy<UserEvent>, probe: Option<Probe>) -> Self {
+    fn new(proxy: EventLoopProxy<UserEvent>, probe: Option<Probe>, mode: &Mode) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
-        let scene = Scene::new(probe.is_some());
+        let scene = Scene::new(mode);
         Self {
             proxy: Some(proxy),
             probe,
@@ -203,6 +282,8 @@ impl Strip {
             placement_pending: false,
             idle_seen: false,
             failed: None,
+            #[cfg(feature = "dev")]
+            dev: Dev::new(matches!(mode, Mode::Probe(ProbeKind::Egui))),
         }
     }
 
@@ -393,7 +474,11 @@ impl Strip {
                 if wanted && self.gate.should_present() {
                     let (frame, padding) = self.scene.pixels();
                     match view.presenter.present(frame, &view.scale, padding) {
-                        Ok(()) => self.gate.presented(),
+                        Ok(()) => {
+                            self.gate.presented();
+                            #[cfg(feature = "dev")]
+                            self.dev.fps.presented(now);
+                        }
                         Err(err) => eprintln!("{}", copy::present_failed(&err)),
                     }
                 }
@@ -483,11 +568,18 @@ fn choose(mut monitors: Vec<Monitor>) -> Option<Monitor> {
 }
 
 impl ApplicationHandler<UserEvent> for Strip {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         let now = Instant::now();
+        #[cfg(feature = "dev")]
+        self.dev_woke(event_loop, now);
+        #[cfg(not(feature = "dev"))]
+        let _ = event_loop;
+        if !self.gate.occluded() {
+            self.scene.look(now, false);
+        }
         if matches!(cause, StartCause::ResumeTimeReached { .. })
             && !self.gate.occluded()
-            && self.scene.due().is_some_and(|due| due <= now)
+            && self.scene.frame_due().is_some_and(|due| due <= now)
             && let Some(view) = &self.view
         {
             self.scheduled = true;
@@ -543,6 +635,17 @@ impl ApplicationHandler<UserEvent> for Strip {
                     self.end_probe(EndReason::Quit);
                     event_loop.exit();
                 }
+                #[cfg(feature = "dev")]
+                if self
+                    .view
+                    .as_ref()
+                    .and_then(|view| view.menu.as_ref())
+                    .is_some_and(|menu| menu.is_debug(&id))
+                    && let Some((feed, overrides)) = self.scene.shown()
+                {
+                    let feed = feed.clone();
+                    self.dev.open_debug(event_loop, &feed, overrides);
+                }
             }
             UserEvent::System(event) => {
                 self.record(ProbeEvent::System {
@@ -558,6 +661,11 @@ impl ApplicationHandler<UserEvent> for Strip {
                 ) {
                     self.placement_pending = true;
                 }
+                // The composer carried the clock on through the sleep, but on macOS the
+                // monotonic clock stops while asleep: the feed takes the local time again.
+                if event == SystemEvent::Woke {
+                    self.scene.look(Instant::now(), true);
+                }
             }
             UserEvent::ProbeLine(line) => {
                 self.with_view(|strip, view| strip.answer(event_loop, view, &line));
@@ -569,8 +677,18 @@ impl ApplicationHandler<UserEvent> for Strip {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        self.with_view(|strip, view| strip.window_input(event_loop, view, event));
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Only the strip's own window quits the app when closed; other windows are egui's.
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|view| view.window.id() == id)
+        {
+            self.with_view(|strip, view| strip.window_input(event_loop, view, event));
+        } else {
+            #[cfg(feature = "dev")]
+            self.dev_window_event(id, &event);
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -589,7 +707,15 @@ impl ApplicationHandler<UserEvent> for Strip {
         let living = (!self.gate.occluded() && self.view.is_some())
             .then(|| self.scene.due())
             .flatten();
-        let deadline = [self.raise.deadline(), living].into_iter().flatten().min();
+        // Open egui windows and the egui probe keep their own deadlines, covered or not.
+        #[cfg(feature = "dev")]
+        let dev = self.dev.deadline();
+        #[cfg(not(feature = "dev"))]
+        let dev = None;
+        let deadline = [self.raise.deadline(), living, dev]
+            .into_iter()
+            .flatten()
+            .min();
         event_loop.set_control_flow(match deadline {
             Some(deadline) => ControlFlow::WaitUntil(deadline),
             None => ControlFlow::Wait,
@@ -603,5 +729,57 @@ impl ApplicationHandler<UserEvent> for Strip {
         if let Some(view) = &self.view {
             view.pinning.release();
         }
+    }
+}
+
+#[cfg(feature = "dev")]
+impl Strip {
+    /// The loop woke: egui windows due a repaint redraw, and the egui probe takes its step.
+    fn dev_woke(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
+        self.dev.woke(now);
+        let Some((feed, overrides)) = self.scene.shown() else {
+            return;
+        };
+        let feed = feed.clone();
+        if self.dev.probe(event_loop, now, (&feed, overrides)) {
+            event_loop.exit();
+        }
+    }
+
+    fn dev_window_event(&mut self, id: WindowId, event: &WindowEvent) {
+        if !self.dev.owns(id) {
+            return;
+        }
+        let now = Instant::now();
+        let Some(readout) = self.readout(now) else {
+            return;
+        };
+        if let Some((feed, overrides)) = self.dev.window_event(id, event, &readout) {
+            self.scene.choose(feed, overrides, now);
+        }
+    }
+
+    fn readout(&mut self, now: Instant) -> Option<Readout> {
+        let frames = self.gate.count();
+        let fps = self.dev.fps.per_second(now);
+        let Scene::Living {
+            living,
+            feeder,
+            origin,
+        } = &self.scene
+        else {
+            return None;
+        };
+        let overlay = feeder.overlay();
+        Some(Readout {
+            frames,
+            fps,
+            compositions: living.compositions(),
+            memory: terrarium_platform::memory::usage(),
+            state: feeder.scene().presentation.state,
+            clock: overlay.clock,
+            dimmed: overlay.dim,
+            stage: feeder.stage(Scene::millis(*origin, now)),
+        })
     }
 }

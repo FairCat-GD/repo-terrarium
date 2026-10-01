@@ -2,6 +2,9 @@
 # list stops the build until it is decided on; no `ignore` or exception is added without that.
 
 [graph]
+# Every feature, so the dev build's dependencies (the debug window's egui and wgpu) are held to
+# the same policy as the release build's.
+all-features = true
 # The shipping targets. Linux is not a product target, so its window-system crates never ship.
 targets = [
     "aarch64-apple-darwin",
@@ -28,6 +31,12 @@ allow = [
     "MPL-2.0",
 ]
 confidence-threshold = 0.93
+# egui's bundled fonts, approved for this crate alone: Ubuntu under the Ubuntu Font Licence, and
+# Hack and the emoji fonts under OFL-1.1. Both free font licences allow bundling; the release
+# notices carry their attribution.
+exceptions = [
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+]
 # The allowlist is policy, not a record of what is linked today.
 unused-allowed-license = "allow"
 

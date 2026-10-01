@@ -1,7 +1,7 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify`, `assets`, `bench`, `probe-zip` and `render`.
+The tasks are `verify`, `assets`, `bench`, `gallery`, `probe-zip` and `render`.
 
 ## `verify`
 
@@ -9,14 +9,16 @@ The gate every commit passes. It runs every stage, even after one fails, and end
 summary. The stages:
 
 1. **fmt**: `cargo fmt --all --check`.
-2. **clippy**: `cargo clippy --workspace --all-targets -- -D warnings`.
-3. **clippy (windows)**: the same for `x86_64-pc-windows-msvc`. There is no CI, so this is what
-   compiles and lints the Windows code.
-4. **nextest**: `cargo nextest run --workspace`.
-5. **doctest**: `cargo test --workspace --doc`, because nextest skips doctests.
-6. **deny**: `cargo deny check`, with the policy in `deny.toml`.
-7. **graph**: the crate-graph check below, including the scan of truth's sources.
-8. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
+2. **clippy**: `cargo clippy --workspace --all-targets -- -D warnings`, the release build's
+   features.
+3. **clippy (dev)**: the same with `--all-features`: the debug window and its egui and wgpu.
+4. **clippy (windows)**: `--all-features` for `x86_64-pc-windows-msvc`. There is no CI, so
+   this is what compiles and lints the Windows code.
+5. **nextest**: `cargo nextest run --workspace --all-features`.
+6. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
+7. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
+8. **graph**: the crate-graph check below, including the scan of truth's sources.
+9. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
    this stage.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
@@ -24,8 +26,8 @@ tool is missing, or at another version, fails and names the install command.
 
 ## The crate-graph check
 
-`cargo metadata` gives the dependency graph, resolved for the shipping targets listed in
-`deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the policy as data:
+`cargo metadata` gives the dependency graph, resolved with every feature for the shipping
+targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the policy as data :
 
 - Each crate depends only on the workspace crates the policy allows, for every dependency kind.
   A new crate fails until it is added to the policy.
@@ -37,6 +39,7 @@ tool is missing, or at another version, fails and names the install command.
 - Truth is a single library target. A test, bench, example or build script would be a crate of
   its own, outside the lint walls on truth's root.
 - Every manifest inherits the workspace package fields and lints.
+- No member enables `dev` by default: the debug window never ships in release builds.
 - No dependency declares a `rust-version` above the workspace's.
 
 ### The scan of truth's sources
@@ -55,6 +58,21 @@ arithmetic. `src/purity.rs` lexes every `.rs` file in `crates/terrarium-truth` w
 - `include!` and `#[path]`, which would bring code in from outside the scan.
 
 It reads tokens, so comments, strings and char literals never trigger it.
+
+## `gallery`
+
+`cargo xtask gallery` writes the A-kit into `target/gallery/`, replacing what an earlier run
+left:
+
+- `states/NN-day.png` and `NN-night.png`: the synthetic climate's 30 states across health and
+  activity, at 3×. `NN` is a fixed shuffle of the grid, so someone rating the pictures cannot
+  read the answer from their order; `key.csv` holds it.
+- `named/<name>-day.png`, `-night.png` and `-dim.png`: the named looks at 3×, Recovering among
+  them.
+- `contact-sheet.png`: the grid at 1×, health falling down the rows and activity rising along
+  the columns, each cell's day above its night.
+- `SHA256SUMS`: the hash of every other file. The same build writes the same bytes every run,
+  and a test renders it twice to hold that.
 
 ## `assets`
 

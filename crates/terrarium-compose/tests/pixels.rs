@@ -1,8 +1,8 @@
 //! Exact pixel snapshots: every blend mode at several opacities, day, night and a half mix,
-//! shear, text, the nine-slice, the upscaler, each of the composer's presets by day and by
-//! night, and the terrarium in motion. Between them the presets and the storm show every sky
-//! state, day and night: clear, overcast, haze and storm, under neutral, dusk and sunburst
-//! light.
+//! shear, text, the nine-slice, the upscaler, each of the composer's presets and of the
+//! synthetic climate's named states by day and by night, and the terrarium in motion. Between
+//! them the presets and the storm show every sky state, day and night: clear, overcast, haze
+//! and storm, under neutral, dusk and sunburst light.
 //!
 //! Each picture is kept twice: as a PNG to look at, and as the SHA-256 of its raw pixels. A new
 //! `png` release that encodes differently fails only the PNGs; a pixel that changed fails both.
@@ -26,7 +26,7 @@ use terrarium_compose::scale::{SizeStep, StripScale, upscale_into};
 use terrarium_compose::text::{Face, Label, Text};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::{preset, sample, world};
+use terrarium_compose::{preset, sample, synthetic, world};
 use terrarium_truth::scene::{Weather, Wind};
 
 fn art() -> &'static Art<'static> {
@@ -166,6 +166,20 @@ fn the_composer_s_presets_by_night() {
     for name in preset::NAMES {
         let frame = preset::frame(art(), &table, name, "repo-terrarium", 255).expect(name);
         snapshot_frame(&format!("preset-{name}-night"), &frame);
+    }
+}
+
+/// Each named state of the synthetic climate (`--demo`'s stages, the debug window's stand-in
+/// for truth), composed from nothing and settled, by day and by night: all six presentation
+/// states, struggling twice, from low light and from poor soil.
+#[test]
+fn the_synthetic_states_by_day_and_night() {
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    for (name, knobs) in synthetic::NAMED {
+        for (mix, suffix) in [(0, ""), (255, "-night")] {
+            let frame = synthetic::frame(art(), &table, &knobs, "repo-terrarium", mix, false);
+            snapshot_frame(&format!("synthetic-{name}{suffix}"), &frame);
+        }
     }
 }
 

@@ -38,13 +38,27 @@ pub fn usage_error(err: &UsageError) -> String {
         UsageError::Unexpected(arg) => {
             format!("unexpected argument '{}'", arg.to_string_lossy())
         }
-        UsageError::MissingProbeKind => "--probe needs a kind: pinning".to_owned(),
+        UsageError::MissingProbeKind => {
+            format!("--probe needs a kind: {}", PROBE_KINDS.join(" or "))
+        }
     };
+    let probes: Vec<String> = PROBE_KINDS
+        .iter()
+        .map(|kind| format!("--probe {kind}"))
+        .collect();
     format!(
-        "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--version | --probe pinning | \
-         --probe-readme]"
+        "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--version | --demo | {} | \
+         --probe-readme]",
+        probes.join(" | ")
     )
 }
+
+/// The probes this build runs: the egui memory probe exists only in dev builds.
+const PROBE_KINDS: &[&str] = if cfg!(feature = "dev") {
+    &["pinning", "egui"]
+} else {
+    &["pinning"]
+};
 
 pub fn window_failed(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the strip could not open: {err}")
@@ -722,6 +736,213 @@ and your notes. Nothing else.
 If the strip ever gets stuck on screen, or the bottom of the screen stays
 reserved after the probe has ended, signing out and back in clears it.
 ";
+
+#[cfg(feature = "dev")]
+pub fn menu_debug() -> &'static str {
+    "Debug window"
+}
+
+/// The words of the debug window and the egui memory probe (dev builds only).
+#[cfg(feature = "dev")]
+pub mod debug {
+    use std::fmt::Write as _;
+    use std::path::Path;
+
+    use terrarium_truth::PresentationState;
+    use terrarium_truth::scene::{EventKind, Light, Weather};
+
+    use super::{BINARY_NAME, PRODUCT_NAME, VERSION};
+    use crate::debug::Readout;
+    use crate::egui_host::{HostError, WindowKind};
+    use crate::egui_probe::{Phase, Sample};
+
+    pub const SCENE: &str = "Scene";
+    pub const THRIVING: &str = "Thriving, as a plain launch shows it";
+    pub const DEMO: &str = "The demo cycle, from its start";
+    pub const SYNTHETIC: &str = "Synthetic climate";
+    pub const CLIMATE: &str = "Climate";
+    pub const HEALTH: &str = "Health (light and soil)";
+    pub const ACTIVITY: &str = "Activity (rain and wind)";
+    pub const LIGHT: &str = "Light";
+    pub const SOIL: &str = "Soil";
+    pub const RAIN: &str = "Rain, % of baseline";
+    pub const WIND: &str = "Wind, % of baseline";
+    pub const WEATHER: &str = "Weather";
+    pub const LIGHT_SHIFT: &str = "Light shift";
+    pub const IDLE_DAYS: &str = "Days since a commit";
+    pub const AGE: &str = "Age in years";
+    pub const RECOVERING: &str = "Recovering";
+    pub const EVENT: &str = "Event";
+    pub const EVENTS_NOT_DRAWN: &str =
+        "The scene carries the event; its choreography is not drawn yet.";
+    pub const CLEAR_EVENT: &str = "None";
+    pub const CLOCK: &str = "Clock";
+    pub const FIXED_TIME: &str = "A fixed time of day";
+    pub const DIM: &str = "Dim";
+    pub const DIM_IDLE: &str = "after idle time";
+    pub const DIM_ON: &str = "on";
+    pub const DIM_OFF: &str = "off";
+    pub const READOUT: &str = "Readout";
+
+    pub fn window_title(kind: WindowKind) -> String {
+        match kind {
+            WindowKind::Debug => format!("{PRODUCT_NAME} {VERSION}: debug"),
+        }
+    }
+
+    pub fn preset(name: &str) -> String {
+        format!("Preset: {name}")
+    }
+
+    pub fn weather(weather: Weather) -> &'static str {
+        match weather {
+            Weather::Clear => "clear",
+            Weather::Overcast => "overcast",
+            Weather::Storm => "storm",
+            Weather::Haze => "haze",
+        }
+    }
+
+    pub fn light(light: Light) -> &'static str {
+        match light {
+            Light::Neutral => "neutral",
+            Light::Dusk => "dusk",
+            Light::Sunburst => "sunburst",
+        }
+    }
+
+    pub fn event(kind: EventKind) -> &'static str {
+        match kind {
+            EventKind::Storm => "storm",
+            EventKind::Clearing => "clearing",
+            EventKind::Lightning => "lightning",
+            EventKind::Dusk => "dusk",
+            EventKind::Sunburst => "sunburst",
+            EventKind::ClearingBurn => "clearing burn",
+            EventKind::Flowering => "flowering",
+            EventKind::Windstorm => "windstorm",
+            EventKind::RainAfterDrought => "rain after drought",
+            EventKind::Earthquake => "earthquake",
+            EventKind::Sinkhole => "sinkhole",
+        }
+    }
+
+    pub fn state(state: PresentationState) -> &'static str {
+        match state {
+            PresentationState::Thriving => "thriving",
+            PresentationState::Struggling => "struggling",
+            PresentationState::Mature => "mature",
+            PresentationState::Dormant => "dormant",
+            PresentationState::Dead => "dead",
+            PresentationState::Recovering => "recovering",
+        }
+    }
+
+    pub fn derived(health: u8, activity: u8, shown: PresentationState) -> String {
+        format!("health {health}, activity {activity}: {}", state(shown))
+    }
+
+    /// `minutes` after midnight, as `HH:MM`.
+    pub fn time_of_day(minutes: f64) -> String {
+        // The slider holds whole minutes of one day.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let minutes = minutes.max(0.0) as u32;
+        format!("{:02}:{:02}", minutes / 60, minutes % 60)
+    }
+
+    fn megabytes(bytes: u64) -> String {
+        format!("{}.{} MB", bytes >> 20, ((bytes & 0xF_FFFF) * 10) >> 20)
+    }
+
+    pub fn readout(readout: &Readout) -> Vec<String> {
+        let mut lines = vec![
+            format!("state: {}", state(readout.state)),
+            format!(
+                "local time {}{}",
+                time_of_day(f64::from(readout.clock.ms_of_day / 60_000)),
+                if readout.dimmed { ", dimmed" } else { "" }
+            ),
+            format!("frames presented: {}", readout.frames),
+            format!("frames in the last second: {}", readout.fps),
+            format!("compositions: {}", readout.compositions),
+        ];
+        if let Some(stage) = readout.stage {
+            lines.push(format!("demo stage: {stage}"));
+        }
+        lines.push(match readout.memory {
+            Some(memory) => match memory.footprint {
+                Some(footprint) => format!(
+                    "memory: {} resident, {} footprint",
+                    megabytes(memory.resident),
+                    megabytes(footprint)
+                ),
+                None => format!("memory: {} resident", megabytes(memory.resident)),
+            },
+            None => "memory: not known".to_owned(),
+        });
+        lines
+    }
+
+    pub fn host_failed(err: &HostError) -> String {
+        let why = match err {
+            HostError::Window(err) => format!("the window could not be created: {err}"),
+            HostError::Gpu(err) => format!("no graphics device: {err}"),
+        };
+        format!("{BINARY_NAME}: the debug window could not open: {why}")
+    }
+
+    fn phase(phase: Phase) -> String {
+        match phase {
+            Phase::Baseline => "baseline, before any window".to_owned(),
+            Phase::Open(cycle) => format!("cycle {cycle}, window open"),
+            Phase::Closed(cycle) => format!("cycle {cycle}, window closed"),
+        }
+    }
+
+    /// The egui memory probe's report: one line per phase.
+    pub fn egui_probe_report(samples: &[Sample]) -> String {
+        let mut text = format!(
+            "{PRODUCT_NAME} {VERSION}: the egui memory probe\n\
+             Each phase is held 15 s. Memory is resident size and footprint; wakes are the \
+             event loop's, per minute.\n\n"
+        );
+        for sample in samples {
+            let memory = sample.memory.map_or_else(
+                || "memory not known".to_owned(),
+                |memory| {
+                    format!(
+                        "{} resident, {} footprint",
+                        megabytes(memory.resident),
+                        memory.footprint.map_or_else(|| "no".to_owned(), megabytes)
+                    )
+                },
+            );
+            let _ = writeln!(
+                text,
+                "{:>4} s  {:<28} {memory}, {} wakes a minute, app active {}, frontmost {}",
+                sample.at,
+                phase(sample.phase),
+                sample.wakes_per_minute,
+                sample
+                    .app_active
+                    .map_or("not known", |active| if active { "yes" } else { "no" }),
+                sample.frontmost.as_deref().unwrap_or("not known"),
+            );
+        }
+        text
+    }
+
+    pub fn egui_probe_written(path: &Path) -> String {
+        format!("The egui memory report is written: {}", path.display())
+    }
+
+    pub fn egui_probe_write_failed(path: &Path, err: &impl std::fmt::Display) -> String {
+        format!(
+            "{BINARY_NAME}: the egui memory report could not be written to {}: {err}",
+            path.display()
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests {

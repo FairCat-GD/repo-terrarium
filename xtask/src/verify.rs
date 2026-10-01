@@ -60,6 +60,22 @@ const STAGES: &[Stage] = &[
             tool: None,
         },
     },
+    // The dev build: the debug window and its egui and wgpu dependencies.
+    Stage {
+        name: "clippy (dev)",
+        step: Step::Cargo {
+            args: &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--all-features",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            tool: None,
+        },
+    },
     Stage {
         name: "clippy (windows)",
         step: Step::Cargo {
@@ -67,6 +83,7 @@ const STAGES: &[Stage] = &[
                 "clippy",
                 "--workspace",
                 "--all-targets",
+                "--all-features",
                 "--target",
                 WINDOWS_TARGET,
                 "--",
@@ -79,7 +96,7 @@ const STAGES: &[Stage] = &[
     Stage {
         name: "nextest",
         step: Step::Cargo {
-            args: &["nextest", "run", "--workspace"],
+            args: &["nextest", "run", "--workspace", "--all-features"],
             tool: Some(Tool {
                 subcommand: "nextest",
                 package: "cargo-nextest",
@@ -91,7 +108,7 @@ const STAGES: &[Stage] = &[
     Stage {
         name: "doctest",
         step: Step::Cargo {
-            args: &["test", "--workspace", "--doc"],
+            args: &["test", "--workspace", "--doc", "--all-features"],
             tool: None,
         },
     },

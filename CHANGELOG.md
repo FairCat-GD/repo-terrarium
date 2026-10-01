@@ -5,6 +5,28 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-01
+
+The strip keeps the local time, and a demo shows every look of the terrarium in turn. A plain
+launch still shows the thriving terrarium, now by day and by night.
+
+### Added
+
+- **`repo-terrarium --demo`** plays the terrarium through its key looks, a quarter of an hour
+  each: thriving, mature, struggling in low light, struggling in poor soil, dormant, dead and
+  recovering. Each look eases in over five minutes, and a storm passes during the low-light
+  stage. The cycle repeats about every 1 h 45 min.
+- **Day and night follow your local time**, from launch and again after the machine wakes.
+- **Dim mode** begins after 30 minutes with no keyboard or mouse input anywhere on the
+  machine, and ends as soon as there is some.
+- **Dev builds** (`--features dev`) add a debug window, opened from the right-click menu. It
+  shows any preset or a climate set by sliders, a foreground event, a fixed time of day and dim
+  held on or off, and reads out frames, compositions and memory. `--probe egui` measures what
+  the window costs.
+- **`cargo xtask gallery`** writes the A-kit's pictures to `target/gallery/`: 30 states across
+  health and activity by day and by night at 3×, the named looks by day, night and dimmed, a
+  contact sheet, and a key.
+
 ## [0.9.0] - 2026-10-01
 
 The terrarium moves. The strip now shows a living preview: the thriving terrarium, with its

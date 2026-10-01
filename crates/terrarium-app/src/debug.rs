@@ -1,0 +1,339 @@
+//! The debug window (dev builds only): what the strip shows, chosen by hand, and how much it
+//! costs. It is the harness for judging the looks: presets, or the synthetic climate's knobs
+//! with health and activity as two sliders; the foreground event; the time of day; dim; and the
+//! frames, compositions and memory the strip is spending.
+//!
+//! The panel keeps its own state, so it survives its window closing and the egui host being
+//! dropped. The strip takes its changes (`take_change`) after each pass and gives them to the
+//! feed.
+
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+use egui::Ui;
+use terrarium_compose::clock::LocalClock;
+use terrarium_compose::preset;
+use terrarium_compose::synthetic::{self, Knobs, MAX_RATIO};
+use terrarium_platform::memory::Memory;
+use terrarium_truth::PresentationState;
+use terrarium_truth::scene::{EventKind, Light, Weather};
+
+use crate::copy::debug as text;
+use crate::feed::{Feed, Overrides};
+
+/// How often the open window refreshes its readout: often enough to read, rarely enough that
+/// an open window costs the strip almost nothing.
+pub const READOUT_EVERY: Duration = Duration::from_millis(500);
+const MINUTES_IN_DAY: u32 = 24 * 60;
+
+/// What the strip shows, as the panel offers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    Thriving,
+    Demo,
+    Preset(usize),
+    Synthetic,
+}
+
+/// Dim as the panel sets it: after idle time, as the strip does, or held on or off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimChoice {
+    Idle,
+    On,
+    Off,
+}
+
+/// The strip's spending, as the readout shows it.
+pub struct Readout {
+    pub frames: u64,
+    pub fps: usize,
+    pub compositions: u64,
+    pub memory: Option<Memory>,
+    pub state: PresentationState,
+    pub clock: LocalClock,
+    pub dimmed: bool,
+    /// `--demo`'s stage, while the demo is shown.
+    pub stage: Option<&'static str>,
+}
+
+pub struct DebugPanel {
+    choice: Choice,
+    knobs: Knobs,
+    fixed_time: bool,
+    minute_of_day: u32,
+    dim: DimChoice,
+    event: Option<EventKind>,
+    changed: bool,
+}
+
+impl DebugPanel {
+    /// A panel showing what the strip shows now.
+    pub fn new(feed: &Feed, overrides: Overrides) -> DebugPanel {
+        let (choice, knobs) = match feed {
+            Feed::Thriving => (Choice::Thriving, synthetic::NAMED[0].1),
+            Feed::Demo => (Choice::Demo, synthetic::NAMED[0].1),
+            Feed::Preset(name) => (
+                Choice::Preset(preset::NAMES.iter().position(|n| n == name).unwrap_or(0)),
+                synthetic::NAMED[0].1,
+            ),
+            Feed::Synthetic(knobs) => (Choice::Synthetic, *knobs),
+        };
+        DebugPanel {
+            choice,
+            knobs,
+            fixed_time: overrides.time_of_day.is_some(),
+            minute_of_day: overrides.time_of_day.map_or(12 * 60, |ms| ms / 60_000),
+            dim: match overrides.dim {
+                None => DimChoice::Idle,
+                Some(true) => DimChoice::On,
+                Some(false) => DimChoice::Off,
+            },
+            event: overrides.event,
+            changed: false,
+        }
+    }
+
+    /// What the strip should now show, if anything was changed since last asked.
+    pub fn take_change(&mut self) -> Option<(Feed, Overrides)> {
+        std::mem::take(&mut self.changed).then(|| (self.feed(), self.overrides()))
+    }
+
+    fn feed(&self) -> Feed {
+        match self.choice {
+            Choice::Thriving => Feed::Thriving,
+            Choice::Demo => Feed::Demo,
+            Choice::Preset(index) => Feed::Preset(preset::NAMES[index]),
+            Choice::Synthetic => Feed::Synthetic(self.knobs),
+        }
+    }
+
+    fn overrides(&self) -> Overrides {
+        Overrides {
+            time_of_day: self.fixed_time.then_some(self.minute_of_day * 60_000),
+            dim: match self.dim {
+                DimChoice::Idle => None,
+                DimChoice::On => Some(true),
+                DimChoice::Off => Some(false),
+            },
+            event: self.event,
+        }
+    }
+
+    pub fn ui(&mut self, ui: &mut Ui, readout: &Readout) {
+        ui.ctx().request_repaint_after(READOUT_EVERY);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            self.scene(ui);
+            ui.separator();
+            if self.choice == Choice::Synthetic {
+                self.climate(ui);
+                ui.separator();
+            }
+            self.events(ui);
+            ui.separator();
+            self.clock(ui);
+            ui.separator();
+            show_readout(ui, readout);
+        });
+    }
+
+    fn scene(&mut self, ui: &mut Ui) {
+        ui.heading(text::SCENE);
+        let before = self.choice;
+        ui.radio_value(&mut self.choice, Choice::Thriving, text::THRIVING);
+        ui.radio_value(&mut self.choice, Choice::Demo, text::DEMO);
+        for (index, name) in preset::NAMES.iter().enumerate() {
+            ui.radio_value(&mut self.choice, Choice::Preset(index), text::preset(name));
+        }
+        ui.radio_value(&mut self.choice, Choice::Synthetic, text::SYNTHETIC);
+        self.changed |= self.choice != before;
+    }
+
+    fn climate(&mut self, ui: &mut Ui) {
+        ui.heading(text::CLIMATE);
+        let before = self.knobs;
+        let mut health = self.knobs.health();
+        if ui
+            .add(egui::Slider::new(&mut health, 0..=synthetic::FULL).text(text::HEALTH))
+            .changed()
+        {
+            self.knobs.set_health(health);
+        }
+        let mut activity = self.knobs.activity();
+        if ui
+            .add(egui::Slider::new(&mut activity, 0..=synthetic::FULL).text(text::ACTIVITY))
+            .changed()
+        {
+            self.knobs.set_activity(activity);
+        }
+        let knobs = &mut self.knobs;
+        ui.add(egui::Slider::new(&mut knobs.light, 0..=synthetic::FULL).text(text::LIGHT));
+        ui.add(egui::Slider::new(&mut knobs.soil, 0..=synthetic::FULL).text(text::SOIL));
+        ui.add(egui::Slider::new(&mut knobs.rain, 0..=MAX_RATIO).text(text::RAIN));
+        ui.add(egui::Slider::new(&mut knobs.wind, 0..=MAX_RATIO).text(text::WIND));
+        egui::ComboBox::from_label(text::WEATHER)
+            .selected_text(text::weather(knobs.weather))
+            .show_ui(ui, |ui| {
+                for &weather in Weather::ALL {
+                    ui.selectable_value(&mut knobs.weather, weather, text::weather(weather));
+                }
+            });
+        egui::ComboBox::from_label(text::LIGHT_SHIFT)
+            .selected_text(text::light(knobs.shift))
+            .show_ui(ui, |ui| {
+                for &light in Light::ALL {
+                    ui.selectable_value(&mut knobs.shift, light, text::light(light));
+                }
+            });
+        ui.add(egui::Slider::new(&mut knobs.idle_days, 0..=800).text(text::IDLE_DAYS));
+        ui.add(egui::Slider::new(&mut knobs.age_years, 0..=10).text(text::AGE));
+        ui.checkbox(&mut knobs.recovering, text::RECOVERING);
+        ui.label(text::derived(
+            knobs.health(),
+            knobs.activity(),
+            knobs.state(),
+        ));
+        self.changed |= self.knobs != before;
+    }
+
+    fn events(&mut self, ui: &mut Ui) {
+        ui.heading(text::EVENT);
+        ui.label(text::EVENTS_NOT_DRAWN);
+        let before = self.event;
+        ui.horizontal_wrapped(|ui| {
+            for &kind in EventKind::ALL {
+                ui.selectable_value(&mut self.event, Some(kind), text::event(kind));
+            }
+            if ui.button(text::CLEAR_EVENT).clicked() {
+                self.event = None;
+            }
+        });
+        self.changed |= self.event != before;
+    }
+
+    fn clock(&mut self, ui: &mut Ui) {
+        ui.heading(text::CLOCK);
+        let before = (self.fixed_time, self.minute_of_day, self.dim);
+        ui.checkbox(&mut self.fixed_time, text::FIXED_TIME);
+        ui.add_enabled(
+            self.fixed_time,
+            egui::Slider::new(&mut self.minute_of_day, 0..=MINUTES_IN_DAY - 1)
+                .custom_formatter(|minutes, _| text::time_of_day(minutes)),
+        );
+        ui.horizontal(|ui| {
+            ui.label(text::DIM);
+            ui.radio_value(&mut self.dim, DimChoice::Idle, text::DIM_IDLE);
+            ui.radio_value(&mut self.dim, DimChoice::On, text::DIM_ON);
+            ui.radio_value(&mut self.dim, DimChoice::Off, text::DIM_OFF);
+        });
+        self.changed |= (self.fixed_time, self.minute_of_day, self.dim) != before;
+    }
+}
+
+fn show_readout(ui: &mut Ui, readout: &Readout) {
+    ui.heading(text::READOUT);
+    for line in text::readout(readout) {
+        ui.label(line);
+    }
+}
+
+/// Frames presented in the last second.
+#[derive(Debug, Default)]
+pub struct FpsMeter {
+    presents: VecDeque<Instant>,
+}
+
+impl FpsMeter {
+    pub fn presented(&mut self, at: Instant) {
+        self.presents.push_back(at);
+        self.forget_before(at);
+    }
+
+    pub fn per_second(&mut self, now: Instant) -> usize {
+        self.forget_before(now);
+        self.presents.len()
+    }
+
+    fn forget_before(&mut self, now: Instant) {
+        while self
+            .presents
+            .front()
+            .is_some_and(|&at| now.saturating_duration_since(at) >= Duration::from_secs(1))
+        {
+            self.presents.pop_front();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use terrarium_compose::sky::LocalDate;
+
+    use super::*;
+
+    fn readout() -> Readout {
+        Readout {
+            frames: 12,
+            fps: 3,
+            compositions: 40,
+            memory: Some(Memory {
+                resident: 53 << 20,
+                footprint: Some(41 << 20),
+            }),
+            state: PresentationState::Thriving,
+            clock: LocalClock::noon(LocalDate::new(2026, 10, 1)),
+            dimmed: false,
+            stage: Some("mature"),
+        }
+    }
+
+    #[test]
+    fn an_open_panel_asks_to_repaint_only_for_its_readout() {
+        let ctx = egui::Context::default();
+        let mut panel = DebugPanel::new(&Feed::Demo, Overrides::default());
+        let mut delay = Duration::ZERO;
+        for _ in 0..5 {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| panel.ui(ui, &readout()));
+            delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            output.drop_without_applying_deltas();
+        }
+        assert!(delay >= READOUT_EVERY / 2, "{delay:?}");
+        assert_eq!(panel.take_change(), None);
+    }
+
+    #[test]
+    fn the_panel_starts_from_what_the_strip_shows_and_gives_back_its_changes() {
+        let overrides = Overrides {
+            time_of_day: Some(22 * 3_600_000),
+            dim: Some(true),
+            event: Some(EventKind::Storm),
+        };
+        let mut panel = DebugPanel::new(&Feed::Preset("dormant"), overrides);
+        assert_eq!(panel.feed(), Feed::Preset("dormant"));
+        assert_eq!(panel.overrides(), overrides);
+        panel.choice = Choice::Synthetic;
+        panel.knobs.set_health(30);
+        panel.changed = true;
+        let (feed, _) = panel.take_change().unwrap();
+        assert_eq!(
+            feed,
+            Feed::Synthetic(Knobs {
+                light: 30,
+                soil: 30,
+                ..synthetic::NAMED[0].1
+            })
+        );
+        assert_eq!(panel.take_change(), None);
+    }
+
+    #[test]
+    fn the_meter_counts_the_last_second() {
+        let base = Instant::now();
+        let mut meter = FpsMeter::default();
+        for ms in [0, 100, 200, 900] {
+            meter.presented(base + Duration::from_millis(ms));
+        }
+        assert_eq!(meter.per_second(base + Duration::from_millis(950)), 4);
+        assert_eq!(meter.per_second(base + Duration::from_millis(1150)), 2);
+        assert_eq!(meter.per_second(base + Duration::from_secs(3)), 0);
+    }
+}

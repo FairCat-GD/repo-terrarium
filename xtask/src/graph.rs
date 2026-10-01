@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::purity;
 
 use cargo_metadata::semver::Version;
-use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, TargetKind};
+use cargo_metadata::{CargoOpt, DependencyKind, Metadata, MetadataCommand, TargetKind};
 
 const TRUTH: &str = "terrarium-truth";
 const ADAPTERS: &str = "terrarium-adapters";
@@ -58,6 +58,10 @@ const REQUIRED_ROOT_ATTRIBUTES: &[(&str, &str)] = &[
     (TRUTH, "#![deny(clippy::disallowed_methods)]"),
 ];
 
+/// The feature that builds the debug window, which never ships in release builds: no member may
+/// enable it by default.
+const DEV_FEATURE: &str = "dev";
+
 /// Package fields every member inherits from `[workspace.package]`.
 const INHERITED_FIELDS: &[&str] = &[
     "version",
@@ -100,6 +104,8 @@ pub struct Member {
     /// Fields of `INHERITED_FIELDS` the manifest sets with `.workspace = true`.
     pub inherited: BTreeSet<String>,
     pub lints_from_workspace: bool,
+    /// The features `default` enables.
+    pub default_features: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +186,13 @@ fn check_manifest(member: &Member, out: &mut Vec<String>) {
     if !member.lints_from_workspace {
         out.push(format!(
             "{} must set `[lints] workspace = true`",
+            member.name
+        ));
+    }
+    if member.default_features.iter().any(|f| f == DEV_FEATURE) {
+        out.push(format!(
+            "{} must not enable `{DEV_FEATURE}` by default: the debug window never ships in \
+             release builds",
             member.name
         ));
     }
@@ -308,8 +321,10 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
             .ok_or("deny.toml [graph] targets must be strings")?;
         filter.extend(["--filter-platform".to_owned(), triple.to_owned()]);
     }
+    // Every feature, so a dependency only a dev build links is held to the same rules.
     let metadata = MetadataCommand::new()
         .current_dir(root)
+        .features(CargoOpt::AllFeatures)
         .other_options(filter)
         .exec()
         .map_err(|e| format!("cargo metadata failed: {e}"))?;
@@ -435,6 +450,7 @@ fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
         targets,
         inherited,
         lints_from_workspace,
+        default_features: package.features.get("default").cloned().unwrap_or_default(),
     })
 }
 
@@ -548,6 +564,7 @@ mod tests {
             }],
             inherited: INHERITED_FIELDS.iter().map(|f| (*f).to_owned()).collect(),
             lints_from_workspace: true,
+            default_features: Vec::new(),
         }
     }
 
@@ -817,6 +834,17 @@ mod tests {
         member_mut(&mut ws, ENGINE).lints_from_workspace = false;
         fails_with(&ws, "terrarium-store must set `edition.workspace = true`");
         fails_with(&ws, "terrarium-engine must set `[lints] workspace = true`");
+    }
+
+    #[test]
+    fn no_member_builds_the_debug_window_by_default() {
+        let mut ws = workspace();
+        member_mut(&mut ws, APP).default_features = vec!["dev".to_owned()];
+        fails_with(
+            &ws,
+            "terrarium-app must not enable `dev` by default: the debug window never ships in \
+             release builds",
+        );
     }
 
     #[test]

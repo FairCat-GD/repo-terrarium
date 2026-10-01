@@ -3,6 +3,7 @@
 
 mod assets;
 mod bench;
+mod gallery;
 mod graph;
 mod probe_zip;
 mod purity;
@@ -28,6 +29,7 @@ fn main() -> ExitCode {
             assets::run(root, assets::Mode::Check)
         }
         [task] if task == "bench" => bench::run(root),
+        [task] if task == "gallery" => gallery::run(root),
         [task] if task == "probe-zip" => probe_zip::run(root),
         [task, flag, out] if task == "render" && flag == "--demo" => {
             render::run(std::path::Path::new(out))
@@ -37,7 +39,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask verify | assets [--check] | bench | probe-zip \
+                "usage: cargo xtask verify | assets [--check] | bench | gallery | probe-zip \
                  | render --demo <out.png> | render --preset <name> <out.png>"
             );
             ExitCode::from(2)

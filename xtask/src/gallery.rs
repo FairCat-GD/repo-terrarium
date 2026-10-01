@@ -1,0 +1,236 @@
+//! `cargo xtask gallery`: the A-kit's pictures, written to `target/gallery/`.
+//!
+//! - `states/NN-day.png` and `NN-night.png`: the 30 states of the synthetic climate's health ×
+//!   activity grid, at 3×. `NN` is a fixed shuffle of the grid, so a viewer rating them cannot
+//!   read the answer from the order; `key.csv` holds it.
+//! - `named/<name>-day.png`, `-night.png` and `-dim.png`: the named states at 3×, Recovering
+//!   among them, which the grid cannot hold.
+//! - `contact-sheet.png`: the grid at 1×, health falling down the rows and activity rising
+//!   along the columns, each cell's day above its night.
+//! - `SHA256SUMS`: every other file's hash. The pictures are composed with the presets' salt
+//!   and date, so the same build always writes the same bytes.
+
+use std::fmt::Write as _;
+use std::path::Path;
+use std::process::ExitCode;
+
+use sha2::{Digest, Sha256};
+use terrarium_compose::catalog::Art;
+use terrarium_compose::compositor::composite;
+use terrarium_compose::export;
+use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Rgba640x74};
+use terrarium_compose::scale::{StripScale, upscale_into};
+use terrarium_compose::synthetic::{self, Cell};
+use terrarium_compose::variants::ArtTable;
+use terrarium_compose::world;
+
+const LABEL: &str = "repo-terrarium";
+const LARGE_SCALE: u32 = 3;
+/// The contact sheet's gutter between cells, and between a cell's day and night.
+const GUTTER: u32 = 4;
+const GAP: u32 = 2;
+const SHEET_BACKGROUND: Rgba = [24, 24, 24, u8::MAX];
+
+/// The gallery's files, by path under its directory, in the order written.
+pub type Files = Vec<(String, Vec<u8>)>;
+
+pub fn run(root: &Path) -> ExitCode {
+    let dir = root.join("target").join("gallery");
+    match render().and_then(|files| write(&dir, &files).map(|()| files.len())) {
+        Ok(count) => {
+            println!("gallery: wrote {count} files to {}", dir.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            println!("gallery: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Writes `files` into `dir`, after removing whatever an earlier run left there.
+pub fn write(dir: &Path, files: &Files) -> Result<(), String> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    }
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("{}: {err}", parent.display()))?;
+        }
+        std::fs::write(&path, bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The number a grid cell is shown under: a fixed shuffle of the 30 positions.
+pub fn number(index: usize, cells: usize) -> usize {
+    (index * 7 + 3) % cells + 1
+}
+
+/// Every file of the gallery, rendered in memory.
+pub fn render() -> Result<Files, String> {
+    let art = Art::embedded();
+    let table = ArtTable::new(&art.catalog).map_err(|gaps| format!("{} art gaps", gaps.len()))?;
+    let cells = synthetic::gallery();
+    let mut files = Files::new();
+    let mut key = String::from("number,health,activity,state\n");
+    let mut sheet = Vec::with_capacity(cells.len());
+    for (index, cell) in cells.iter().enumerate() {
+        let shown = number(index, cells.len());
+        let day = compose(art, &table, cell, 0, false);
+        let night = compose(art, &table, cell, 255, false);
+        files.push((
+            format!("states/{shown:02}-day.png"),
+            large(art, &day, 0, false)?,
+        ));
+        files.push((
+            format!("states/{shown:02}-night.png"),
+            large(art, &night, 255, false)?,
+        ));
+        let activity = cell
+            .activity
+            .map_or_else(|| "inactive".to_owned(), |a| a.to_string());
+        let _ = writeln!(
+            key,
+            "{shown:02},{},{activity},{}",
+            cell.health,
+            cell.knobs.state().name().to_ascii_lowercase()
+        );
+        sheet.push((cell.row, cell.column, day, night));
+    }
+    for (name, knobs) in synthetic::NAMED {
+        for (suffix, mix, dim) in [("day", 0, false), ("night", 255, false), ("dim", 0, true)] {
+            let frame = synthetic::frame(art, &table, &knobs, LABEL, mix, dim);
+            let image = composite(art, &frame);
+            files.push((
+                format!("named/{name}-{suffix}.png"),
+                large(art, &image, mix, dim)?,
+            ));
+        }
+    }
+    files.push(("key.csv".to_owned(), key.into_bytes()));
+    files.push(("contact-sheet.png".to_owned(), contact_sheet(&sheet)));
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut sums = String::new();
+    for (name, bytes) in &files {
+        let hex = Sha256::digest(bytes)
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
+        let _ = writeln!(sums, "{hex}  {name}");
+    }
+    files.push(("SHA256SUMS".to_owned(), sums.into_bytes()));
+    Ok(files)
+}
+
+/// A grid cell's terrarium, settled, by day or by night.
+fn compose(art: &Art, table: &ArtTable, cell: &Cell, mix: u8, dim: bool) -> Rgba640x74 {
+    composite(
+        art,
+        &synthetic::frame(art, table, &cell.knobs, LABEL, mix, dim),
+    )
+}
+
+/// `image` at 3×, padded as the strip pads it at that mix and dim, as a PNG.
+fn large(art: &Art, image: &Rgba640x74, mix: u8, dim: bool) -> Result<Vec<u8>, String> {
+    let scale = StripScale::exact(LARGE_SCALE);
+    let padding = world::padding(
+        art,
+        mix,
+        if dim {
+            terrarium_compose::composer::DIM
+        } else {
+            0
+        },
+    );
+    let mut pixels = vec![[0; 4]; scale.pixel_count()];
+    upscale_into(image, &scale, &padding, |colour| colour, &mut pixels).map_err(|err| {
+        format!(
+            "the 3× image is {} pixels, not {}",
+            err.actual, err.expected
+        )
+    })?;
+    Ok(export::png(scale.width, scale.height, &pixels))
+}
+
+/// The grid at 1×: each cell's day above its night, in grid order.
+fn contact_sheet(cells: &[(usize, usize, Rgba640x74, Rgba640x74)]) -> Vec<u8> {
+    let columns = u32::try_from(synthetic::GALLERY_ACTIVITY.len()).unwrap_or(1);
+    let rows = u32::try_from(synthetic::GALLERY_HEALTH.len()).unwrap_or(1);
+    let cell_height = 2 * NATIVE_HEIGHT + GAP;
+    let width = columns * NATIVE_WIDTH + (columns + 1) * GUTTER;
+    let height = rows * cell_height + (rows + 1) * GUTTER;
+    let mut pixels = vec![SHEET_BACKGROUND; usize::try_from(width * height).unwrap_or(0)];
+    for (row, column, day, night) in cells {
+        let x0 = GUTTER + u32::try_from(*column).unwrap_or(0) * (NATIVE_WIDTH + GUTTER);
+        let y0 = GUTTER + u32::try_from(*row).unwrap_or(0) * (cell_height + GUTTER);
+        for (image, top) in [(day, y0), (night, y0 + NATIVE_HEIGHT + GAP)] {
+            for y in 0..NATIVE_HEIGHT {
+                for x in 0..NATIVE_WIDTH {
+                    let at = usize::try_from((top + y) * width + x0 + x).unwrap_or(0);
+                    pixels[at] = image.pixel(x, y);
+                }
+            }
+        }
+    }
+    export::png(width, height, &pixels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::test_support::TempDir;
+
+    #[test]
+    fn the_shuffle_numbers_every_cell_once() {
+        let mut numbers: Vec<usize> = (0..30).map(|i| number(i, 30)).collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, (1..=30).collect::<Vec<_>>());
+        assert_ne!(number(0, 30), 1, "the shuffle keeps grid order");
+    }
+
+    #[test]
+    fn the_gallery_is_the_same_bytes_every_time_and_holds_every_picture() {
+        let first = render().unwrap();
+        let second = render().unwrap();
+        assert!(first == second, "two renders differ");
+        let named = |prefix: &str| first.iter().filter(|(n, _)| n.starts_with(prefix)).count();
+        assert_eq!(named("states/"), 60);
+        assert_eq!(named("named/"), 21);
+        let key = &first.iter().find(|(n, _)| n == "key.csv").unwrap().1;
+        assert_eq!(String::from_utf8_lossy(key).lines().count(), 31);
+        let sums = &first.iter().find(|(n, _)| n == "SHA256SUMS").unwrap().1;
+        assert_eq!(
+            String::from_utf8_lossy(sums).lines().count(),
+            first.len() - 1
+        );
+
+        let sheet = &first
+            .iter()
+            .find(|(n, _)| n == "contact-sheet.png")
+            .unwrap()
+            .1;
+        let (w, h, _) = export::read_png(sheet).unwrap();
+        assert_eq!((w, h), (5 * 640 + 6 * GUTTER, 6 * 150 + 7 * GUTTER));
+        let (w, h, _) = export::read_png(&first[first.len() - 2].1).unwrap();
+        assert_eq!((w, h), (1920, 222));
+    }
+
+    #[test]
+    fn a_rerun_replaces_what_an_earlier_one_left() {
+        let dir = TempDir::new("gallery");
+        std::fs::write(dir.0.join("stale.png"), b"old").unwrap();
+        let files = vec![("states/01-day.png".to_owned(), b"new".to_vec())];
+        write(&dir.0, &files).unwrap();
+        assert!(!dir.0.join("stale.png").exists());
+        assert_eq!(
+            std::fs::read(dir.0.join("states/01-day.png")).unwrap(),
+            b"new"
+        );
+    }
+}

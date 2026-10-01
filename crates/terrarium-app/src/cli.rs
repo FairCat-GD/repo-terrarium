@@ -7,6 +7,8 @@ use std::ffi::OsString;
 pub enum Command {
     /// No arguments: run the strip.
     Run,
+    /// `--demo`: run the strip through the synthetic climate's states, with no repository.
+    Demo,
     /// `--version`: print the version and exit.
     Version,
     /// `--probe <kind>`: run the strip with a recorder and write a report.
@@ -20,6 +22,9 @@ pub enum Command {
 pub enum ProbeKind {
     /// Window level, Spaces, hover, the hotkey and activation.
     Pinning,
+    /// The memory an egui window costs, opened and closed again (dev builds).
+    #[cfg(feature = "dev")]
+    Egui,
 }
 
 /// A command line the program does not accept.
@@ -43,12 +48,16 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
     };
     let command = if first == "--version" {
         Command::Version
+    } else if first == "--demo" {
+        Command::Demo
     } else if first == "--probe-readme" {
         Command::ProbeReadme
     } else if first == "--probe" {
         match args.next() {
             None => return Err(UsageError::MissingProbeKind),
             Some(kind) if kind == "pinning" => Command::Probe(ProbeKind::Pinning),
+            #[cfg(feature = "dev")]
+            Some(kind) if kind == "egui" => Command::Probe(ProbeKind::Egui),
             Some(kind) => return Err(UsageError::Unexpected(kind)),
         }
     } else {
@@ -108,6 +117,21 @@ mod tests {
             parse_strs(&["--probe", "pinning"]),
             Ok(Command::Probe(ProbeKind::Pinning))
         );
+    }
+
+    #[test]
+    fn the_demo_runs_the_strip_on_its_own_and_takes_nothing_after_it() {
+        assert_eq!(parse_strs(&["--demo"]), Ok(Command::Demo));
+        assert_eq!(parse_strs(&["--demo", "x"]), unexpected("x"));
+    }
+
+    #[test]
+    fn the_egui_probe_is_a_dev_build_s_alone() {
+        let parsed = parse_strs(&["--probe", "egui"]);
+        #[cfg(feature = "dev")]
+        assert_eq!(parsed, Ok(Command::Probe(ProbeKind::Egui)));
+        #[cfg(not(feature = "dev"))]
+        assert_eq!(parsed, unexpected("egui"));
     }
 
     #[test]

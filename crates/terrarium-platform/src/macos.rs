@@ -12,10 +12,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
-    NSApplication, NSApplicationDidBecomeActiveNotification,
+    NSApplication, NSApplicationActivationOptions, NSApplicationDidBecomeActiveNotification,
     NSApplicationDidChangeScreenParametersNotification, NSApplicationDidResignActiveNotification,
-    NSFloatingWindowLevel, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowCollectionBehavior, NSWindowLevel, NSWorkspace,
+    NSFloatingWindowLevel, NSRunningApplication, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowLevel, NSWorkspace,
     NSWorkspaceActiveSpaceDidChangeNotification, NSWorkspaceDidWakeNotification,
     NSWorkspaceScreensDidWakeNotification,
 };
@@ -238,6 +238,31 @@ fn display_uuid(display_id: u32) -> Option<String> {
 /// Whether the app is the active one. False off the main thread.
 pub fn app_is_active() -> bool {
     MainThreadMarker::new().is_some_and(|mtm| NSApplication::sharedApplication(mtm).isActive())
+}
+
+/// The app the user was working in before this one took the keyboard, kept so it can be given
+/// the keyboard back: an accessory app's last window closing leaves the app active, and macOS
+/// does not hand focus on by itself.
+pub struct PreviousApp(Retained<NSRunningApplication>);
+
+impl PreviousApp {
+    /// The frontmost app, unless it is this one.
+    pub fn frontmost() -> Option<PreviousApp> {
+        if app_is_active() {
+            return None;
+        }
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(PreviousApp)
+    }
+
+    /// Gives it the keyboard back, if this app still holds it.
+    pub fn restore(&self) {
+        if app_is_active() {
+            self.0
+                .activateWithOptions(NSApplicationActivationOptions::empty());
+        }
+    }
 }
 
 /// The name of the app the user is working in.

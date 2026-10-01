@@ -31,7 +31,15 @@ Operating-system integration that needs FFI.
     menu.
   - Later, with Windows hardening: fullscreen yield, `TaskbarCreated` re-registration and
     Peek exclusion.
-- Later: idle time, the login item, and power notifications.
+- `clock`: the local date and time of day, for day and night (`localtime_r` on macOS,
+  `GetLocalTime` on Windows).
+- `idle`: how long the machine has gone without input, for dim mode (`CGEventSource` on macOS,
+  `GetLastInputInfo` on Windows). Neither asks the user for permission.
+- `memory`: the process's resident size, and on macOS its footprint, for the debug window and
+  the egui memory probe.
+- On macOS, the app the user was in, so an egui window that took the keyboard can give it back
+  (`macos::PreviousApp`).
+- Later: the login item, and power notifications on Windows.
 
 ## Why it is a crate of its own
 
