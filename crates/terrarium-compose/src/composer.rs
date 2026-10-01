@@ -526,8 +526,9 @@ pub struct Composer {
     eras: Eras,
     /// Each resident's stretch of the strip, by id, kept while it stays.
     resident_spots: BTreeMap<u32, u8>,
-    /// Each resident drawn or fading, by id.
-    residents: BTreeMap<u32, Shown>,
+    /// Each resident drawn or fading, by id and stretch: one that comes back in another
+    /// stretch fades out where it was as it fades in where it is.
+    residents: BTreeMap<(u32, u8), Shown>,
     /// When the changes of rest an update brought at the next turn are over.
     residents_settle: Millis,
 }
@@ -664,17 +665,29 @@ impl Composer {
     /// that left; returns the residents drawn, by id.
     fn update_residents(&mut self, input: &SceneInput, now: Millis) -> Vec<Resident> {
         // A resident still fading out keeps its stretch, so one that comes back finds it
-        // again and no newcomer stands in its place while it goes.
-        let fading = self
+        // again and no newcomer stands in its place while it goes; but never at the cost of a
+        // resident of the scene going undrawn, which would hide it until the next update.
+        let present: Vec<u32> = input.residents.iter().map(|r| r.id).collect();
+        let fading: Vec<u32> = self
             .residents
             .iter()
             .filter(|(_, shown)| now < shown.opacity.end() || shown.opacity.target() == SHOWN)
-            .map(|(&id, _)| id);
-        self.resident_spots = assign_spots(
+            .map(|(&(id, _), _)| id)
+            .collect();
+        let held = assign_spots(
             &self.resident_spots,
-            input.residents.iter().map(|r| r.id).chain(fading),
+            present.iter().chain(&fading).copied(),
             world::RESIDENTS,
         );
+        let all_drawn = present
+            .iter()
+            .take(world::RESIDENTS)
+            .all(|id| held.contains_key(id));
+        self.resident_spots = if all_drawn {
+            held
+        } else {
+            assign_spots(&self.resident_spots, present, world::RESIDENTS)
+        };
         let mut records: Vec<Resident> = input
             .residents
             .iter()
@@ -684,9 +697,9 @@ impl Composer {
             })
             .collect();
         records.sort_by_key(|record| record.view.id);
-        for shown in self.residents.values_mut() {
+        for (&key, shown) in &mut self.residents {
             if shown.opacity.target() == SHOWN
-                && !records.iter().any(|r| r.view.id == shown.last.view.id)
+                && !records.iter().any(|r| (r.view.id, r.spot) == key)
             {
                 shown.opacity = Tween::new(shown.opacity.value(now), 0, now, TRANSITION_MS);
             }
@@ -694,7 +707,8 @@ impl Composer {
         self.residents
             .retain(|_, shown| shown.opacity.target() == SHOWN || now < shown.opacity.end());
         for record in &records {
-            let shown = self.residents.entry(record.view.id).or_insert(Shown {
+            let key = (record.view.id, record.spot);
+            let shown = self.residents.entry(key).or_insert(Shown {
                 opacity: Tween::new(0, 0, now, 0),
                 last: *record,
                 arrival: None,
@@ -707,13 +721,13 @@ impl Composer {
         records
     }
 
-    /// What each resident arrived as, with the scene it arrived with, by id.
-    fn arrivals(&self) -> BTreeMap<u32, (&Resident, &Snapshot)> {
+    /// What each resident arrived as, with the scene it arrived with, by id and stretch.
+    fn arrivals(&self) -> resident::Arrivals<'_> {
         self.residents
             .iter()
-            .filter_map(|(&id, shown)| {
+            .filter_map(|(&key, shown)| {
                 let (_, record, scene) = shown.arrival.as_ref()?;
-                Some((id, (record, scene)))
+                Some((key, (record, scene)))
             })
             .collect()
     }
@@ -723,9 +737,10 @@ impl Composer {
     fn note_arrivals(&mut self, snapshot: &Snapshot, running: u64) {
         let read = self.eras.at(running);
         for record in &snapshot.residents {
-            let id = record.view.id;
-            let in_turn = read.is_some_and(|era| era.residents.iter().any(|r| r.view.id == id));
-            if let Some(shown) = self.residents.get_mut(&id)
+            let key = (record.view.id, record.spot);
+            let in_turn =
+                read.is_some_and(|era| era.residents.iter().any(|r| (r.view.id, r.spot) == key));
+            if let Some(shown) = self.residents.get_mut(&key)
                 && !in_turn
                 && shown
                     .arrival
@@ -821,35 +836,34 @@ impl Composer {
         art: &Art,
         table: &ArtTable,
         w: u64,
-    ) -> BTreeMap<u32, (TurnPlan, Resident)> {
+    ) -> BTreeMap<(u32, u8), (TurnPlan, Resident)> {
         let catalog = &art.catalog;
-        let mut plans: BTreeMap<u32, (TurnPlan, Resident)> = BTreeMap::new();
+        let mut plans: BTreeMap<(u32, u8), (TurnPlan, Resident)> = BTreeMap::new();
         let before = self.eras.at(w.saturating_sub(1)).filter(|_| w > 0);
+        let arrivals = self.arrivals();
         if let Some(now) = self.eras.at(w) {
-            for plan in resident::plans(catalog, table, w, before, now, &self.arrivals()) {
+            for plan in resident::plans(catalog, table, w, before, now, &arrivals) {
                 if let Some(record) = now.residents.iter().find(|r| r.view.id == plan.id) {
-                    plans.insert(plan.id, (plan, *record));
+                    plans.insert((plan.id, record.spot), (plan, *record));
                 }
             }
         }
-        for (&id, shown) in &self.residents {
-            if plans.contains_key(&id) {
+        for (&key, shown) in &self.residents {
+            if plans.contains_key(&key) {
                 continue;
             }
             // An arrival rests as it arrived; one fading out after leaving rests as it did in
             // the turn before.
-            let earlier = before.and_then(|era| {
-                let record = era.residents.iter().find(|r| r.view.id == id)?;
-                Some((record, era, w - 1))
-            });
             let arrived = shown
                 .arrival
                 .as_ref()
-                .map(|(turn, record, scene)| (record, scene, (*turn).min(w)));
+                .filter(|&&(turn, ..)| turn == w)
+                .map(|(_, record, scene)| (record, scene, w));
             let plan = arrived
-                .filter(|&(_, _, turn)| turn == w)
-                .or(earlier)
-                .or(arrived)
+                .or_else(|| {
+                    let (record, scene) = resident::earlier(&shown.last, before, &arrivals)?;
+                    Some((record, scene, w.saturating_sub(1)))
+                })
                 .and_then(|(record, scene, read)| {
                     Some((
                         resident::resting(catalog, table, w, record, scene, read)?,
@@ -857,7 +871,7 @@ impl Composer {
                     ))
                 });
             if let Some(plan) = plan {
-                plans.insert(id, plan);
+                plans.insert(key, plan);
             }
         }
         plans
@@ -1105,10 +1119,23 @@ impl Composer {
             for look in entry.looks() {
                 next.take(look.opacity.next_step(now));
             }
-            let shown = entry.looks().any(|look| look.opacity.value(now) > 0);
+            let shown: Vec<SpriteId> = entry
+                .looks()
+                .filter(|look| look.opacity.value(now) > 0)
+                .filter_map(|look| look.piece.sprite(table, self.salt, subject, 0))
+                .collect();
             match subject {
-                Subject::Cloud(i) if shown => next.take(Some(self.world.cloud(i).next_step(now))),
-                Subject::Weather if shown => next.take(Some(drift::next_step(now, BAND_MS_PER_PX))),
+                Subject::Cloud(i) => {
+                    let widest = shown
+                        .iter()
+                        .map(|&s| i32::from(art.catalog.sprite(s).rect.w))
+                        .max();
+                    next.take(widest.map(|width| self.world.cloud(i).next_seen_step(now, width)));
+                }
+                // A plain tile looks the same however far it has drifted, so it does not.
+                Subject::Weather if shown.iter().any(|&tile| !plain(art, tile)) => {
+                    next.take(Some(drift::next_step(now, BAND_MS_PER_PX)));
+                }
                 _ => {}
             }
         }
@@ -1157,7 +1184,9 @@ impl Composer {
             }
             let end = turn_start(w + 1);
             for (plan, _) in self.resident_plans(art, table, w).values() {
-                next.take(plan_next(&art.catalog, plan, now, start).filter(|&moment| moment < end));
+                next.take(
+                    plan_next(&art.catalog, table, plan, now, start).filter(|&moment| moment < end),
+                );
             }
             if next.0.is_some() {
                 return next.0;
@@ -1188,15 +1217,12 @@ impl Composer {
     /// which reads no salt, is not among them.
     pub fn depicted(&self, now: Millis) -> Vec<Depicted> {
         let mut depicted = Vec::new();
-        for (&id, shown) in &self.residents {
+        for (&(id, spot), shown) in &self.residents {
             let opacity = shown.opacity.value(now);
             if opacity > 0 {
                 let view = shown.last.view;
                 depicted.push(Depicted {
-                    subject: Subject::Resident {
-                        id,
-                        spot: shown.last.spot,
-                    },
+                    subject: Subject::Resident { id, spot },
                     part: 0,
                     piece: Piece::Resident {
                         species: view.species,
@@ -1267,21 +1293,17 @@ impl Composer {
         let w = turn(now);
         let plans = self.resident_plans(art, table, w);
         let before = self.eras.at(w.saturating_sub(1));
-        for (&id, shown) in &self.residents {
+        let arrivals = self.arrivals();
+        for (&(id, spot), shown) in &self.residents {
             let visible = shown.opacity.value(now);
-            let Some((plan, record)) = plans.get(&id).filter(|_| visible > 0) else {
+            let Some((plan, record)) = plans.get(&(id, spot)).filter(|_| visible > 0) else {
                 continue;
             };
-            let subject = Subject::Resident {
-                id,
-                spot: record.spot,
-            };
+            let subject = Subject::Resident { id, spot };
             // Where it stood the turn before, for a move's pose fading out there: in the scene
             // that turn read, or as it arrived.
-            let old_home = before
-                .and_then(|era| era.residents.iter().find(|r| r.view.id == id))
-                .or_else(|| shown.arrival.as_ref().map(|(_, arrived, _)| arrived))
-                .map_or(record.home, |r| r.home);
+            let old_home =
+                resident::earlier(record, before, &arrivals).map_or(record.home, |(r, _)| r.home);
             // Until it moves, it stands where it stood.
             let moves = plan.segments.iter().position(|s| s.enter == Enter::Moved);
             for (look, index, segment, opacity) in poses(plan, now) {
@@ -1296,6 +1318,7 @@ impl Composer {
                 };
                 push_creature(
                     art,
+                    table,
                     place_of(subject, look),
                     &segment,
                     home,
@@ -1362,7 +1385,7 @@ impl Composer {
                 // the old in every column, whatever the two tiles' widths. The band drifts
                 // right; a tile keeps its item as it drifts, entering and leaving at an edge.
                 let step = i32::from(rect.w);
-                let offset = drift::offset(now, BAND_MS_PER_PX, step);
+                let offset = band_offset(art, sprite, now);
                 for (tile, x) in drift::columns(offset, step, 1, FRAME_WIDTH) {
                     push(
                         place.item(tile),
@@ -1372,12 +1395,12 @@ impl Composer {
                 }
             }
             Subject::Cloud(i) => {
+                // Wholly out of sight, a cloud is not drawn, so its drift there changes nothing.
                 let drift = self.world.cloud(i);
-                push(
-                    place,
-                    None,
-                    Draw::new(catalog, sprite, drift.x(now), drift.y),
-                );
+                let x = drift.x(now);
+                if x + i32::from(rect.w) > 0 && x < FRAME_WIDTH {
+                    push(place, None, Draw::new(catalog, sprite, x, drift.y));
+                }
             }
             Subject::Sun => {
                 let (x, y) = self.world.sun();
@@ -1493,6 +1516,23 @@ impl Composer {
     }
 }
 
+/// How far the sky band's `tile` has drifted at `now`: a plain tile, which drifting would not
+/// change, stays put.
+fn band_offset(art: &Art, tile: SpriteId, now: Millis) -> i32 {
+    if plain(art, tile) {
+        0
+    } else {
+        let width = i32::from(art.catalog.sprite(tile).rect.w);
+        drift::offset(now, BAND_MS_PER_PX, width)
+    }
+}
+
+/// Whether a tiled sprite is the same in every column: drifting it changes no pixel.
+fn plain(art: &Art, tile: SpriteId) -> bool {
+    art.rows(tile)
+        .all(|row| row.iter().all(|&index| Some(&index) == row.first()))
+}
+
 /// The earliest of several moments, each perhaps none.
 #[derive(Clone, Copy, Debug, Default)]
 struct Earliest(Option<Millis>);
@@ -1513,6 +1553,7 @@ impl Earliest {
 )]
 fn push_creature(
     art: &Art,
+    table: &ArtTable,
     place: Place,
     segment: &Segment,
     home: i32,
@@ -1541,11 +1582,8 @@ fn push_creature(
         out.push(KeyedDraw::placed(catalog, place, draw));
     }
     // A firefly's lantern plays in step with its signal, on the same anchor.
-    let lantern = catalog
-        .animations
-        .iter()
-        .find(|effect| effect.sync == Some(segment.routine));
-    if let Some(effect) = lantern {
+    if let Some(effect) = table.lantern(segment.routine) {
+        let effect = catalog.animation(effect);
         let glow = anim::pose(catalog, effect, now.0.saturating_sub(segment.start.0));
         if !glow.done {
             let draw = face(Draw::anchored(catalog, glow.frame, x, PLANT_GROUND_Y));
@@ -1591,6 +1629,7 @@ fn poses(plan: &TurnPlan, now: Millis) -> Vec<(u16, usize, Segment, u8)> {
 /// turn before), a frame of a look playing, a step of a cover or a move, or of a lantern.
 fn plan_next(
     catalog: &crate::catalog::Catalog,
+    table: &ArtTable,
     plan: &TurnPlan,
     after: Millis,
     start: Millis,
@@ -1611,11 +1650,8 @@ fn plan_next(
             let frame = anim::next_frame_at(animation, elapsed);
             next.take(frame.map(|ms| Millis(segment.anchor.0 + ms).max(Millis(from.0 + 1))));
         }
-        if let Some(effect) = catalog
-            .animations
-            .iter()
-            .find(|effect| effect.sync == Some(segment.routine))
-        {
+        if let Some(effect) = table.lantern(segment.routine) {
+            let effect = catalog.animation(effect);
             let elapsed = from.0.saturating_sub(segment.start.0);
             let glow = anim::next_frame_at(effect, elapsed);
             next.take(glow.map(|ms| Millis(segment.start.0 + ms).max(Millis(from.0 + 1))));
@@ -2561,6 +2597,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_change_of_energy_alone_settles_with_the_tweens() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.residents = six();
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &overlay(&[]), Millis(0));
+        let settled = composer.settled_at();
+        for resident in &mut scene.residents {
+            resident.energy = Energy::Low;
+        }
+        composer.update(&scene, &overlay(&[]), Millis(30_000));
+        assert_eq!(composer.settled_at(), settled, "nothing new to settle");
+        // A step of stage plays at the next turn, and settling waits for it.
+        scene.residents[0].stage = LifeStage::Dying;
+        composer.update(&scene, &overlay(&[]), Millis(31_000));
+        assert!(composer.settled_at() > Millis(48_000));
+    }
+
+    #[test]
+    fn a_newcomer_is_drawn_though_one_leaving_still_fades() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.residents = six();
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &overlay(&[]), Millis(0));
+        // One leaves as another arrives: six in the scene, a seventh still fading.
+        scene.residents.pop();
+        scene
+            .residents
+            .push(resident(9, ResidentSpecies::Woodlouse, LifeStage::Adult));
+        composer.update(&scene, &overlay(&[]), Millis(30_000));
+        let shown: BTreeSet<u32> = composer
+            .depicted(Millis(30_600))
+            .iter()
+            .filter_map(|d| match d.subject {
+                Subject::Resident { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert!(shown.contains(&9), "the newcomer fades in: {shown:?}");
+        assert!(shown.contains(&6), "the one leaving fades out");
     }
 
     #[test]

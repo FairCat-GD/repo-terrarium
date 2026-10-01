@@ -260,11 +260,10 @@ pub fn plans(
     w: u64,
     before: Option<&Snapshot>,
     now: &Snapshot,
-    arrivals: &BTreeMap<u32, (&Resident, &Snapshot)>,
+    arrivals: &Arrivals,
 ) -> Vec<TurnPlan> {
     let start = turn_start(w);
     let here = Conditions::of(now, w);
-    let there = before.map(|snapshot| Conditions::of(snapshot, w.saturating_sub(1)));
     // How each rested through the turn before, and rests in this one. One that arrived then
     // rested as the scene it arrived with had it ([`resting`]).
     let rests: Vec<(&Resident, Rest, Rest, bool)> = now
@@ -272,19 +271,8 @@ pub fn plans(
         .iter()
         .filter_map(|resident| {
             let art = routines(catalog, table, resident);
-            let earlier = before
-                .and_then(|snapshot| {
-                    snapshot
-                        .residents
-                        .iter()
-                        .find(|r| r.view.id == resident.view.id)
-                })
-                .zip(there)
-                .or_else(|| {
-                    let &(arrived, scene) = arrivals.get(&resident.view.id)?;
-                    Some((arrived, Conditions::of(scene, w.saturating_sub(1))))
-                })
-                .unwrap_or((resident, Conditions::of(now, w.saturating_sub(1))));
+            let (record, scene) = earlier(resident, before, arrivals).unwrap_or((resident, now));
+            let earlier = (record, Conditions::of(scene, w.saturating_sub(1)));
             // Read in the earlier record's own art: an id that became another species fades
             // from the one to the other, like a move of home.
             let then = rest(&routines(catalog, table, earlier.0), earlier.0, earlier.1)?;
@@ -385,14 +373,9 @@ pub const CHANGE_SETTLES_MS: u32 = 8000;
 /// Whether the turn after `w` will change how some resident rests or where it lives, given
 /// the scene turn `w` reads (`None` before the first) and what the residents not in it arrived
 /// with: a lifecycle step, a new home or species, a storm coming or going, dormancy, or day
-/// turning to night. It reads no art, so it may answer yes where in the end nothing changes,
+/// turning to night. A change of energy alone changes no rest. It reads no art, so it may answer yes where in the end nothing changes,
 /// never the other way.
-pub fn pending(
-    before: Option<&Snapshot>,
-    now: &Snapshot,
-    w: u64,
-    arrivals: &BTreeMap<u32, (&Resident, &Snapshot)>,
-) -> bool {
+pub fn pending(before: Option<&Snapshot>, now: &Snapshot, w: u64, arrivals: &Arrivals) -> bool {
     let conditions = |snapshot: &Snapshot, w: u64| {
         (
             snapshot.state == PresentationState::Dormant,
@@ -401,16 +384,36 @@ pub fn pending(
         )
     };
     let after = conditions(now, w + 1);
+    let what = |r: &Resident| (r.view.species, r.view.stage, r.plant);
     now.residents.iter().any(|resident| {
-        let id = resident.view.id;
-        let earlier = before
-            .and_then(|scene| Some((scene.residents.iter().find(|r| r.view.id == id)?, scene)))
-            .or_else(|| arrivals.get(&id).copied());
-        earlier.is_some_and(|(earlier, scene)| {
-            conditions(scene, w) != after
-                || (earlier.view, earlier.plant) != (resident.view, resident.plant)
+        earlier(resident, before, arrivals).is_some_and(|(earlier, scene)| {
+            conditions(scene, w) != after || what(earlier) != what(resident)
         })
     })
+}
+
+/// What residents arrived as, with the scene they arrived with, by id and stretch.
+pub type Arrivals<'a> = BTreeMap<(u32, u8), (&'a Resident, &'a Snapshot)>;
+
+/// How a resident stood in the turn before, in the same stretch, and the scene that turn read
+/// it in: the record `before` holds, or else what it arrived as, with the scene it arrived
+/// with. `None` for a resident first seen now, or first seen in this stretch: one that comes
+/// back in another stretch is another to draw.
+pub fn earlier<'a>(
+    resident: &Resident,
+    before: Option<&'a Snapshot>,
+    arrivals: &Arrivals<'a>,
+) -> Option<(&'a Resident, &'a Snapshot)> {
+    let (id, spot) = (resident.view.id, resident.spot);
+    before
+        .and_then(|scene| {
+            let record = scene
+                .residents
+                .iter()
+                .find(|r| (r.view.id, r.spot) == (id, spot))?;
+            Some((record, scene))
+        })
+        .or_else(|| arrivals.get(&(id, spot)).copied())
 }
 
 /// The residents that travel in turn `w`, of those `ready` to: three in rotation, or all
@@ -672,5 +675,140 @@ fn stage_of_routine(art: &Routines, routine: AnimationId) -> Option<LifeStage> {
         "pupa" => Some(LifeStage::Pupa),
         "adult" => Some(LifeStage::Adult),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use terrarium_truth::scene::Wind;
+
+    use super::*;
+    use crate::catalog::Art;
+    use crate::clock::{DayNight, LocalClock};
+    use crate::motion::{Clock, TURN_MS};
+    use crate::sky::LocalDate;
+
+    fn scene(residents: Vec<Resident>, weather: Weather, hour: u32) -> Snapshot {
+        Snapshot {
+            state: PresentationState::Thriving,
+            weather,
+            wind: Wind::Calm,
+            dim: false,
+            clock: Clock {
+                local: LocalClock::new(LocalDate::new(2026, 3, 3), hour * 3_600_000),
+                at: Millis(0),
+                day_night: DayNight::default(),
+            },
+            swaying: BTreeSet::new(),
+            residents,
+        }
+    }
+
+    fn resident(
+        id: u32,
+        species: ResidentSpecies,
+        stage: LifeStage,
+        plant: Option<u8>,
+    ) -> Resident {
+        Resident {
+            view: ResidentView {
+                id,
+                species,
+                stage,
+                energy: Energy::High,
+            },
+            spot: u8::try_from(id % 6).unwrap(),
+            home: 100,
+            plant,
+            out: if id.is_multiple_of(2) { 1 } else { -1 },
+        }
+    }
+
+    /// Every species, as one stage then another, perhaps beside a plant then not.
+    fn cast(
+        then: LifeStage,
+        now: LifeStage,
+        plants: (Option<u8>, Option<u8>),
+    ) -> (Vec<Resident>, Vec<Resident>) {
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        for (&species, id) in ResidentSpecies::ALL.iter().zip(1..) {
+            let fits = |stage| stage != LifeStage::Pupa || species.has_pupa();
+            if fits(then) && fits(now) {
+                before.push(resident(id, species, then, plants.0));
+                after.push(resident(id, species, now, plants.1));
+            }
+        }
+        (before, after)
+    }
+
+    #[test]
+    fn every_plan_settles_before_its_turn_ends() {
+        use LifeStage::{Adult, Dying, Egg, Juvenile, Pupa};
+        let catalog = &Art::embedded().catalog;
+        let table = ArtTable::new(catalog).unwrap();
+        let steps = [
+            (Adult, Adult, (Some(3), Some(3))),
+            (Juvenile, Juvenile, (None, None)),
+            (Egg, Juvenile, (Some(3), Some(3))),
+            (Pupa, Adult, (None, Some(3))),
+            (Juvenile, Adult, (None, None)),
+            (Adult, Dying, (Some(3), None)),
+            (Adult, Adult, (Some(3), None)),
+        ];
+        let mut segments = 0;
+        for (then, now, plants) in steps {
+            let (before, after) = cast(then, now, plants);
+            for (weathers, hour) in [
+                ((Weather::Clear, Weather::Clear), 12),
+                ((Weather::Clear, Weather::Clear), 0),
+                ((Weather::Clear, Weather::Storm), 0),
+                ((Weather::Storm, Weather::Clear), 12),
+            ] {
+                let before = scene(before.clone(), weathers.0, hour);
+                let now = scene(after.clone(), weathers.1, hour);
+                for w in 1..60 {
+                    let end = turn_start(w + 1);
+                    for plan in plans(catalog, &table, w, Some(&before), &now, &Arrivals::new()) {
+                        let last = plan.segments.last().unwrap();
+                        let routine = catalog.animation(last.routine);
+                        let name = routine.keys.routine.as_deref().unwrap_or("");
+                        assert!(
+                            !matches!(name, "move" | "flight" | "takeoff" | "land" | "hop"),
+                            "turn {w} ends {} on its way: {}",
+                            plan.id,
+                            routine.name
+                        );
+                        for segment in &plan.segments {
+                            segments += 1;
+                            let animation = catalog.animation(segment.routine);
+                            let fades = if segment.enter == Enter::Straight {
+                                0
+                            } else {
+                                TRANSITION_MS
+                            };
+                            let plays = if segment.anchor == segment.start {
+                                length_ms(animation).unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            let over = segment
+                                .start
+                                .plus(fades)
+                                .max(Millis(segment.start.0 + plays));
+                            assert!(
+                                over <= end,
+                                "{} in turn {w}: {} runs to {over:?}",
+                                plan.id,
+                                animation.name
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(segments > 10_000, "{segments}");
+        assert_eq!(TURN_MS, 24_000);
     }
 }

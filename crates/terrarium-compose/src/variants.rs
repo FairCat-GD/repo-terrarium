@@ -239,6 +239,14 @@ fn resident(
     }
 }
 
+/// Each effect that plays in step with a routine, by the routine.
+fn lanterns(catalog: &Catalog) -> BTreeMap<AnimationId, AnimationId> {
+    (0..catalog.animations.len())
+        .filter_map(AnimationId::from_index)
+        .filter_map(|effect| Some((catalog.animation(effect).sync?, effect)))
+        .collect()
+}
+
 /// The stone of a monument's age, and its night lichen glow once it has lichen.
 fn monument(catalog: &Catalog, age: MonumentAge) -> Result<Vec<SpriteId>, MissingArt> {
     let ids: &[&str] = match age {
@@ -745,6 +753,8 @@ pub struct ArtTable {
     plant_layers: BTreeMap<PlantSpecies, Layer>,
     scorches: BTreeMap<PlantSpecies, SpriteId>,
     residents: BTreeMap<(ResidentSpecies, LifeStage), Vec<AnimationId>>,
+    /// Each effect that plays in step with a routine, by the routine: the firefly's lantern.
+    lanterns: BTreeMap<AnimationId, AnimationId>,
     monuments: BTreeMap<MonumentAge, Vec<SpriteId>>,
     carved_marks: Vec<SpriteId>,
     fossils: BTreeMap<FossilForm, SpriteId>,
@@ -760,13 +770,15 @@ pub struct ArtTable {
 }
 
 impl ArtTable {
-    fn empty() -> ArtTable {
+    /// A table with nothing resolved but the effects synced to routines.
+    fn empty(catalog: &Catalog) -> ArtTable {
         ArtTable {
             plants: BTreeMap::new(),
             blooms: BTreeMap::new(),
             plant_layers: BTreeMap::new(),
             scorches: BTreeMap::new(),
             residents: BTreeMap::new(),
+            lanterns: lanterns(catalog),
             monuments: BTreeMap::new(),
             carved_marks: Vec::new(),
             fossils: BTreeMap::new(),
@@ -804,7 +816,7 @@ impl ArtTable {
                 gaps.push(gap);
             }
         };
-        let mut table = ArtTable::empty();
+        let mut table = ArtTable::empty(catalog);
         for &species in PlantSpecies::ALL {
             for &growth in GrowthStage::ALL {
                 for &health in PlantState::ALL {
@@ -961,6 +973,12 @@ impl ArtTable {
         self.residents
             .get(&(species, stage))
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The effect that plays in step with a routine, if it has one: a firefly's lantern with
+    /// its signal.
+    pub fn lantern(&self, routine: AnimationId) -> Option<AnimationId> {
+        self.lanterns.get(&routine).copied()
     }
 
     /// The stone of a monument's age, and its night lichen glow once it has lichen.

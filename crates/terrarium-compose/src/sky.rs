@@ -163,10 +163,23 @@ impl Drift {
         i32::try_from(at).unwrap_or(0) - CLOUD_MARGIN
     }
 
-    /// When the cloud next moves a pixel after `now`.
-    pub fn next_step(self, now: crate::tween::Millis) -> crate::tween::Millis {
+    /// When a cloud `width` pixels wide next changes what is seen of it after `now`: its next
+    /// pixel while any of it is in the frame or about to be, else the step that brings it back
+    /// into sight.
+    pub fn next_seen_step(self, now: crate::tween::Millis, width: i32) -> crate::tween::Millis {
         let ms = u64::from(self.ms_per_px.max(1));
-        crate::tween::Millis((now.0 / ms + 1) * ms)
+        let moved = now.0 / ms;
+        let seen = |steps: u64| {
+            let x = self.x(crate::tween::Millis(steps * ms));
+            x + width > 0 && x < 640
+        };
+        let span = u64::try_from(CLOUD_SPAN).unwrap_or(1);
+        let ahead = if seen(moved) {
+            1
+        } else {
+            (1..=span).find(|&k| seen(moved + k)).unwrap_or(1)
+        };
+        crate::tween::Millis((moved + ahead) * ms)
     }
 }
 
@@ -256,6 +269,27 @@ mod tests {
             last = x;
         }
         assert_eq!(drift.x(Millis(2999)), -CLOUD_MARGIN);
+    }
+
+    #[test]
+    fn a_cloud_out_of_sight_wakes_nothing_until_it_comes_back() {
+        let drift = Drift {
+            start: 0,
+            y: 20,
+            ms_per_px: 100,
+        };
+        // At start a 30-wide cloud stands at x = −32, wholly left: it shows at x = −29.
+        assert_eq!(drift.next_seen_step(Millis(0), 30), Millis(300));
+        assert_eq!(drift.x(Millis(300)), -29);
+        // In sight it moves a pixel at a time, and its last step, out of sight, counts.
+        assert_eq!(drift.next_seen_step(Millis(300), 30), Millis(400));
+        let leaving = Millis(u64::try_from(32 + 639).unwrap() * 100);
+        assert_eq!(drift.x(leaving), 639);
+        assert_eq!(drift.next_seen_step(leaving, 30), Millis(leaving.0 + 100));
+        // Past the right edge it waits for the wrap and the steps back into sight.
+        let gone = Millis(leaving.0 + 100);
+        assert_eq!(drift.x(gone), 640);
+        assert_eq!(drift.next_seen_step(gone, 30), Millis(gone.0 + 4 * 100));
     }
 
     #[test]

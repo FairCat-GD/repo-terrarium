@@ -38,6 +38,9 @@ pub struct Living {
     padding: Padding,
     /// A spare image to compose into, so a frame that changes nothing costs no allocation.
     spare: Rgba640x74,
+    /// When it next wants composing, worked out once per composition: the loop asks on
+    /// every event it handles.
+    due: Option<Millis>,
 }
 
 impl Living {
@@ -71,6 +74,7 @@ impl Living {
             image: blank.clone(),
             padding: [[0; 4]; terrarium_compose::frame::NATIVE_HEIGHT as usize],
             spare: blank,
+            due: None,
         };
         living.compose(now);
         living
@@ -79,11 +83,7 @@ impl Living {
     /// When the strip should next compose: at the composer's next change, or when it is to be
     /// told it is noon, but never sooner than a fifteenth of a second after it last composed.
     pub fn due(&self) -> Option<Millis> {
-        let change = self
-            .composer
-            .next_change(self.art, &self.table, self.at)
-            .map_or(self.noon_at, |change| change.min(self.noon_at));
-        self.pacer.wake(Some(change))
+        self.due
     }
 
     /// Brings the strip to `now`; true if its pixels changed. Every call counts against the
@@ -115,6 +115,11 @@ impl Living {
         let padding = world::padding(self.art, mix, frame.dim);
         self.at = now;
         self.pacer.composed(now);
+        let change = self
+            .composer
+            .next_change(self.art, &self.table, now)
+            .map_or(self.noon_at, |change| change.min(self.noon_at));
+        self.due = self.pacer.wake(Some(change));
         let changed = Damage::between(&self.image, &self.padding, &self.spare, &padding).is_some();
         if changed {
             std::mem::swap(&mut self.image, &mut self.spare);

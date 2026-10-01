@@ -757,8 +757,10 @@ fn check_one_message(
     let quiet = dressing(input.presentation.state);
     let weather = input.weather;
     let lets_bodies = matches!(weather, Weather::Clear | Weather::Haze);
+    // Every cloud is depicted (`check_settled` counts them); one wholly out of sight is not
+    // drawn.
     let clouds = weather_clouds(weather).min(quiet.clouds);
-    prop_assert_eq!(count(day, |s| matches!(s, Subject::Cloud(_))), clouds);
+    prop_assert!(count(day, |s| matches!(s, Subject::Cloud(_))) <= clouds);
     prop_assert_eq!(
         count(day, |s| s == Subject::Sun),
         usize::from(lets_bodies && quiet.sun)
@@ -884,6 +886,17 @@ fn check_settled(
         prop_assert!(species.len() == 1 || species[0] != species[1]);
     }
     check_one_message(&day, &night, input, overlay, placement.plants.len())?;
+    let clouds: BTreeSet<Subject> = composer
+        .depicted(now)
+        .iter()
+        .map(|depicted| depicted.subject)
+        .filter(|subject| matches!(subject, Subject::Cloud(_)))
+        .collect();
+    let quiet = dressing(input.presentation.state);
+    prop_assert_eq!(
+        clouds.len(),
+        weather_clouds(input.weather).min(quiet.clouds)
+    );
     check_residents_settled(&day, input)?;
     let scenery = composer.scenery(art(), table());
     for mix in [0, 255] {
@@ -1007,9 +1020,12 @@ fn check_continuity(
         let [a, b] = [old.get(key), new.get(key)];
         let drawn = a.or(b).unwrap();
         let width = i32::from(art().catalog.sprite(drawn.sprite).rect.w);
-        // A drifting tile, or the sweep, may come and go at an edge of the frame; anywhere
-        // else it fades like any other draw.
-        let drifting = matches!(key.0, Subject::Weather | Subject::Soil | Subject::Sweep);
+        // A drifting tile, a cloud or the sweep may come and go at an edge of the frame;
+        // anywhere else it fades like any other draw.
+        let drifting = matches!(
+            key.0,
+            Subject::Weather | Subject::Soil | Subject::Sweep | Subject::Cloud(_)
+        );
         if drifting && (a.is_none() || b.is_none()) && at_edge(drawn.x, width) {
             continue;
         }
