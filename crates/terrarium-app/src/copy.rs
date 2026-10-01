@@ -24,6 +24,11 @@ pub fn version_line() -> String {
     format!("{BINARY_NAME} {VERSION}")
 }
 
+/// What the sample scene's label reads: the binary's name.
+pub fn sample_label() -> &'static str {
+    BINARY_NAME
+}
+
 pub fn window_title() -> String {
     format!("{PRODUCT_NAME} {VERSION}")
 }

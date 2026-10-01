@@ -1,5 +1,9 @@
-//! The integer scale policy and the upscaler that applies it. Scaling is integer only, with
-//! nearest sampling, and the art is never cropped or stretched (I-11).
+//! The integer scale policy and the upscaler that applies it, shared by the presenter and every
+//! export. Scaling is integer only, with nearest sampling, and the art is never cropped or
+//! stretched (I-11).
+//!
+//! The upscaler can rewrite only what changed since the last image ([`Damage`]); the result is
+//! the same, pixel for pixel, as a full redraw.
 
 use crate::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Rgba640x74};
 
@@ -42,9 +46,94 @@ impl StripScale {
         }
     }
 
+    /// Exactly `k` times the native image, with no padding: what exports are written at.
+    pub fn exact(k: u32) -> Self {
+        let scale = k.max(1);
+        Self {
+            scale,
+            width: NATIVE_WIDTH.saturating_mul(scale),
+            height: NATIVE_HEIGHT.saturating_mul(scale),
+            image_x: 0,
+        }
+    }
+
     pub fn pixel_count(&self) -> usize {
         self.width as usize * self.height as usize
     }
+}
+
+/// Each native row's padding colour, continued to the monitor's edges either side.
+pub type Padding = [Rgba; NATIVE_HEIGHT as usize];
+
+/// What changed between two images: a rectangle of native pixels, and whether the padding
+/// beside any of its rows changed too. Rows whose padding changed are rewritten whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Damage {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub padding: bool,
+}
+
+impl Damage {
+    /// Everything: a full redraw.
+    pub const FULL: Damage = Damage {
+        x: 0,
+        y: 0,
+        w: NATIVE_WIDTH,
+        h: NATIVE_HEIGHT,
+        padding: true,
+    };
+
+    /// The smallest damage that turns the first image into the second: the bounding box of
+    /// the changed pixels and of the rows whose padding changed. `None` if nothing did.
+    pub fn between(
+        before: &Rgba640x74,
+        before_padding: &Padding,
+        after: &Rgba640x74,
+        after_padding: &Padding,
+    ) -> Option<Damage> {
+        let mut rows: Option<(u32, u32)> = None;
+        let mut columns: Option<(u32, u32)> = None;
+        let mut padding = false;
+        for (y, (old_pad, new_pad)) in
+            (0..NATIVE_HEIGHT).zip(before_padding.iter().zip(after_padding))
+        {
+            let mut changed = (0..NATIVE_WIDTH)
+                .zip(before.row(y).iter().zip(after.row(y)))
+                .filter(|(_, (old, new))| old != new)
+                .map(|(x, _)| x);
+            let first = changed.next();
+            if let Some(first) = first {
+                let last = changed.next_back().unwrap_or(first);
+                columns = Some(columns.map_or((first, last), |(l, r)| (l.min(first), r.max(last))));
+            }
+            let padded = old_pad != new_pad;
+            if first.is_some() || padded {
+                rows = Some(rows.map_or((y, y), |(top, _)| (top, y)));
+            }
+            padding |= padded;
+        }
+        let (top, bottom) = rows?;
+        let (left, right) = columns.map_or((0, 0), |(l, r)| (l, r + 1));
+        Some(Damage {
+            x: left,
+            y: top,
+            w: right - left,
+            h: bottom + 1 - top,
+            padding,
+        })
+    }
+}
+
+/// A rectangle of the destination, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 /// The destination does not hold exactly `width × height` pixels.
@@ -60,38 +149,85 @@ pub struct SizeMismatch {
 pub fn upscale_into<T: Copy>(
     frame: &Rgba640x74,
     scale: &StripScale,
-    padding: &[Rgba; NATIVE_HEIGHT as usize],
+    padding: &Padding,
     pack: impl Fn(Rgba) -> T,
     dst: &mut [T],
 ) -> Result<(), SizeMismatch> {
+    upscale_damage_into(frame, scale, padding, pack, dst, &Damage::FULL).map(|_| ())
+}
+
+/// As [`upscale_into`], but writes only what `damage` covers, and returns that area of `dst`.
+/// Over a destination that holds the image the damage was measured from, the result equals a
+/// full redraw. A damage reaching past the frame is cut at its edge.
+pub fn upscale_damage_into<T: Copy>(
+    frame: &Rgba640x74,
+    scale: &StripScale,
+    padding: &Padding,
+    pack: impl Fn(Rgba) -> T,
+    dst: &mut [T],
+    damage: &Damage,
+) -> Result<PhysicalRect, SizeMismatch> {
     if dst.len() != scale.pixel_count() {
         return Err(SizeMismatch {
             expected: scale.pixel_count(),
             actual: dst.len(),
         });
     }
+    let top = damage.y.min(NATIVE_HEIGHT);
+    let bottom = damage.y.saturating_add(damage.h).min(NATIVE_HEIGHT);
+    // Rows whose padding changed are written whole: padding and every native column.
+    let (left, right) = if damage.padding {
+        (0, NATIVE_WIDTH)
+    } else {
+        let left = damage.x.min(NATIVE_WIDTH);
+        (
+            left,
+            damage.x.saturating_add(damage.w).clamp(left, NATIVE_WIDTH),
+        )
+    };
+    let k = scale.scale;
+    let (span_start, span_end) = if damage.padding {
+        (0, scale.width)
+    } else {
+        (scale.image_x + left * k, scale.image_x + right * k)
+    };
     let width = scale.width as usize;
-    let k = scale.scale as usize;
+    let k_rows = k as usize;
     let image_x = scale.image_x as usize;
-    let image_end = image_x + NATIVE_WIDTH as usize * k;
-    for (rows, native_y) in dst.chunks_exact_mut(width * k).zip(0..NATIVE_HEIGHT) {
+    let image_end = image_x + NATIVE_WIDTH as usize * k_rows;
+    let span = span_start as usize..span_end as usize;
+    for native_y in top..bottom {
+        let start = native_y as usize * k_rows * width;
+        let rows = &mut dst[start..start + k_rows * width];
         let (first, rest) = rows.split_at_mut(width);
-        let pad = pack(padding[native_y as usize]);
-        first[..image_x].fill(pad);
-        first[image_end..].fill(pad);
-        let source = frame.row(native_y);
-        for (block, &colour) in first[image_x..image_end].chunks_exact_mut(k).zip(source) {
+        if damage.padding {
+            let pad = pack(padding[native_y as usize]);
+            first[..image_x].fill(pad);
+            first[image_end..].fill(pad);
+        }
+        let source = &frame.row(native_y)[left as usize..right as usize];
+        let target =
+            &mut first[image_x + left as usize * k_rows..image_x + right as usize * k_rows];
+        for (block, &colour) in target.chunks_exact_mut(k_rows).zip(source) {
             block.fill(pack(colour));
         }
         for row in rest.chunks_exact_mut(width) {
-            row.copy_from_slice(first);
+            row[span.clone()].copy_from_slice(&first[span.clone()]);
         }
     }
-    Ok(())
+    Ok(PhysicalRect {
+        x: span_start,
+        y: top * k,
+        w: span_end - span_start,
+        h: (bottom - top) * k,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
     use super::*;
 
     fn full(width: u32) -> StripScale {
@@ -211,5 +347,138 @@ mod tests {
                 actual: scale.pixel_count() - 1
             })
         );
+    }
+
+    #[test]
+    fn exact_scales_have_no_padding() {
+        assert_eq!(
+            StripScale::exact(3),
+            StripScale {
+                scale: 3,
+                width: 1920,
+                height: 222,
+                image_x: 0
+            }
+        );
+        assert_eq!(StripScale::exact(0).scale, 1);
+    }
+
+    #[test]
+    fn damage_is_the_bounding_box_of_what_changed() {
+        let before = gradient();
+        let pad = padding();
+        assert_eq!(Damage::between(&before, &pad, &before, &pad), None);
+
+        let mut after = before.clone();
+        after.set_pixel(7, 3, [1, 1, 1, 255]);
+        after.set_pixel(20, 9, [1, 1, 1, 255]);
+        assert_eq!(
+            Damage::between(&before, &pad, &after, &pad),
+            Some(Damage {
+                x: 7,
+                y: 3,
+                w: 14,
+                h: 7,
+                padding: false
+            })
+        );
+
+        let mut moved = pad;
+        moved[40] = [0, 0, 0, 0];
+        assert_eq!(
+            Damage::between(&before, &pad, &before, &moved),
+            Some(Damage {
+                x: 0,
+                y: 40,
+                w: 0,
+                h: 1,
+                padding: true
+            })
+        );
+    }
+
+    #[test]
+    fn a_damage_write_reports_the_physical_area_it_covered() {
+        let scale = full(1301);
+        let frame = gradient();
+        let mut dst = vec![[0u8; 4]; scale.pixel_count()];
+        let damage = Damage {
+            x: 5,
+            y: 2,
+            w: 3,
+            h: 4,
+            padding: false,
+        };
+        let area = upscale_damage_into(&frame, &scale, &padding(), |c| c, &mut dst, &damage);
+        assert_eq!(
+            area,
+            Ok(PhysicalRect {
+                x: 10 + 10,
+                y: 4,
+                w: 6,
+                h: 8
+            })
+        );
+        let rows = Damage {
+            padding: true,
+            ..damage
+        };
+        let area = upscale_damage_into(&frame, &scale, &padding(), |c| c, &mut dst, &rows);
+        assert_eq!(
+            area,
+            Ok(PhysicalRect {
+                x: 0,
+                y: 4,
+                w: 1301,
+                h: 8
+            })
+        );
+    }
+
+    fn redraw(frame: &Rgba640x74, scale: &StripScale, pad: &Padding) -> Vec<Rgba> {
+        let mut dst = vec![[0u8; 4]; scale.pixel_count()];
+        upscale_into(frame, scale, pad, |c| c, &mut dst).unwrap();
+        dst
+    }
+
+    /// Property tests run from a fixed seed and write no regression files into the tree.
+    fn config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 48,
+            rng_seed: RngSeed::Fixed(0x7465_7272_6172_6975),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    proptest! {
+        #![proptest_config(config())]
+
+        #[test]
+        fn writing_only_the_damage_equals_a_full_redraw(
+            width in prop::sample::select(vec![640_u32, 1281, 1301, 1925]),
+            edits in prop::collection::vec((0_u32..640, 0_u32..74, 1_u32..80, 1_u32..20, any::<u8>()), 0..4),
+            padded in prop::collection::vec((0_usize..74, any::<u8>()), 0..3),
+        ) {
+            let scale = full(width);
+            let (before, before_pad) = (gradient(), padding());
+            let mut after = before.clone();
+            for (x, y, w, h, value) in edits {
+                for yy in y..(y + h).min(NATIVE_HEIGHT) {
+                    for xx in x..(x + w).min(NATIVE_WIDTH) {
+                        after.set_pixel(xx, yy, [value, value, value, 255]);
+                    }
+                }
+            }
+            let mut after_pad = before_pad;
+            for (y, value) in padded {
+                after_pad[y] = [value, 0, 0, 255];
+            }
+            let mut dst = redraw(&before, &scale, &before_pad);
+            if let Some(damage) = Damage::between(&before, &before_pad, &after, &after_pad) {
+                upscale_damage_into(&after, &scale, &after_pad, |c| c, &mut dst, &damage).unwrap();
+            }
+            prop_assert!(dst == redraw(&after, &scale, &after_pad));
+        }
     }
 }

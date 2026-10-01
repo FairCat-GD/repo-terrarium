@@ -1,2 +1,7 @@
 [alias]
 xtask = "run --package xtask --"
+
+[env]
+# Where insta keeps snapshots relative to. Without it, insta runs `cargo metadata` once per
+# test process, and nextest runs every test in a process of its own.
+INSTA_WORKSPACE_ROOT = { value = "", relative = true }

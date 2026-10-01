@@ -7,11 +7,18 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 /// (package, bench target, what it holds to its budget).
-const BENCHES: &[(&str, &str, &str)] = &[(
-    "terrarium-compose",
-    "catalog",
-    "loading the embedded art, under 20 ms",
-)];
+const BENCHES: &[(&str, &str, &str)] = &[
+    (
+        "terrarium-compose",
+        "catalog",
+        "loading the embedded art, under 20 ms",
+    ),
+    (
+        "terrarium-compose",
+        "compositor",
+        "compositing a busy frame, median under 1 ms",
+    ),
+];
 
 pub fn run(root: &Path) -> ExitCode {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));

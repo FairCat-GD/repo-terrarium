@@ -15,3 +15,7 @@
 
 # Reports `repo-terrarium --probe` writes into whatever directory it runs from
 repo-terrarium-probe-*
+
+# Snapshots insta proposes but nobody has accepted
+*.snap.new*
+*.pending-snap

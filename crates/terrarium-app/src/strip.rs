@@ -10,9 +10,12 @@ use std::time::Instant;
 
 use global_hotkey::GlobalHotKeyEvent;
 use muda::MenuId;
+use terrarium_compose::catalog::Art;
+use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NATIVE_HEIGHT, Rgba, Rgba640x74};
-use terrarium_compose::placeholder;
+use terrarium_compose::sample;
 use terrarium_compose::scale::{SizeStep, StripScale};
+use terrarium_compose::variants::ArtTable;
 use terrarium_platform::SystemEvent;
 use terrarium_platform::geometry::Edge;
 use winit::application::ApplicationHandler;
@@ -37,6 +40,16 @@ use crate::raise::RaiseTimer;
 /// Until settings exist, the strip uses the default edge and size.
 const EDGE: Edge = Edge::Bottom;
 const SIZE_STEP: SizeStep = SizeStep::Full;
+
+/// The sample scene by day, composed once: the strip is static until the composer draws the
+/// terrarium.
+fn sample_scene() -> (Rgba640x74, [Rgba; NATIVE_HEIGHT as usize]) {
+    let art = Art::embedded();
+    // `cargo xtask verify` checks the embedded art is complete, so this table always builds.
+    let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
+    let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
+    (composite(art, &frame), sample::padding(art, 0, 0))
+}
 
 /// What other threads send the event loop.
 #[derive(Debug)]
@@ -114,12 +127,13 @@ struct View {
 impl Strip {
     fn new(proxy: EventLoopProxy<UserEvent>, probe: Option<Probe>) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
+        let (frame, padding) = sample_scene();
         Self {
             proxy: Some(proxy),
             probe,
             view: None,
-            frame: placeholder::frame(),
-            padding: placeholder::padding(),
+            frame,
+            padding,
             level,
             raise: RaiseTimer::default(),
             hover: HoverTracker::default(),

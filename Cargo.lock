@@ -427,6 +427,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -582,6 +588,17 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "insta"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
+dependencies = [
+ "once_cell",
+ "similar",
+ "tempfile",
 ]
 
 [[package]]
@@ -1562,6 +1579,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1658,15 +1681,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix 1.1.5",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "terrarium-adapters"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "terrarium-truth",
 ]
 
 [[package]]
 name = "terrarium-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "global-hotkey",
  "muda",
@@ -1684,16 +1720,20 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
+ "insta",
+ "png",
  "postcard",
+ "proptest",
  "serde",
+ "sha2",
  "terrarium-truth",
 ]
 
 [[package]]
 name = "terrarium-engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "terrarium-adapters",
  "terrarium-store",
@@ -1702,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2 0.6.2",
  "muda",
@@ -1718,14 +1758,14 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "terrarium-truth",
 ]
 
 [[package]]
 name = "terrarium-truth"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -2450,7 +2490,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "cargo_metadata",
  "png",

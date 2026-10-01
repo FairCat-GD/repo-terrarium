@@ -1,7 +1,7 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify`, `assets`, `bench` and `probe-zip`.
+The tasks are `verify`, `assets`, `bench`, `probe-zip` and `render`.
 
 ## `verify`
 
@@ -110,6 +110,21 @@ profile, so the timings are those of a shipped build.
 
 - `terrarium-compose` `catalog`: decoding the embedded catalog and checking it against its
   atlas takes under 20 ms, measured cold, the way startup pays it.
+- `terrarium-compose` `compositor`: compositing a busy frame takes a median under 1 ms over 200
+  runs. The frame is the sample scene plus a full-frame dusk overlay, rain across the width
+  and the heaviest condensation, more than any one presentation state draws. It also prints
+  the 99th percentile and the slowest run.
+
+## `render`
+
+`cargo xtask render --demo <out.png>` writes the sample scene the strip shows, by day:
+
+- `<out.png>` at 1×, 640×74;
+- `<out>@3x.png` beside it at 3×, 1920×222.
+
+It goes through the strip's own compositor and upscaler, and the one PNG encoder in
+`terrarium_compose::export`. The label reads `repo-terrarium`, the binary's name. The app takes
+the same words from its copy module, so the two literals must change together.
 
 ## `probe-zip`
 

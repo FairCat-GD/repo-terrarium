@@ -12,10 +12,23 @@ publish.workspace = true
 terrarium-truth.workspace = true
 serde.workspace = true
 postcard.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+sha2.workspace = true
+# Exact pixel snapshots. Pinned exactly: its binary snapshots are marked experimental, and a
+# minor release may change them.
+insta = { version = "=1.48.0", default-features = false }
 
 # The release-build budget for loading the embedded catalog, run by `cargo xtask bench`.
 [[bench]]
 name = "catalog"
+harness = false
+
+# The release-build budget for compositing a frame, run by `cargo xtask bench`.
+[[bench]]
+name = "compositor"
 harness = false
 
 [lints]

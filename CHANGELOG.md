@@ -5,6 +5,33 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-01
+
+The strip now shows the delivered art: a sample scene of a few plants on the soil band, inside
+the glass edges, with a stone label reading `repo-terrarium`. It is still static; the living
+terrarium comes next.
+
+### Added
+
+- **The compositor.** Every frame is painted from the art on the CPU at 640×74, then scaled by
+  a whole number:
+  - normal, multiply and add blending at any opacity, in the palette's own colours, never
+    linearized;
+  - day and night palettes, and any crossfade between them;
+  - mirroring, the sway shear, cropping, and tinted glyphs;
+  - darkening of the whole frame, for the dim mode to come.
+- **Text** in both delivered fonts, with `?` for characters the fonts lack, and the label
+  plate, which holds 18 characters and ends a longer line in `~`.
+- **Panels** built from the nine-slice tiles, at any size from 9×9 up.
+- **`cargo xtask render --demo out.png`** writes the sample scene as `out.png` and, at 3×,
+  `out@3x.png`.
+- **`cargo xtask bench`** also holds compositing a busy frame to under 1 ms.
+
+### Changed
+
+- **The strip's sides** continue the glass and the soil to the monitor's edges, taken from the
+  art instead of fixed colours.
+
 ## [0.5.0] - 2026-09-30
 
 Nothing changes on screen. This release checks the delivered art and packs it into the form

@@ -6,6 +6,7 @@ mod bench;
 mod graph;
 mod probe_zip;
 mod purity;
+mod render;
 mod verify;
 
 use std::path::Path;
@@ -26,8 +27,14 @@ fn main() -> ExitCode {
         }
         [task] if task == "bench" => bench::run(root),
         [task] if task == "probe-zip" => probe_zip::run(root),
+        [task, flag, out] if task == "render" && flag == "--demo" => {
+            render::run(std::path::Path::new(out))
+        }
         _ => {
-            eprintln!("usage: cargo xtask verify | assets [--check] | bench | probe-zip");
+            eprintln!(
+                "usage: cargo xtask verify | assets [--check] | bench | probe-zip \
+                 | render --demo <out.png>"
+            );
             ExitCode::from(2)
         }
     }
