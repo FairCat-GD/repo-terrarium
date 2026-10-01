@@ -76,6 +76,23 @@ pub fn in_order(mut keyed: Vec<KeyedDraw>) -> Vec<Draw> {
     keyed.into_iter().map(|keyed| keyed.draw).collect()
 }
 
+/// Two key-sorted lists as one, in key order; on equal keys the first list's draw goes first.
+pub fn merged(a: &[KeyedDraw], b: &[KeyedDraw]) -> Vec<Draw> {
+    let (mut i, mut j) = (0, 0);
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    while i < a.len() || j < b.len() {
+        let take_a = j == b.len() || (i < a.len() && a[i].key <= b[j].key);
+        if take_a {
+            out.push(a[i].draw);
+            i += 1;
+        } else {
+            out.push(b[j].draw);
+            j += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +149,33 @@ mod tests {
             in_order(vec![plant, near_right, near_left, far_right]),
             [far_right.draw, near_left.draw, near_right.draw, plant.draw]
         );
+    }
+
+    #[test]
+    fn merging_two_sorted_lists_equals_sorting_them_together() {
+        let catalog = &Art::embedded().catalog;
+        let tuft = catalog.id("tmp.ground.tuft.01").unwrap();
+        let at = |x, subject| {
+            KeyedDraw::new(
+                catalog,
+                subject,
+                0,
+                0,
+                Draw::anchored(catalog, tuft, x, PLANT_GROUND_Y),
+            )
+        };
+        let a = [
+            at(10, Subject::Fill { cell: 0 }),
+            at(30, Subject::Fill { cell: 2 }),
+        ];
+        let b = [
+            at(5, Subject::Scenery(0)),
+            at(30, Subject::Scenery(1)),
+            at(40, Subject::Scenery(2)),
+        ];
+        let together: Vec<KeyedDraw> = a.iter().chain(&b).copied().collect();
+        assert_eq!(merged(&a, &b), in_order(together));
+        assert_eq!(merged(&[], &b), in_order(b.to_vec()));
     }
 
     #[test]

@@ -10,8 +10,8 @@
 //! - **No neighbours alike.** Neighbouring cells of a band never hold one species. Placement
 //!   checks it, and a removal can never break it.
 //! - **Hero plus company.** Each third has two tree cells, and they are band neighbours, so a
-//!   third holds at most two mature trees and never two of one species. One always dominates,
-//!   and a tree matures where it stands.
+//!   third holds at most two mature trees and never two of one species, and a tree matures
+//!   where it stands. The two are not ranked by size.
 //! - **Ceiling.** At most [`CEILING`] plants are placed, 70% of the cells. Above it a terrarium
 //!   grows taller and fuller, not into more sprites: the waiting plants are placed mature
 //!   first, and the rest are not drawn, which never adds health (I-7).
@@ -67,11 +67,11 @@ impl Bands {
     }
 }
 
-/// A placed plant.
+/// A placed plant: its cell, and the plant as the scene that placed it gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placed {
     pub cell: u8,
-    pub species: PlantSpecies,
+    pub view: PlantView,
 }
 
 /// What a filler cell shows.
@@ -109,7 +109,7 @@ impl Placement {
     pub fn species_by_cell(&self) -> [Option<PlantSpecies>; CELLS] {
         let mut cells = [None; CELLS];
         for placed in self.plants.values() {
-            cells[usize::from(placed.cell)] = Some(placed.species);
+            cells[usize::from(placed.cell)] = Some(placed.view.species);
         }
         for (&cell, form) in &self.fill {
             if let FillForm::Plant { species, .. } = *form {
@@ -126,13 +126,12 @@ pub fn place(prev: &Placement, input: &SceneInput, bands: &Bands) -> Placement {
     let views: BTreeMap<u32, &PlantView> = input.plants.iter().map(|p| (p.id, p)).collect();
     let mut cells: [Option<PlantSpecies>; CELLS] = [None; CELLS];
     let mut plants = BTreeMap::new();
-    for (&id, &placed) in &prev.plants {
-        if views
-            .get(&id)
-            .is_some_and(|view| view.species == placed.species)
+    for (&id, placed) in &prev.plants {
+        if let Some(&&view) = views.get(&id)
+            && view.species == placed.view.species
         {
-            cells[usize::from(placed.cell)] = Some(placed.species);
-            plants.insert(id, placed);
+            cells[usize::from(placed.cell)] = Some(view.species);
+            plants.insert(id, Placed { view, ..*placed });
         }
     }
     let mut waiting: Vec<&PlantView> = views
@@ -147,13 +146,7 @@ pub fn place(prev: &Placement, input: &SceneInput, bands: &Bands) -> Placement {
         }
         if let Some(cell) = free_cell(&cells, bands.of(view.species), view) {
             cells[usize::from(cell)] = Some(view.species);
-            plants.insert(
-                view.id,
-                Placed {
-                    cell,
-                    species: view.species,
-                },
-            );
+            plants.insert(view.id, Placed { cell, view: *view });
         }
     }
     let fill = filler(cells, plants.len(), input, bands);
@@ -257,8 +250,6 @@ mod tests {
     use super::*;
     use crate::catalog::Art;
     use crate::slots::third;
-    use terrarium_truth::Tick;
-    use terrarium_truth::scene::{Light, Presentation, Weather, Wind};
 
     fn bands() -> Bands {
         Bands::new(&ArtTable::new(&Art::embedded().catalog).unwrap())
@@ -277,26 +268,7 @@ mod tests {
     }
 
     fn scene(state: PresentationState, plants: Vec<PlantView>) -> SceneInput {
-        SceneInput {
-            presentation: Presentation {
-                state,
-                since_tick: Tick::new(0),
-            },
-            plants,
-            weeds: 0,
-            litter: 0,
-            fungus: 0,
-            residents: Vec::new(),
-            monuments: Vec::new(),
-            fossils: Vec::new(),
-            ground_marks: Vec::new(),
-            weather: Weather::Clear,
-            light: Light::Neutral,
-            wind: Wind::Calm,
-            condensation: 0,
-            dust: 0,
-            event: None,
-        }
+        crate::preset::bare(state, plants)
     }
 
     fn fresh(input: &SceneInput) -> Placement {
@@ -430,7 +402,7 @@ mod tests {
             &scene(PresentationState::Thriving, vec![reed]),
             &bands(),
         );
-        assert_eq!(next.plants[&1].species, PlantSpecies::Reed);
+        assert_eq!(next.plants[&1].view.species, PlantSpecies::Reed);
         let oak = PlantView {
             species: PlantSpecies::Oak,
             ..fern

@@ -616,6 +616,15 @@ impl ArtTable {
         self.plants[&(species, growth, health)]
     }
 
+    /// A young or mature plant's stem, or `None` for a seedling, whose one image carries its
+    /// own. A stem is found without a state, so every state of a stage shares it.
+    pub fn stem(&self, species: PlantSpecies, growth: GrowthStage) -> Option<SpriteId> {
+        match self.plants.get(&(species, growth, PlantState::Thriving))? {
+            PlantArt::Parts { stem, .. } => Some(*stem),
+            PlantArt::Seedling(_) => None,
+        }
+    }
+
     /// The bloom overlay, drawn only on a mature, thriving plant whose `bloom` truth set.
     pub fn bloom(&self, species: PlantSpecies) -> SpriteId {
         self.blooms[&species]
@@ -935,6 +944,24 @@ mod tests {
             "Wind::Calm",
         ] {
             assert!(named.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn every_state_of_a_stage_shares_its_stem_and_a_seedling_has_none() {
+        let table = ArtTable::new(catalog()).unwrap();
+        for &species in PlantSpecies::ALL {
+            assert_eq!(table.stem(species, GrowthStage::Seedling), None);
+            for growth in [GrowthStage::Young, GrowthStage::Mature] {
+                let stem = table.stem(species, growth).expect("a stem");
+                for &health in PlantState::ALL {
+                    let PlantArt::Parts { stem: own, .. } = table.plant(species, growth, health)
+                    else {
+                        panic!("{species:?} {growth:?} is drawn from parts");
+                    };
+                    assert_eq!(own, stem, "{species:?} {growth:?} {health:?}");
+                }
+            }
         }
     }
 

@@ -22,7 +22,7 @@ use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState, PlantView, S
 
 use crate::catalog::{Art, SpriteId};
 use crate::frame::{Draw, Frame, PLANT_GROUND_Y};
-use crate::order::{KeyedDraw, Subject, in_order};
+use crate::order::{KeyedDraw, Subject, merged};
 use crate::place::{Bands, FillForm, Placement, place};
 use crate::plant::shows_bloom;
 use crate::salt::{InstallSalt, Purpose};
@@ -58,19 +58,16 @@ pub enum Piece {
 }
 
 impl Piece {
-    fn sprite(self, table: &ArtTable, salt: InstallSalt, cell: u8) -> SpriteId {
+    /// The sprite the piece shows in `cell`; `None` only for the stem of a seedling, which no
+    /// subject is given.
+    fn sprite(self, table: &ArtTable, salt: InstallSalt, cell: u8) -> Option<SpriteId> {
         let variant = |sprites: &[SpriteId]| {
             let n = u64::try_from(sprites.len()).unwrap_or(1);
             let pick = salt.below(Purpose::FillVariant, u64::from(cell), n);
             sprites[usize::try_from(pick).unwrap_or(0)]
         };
-        match self {
-            Piece::Stem { species, stage } => {
-                match table.plant(species, stage, PlantState::Thriving) {
-                    PlantArt::Parts { stem, .. } => stem,
-                    PlantArt::Seedling(combined) => combined,
-                }
-            }
+        Some(match self {
+            Piece::Stem { species, stage } => return table.stem(species, stage),
             Piece::Foliage {
                 species,
                 stage,
@@ -82,7 +79,7 @@ impl Piece {
             Piece::Bloom { species } => table.bloom(species),
             Piece::Tuft => variant(table.tufts()),
             Piece::DeadStems => variant(table.dead_stems()),
-        }
+        })
     }
 }
 
@@ -264,16 +261,13 @@ impl Composer {
         self.entries
             .retain(|_, entry| entry.looks().next().is_some());
         self.placement = place(&self.placement, input, &self.bands);
-        let views: BTreeMap<u32, &PlantView> = input.plants.iter().map(|p| (p.id, p)).collect();
         let mut wanted: BTreeMap<Subject, [Option<Piece>; PARTS]> = BTreeMap::new();
         for (&id, placed) in &self.placement.plants {
-            if let Some(view) = views.get(&id) {
-                let subject = Subject::Plant {
-                    id,
-                    cell: placed.cell,
-                };
-                wanted.insert(subject, plant_pieces(view));
-            }
+            let subject = Subject::Plant {
+                id,
+                cell: placed.cell,
+            };
+            wanted.insert(subject, plant_pieces(&placed.view));
         }
         for (&cell, &form) in &self.placement.fill {
             wanted.insert(Subject::Fill { cell }, fill_pieces(form));
@@ -337,9 +331,15 @@ impl Composer {
             let x = self.layout.slot(cell).x;
             for (part, looks) in (0_u8..).zip(&entry.parts) {
                 for (index, look) in (0_u16..).zip(looks) {
-                    let sprite = look.piece.sprite(table, self.salt, cell);
+                    let value = look.opacity.value(now);
+                    if value == 0 {
+                        continue;
+                    }
+                    let Some(sprite) = look.piece.sprite(table, self.salt, cell) else {
+                        continue;
+                    };
                     let draw = Draw::anchored(catalog, sprite, x, PLANT_GROUND_Y);
-                    let opacity = scale(draw.opacity, look.opacity.value(now));
+                    let opacity = times_opacity(draw.opacity, value);
                     if opacity > 0 {
                         let draw = Draw { opacity, ..draw };
                         keyed.push(KeyedDraw::new(catalog, subject, part, index, draw));
@@ -351,23 +351,18 @@ impl Composer {
         keyed
     }
 
-    /// The whole frame at `now`: the composer's draws with the fixed scenery, in depth order.
+    /// The whole frame at `now`: the composer's draws merged with the fixed scenery, in depth
+    /// order.
     pub fn frame(
         &self,
         art: &Art,
         table: &ArtTable,
-        label: &str,
+        scenery: &Scenery,
         palette_mix: u8,
         now: Millis,
     ) -> Frame {
-        let mut keyed = self.draws(art, table, now);
-        keyed.extend(
-            (0_u16..)
-                .zip(crate::sample::scenery(art, label))
-                .map(|(i, draw)| KeyedDraw::new(&art.catalog, Subject::Scenery(i), 0, 0, draw)),
-        );
         Frame {
-            draws: in_order(keyed),
+            draws: merged(&self.draws(art, table, now), &scenery.keyed),
             palette_mix,
             dim: 0,
         }
@@ -388,8 +383,27 @@ fn leave_ms(subject: Subject) -> u32 {
     }
 }
 
-/// A sprite's own opacity scaled by a look's, rounded to nearest.
-fn scale(own: u8, look: u8) -> u8 {
+/// The draws that never change between frames, keyed and sorted once: the soil band, the
+/// glass and the label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scenery {
+    keyed: Vec<KeyedDraw>,
+}
+
+impl Scenery {
+    /// The scenery with its label reading `label`. Build it again when the label changes.
+    pub fn new(art: &Art, label: &str) -> Scenery {
+        let mut keyed: Vec<KeyedDraw> = (0_u16..)
+            .zip(crate::sample::scenery(art, label))
+            .map(|(i, draw)| KeyedDraw::new(&art.catalog, Subject::Scenery(i), 0, 0, draw))
+            .collect();
+        keyed.sort_by_key(|keyed| keyed.key);
+        Scenery { keyed }
+    }
+}
+
+/// A sprite's own opacity times a look's, rounded to nearest.
+fn times_opacity(own: u8, look: u8) -> u8 {
     u8::try_from((u16::from(own) * u16::from(look) + 127) / 255).unwrap_or(u8::MAX)
 }
 
@@ -534,10 +548,10 @@ mod tests {
         let table = table();
         let tufts = table.tufts();
         let chosen: Vec<SpriteId> = (0..30)
-            .map(|cell| Piece::Tuft.sprite(&table, preset::SALT, cell))
+            .filter_map(|cell| Piece::Tuft.sprite(&table, preset::SALT, cell))
             .collect();
         assert!(chosen.iter().all(|id| tufts.contains(id)));
         assert!(chosen.iter().any(|&id| id != chosen[0]));
-        assert_eq!(chosen[4], Piece::Tuft.sprite(&table, preset::SALT, 4));
+        assert_eq!(Some(chosen[4]), Piece::Tuft.sprite(&table, preset::SALT, 4));
     }
 }

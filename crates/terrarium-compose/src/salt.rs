@@ -47,9 +47,10 @@ impl InstallSalt {
 
     /// A salted value in `0..n`, or 0 when `n` is 0.
     pub fn below(self, purpose: Purpose, index: u64, n: u64) -> u64 {
-        // The high 32 bits scaled down: no modulo, so no value is favoured by more than one
-        // part in 2^32.
-        ((self.mix(purpose, index) >> 32) * n) >> 32
+        // The whole value scaled down in 128 bits, with no modulo, so no `n` overflows and no
+        // value is favoured by more than one part in 2^64.
+        let scaled = (u128::from(self.mix(purpose, index)) * u128::from(n)) >> 64;
+        u64::try_from(scaled).unwrap_or(n.saturating_sub(1))
     }
 }
 
@@ -101,5 +102,9 @@ mod tests {
         }
         assert!(seen.iter().all(|&s| s));
         assert_eq!(A.below(Purpose::SlotJitter, 0, 0), 0);
+        // The widest range a u64 holds stays in range, where 32-bit scaling would overflow.
+        for index in 0..100 {
+            assert!(A.below(Purpose::FillVariant, index, u64::MAX) < u64::MAX);
+        }
     }
 }

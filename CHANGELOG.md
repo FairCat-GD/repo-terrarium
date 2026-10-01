@@ -14,8 +14,7 @@ shows the sample scene until the live terrarium reaches it. Seven preset scenes 
 
 - **The composer** places a terrarium's plants on thirty slots along the strip, in far, mid and
   near bands that step tall, medium, small.
-  - Each third of the strip holds at most two big trees, never two of one species, so one
-    always leads.
+  - Each third of the strip holds at most two big trees, never two of one species.
   - No two neighbouring plants of a band are the same species.
   - Between 35% and 70% of the slots hold something. When there are too few plants, the gaps
     fill to suit the scene: grass tufts in a living terrarium, the terrarium's own species

@@ -18,16 +18,14 @@ use terrarium_compose::composer::Composer;
 use terrarium_compose::frame::Draw;
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::place::{CEILING, FLOOR};
+use terrarium_compose::preset;
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::slots::{Band, PATTERN, band_cells, screen_third};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::tween::durations::{APPEAR_MS, RESTYLE_MS, SHORTEST_MS};
 use terrarium_compose::variants::{ArtTable, art_key};
-use terrarium_truth::scene::{
-    GrowthStage, Light, PlantSpecies, PlantState, PlantView, Presentation, SceneInput, Weather,
-    Wind,
-};
-use terrarium_truth::{PresentationState, Tick};
+use terrarium_truth::PresentationState;
+use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState, PlantView, SceneInput};
 
 fn config() -> ProptestConfig {
     ProptestConfig {
@@ -114,26 +112,7 @@ fn unique(mut plants: Vec<PlantView>) -> Vec<PlantView> {
 }
 
 fn scene_with(state: PresentationState, plants: Vec<PlantView>) -> SceneInput {
-    SceneInput {
-        presentation: Presentation {
-            state,
-            since_tick: Tick::new(0),
-        },
-        plants: unique(plants),
-        weeds: 0,
-        litter: 0,
-        fungus: 0,
-        residents: Vec::new(),
-        monuments: Vec::new(),
-        fossils: Vec::new(),
-        ground_marks: Vec::new(),
-        weather: Weather::Clear,
-        light: Light::Neutral,
-        wind: Wind::Calm,
-        condensation: 0,
-        dust: 0,
-        event: None,
-    }
+    preset::bare(state, unique(plants))
 }
 
 /// A valid scene of 0 to 40 plants.
@@ -288,8 +267,8 @@ fn check_placement(composer: &Composer, input: &SceneInput) -> Result<(), TestCa
     let views: BTreeMap<u32, &PlantView> = input.plants.iter().map(|p| (p.id, p)).collect();
     for (id, placed) in &placement.plants {
         let view = views.get(id);
-        prop_assert_eq!(view.map(|v| v.species), Some(placed.species));
-        prop_assert_eq!(PATTERN[usize::from(placed.cell)], band(placed.species));
+        prop_assert_eq!(view.map(|v| v.species), Some(placed.view.species));
+        prop_assert_eq!(PATTERN[usize::from(placed.cell)], band(placed.view.species));
     }
     let species = placement.species_by_cell();
     for band in Band::ALL {
@@ -314,12 +293,11 @@ enum Class {
     Other,
 }
 
-/// The variant whose art key is `key`.
-fn find<T: Copy + std::fmt::Debug>(key: Option<&str>, all: &[T]) -> Option<T> {
-    let name = |variant: &T| art_key(format!("{variant:?}").as_str());
+/// The variant whose art key is `key`, named as the crate names it.
+fn find<T: Copy>(key: Option<&str>, all: &[T], name: fn(T) -> &'static str) -> Option<T> {
     all.iter()
         .copied()
-        .find(|variant| Some(name(variant).as_str()) == key)
+        .find(|&variant| key == Some(art_key(name(variant)).as_str()))
 }
 
 fn class(draw: &Draw) -> Class {
@@ -334,9 +312,13 @@ fn class(draw: &Draw) -> Class {
                 if keys.event.is_some() {
                     return Class::Other;
                 }
-                let species = find(keys.species.as_deref(), PlantSpecies::ALL);
-                let growth = find(keys.stage.as_deref(), GrowthStage::ALL);
-                let health = find(keys.state.as_deref(), PlantState::ALL);
+                let species = find(
+                    keys.species.as_deref(),
+                    PlantSpecies::ALL,
+                    PlantSpecies::name,
+                );
+                let growth = find(keys.stage.as_deref(), GrowthStage::ALL, GrowthStage::name);
+                let health = find(keys.state.as_deref(), PlantState::ALL, PlantState::name);
                 match (keys.part.as_deref(), species, growth, health) {
                     (Some("foliage" | "combined"), Some(sp), Some(gr), Some(he)) => {
                         Class::Foliage(sp, gr, he)
@@ -488,13 +470,21 @@ fn check_continuity(
 /// Moments worth looking at after an update: its tween boundaries and either side of them.
 fn moments(update: Millis, until: Millis) -> Vec<Millis> {
     let half = RESTYLE_MS / 2;
+    // Quarter steps keep the continuity bound near 96 of 255, so a cut mid-tween shows; the
+    // boundaries and their neighbours catch a cut at a phase change.
     let mut moments: Vec<Millis> = [
         0,
         1,
+        750,
+        1500,
+        2250,
         half - 1,
         half,
         half + 1,
+        3750,
         APPEAR_MS,
+        4500,
+        5250,
         RESTYLE_MS - 1,
         RESTYLE_MS + 1,
     ]

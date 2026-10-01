@@ -12,7 +12,7 @@ use terrarium_truth::scene::{
 use terrarium_truth::{PresentationState, Tick};
 
 use crate::catalog::Art;
-use crate::composer::Composer;
+use crate::composer::{Composer, Scenery};
 use crate::frame::Frame;
 use crate::salt::InstallSalt;
 use crate::tween::Millis;
@@ -268,21 +268,40 @@ pub fn scene(name: &str) -> Option<SceneInput> {
             state: world.state,
             since_tick: Tick::new(24 * 90),
         },
-        plants,
         weeds,
         litter,
         fungus,
+        weather: world.weather,
+        wind: world.wind,
+        condensation,
+        dust,
+        ..bare(world.state, plants)
+    })
+}
+
+/// A scene of these plants and nothing else: no ground cover, residents, monuments or marks,
+/// a clear and calm sky, clean glass and no event. The presets and the tests start from it.
+pub fn bare(state: PresentationState, plants: Vec<PlantView>) -> SceneInput {
+    SceneInput {
+        presentation: Presentation {
+            state,
+            since_tick: Tick::new(0),
+        },
+        plants,
+        weeds: 0,
+        litter: 0,
+        fungus: 0,
         residents: Vec::new(),
         monuments: Vec::new(),
         fossils: Vec::new(),
         ground_marks: Vec::new(),
-        weather: world.weather,
+        weather: Weather::Clear,
         light: Light::Neutral,
-        wind: world.wind,
-        condensation,
-        dust,
+        wind: Wind::Calm,
+        condensation: 0,
+        dust: 0,
         event: None,
-    })
+    }
 }
 
 /// The named preset composed from nothing and settled, by day, with its label reading `label`.
@@ -290,7 +309,8 @@ pub fn frame(art: &Art, table: &ArtTable, name: &str, label: &str) -> Option<Fra
     let input = scene(name)?;
     let mut composer = Composer::new(table, SALT);
     composer.update(&input, Millis(0));
-    Some(composer.frame(art, table, label, 0, composer.settled_at()))
+    let scenery = Scenery::new(art, label);
+    Some(composer.frame(art, table, &scenery, 0, composer.settled_at()))
 }
 
 #[cfg(test)]
