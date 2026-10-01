@@ -13,14 +13,17 @@ Depiction: from `SceneInput` to pixels.
 - Bitmap text and the label plate (`text`), and the nine-slice panel (`nine_slice`).
 - Damage: rewriting only what changed, equal to a full redraw (`scale::Damage`).
 - The one PNG encoder (`export`), for exports, `cargo xtask render` and the snapshot tests.
-- A sample scene assembled by hand (`sample`), shown until the composer draws the terrarium.
+- A sample scene assembled by hand (`sample`), shown until the live terrarium reaches the
+  strip. Its soil, glass and label are the scenery the composer draws in for now.
 - The asset catalog (`catalog`): every delivered sprite under its semantic ID, with its
   metadata and the atlas its pixels are packed into.
-- The variant table (`variants`, `ArtTable`): the art that depicts each `SceneInput` variant.
-- The composer, its tweens and animation.
-- Frame scheduling hints.
-- GIF encoding.
-- `InstallSalt`.
+- The variant table (`variants`, `ArtTable`): the art that depicts each `SceneInput` variant,
+  each species' depth band, and the filler art.
+- The composer (`composer`), with its slots (`slots`), placement (`place`), plant assembly
+  (`plant`), tweens (`tween`) and draw order (`order`), and the presets it is shown with
+  (`preset`).
+- `InstallSalt` (`salt`).
+- Animation, frame scheduling hints and GIF encoding, still to come.
 
 ## The embedded art
 
@@ -55,6 +58,35 @@ variant once, so the composer reads maps rather than scanning the catalog, and f
 every gap. `variants::missing`, those gaps, is check 6 of `cargo xtask assets`, and this
 crate's tests run it on the embedded art. The module's docs list where the art and the enums
 are not one to one.
+
+## The composer
+
+`Composer::update(&SceneInput, now)` moves the depiction toward a scene from `now`, and
+`Composer::frame` draws it at any moment. The clock is always passed in.
+
+- **Slots** (`slots`). Thirty cells cross the strip, ten per third, each in a depth band: far,
+  mid or near. The bands step tall, medium, small, and each third has two tree cells, spaced
+  differently in each third. The install salt moves each slot up to 7 pixels within its cell,
+  and nothing else.
+- **Placement** (`place`). A pure function of the previous placement and the scene, over cells
+  only, so the same history depicts the same plants on every install. The rules:
+  - **bands:** a plant stands in its species' band;
+  - **kept:** a plant keeps its cell while truth keeps it;
+  - **neighbours:** neighbouring cells of a band never hold one species;
+  - **trees:** a third holds at most two mature trees, of different species;
+  - **ceiling:** at most 21 plants, mature ones first;
+  - **floor:** filler brings the occupied cells to at least 11.
+
+  Filler follows the scene's state and is never a living plant: grass tufts, the terrarium's
+  own species dormant or dead, or dead-stem litter.
+- **Looks** (`composer`). Each plant or filler has a stem, a foliage and a bloom part. A part
+  that changes look raises the new look over the old one before the old one falls, so a change
+  never shows the sky through it. An update never changes the frame at its own moment.
+- **Order** (`order`). Within a layer, draws are sorted by their world point (where the anchor
+  lands), then by subject, so a foliage always follows its stem.
+
+The constraints are property-tested over generated histories in `tests/composer.rs`:
+occupancy, rhythm, the healthy subset, no cuts, and salt independence.
 
 ## The compositor
 
@@ -94,6 +126,7 @@ reaching past `SceneInput` into live data.
 - Floats are allowed, but the output is deterministic for a given input, salt and clock.
 - It never fabricates health: the healthy plants drawn are a subset of those in `SceneInput`
   (I-7).
+- It reads no clock and iterates no hash map; `clippy.toml` holds that.
 - Every visible change tweens, and the camera never moves (I-15). At most 15 frames a second,
   and none while nothing changes (I-10).
 - Art is used as delivered (I-11).

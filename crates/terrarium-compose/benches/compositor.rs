@@ -4,6 +4,10 @@
 //! bench`.
 
 #![forbid(unsafe_code)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a bench measures wall time, which the composer itself never reads"
+)]
 
 use std::hint::black_box;
 use std::process::ExitCode;

@@ -10,6 +10,9 @@ pub const NATIVE_WIDTH: u32 = 640;
 pub const NATIVE_HEIGHT: u32 = 74;
 /// The ground line. The soil band is this row and the seven below it.
 pub const GROUND_Y: u32 = 66;
+/// Where plants and filler stand: the row above the ground line. Their anchor row is their
+/// last, so they sit on the soil's opaque top edge rather than under it.
+pub const PLANT_GROUND_Y: i32 = GROUND_Y.cast_signed() - 1;
 
 /// One pixel: red, green, blue, alpha.
 pub type Rgba = [u8; 4];

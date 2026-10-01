@@ -32,10 +32,13 @@ fn main() -> ExitCode {
         [task, flag, out] if task == "render" && flag == "--demo" => {
             render::run(std::path::Path::new(out))
         }
+        [task, flag, name, out] if task == "render" && flag == "--preset" => {
+            render::run_preset(name, std::path::Path::new(out))
+        }
         _ => {
             eprintln!(
                 "usage: cargo xtask verify | assets [--check] | bench | probe-zip \
-                 | render --demo <out.png>"
+                 | render --demo <out.png> | render --preset <name> <out.png>"
             );
             ExitCode::from(2)
         }

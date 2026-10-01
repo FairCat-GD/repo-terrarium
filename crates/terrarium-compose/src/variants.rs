@@ -21,6 +21,10 @@
 //!
 //! Some enums have no art by design; [`NO_ART`] lists them with the reason.
 //!
+//! The table also holds what the composer draws beyond the variants: each species' plant layer,
+//! which is its depth band, and the filler that keeps the slots from standing empty (ground
+//! tufts and dead-stem litter).
+//!
 //! [`ArtTable`] resolves every variant once, so the composer reads maps instead of scanning the
 //! catalog. [`missing`], the gaps it finds, is check 6 of `cargo xtask assets`.
 
@@ -32,7 +36,7 @@ use terrarium_truth::scene::{
     MonumentAge, PlantSpecies, PlantState, ResidentSpecies, Weather, Wind,
 };
 
-use crate::catalog::{AnimationId, Catalog, Sprite, SpriteId};
+use crate::catalog::{AnimationId, Catalog, Layer, Sprite, SpriteId};
 
 /// Art a variant needs that the catalog lacks, or holds more than once.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,6 +283,37 @@ fn ground_mark(catalog: &Catalog, kind: GroundMark) -> Result<Vec<SpriteId>, Mis
     named(catalog, &format!("GroundMark::{}", kind.name()), ids)
 }
 
+/// Every part of a species, from seedling to bloom, in one plant layer: its depth band.
+fn plant_layer(
+    catalog: &Catalog,
+    species: PlantSpecies,
+    sprites: &[SpriteId],
+) -> Result<Layer, MissingArt> {
+    let layers: Vec<Option<Layer>> = sprites.iter().map(|&id| catalog.sprite(id).layer).collect();
+    match layers.first() {
+        Some(&Some(layer @ (Layer::FarPlants | Layer::MidPlants | Layer::NearPlants)))
+            if layers.iter().all(|&l| l == Some(layer)) =>
+        {
+            Ok(layer)
+        }
+        _ => Err(MissingArt {
+            variant: format!("PlantSpecies::{}", species.name()),
+            wanted: "every part in one plant layer".into(),
+        }),
+    }
+}
+
+/// The ground tufts: the lower vegetation that fills a living scene's empty slots.
+pub const TUFTS: [&str; 4] = [
+    "tmp.ground.tuft.01",
+    "tmp.ground.tuft.02",
+    "tmp.ground.tuft.03",
+    "tmp.ground.tuft.04",
+];
+
+/// The dead-stem litter that fills a dead scene's empty slots when it has no species to show.
+pub const DEAD_STEMS: [&str; 2] = ["tmp.litter.dead-stems.01", "tmp.litter.dead-stems.02"];
+
 /// The two films the glass can carry, each in levels 1 to `MAX_GLASS_LEVEL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlassFilm {
@@ -418,6 +453,7 @@ fn event(catalog: &Catalog, kind: EventKind) -> Result<Vec<SpriteId>, MissingArt
 pub struct ArtTable {
     plants: BTreeMap<(PlantSpecies, GrowthStage, PlantState), PlantArt>,
     blooms: BTreeMap<PlantSpecies, SpriteId>,
+    plant_layers: BTreeMap<PlantSpecies, Layer>,
     scorches: BTreeMap<PlantSpecies, SpriteId>,
     residents: BTreeMap<(ResidentSpecies, LifeStage), Vec<AnimationId>>,
     monuments: BTreeMap<MonumentAge, Vec<SpriteId>>,
@@ -429,6 +465,8 @@ pub struct ArtTable {
     light: BTreeMap<Light, SpriteId>,
     wind: BTreeMap<Wind, Vec<SpriteId>>,
     events: BTreeMap<EventKind, Vec<SpriteId>>,
+    tufts: Vec<SpriteId>,
+    dead_stems: Vec<SpriteId>,
 }
 
 impl ArtTable {
@@ -436,6 +474,7 @@ impl ArtTable {
         ArtTable {
             plants: BTreeMap::new(),
             blooms: BTreeMap::new(),
+            plant_layers: BTreeMap::new(),
             scorches: BTreeMap::new(),
             residents: BTreeMap::new(),
             monuments: BTreeMap::new(),
@@ -447,7 +486,22 @@ impl ArtTable {
             light: BTreeMap::new(),
             wind: BTreeMap::new(),
             events: BTreeMap::new(),
+            tufts: Vec::new(),
+            dead_stems: Vec::new(),
         }
+    }
+
+    /// Every plant sprite of a species resolved so far, blooms included.
+    fn parts_of(&self, species: PlantSpecies) -> Vec<SpriteId> {
+        self.plants
+            .iter()
+            .filter(|((sp, _, _), _)| *sp == species)
+            .flat_map(|(_, art)| match *art {
+                PlantArt::Seedling(id) => vec![id],
+                PlantArt::Parts { stem, foliage } => vec![stem, foliage],
+            })
+            .chain(self.blooms.get(&species).copied())
+            .collect()
     }
 
     /// Resolves every variant, or returns every gap. `cargo xtask assets` refuses a package
@@ -474,6 +528,12 @@ impl ArtTable {
             keep(scorch(catalog, species).map(|id| {
                 table.scorches.insert(species, id);
             }));
+            let parts = table.parts_of(species);
+            if !parts.is_empty() {
+                keep(plant_layer(catalog, species, &parts).map(|layer| {
+                    table.plant_layers.insert(species, layer);
+                }));
+            }
         }
         for &species in ResidentSpecies::ALL {
             for &stage in LifeStage::ALL {
@@ -536,6 +596,8 @@ impl ArtTable {
                 table.events.insert(kind, ids);
             }));
         }
+        keep(named(catalog, "filler tufts", &TUFTS).map(|ids| table.tufts = ids));
+        keep(named(catalog, "filler dead stems", &DEAD_STEMS).map(|ids| table.dead_stems = ids));
         if gaps.is_empty() {
             Ok(table)
         } else {
@@ -557,6 +619,21 @@ impl ArtTable {
     /// The bloom overlay, drawn only on a mature, thriving plant whose `bloom` truth set.
     pub fn bloom(&self, species: PlantSpecies) -> SpriteId {
         self.blooms[&species]
+    }
+
+    /// The species' plant layer, shared by every part of it: its depth band.
+    pub fn plant_layer(&self, species: PlantSpecies) -> Layer {
+        self.plant_layers[&species]
+    }
+
+    /// The ground tufts that fill a living scene's empty slots, all equivalent.
+    pub fn tufts(&self) -> &[SpriteId] {
+        &self.tufts
+    }
+
+    /// The dead-stem litter that fills a dead scene's empty slots, all equivalent.
+    pub fn dead_stems(&self) -> &[SpriteId] {
+        &self.dead_stems
     }
 
     /// The scorched foliage that stands in for a mature plant's while lightning's scorch plays.
@@ -858,6 +935,52 @@ mod tests {
             "Wind::Calm",
         ] {
             assert!(named.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn each_species_stands_in_the_band_of_its_pool() {
+        // The species pools: three far trees, five mid plants, four near ones.
+        let table = ArtTable::new(catalog()).unwrap();
+        let in_layer = |layer| {
+            PlantSpecies::ALL
+                .iter()
+                .filter(|&&species| table.plant_layer(species) == layer)
+                .map(|species| species.name())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(in_layer(Layer::FarPlants), ["Oak", "Birch", "Rowan"]);
+        assert_eq!(
+            in_layer(Layer::MidPlants),
+            ["Fern", "TallGrass", "Bramble", "Foxglove", "Reed"]
+        );
+        assert_eq!(
+            in_layer(Layer::NearPlants),
+            ["MossMound", "WildflowerCluster", "Clover", "Thistle"]
+        );
+    }
+
+    #[test]
+    fn a_species_split_across_layers_is_a_gap() {
+        let mut broken = catalog().clone();
+        let id = broken.id("tmp.plant.fern.bloom.mature").unwrap();
+        broken.sprites[id.index()].layer = Some(Layer::NearPlants);
+        assert_eq!(
+            lines(&missing(&broken)),
+            "PlantSpecies::Fern: every part in one plant layer"
+        );
+    }
+
+    #[test]
+    fn the_filler_is_tufts_and_dead_stems_from_the_ground_art() {
+        let table = ArtTable::new(catalog()).unwrap();
+        assert_eq!(table.tufts().len(), TUFTS.len());
+        assert_eq!(table.dead_stems().len(), DEAD_STEMS.len());
+        for &id in table.tufts() {
+            assert_eq!(catalog().sprite(id).layer, Some(Layer::NearPlants));
+        }
+        for &id in table.dead_stems() {
+            assert_eq!(catalog().sprite(id).layer, Some(Layer::GroundLitter));
         }
     }
 

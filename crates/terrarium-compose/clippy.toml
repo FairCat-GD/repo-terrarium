@@ -1,0 +1,13 @@
+# The composer is deterministic for a given input, salt and clock, and snapshots hold it to
+# that. Clippy reads only the nearest clippy.toml, so a root-level file added later would not
+# apply here unless merged into this one.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order varies per run; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "iteration order varies per run; use BTreeSet" },
+    { path = "std::hash::DefaultHasher", reason = "its algorithm may change between Rust releases" },
+    { path = "std::hash::RandomState", reason = "it is seeded per process" },
+]
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "the composer reads no clock; the time is passed in" },
+    { path = "std::time::SystemTime::now", reason = "the composer reads no clock; the time is passed in" },
+]

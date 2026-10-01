@@ -1,22 +1,21 @@
 //! A scene assembled by hand from the delivered art: a few plants on the soil band, the glass
 //! edges and the label. The strip shows it, and `cargo xtask render --demo` writes it, until the
-//! composer draws the terrarium from `SceneInput`.
+//! live terrarium reaches the strip. Its soil, glass and label are also the fixed scenery the
+//! composer draws its plants in, until the composer draws the world.
 
 use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState};
 
 use crate::catalog::{Art, Catalog, SpriteId};
 use crate::compositor::composite_area;
 use crate::frame::{Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba640x74};
+use crate::plant::Parts;
 use crate::scale::Padding;
 use crate::text::Label;
-use crate::variants::{ArtTable, PlantArt};
+use crate::variants::ArtTable;
 
 const WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
 const GROUND: i32 = GROUND_Y.cast_signed();
-/// Where a plant's ground point stands: the row above the ground line. A plant's anchor row
-/// is its last, so it sits on the soil's top edge rather than under it.
-const PLANT_GROUND: i32 = GROUND - 1;
 /// The gap between the label plate and the right glass edge.
 const LABEL_MARGIN: i32 = 4;
 
@@ -89,10 +88,27 @@ pub fn frame(art: &Art, table: &ArtTable, label: &str, palette_mix: u8, dim: u8)
     let mut draws: Vec<Draw> = PLANTS
         .iter()
         .flat_map(|&(species, growth, health, bloom, x)| {
-            plant(catalog, table, (species, growth, health), bloom, x)
+            Parts::new(table, species, growth, health, bloom).draws(catalog, x)
         })
         .collect();
-    draws.extend(soil_and_glass(catalog, WIDTH));
+    draws.extend(scenery(art, label));
+    // Depth order. The sort is stable, so each plant keeps its stem, foliage, bloom order.
+    draws.sort_by_key(|draw| draw.layer);
+    Frame {
+        draws,
+        palette_mix,
+        dim,
+    }
+}
+
+/// The fixed scenery: the soil band and its edge, both glass edges, and the label plate at the
+/// bottom right reading `label`.
+///
+/// # Panics
+/// If the catalog lacks the soil, glass or label art, which the embedded art has.
+pub fn scenery(art: &Art, label: &str) -> Vec<Draw> {
+    let catalog = &art.catalog;
+    let mut draws = soil_and_glass(catalog, WIDTH);
     let plate = sprite(catalog, Label::PLATE);
     let size = catalog.sprite(plate).rect;
     let glass = catalog
@@ -103,13 +119,7 @@ pub fn frame(art: &Art, table: &ArtTable, label: &str, palette_mix: u8, dim: u8)
     let plate_y = HEIGHT - i32::from(size.h);
     let label_art = Label::new(catalog).expect("the delivered label plate");
     draws.extend(label_art.draws(label, plate_x, plate_y));
-    // Depth order. The sort is stable, so each plant keeps its stem, foliage, bloom order.
-    draws.sort_by_key(|draw| draw.layer);
-    Frame {
-        draws,
-        palette_mix,
-        dim,
-    }
+    draws
 }
 
 /// Each row's colour beyond the image: the outer column of the glass and the soil alone,
@@ -130,26 +140,6 @@ pub fn padding(art: &Art, palette_mix: u8, dim: u8) -> Padding {
     let mut image = Rgba640x74::filled([0; 4]);
     composite_area(art, &frame, &mut image, column);
     std::array::from_fn(|y| image.pixel(0, u32::try_from(y).unwrap_or(0)))
-}
-
-/// A plant's draws at a ground point: the seedling, or the stem then the foliage, then the
-/// bloom when it has one.
-fn plant(
-    catalog: &Catalog,
-    table: &ArtTable,
-    (species, growth, health): (PlantSpecies, GrowthStage, PlantState),
-    bloom: bool,
-    x: i32,
-) -> Vec<Draw> {
-    let at = |sprite| Draw::anchored(catalog, sprite, x, PLANT_GROUND);
-    let mut draws = match table.plant(species, growth, health) {
-        PlantArt::Seedling(sprite) => vec![at(sprite)],
-        PlantArt::Parts { stem, foliage } => vec![at(stem), at(foliage)],
-    };
-    if bloom {
-        draws.push(at(table.bloom(species)));
-    }
-    draws
 }
 
 /// The soil band and its top edge from the left edge to `width`, then both glass edges.
@@ -200,6 +190,7 @@ mod tests {
     use crate::blend::dim;
     use crate::catalog::Layer;
     use crate::compositor::composite;
+    use crate::frame::PLANT_GROUND_Y;
 
     fn sample(mix: u8, dim: u8) -> Frame {
         let art = Art::embedded();
@@ -240,7 +231,7 @@ mod tests {
             let rect = art.catalog.sprite(draw.sprite).rect;
             let bottom = draw.y + i32::from(rect.h) - 1;
             assert!(
-                bottom <= PLANT_GROUND,
+                bottom <= PLANT_GROUND_Y,
                 "{} reaches row {bottom}",
                 art.catalog.sprite(draw.sprite).id
             );

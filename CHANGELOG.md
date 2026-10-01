@@ -5,6 +5,32 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-01
+
+The terrarium's plants are now composed from the state truth hands over, though the strip still
+shows the sample scene until the live terrarium reaches it. Seven preset scenes show the result.
+
+### Added
+
+- **The composer** places a terrarium's plants on thirty slots along the strip, in far, mid and
+  near bands that step tall, medium, small.
+  - Each third of the strip holds at most two big trees, never two of one species, so one
+    always leads.
+  - No two neighbouring plants of a band are the same species.
+  - Between 35% and 70% of the slots hold something. When there are too few plants, the gaps
+    fill to suit the scene: grass tufts in a living terrarium, the terrarium's own species
+    dormant or dead in a dormant or dead one, or dead-stem litter. A healthy plant is never
+    invented.
+  - When there are more plants than the slots should hold, the mature ones are shown first.
+  - Each install shifts the slots a few pixels, so two installs look a little different and
+    never disagree.
+- **Every change fades over seconds.** A plant fades in where it arrives and out where it
+  leaves. A new look fades in over the old one before the old one goes, so the sky never shows
+  through a change. A plant turning pale changes only its leaves, never its stem.
+- **`cargo xtask render --preset <name> out.png`** writes a preset scene at 1× and 3×. The
+  presets are `thriving`, `struggling-low-light`, `struggling-poor-soil`, `mature`, `dormant`,
+  `dead` and `recovering`.
+
 ## [0.6.0] - 2026-10-01
 
 The strip now shows the delivered art: a sample scene of a few plants on the soil band, inside

@@ -117,14 +117,23 @@ profile, so the timings are those of a shipped build.
 
 ## `render`
 
-`cargo xtask render --demo <out.png>` writes the sample scene the strip shows, by day:
+Writes a scene by day, in two sizes:
 
 - `<out.png>` at 1×, 640×74;
 - `<out>@3x.png` beside it at 3×, 1920×222.
 
-It goes through the strip's own compositor and upscaler, and the one PNG encoder in
+The scenes:
+
+- `cargo xtask render --demo <out.png>` is the sample scene the strip shows.
+- `cargo xtask render --preset <name> <out.png>` is one of the composer's presets, composed
+  from nothing and settled, with the presets' fixed salt. The names are `thriving`,
+  `struggling-low-light`, `struggling-poor-soil`, `mature`, `dormant`, `dead` and
+  `recovering`. An unknown name fails and lists them.
+
+Both go through the strip's own compositor and upscaler, and the one PNG encoder in
 `terrarium_compose::export`. The label reads `repo-terrarium`, the binary's name. The app takes
-the same words from its copy module, so the two literals must change together.
+the same words from its copy module, so the two literals must change together. The presets'
+pictures are also exact snapshots in `terrarium-compose`'s tests.
 
 ## `probe-zip`
 

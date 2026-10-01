@@ -1,5 +1,8 @@
-//! `cargo xtask render --demo <out.png>`: the sample scene the strip shows, written as PNGs at
-//! 1× and 3×, through the same compositor and upscaler as the strip.
+//! `cargo xtask render`: a scene written as PNGs at 1× and 3×, through the same compositor and
+//! upscaler as the strip.
+//!
+//! - `--demo <out.png>` writes the sample scene the strip shows.
+//! - `--preset <name> <out.png>` writes one of the composer's presets, settled, by day.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -7,18 +10,27 @@ use std::process::ExitCode;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
-use terrarium_compose::sample;
+use terrarium_compose::frame::{Frame, NATIVE_HEIGHT, NATIVE_WIDTH};
 use terrarium_compose::scale::{StripScale, upscale_into};
 use terrarium_compose::variants::ArtTable;
+use terrarium_compose::{preset, sample};
 
-/// The sample's label: the binary's name, as the app's copy module gives it to the strip.
+/// The label every picture shows: the binary's name, as the app's copy module gives it to the
+/// strip.
 const SAMPLE_LABEL: &str = "repo-terrarium";
 /// The larger picture, the exact scale INTEGRATION.md names (1920×222).
 const LARGE_SCALE: u32 = 3;
 
 pub fn run(out: &Path) -> ExitCode {
-    match render_demo(out) {
+    report(render_demo(out))
+}
+
+pub fn run_preset(name: &str, out: &Path) -> ExitCode {
+    report(render_preset(name, out))
+}
+
+fn report(result: Result<[PathBuf; 2], String>) -> ExitCode {
+    match result {
         Ok(written) => {
             for path in written {
                 println!("render: wrote {}", path.display());
@@ -35,8 +47,30 @@ pub fn run(out: &Path) -> ExitCode {
 /// Writes the sample by day to `out` at 1× and beside it, `@3x` before the extension, at 3×.
 pub fn render_demo(out: &Path) -> Result<[PathBuf; 2], String> {
     let art = Art::embedded();
-    let table = ArtTable::new(&art.catalog).map_err(|gaps| format!("{} art gaps", gaps.len()))?;
-    let image = composite(art, &sample::frame(art, &table, SAMPLE_LABEL, 0, 0));
+    let table = table(art)?;
+    write(art, &sample::frame(art, &table, SAMPLE_LABEL, 0, 0), out)
+}
+
+/// Writes the named preset, as [`render_demo`] writes the sample.
+pub fn render_preset(name: &str, out: &Path) -> Result<[PathBuf; 2], String> {
+    let art = Art::embedded();
+    let table = table(art)?;
+    let frame = preset::frame(art, &table, name, SAMPLE_LABEL).ok_or_else(|| {
+        format!(
+            "no preset is called `{name}`; the presets are {}",
+            preset::NAMES.join(", ")
+        )
+    })?;
+    write(art, &frame, out)
+}
+
+fn table(art: &Art) -> Result<ArtTable, String> {
+    ArtTable::new(&art.catalog).map_err(|gaps| format!("{} art gaps", gaps.len()))
+}
+
+/// Composites `frame` and writes it at 1× to `out` and at 3× beside it.
+fn write(art: &Art, frame: &Frame, out: &Path) -> Result<[PathBuf; 2], String> {
+    let image = composite(art, frame);
     let padding = sample::padding(art, 0, 0);
     let large = StripScale::exact(LARGE_SCALE);
     let mut pixels = vec![[0; 4]; large.pixel_count()];
@@ -89,6 +123,32 @@ mod tests {
             Path::new("out/demo@3x.png")
         );
         assert_eq!(beside(Path::new("demo"), 3), Path::new("demo@3x"));
+    }
+
+    #[test]
+    fn a_preset_is_written_with_the_composer_s_pixels() {
+        let dir = TempDir::new("render-preset");
+        let [small, large] = render_preset("dormant", &dir.0.join("dormant.png")).unwrap();
+        assert_eq!(large, dir.0.join("dormant@3x.png"));
+        let art = Art::embedded();
+        let table = ArtTable::new(&art.catalog).unwrap();
+        let frame = preset::frame(art, &table, "dormant", SAMPLE_LABEL).unwrap();
+        let (w, h, pixels) = decode(&small);
+        assert_eq!((w, h), (640, 74));
+        assert_eq!(pixels, composite(art, &frame).pixels());
+        assert_eq!(decode(&large).0, 1920);
+    }
+
+    #[test]
+    fn an_unknown_preset_is_refused_with_the_names() {
+        let dir = TempDir::new("render-unknown");
+        let out = dir.0.join("lush.png");
+        let err = render_preset("lush", &out).unwrap_err();
+        assert!(
+            err.contains("`lush`") && err.contains("struggling-poor-soil"),
+            "{err}"
+        );
+        assert!(!out.exists());
     }
 
     #[test]

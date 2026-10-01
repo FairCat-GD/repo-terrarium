@@ -1,5 +1,5 @@
-//! Exact pixel snapshots of the compositor: every blend mode at several opacities, day, night
-//! and a half mix, shear, text, the nine-slice and the upscaler.
+//! Exact pixel snapshots: every blend mode at several opacities, day, night and a half mix,
+//! shear, text, the nine-slice, the upscaler, and each of the composer's presets.
 //!
 //! Each picture is kept twice: as a PNG to look at, and as the SHA-256 of its raw pixels. A new
 //! `png` release that encodes differently fails only the PNGs; a pixel that changed fails both.
@@ -16,10 +16,10 @@ use terrarium_compose::export;
 use terrarium_compose::frame::{Area, Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Shear};
 use terrarium_compose::nine_slice::NineSlice;
 use terrarium_compose::palette::Slot;
-use terrarium_compose::sample;
 use terrarium_compose::scale::{SizeStep, StripScale, upscale_into};
 use terrarium_compose::text::{Face, Label, Text};
 use terrarium_compose::variants::ArtTable;
+use terrarium_compose::{preset, sample};
 
 fn art() -> &'static Art<'static> {
     Art::embedded()
@@ -139,6 +139,16 @@ fn the_sample_at_a_half_mix() {
 #[test]
 fn the_sample_by_night() {
     snapshot_frame("sample-night", &sample_frame(255));
+}
+
+/// Each preset composed from nothing and settled, by day, with the preset salt.
+#[test]
+fn the_composer_s_presets() {
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    for name in preset::NAMES {
+        let frame = preset::frame(art(), &table, name, "repo-terrarium").expect(name);
+        snapshot_frame(&format!("preset-{name}"), &frame);
+    }
 }
 
 #[test]
