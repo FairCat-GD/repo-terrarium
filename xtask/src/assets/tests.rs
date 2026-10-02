@@ -665,7 +665,7 @@ fn check_3_fails_on_a_backdrop_with_a_hole() {
     assert_eq!(messages, [BACKDROP_RULE]);
 }
 
-const BACKDROP_RULE: &str = "tmp.sky.clear.tile: a backdrop covers the 640×74 frame from (0, 0), or a wider one centred on it, with no transparent pixel";
+const BACKDROP_RULE: &str = "tmp.sky.clear.tile: a backdrop covers the widest viewport, 840×74 from (0, 0), with the 640-wide scene at its centre and no transparent pixel";
 
 #[test]
 fn check_3_fails_on_a_backdrop_whose_scene_is_off_centre() {

@@ -43,7 +43,10 @@ impl Slot {
 /// Every slot's colour at one palette mix. Slots the palette lacks are black; the catalog
 /// check rules out an atlas byte that names one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lut([Rgb; MAX_SLOTS]);
+pub struct Lut {
+    colours: [Rgb; MAX_SLOTS],
+    slots: usize,
+}
 
 impl Lut {
     /// Day at `mix` 0, night at 255, and each slot's two colours blended in gamma-encoded sRGB
@@ -56,11 +59,19 @@ impl Lut {
         {
             *colour = std::array::from_fn(|channel| mix(day[channel], night[channel], mix_by));
         }
-        Lut(colours)
+        Lut {
+            colours,
+            slots: palette.slots().min(MAX_SLOTS),
+        }
+    }
+
+    /// How many slots the palette holds.
+    pub fn slots(&self) -> usize {
+        self.slots
     }
 
     pub fn colour(&self, slot: Slot) -> Rgb {
-        self.0[slot.index()]
+        self.colours[slot.index()]
     }
 }
 

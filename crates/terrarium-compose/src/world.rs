@@ -400,16 +400,12 @@ fn glass(art: &Art, corners: [SpriteId; 4], viewport: Viewport) -> Vec<Draw> {
         .map(|name| {
             let edge = fixed(art, sprite(catalog, name), viewport);
             let width = i32::from(catalog.sprite(edge.sprite).rect.w);
-            // The rows the corners on this edge's side leave it.
-            let (mut top, mut bottom) = (0, HEIGHT);
-            for corner in corners.iter().filter(|corner| corner.x == edge.x) {
-                let height = i32::from(catalog.sprite(corner.sprite).rect.h);
-                if corner.y == 0 {
-                    top = top.max(height);
-                } else {
-                    bottom = bottom.min(corner.y);
-                }
-            }
+            let placed: Vec<(i32, i32, i32)> = corners
+                .iter()
+                .map(|c| (c.x, c.y, i32::from(catalog.sprite(c.sprite).rect.h)))
+                .collect();
+            let columns = i32::try_from(viewport.width()).unwrap_or(WIDTH);
+            let (top, bottom) = edge_rows(edge.x, &placed, columns);
             Draw {
                 clip: Some(Area {
                     x: edge.x,
@@ -423,6 +419,22 @@ fn glass(art: &Art, corners: [SpriteId; 4], viewport: Viewport) -> Vec<Draw> {
         .collect();
     draws.extend(corners);
     draws
+}
+
+/// The rows an edge at `edge_x` keeps in a viewport `columns` wide: below the top corners and
+/// above the bottom ones on its side, each corner given as its `(x, y, height)`. A side, not an
+/// exact column, matches them, so pieces their own blank columns set out differently still meet.
+fn edge_rows(edge_x: i32, corners: &[(i32, i32, i32)], columns: i32) -> (i32, i32) {
+    let left = |x: i32| x < columns / 2;
+    let (mut top, mut bottom) = (0, HEIGHT);
+    for &(_, y, height) in corners.iter().filter(|&&(x, ..)| left(x) == left(edge_x)) {
+        if y == 0 {
+            top = top.max(height);
+        } else {
+            bottom = bottom.min(y);
+        }
+    }
+    (top, bottom)
 }
 
 /// A piece with a fixed place, drawn in `viewport`. A backdrop wider than the scene is cropped
@@ -439,11 +451,10 @@ pub(crate) fn fixed(art: &Art, id: SpriteId, viewport: Viewport) -> Draw {
         .at
         .unwrap_or_else(|| panic!("the delivered {} has its place", sprite.id));
     let (x, w) = (i32::from(at.x), i32::from(sprite.rect.w));
-    let (left, right) = blank_columns(art, id);
     let x = match sprite.scene {
         Some(scene) => x + viewport.inset() - i32::from(scene.x),
-        None if 2 * x + w > WIDTH => x + viewport.extra() + right,
-        None => x - left,
+        None if 2 * x + w > WIDTH => x + viewport.extra() + blank_columns(art, id).1,
+        None => x - blank_columns(art, id).0,
     };
     Draw::new(catalog, id, x, i32::from(at.y))
 }
@@ -776,6 +787,16 @@ mod tests {
         assert_eq!(places, frame_corners);
         let plate = label_area(catalog).unwrap();
         assert_eq!((plate.w, plate.h), (90, 9));
+    }
+
+    #[test]
+    fn an_edge_keeps_the_rows_between_the_corners_on_its_side() {
+        // The corners stand a column further in than their edges: the side still matches them.
+        let corners = [(0, 0, 6), (0, 68, 6), (729, 0, 6), (729, 68, 6)];
+        assert_eq!(edge_rows(-1, &corners, 735), (6, 68));
+        assert_eq!(edge_rows(730, &corners, 735), (6, 68));
+        // A side without corners keeps the full height.
+        assert_eq!(edge_rows(730, &corners[..2], 735), (0, HEIGHT));
     }
 
     #[test]

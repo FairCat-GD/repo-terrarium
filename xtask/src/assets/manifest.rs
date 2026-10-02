@@ -1219,10 +1219,10 @@ fn local(json: &mut SpriteJson) -> Result<Option<LocalDraft>, String> {
                 return Err(format!("its nightMode is not `{PAIRED_NIGHT}`"));
             }
             let n = palettes.day.len();
-            if n == 0 || n >= MAX_SLOTS || palettes.night.len() != n {
+            // PNG indices 1..=255 name the list's colours.
+            if n == 0 || n > MAX_SLOTS || palettes.night.len() != n {
                 return Err(format!(
-                    "its palettes are not 1 to {} day colours with one night colour each",
-                    MAX_SLOTS - 1
+                    "its palettes are not 1 to {MAX_SLOTS} day colours with one night colour each"
                 ));
             }
             Ok(Some(LocalDraft {

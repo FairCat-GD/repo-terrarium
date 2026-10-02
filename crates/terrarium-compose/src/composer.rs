@@ -1395,9 +1395,10 @@ impl Composer {
         let world = table.world();
         if let Some(x) = drift::sweep_x(self.salt, now, world.sweep_width, width) {
             let draw = Draw::new(catalog, world.sweep, x, 0);
+            // Faded, but never to nothing while it is named a step: each step it takes shows.
             let fade = drift::sweep_fade(x, world.sweep_width, width);
             let draw = Draw {
-                opacity: times_opacity(draw.opacity, fade),
+                opacity: times_opacity(draw.opacity, fade).max(1),
                 ..draw
             };
             // Keyed past the frame's far corner: it paints over all the rest of the glass.

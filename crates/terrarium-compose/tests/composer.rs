@@ -21,7 +21,9 @@ use terrarium_compose::catalog::{Art, Blend, Flags, Layer};
 use terrarium_compose::clock::LocalClock;
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite;
-use terrarium_compose::frame::{Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Rgba};
+use terrarium_compose::frame::{
+    Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Rgba, Viewport,
+};
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::palette::Slot;
 use terrarium_compose::place::{CEILING, FLOOR};
@@ -1408,10 +1410,16 @@ proptest! {
     #![proptest_config(config(300))]
 
     /// I-10: the composer names every moment its frame may change, so the app can sleep until
-    /// then. Between a moment and the next change it names, the frame holds.
+    /// then. Between a moment and the next change it names, the frame holds, in the scene's
+    /// width and in wider viewports, where the clouds and the sweep cross more columns.
     #[test]
-    fn the_frame_holds_until_the_next_change(history in history(), salt in salt()) {
+    fn the_frame_holds_until_the_next_change(
+        history in history(),
+        salt in salt(),
+        columns in prop::sample::select(vec![640_u32, 651, 735, 840]),
+    ) {
         let mut composer = Composer::new(table(), salt);
+        composer.set_viewport(Viewport::new(columns));
         let scenery = composer.scenery(art(), table());
         let mut now = Millis(500);
         for (i, (scene, overlay)) in history.scenes.iter().enumerate() {

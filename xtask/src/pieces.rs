@@ -128,10 +128,6 @@ impl Pieces {
 pub fn render(art: &Art, table: &ArtTable, label: &str) -> Result<Files, String> {
     let pieces = Pieces::new(&art.catalog, table)?;
     let thriving = synthetic::named("thriving").ok_or("no thriving look")?;
-    let only = |frame: &Frame, keep: &dyn Fn(&Draw) -> bool| Frame {
-        draws: frame.draws.iter().copied().filter(|d| keep(d)).collect(),
-        ..*frame
-    };
     let sky = Area {
         x: 0,
         y: 0,
@@ -200,12 +196,12 @@ pub fn render(art: &Art, table: &ArtTable, label: &str) -> Result<Files, String>
         ));
         files.push((
             format!("pieces/wide-{suffix}.png"),
-            empty_in(art, table, &pieces, label, mix, WIDE)?,
+            empty_in(art, table, &pieces, &thriving, label, mix, WIDE)?,
         ));
     }
     files.push((
         "pieces/widest-day.png".to_owned(),
-        empty_in(art, table, &pieces, label, 0, WIDEST)?,
+        empty_in(art, table, &pieces, &thriving, label, 0, WIDEST)?,
     ));
     for (suffix, mix, dim) in [
         ("day", 0, false),
@@ -223,28 +219,27 @@ pub fn render(art: &Art, table: &ArtTable, label: &str) -> Result<Files, String>
     Ok(files)
 }
 
-/// The thriving look's background pieces alone, in `columns`, at 3×.
+/// `knobs`' background pieces alone, in `columns`, at 3×.
 fn empty_in(
     art: &Art,
     table: &ArtTable,
     pieces: &Pieces,
+    knobs: &Knobs,
     label: &str,
     mix: u8,
     columns: u32,
 ) -> Result<Vec<u8>, String> {
-    let thriving = synthetic::named("thriving").ok_or("no thriving look")?;
     let viewport = Viewport::new(columns);
-    let frame = synthetic::frame_in(art, table, &thriving, label, mix, false, viewport);
-    let empty = Frame {
-        draws: frame
-            .draws
-            .iter()
-            .copied()
-            .filter(|d| pieces.background(d))
-            .collect(),
-        ..frame
-    };
-    large_png(&composite(art, &empty))
+    let frame = synthetic::frame_in(art, table, knobs, label, mix, false, viewport);
+    large_png(&composite(art, &only(&frame, &|d| pieces.background(d))))
+}
+
+/// `frame` with only the draws `keep` keeps.
+fn only(frame: &Frame, keep: &dyn Fn(&Draw) -> bool) -> Frame {
+    Frame {
+        draws: frame.draws.iter().copied().filter(|d| keep(d)).collect(),
+        ..*frame
+    }
 }
 
 /// `area` grown by `margin` on every side, kept inside the frame.

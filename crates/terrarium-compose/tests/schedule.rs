@@ -101,6 +101,12 @@ fn a_quiet_hour_draws_only_its_slow_motions() {
         }
         let next = draws(wake);
         let moved = changed(&shown, &next);
+        // Each step of the sweep it wakes for shows, however faded.
+        let sweep = next.iter().filter(|k| k.key.subject == Subject::Sweep);
+        assert!(
+            sweep.clone().all(|k| k.draw.opacity > 0),
+            "an unseen sweep at {wake:?}"
+        );
         // A frame is drawn only for a change, and only the slow motions change.
         assert!(
             !moved.is_empty(),

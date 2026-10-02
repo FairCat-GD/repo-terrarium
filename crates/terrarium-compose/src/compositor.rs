@@ -115,12 +115,16 @@ fn over(pixel: &mut Rgba, src: Rgb, opacity: u8, mode: Blend) {
 }
 
 /// Each atlas byte's colour for this draw: its slot's, or the tint's. Byte 0 is transparent
-/// and never painted.
+/// and never painted, and only the palette's own slots are looked up: the catalog check rules
+/// out a byte past them.
 fn source_colours(lut: &Lut, tint: Option<Slot>) -> [Rgb; MAX_SLOTS + 1] {
-    std::array::from_fn(|index| {
-        let slot = u8::try_from(index).ok().and_then(Slot::from_atlas);
-        slot.map_or([0; 3], |slot| lut.colour(tint.unwrap_or(slot)))
-    })
+    let mut colours = [[0; 3]; MAX_SLOTS + 1];
+    for (index, colour) in (1_u8..).zip(colours.iter_mut().skip(1).take(lut.slots())) {
+        if let Some(slot) = Slot::from_atlas(index) {
+            *colour = lut.colour(tint.unwrap_or(slot));
+        }
+    }
+    colours
 }
 
 /// Calls `ink` with every opaque pixel of the draw that lands inside `visible`, after flip and

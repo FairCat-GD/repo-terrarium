@@ -4,8 +4,8 @@
 //! (`Transformations::IDENTITY`), because the runtime atlas keeps those indices.
 //!
 //! - Check 3: every rect lies inside its atlas, and the atlas holds exactly the pixels of the
-//!   individual PNG. Art with its own colours has no rect. A backdrop covers the whole frame,
-//!   or a wider one with the 640-wide scene at its centre, for wider viewports to crop.
+//!   individual PNG. Art with its own colours has no rect. A backdrop covers the widest
+//!   viewport the strip composes, with the 640-wide scene at its centre, for viewports to crop.
 //! - Check 4, the palette validator: every shared index is at most 32, and every shared file's
 //!   `PLTE` and `tRNS` are the biome palette: index 0 the only transparent entry, 1..=32 the
 //!   day colours. Art with its own colours carries its manifest's day list instead, and uses no
@@ -20,7 +20,7 @@ use std::io::Cursor;
 
 use png::{BitDepth, ColorType, Decoder, Transformations};
 use terrarium_compose::catalog::{Flags, MAX_SLOTS, Palette, Point, Rect, Rgb, SHARED_SLOTS};
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
+use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, WIDEST};
 
 use super::manifest::{Biome, LocalDraft, SpriteDraft};
 use super::package::Package;
@@ -197,23 +197,22 @@ pub fn check(
             continue;
         }
         if sprite.flags.contains(Flags::BACKDROP) {
-            // The scene stands in the middle, so a viewport crops it the same on either side.
+            // It covers the widest viewport the strip composes, with the scene in its middle,
+            // so every viewport crops it the same on either side.
             let scene = sprite.scene.unwrap_or(Rect {
                 x: 0,
                 y: 0,
                 w: sprite.size.w,
                 h: sprite.size.h,
             });
-            let extra = size.0.saturating_sub(NATIVE_WIDTH);
-            let covers = size.1 == NATIVE_HEIGHT
+            let covers = size == (WIDEST, NATIVE_HEIGHT)
                 && u32::from(scene.w) == NATIVE_WIDTH
-                && extra.is_multiple_of(2)
-                && u32::from(scene.x) == extra / 2
+                && u32::from(scene.x) == (WIDEST - NATIVE_WIDTH) / 2
                 && sprite.at == Some(Point::default())
                 && !image.pixels.contains(&0);
             if !covers {
                 failures.push(fail(format!(
-                    "a backdrop covers the {NATIVE_WIDTH}×{NATIVE_HEIGHT} frame from (0, 0), or a wider one centred on it, with no transparent pixel"
+                    "a backdrop covers the widest viewport, {WIDEST}×{NATIVE_HEIGHT} from (0, 0), with the {NATIVE_WIDTH}-wide scene at its centre and no transparent pixel"
                 )));
             }
         }

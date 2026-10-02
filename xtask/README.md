@@ -98,8 +98,8 @@ Finder's `.DS_Store` files are never read (I-14). The checks:
 3. **Pixels.** Every PNG is read as raw indices, never expanded.
    - Every rect lies inside its atlas.
    - The atlas holds exactly the individual PNG's pixels.
-   - A backdrop is opaque and covers the 640×74 scene from (0, 0), or a wider picture with the
-     scene at its centre, for wider viewports to crop.
+   - A backdrop is opaque and covers the widest viewport the strip composes (840×74) from
+     (0, 0), with the 640-wide scene at its centre, for viewports to crop.
    - The packed runtime atlas is read back against every sprite.
 4. **Palette**. Every shared index is at most 32, and every shared file's `PLTE` and `tRNS` are
    the biome palette: index 0 the only transparent entry, 1..=32 the day colours. Art with its
