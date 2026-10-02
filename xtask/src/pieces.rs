@@ -18,8 +18,8 @@ use std::fmt::Write as _;
 use terrarium_compose::catalog::{Art, Blend, Catalog, Flags, Layer, SpriteId};
 use terrarium_compose::compositor::composite;
 use terrarium_compose::drift::{
-    self, BAND_MS_PER_PX, SOIL_MS_PER_PX, SOIL_PERIOD, SWEEP_JITTER_MS, SWEEP_SLOT_MS,
-    SWEEP_STEP_MS, SWEEP_STEP_PX,
+    BAND_MS_PER_PX, SOIL_MS_PER_PX, SOIL_PERIOD, SWEEP_JITTER_MS, SWEEP_SLOT_MS, SWEEP_STEP_MS,
+    SWEEP_STEP_PX,
 };
 use terrarium_compose::export;
 use terrarium_compose::frame::{Area, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba};
@@ -109,12 +109,17 @@ impl Pieces {
         })
     }
 
+    /// Whether `draw` is the label: its plate, or the text inked on it.
+    fn label(&self, draw: &Draw) -> bool {
+        draw.sprite == self.plate || (draw.layer == Layer::Label && draw.tint.is_some())
+    }
+
     /// Whether `draw` belongs to the sky band, the soil, the glass or the label.
     fn background(&self, draw: &Draw) -> bool {
         self.bands.iter().any(|&(_, tile)| tile == draw.sprite)
             || self.soil.contains(&draw.sprite)
             || self.glass.contains(&draw.sprite)
-            || draw.layer == Layer::Label
+            || self.label(draw)
     }
 }
 
@@ -154,28 +159,30 @@ pub fn render(art: &Art, table: &ArtTable, label: &str) -> Result<Files, String>
         },
     ];
     let plate = world::label_area(&art.catalog).ok_or("no label plate")?;
-    let plate = Area {
-        x: plate.x - MARGIN,
-        y: (plate.y - MARGIN).max(0),
-        w: plate.w + 2 * MARGIN,
-        h: plate.h + 2 * MARGIN,
-    };
+    let plate = around(plate, MARGIN);
 
     let mut files = Files::new();
     for (suffix, mix) in [("day", 0), ("night", u8::MAX)] {
+        // The thriving look's own weather is one of the skies; its frame serves the rest.
+        let frame = synthetic::frame(art, table, &thriving, label, mix, false);
         for &(weather, tile) in &pieces.bands {
-            let knobs = Knobs {
-                weather,
-                ..thriving
+            let other;
+            let sky_frame = if weather == thriving.weather {
+                &frame
+            } else {
+                let knobs = Knobs {
+                    weather,
+                    ..thriving
+                };
+                other = synthetic::frame(art, table, &knobs, label, mix, false);
+                &other
             };
-            let frame = synthetic::frame(art, table, &knobs, label, mix, false);
-            let band = composite(art, &only(&frame, &|d| d.sprite == tile));
+            let band = composite(art, &only(sky_frame, &|d| d.sprite == tile));
             files.push((
                 format!("pieces/sky-{}-{suffix}.png", name(weather)),
                 crop(&band, &[sky]),
             ));
         }
-        let frame = synthetic::frame(art, table, &thriving, label, mix, false);
         let soil_image = composite(art, &only(&frame, &|d| pieces.soil.contains(&d.sprite)));
         files.push((
             format!("pieces/soil-{suffix}.png"),
@@ -186,7 +193,7 @@ pub fn render(art: &Art, table: &ArtTable, label: &str) -> Result<Files, String>
             format!("pieces/glass-{suffix}.png"),
             crop(&glass_image, &glass),
         ));
-        let label_image = composite(art, &only(&frame, &|d| d.layer == Layer::Label));
+        let label_image = composite(art, &only(&frame, &|d| pieces.label(d)));
         files.push((
             format!("pieces/label-{suffix}.png"),
             crop(&label_image, &[plate]),
@@ -211,6 +218,19 @@ pub fn render(art: &Art, table: &ArtTable, label: &str) -> Result<Files, String>
     }
     files.push(("pieces/contract.csv".to_owned(), contract(art, &pieces)));
     Ok(files)
+}
+
+/// `area` grown by `margin` on every side, kept inside the frame.
+fn around(area: Area, margin: i32) -> Area {
+    let (x, y) = ((area.x - margin).max(0), (area.y - margin).max(0));
+    let right = (area.x + area.w + margin).min(WIDTH);
+    let bottom = (area.y + area.h + margin).min(HEIGHT);
+    Area {
+        x,
+        y,
+        w: right - x,
+        h: bottom - y,
+    }
 }
 
 /// The weather's name in a file name.
@@ -269,7 +289,7 @@ fn contract(art: &Art, pieces: &Pieces) -> Vec<u8> {
     let mut rows: Vec<(String, SpriteId, String)> = Vec::new();
     for &(weather, tile) in &pieces.bands {
         let width = art.catalog.sprite(tile).rect.w;
-        let drift = if drift::plain(art, tile) {
+        let drift = if art.plain(tile) {
             "none: every row is one colour".to_owned()
         } else {
             format!(
@@ -433,8 +453,8 @@ mod tests {
     }
 
     #[test]
-    fn the_padded_strip_is_the_3x_image_with_padding_either_side() {
-        let (files, _, _) = rendered();
+    fn the_padded_strip_is_the_3x_image_with_the_strip_s_padding_either_side() {
+        let (files, art, table) = rendered();
         let png = &files
             .iter()
             .find(|(n, _)| n == "pieces/padding-day.png")
@@ -442,10 +462,68 @@ mod tests {
             .1;
         let (w, h, pixels) = export::read_png(png).unwrap();
         assert_eq!((w, h), (PADDED_WIDTH, 3 * NATIVE_HEIGHT));
-        let row = |y: u32| &pixels[usize::try_from(y * w).unwrap()..][..96];
-        assert!(
-            row(0).iter().all(|&p| p == row(0)[0]),
-            "the padding is one colour a row"
+        let pieces = Pieces::new(&art.catalog, &table).unwrap();
+        let thriving = synthetic::named("thriving").unwrap();
+        let frame = synthetic::frame(art, &table, &thriving, "repo-terrarium", 0, false);
+        let empty: Vec<Draw> = frame
+            .draws
+            .into_iter()
+            .filter(|d| pieces.background(d))
+            .collect();
+        let image = composite(
+            art,
+            &Frame {
+                draws: empty,
+                palette_mix: 0,
+                dim: 0,
+            },
         );
+        let padding = world::padding(art, 0, 0);
+        let side = (PADDED_WIDTH - 3 * NATIVE_WIDTH) / 2;
+        for y in 0..h {
+            let row = &pixels[usize::try_from(y * w).unwrap()..][..usize::try_from(w).unwrap()];
+            let pad = padding[usize::try_from(y / 3).unwrap()];
+            let (left, rest) = row.split_at(usize::try_from(side).unwrap());
+            let right = &rest[usize::try_from(3 * NATIVE_WIDTH).unwrap()..];
+            assert!(left.iter().chain(right).all(|&p| p == pad), "row {y}");
+            for x in [0, 1, 639] {
+                let at = usize::try_from(side + 3 * x).unwrap();
+                assert_eq!(row[at], image.pixel(x, y / 3), "({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_margin_stays_inside_the_frame() {
+        let inside = around(
+            Area {
+                x: 9,
+                y: 2,
+                w: 90,
+                h: 9,
+            },
+            2,
+        );
+        assert_eq!((inside.x, inside.y, inside.w, inside.h), (7, 0, 94, 13));
+        let corner = around(
+            Area {
+                x: 1,
+                y: 1,
+                w: 4,
+                h: 4,
+            },
+            3,
+        );
+        assert_eq!((corner.x, corner.y, corner.w, corner.h), (0, 0, 8, 8));
+        let edge = around(
+            Area {
+                x: 630,
+                y: 70,
+                w: 10,
+                h: 4,
+            },
+            3,
+        );
+        assert_eq!((edge.x, edge.y, edge.w, edge.h), (627, 67, 13, 7));
     }
 }

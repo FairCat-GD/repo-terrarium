@@ -1133,7 +1133,7 @@ impl Composer {
                     next.take(widest.map(|width| self.world.cloud(i).next_seen_step(now, width)));
                 }
                 // A plain tile looks the same however far it has drifted, so it does not.
-                Subject::Weather if shown.iter().any(|&tile| !drift::plain(art, tile)) => {
+                Subject::Weather if shown.iter().any(|&tile| !art.plain(tile)) => {
                     next.take(Some(drift::next_step(now, BAND_MS_PER_PX)));
                 }
                 _ => {}
@@ -1519,7 +1519,7 @@ impl Composer {
 /// How far the sky band's `tile` has drifted at `now`: a plain tile, which drifting would not
 /// change, stays put.
 fn band_offset(art: &Art, tile: SpriteId, now: Millis) -> i32 {
-    if drift::plain(art, tile) {
+    if art.plain(tile) {
         0
     } else {
         let width = i32::from(art.catalog.sprite(tile).rect.w);

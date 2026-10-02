@@ -4,7 +4,6 @@
 //! the composer's clock, and each stands at its start for the first six seconds, while a fresh
 //! composer fades the scene in.
 
-use crate::catalog::{Art, SpriteId};
 use crate::salt::{InstallSalt, Purpose};
 use crate::tween::Millis;
 
@@ -45,13 +44,6 @@ pub fn columns(offset: i32, step: i32, lead: i32, width: i32) -> Vec<(u16, i32)>
         .filter(|&(_, x)| x + step > 0 && x < width)
         .filter_map(|(column, x)| Some((u16::try_from(column).ok()?, x)))
         .collect()
-}
-
-/// Whether a tiled sprite is the same in every column: drifting it changes no pixel, so it is
-/// held still.
-pub fn plain(art: &Art, tile: SpriteId) -> bool {
-    art.rows(tile)
-        .all(|row| row.iter().all(|&index| Some(&index) == row.first()))
 }
 
 /// When a drift moving a pixel every `ms_per_px` next moves after `now`.

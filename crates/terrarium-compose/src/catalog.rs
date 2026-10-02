@@ -625,6 +625,13 @@ impl<'a> Art<'a> {
         })
     }
 
+    /// Whether every row of the sprite is one colour, so a tiled band of it looks the same
+    /// however far it drifts.
+    pub fn plain(&self, id: SpriteId) -> bool {
+        self.rows(id)
+            .all(|row| row.iter().all(|&index| Some(&index) == row.first()))
+    }
+
     /// The sprite's pixel rows: raw PNG indices, 0 transparent.
     pub fn rows(&self, id: SpriteId) -> impl Iterator<Item = &'a [u8]> + use<'a> {
         let Rect { x, y, w, h } = self.catalog.sprite(id).rect;

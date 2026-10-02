@@ -824,9 +824,7 @@ fn settled_opacity(draw: &Draw, mix: u8) -> u8 {
 
 /// Once settled: every draw at its own opacity, exactly the placement drawn, the healthy
 /// subset exact, each third of the strip with at most two mature trees and never two of one
-/// species, and the one-message table kept. A resident's turn goes on past the moment it
-/// settled, and a trip it ends covers one pose with the next, so of each resident's part only
-/// the strongest look is held to its own opacity.
+/// species, and the one-message table kept.
 fn check_settled(
     composer: &Composer,
     input: &SceneInput,
@@ -835,37 +833,19 @@ fn check_settled(
     let now = composer.settled_at();
     let [day, night] = [0, 255].map(|mix| drawn(composer, mix, now));
     for (mix, draws) in [(0, &day), (255, &night)] {
-        let mut strongest: BTreeMap<(Subject, u8), &KeyedDraw> = BTreeMap::new();
         for keyed in draws {
-            match keyed.key.subject {
-                // The label cycles past the moment it settled.
-                Subject::Label => {}
-                Subject::Resident { .. } => {
-                    let held = strongest
-                        .entry((keyed.key.subject, keyed.key.part))
-                        .or_insert(keyed);
-                    if keyed.draw.opacity > held.draw.opacity {
-                        *held = keyed;
-                    }
-                }
-                _ => prop_assert_eq!(
+            // The label cycles past the moment it settled; residents are checked below.
+            if !matches!(keyed.key.subject, Subject::Label | Subject::Resident { .. }) {
+                prop_assert_eq!(
                     keyed.draw.opacity,
                     settled_opacity(&keyed.draw, mix),
                     "{:?} at {}",
                     keyed.key,
                     mix
-                ),
+                );
             }
         }
-        for keyed in strongest.values() {
-            prop_assert_eq!(
-                keyed.draw.opacity,
-                settled_opacity(&keyed.draw, mix),
-                "{:?} at {}",
-                keyed.key,
-                mix
-            );
-        }
+        check_resident_opacity(composer, mix, now, draws)?;
     }
     let subjects: BTreeSet<Subject> = day
         .iter()
@@ -1198,6 +1178,70 @@ fn check_residents_continuity(
         }
     }
     Ok(())
+}
+
+/// Every resident's looks at their own opacity once settled; of a resident that has travelled
+/// in this turn, which ends its trip by covering its last pose with its rest, only the
+/// strongest look.
+fn check_resident_opacity(
+    composer: &Composer,
+    mix: u8,
+    now: Millis,
+    draws: &[KeyedDraw],
+) -> Result<(), TestCaseError> {
+    let mut residents: BTreeMap<(Subject, u8), Vec<&KeyedDraw>> = BTreeMap::new();
+    for keyed in draws {
+        if matches!(keyed.key.subject, Subject::Resident { .. }) {
+            residents
+                .entry((keyed.key.subject, keyed.key.part))
+                .or_default()
+                .push(keyed);
+        }
+    }
+    for ((subject, _), looks) in residents {
+        let unsettled = |keyed: &KeyedDraw| keyed.draw.opacity != settled_opacity(&keyed.draw, mix);
+        let Some(off) = looks.iter().copied().find(|keyed| unsettled(keyed)) else {
+            continue;
+        };
+        let held = if travelled_this_turn(composer, mix, now, subject) {
+            looks
+                .iter()
+                .copied()
+                .max_by_key(|keyed| keyed.draw.opacity)
+                .unwrap_or(off)
+        } else {
+            off
+        };
+        prop_assert_eq!(
+            held.draw.opacity,
+            settled_opacity(&held.draw, mix),
+            "{:?} at {}",
+            held.key,
+            mix
+        );
+    }
+    Ok(())
+}
+
+/// Whether the resident `subject` has travelled since its turn began, up to `now`.
+fn travelled_this_turn(composer: &Composer, mix: u8, now: Millis, subject: Subject) -> bool {
+    let start = now.0 / TURN_MS * TURN_MS;
+    (start..now.0).step_by(50).any(|ms| {
+        drawn(composer, mix, Millis(ms)).iter().any(|keyed| {
+            let routine = art()
+                .catalog
+                .sprite(keyed.draw.sprite)
+                .keys
+                .state
+                .as_deref();
+            keyed.key.subject == subject
+                && keyed.key.part == 0
+                && matches!(
+                    routine,
+                    Some("move" | "takeoff" | "flight" | "land" | "hop")
+                )
+        })
+    })
 }
 
 /// Moments worth looking at after an update: its tween boundaries and either side of them,
