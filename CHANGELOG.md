@@ -5,6 +5,20 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-02
+
+### Changed
+
+- **Residents keep new hours.** Every resident except the firefly is now about by day and by
+  night; the firefly still signals only after dark and sleeps through the day.
+
+### Added
+
+- **`cargo xtask gallery` adds `pieces/`:** the background art on its own at 3×, by day and by
+  night (each weather's sky, the soil, the glass ends, the label plate, the padding beside a
+  wider strip, and the empty terrarium), with `contract.csv` listing each piece's size, anchor,
+  palette slots and drift.
+
 ## [0.10.0] - 2026-10-01
 
 The strip keeps the local time, and a demo shows every look of the terrarium in turn. A plain

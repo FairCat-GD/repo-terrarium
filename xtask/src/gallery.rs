@@ -7,6 +7,7 @@
 //!   among them, which the grid cannot hold.
 //! - `contact-sheet.png`: the grid at 1×, health falling down the rows and activity rising
 //!   along the columns, each cell's day above its night.
+//! - `pieces/`: the background art on its own, for art review (`pieces.rs`).
 //! - `SHA256SUMS`: every other file's hash. The pictures are composed with the presets' salt
 //!   and date, so the same build always writes the same bytes.
 
@@ -23,6 +24,7 @@ use terrarium_compose::synthetic::{self, Cell};
 use terrarium_compose::variants::ArtTable;
 use terrarium_truth::canon::to_hex;
 
+use crate::pieces;
 use crate::render::large_png;
 
 const LABEL: &str = "repo-terrarium";
@@ -110,6 +112,7 @@ pub fn render() -> Result<Files, String> {
             ));
         }
     }
+    files.extend(pieces::render(art, &table, LABEL)?);
     files.push(("key.csv".to_owned(), key.into_bytes()));
     files.push(("contact-sheet.png".to_owned(), contact_sheet(&sheet)));
     files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -174,6 +177,7 @@ mod tests {
         let named = |prefix: &str| first.iter().filter(|(n, _)| n.starts_with(prefix)).count();
         assert_eq!(named("states/"), 60);
         assert_eq!(named("named/"), 21);
+        assert_eq!(named("pieces/"), 20);
         let key = &first.iter().find(|(n, _)| n == "key.csv").unwrap().1;
         assert_eq!(String::from_utf8_lossy(key).lines().count(), 31);
         let sums = &first.iter().find(|(n, _)| n == "SHA256SUMS").unwrap().1;

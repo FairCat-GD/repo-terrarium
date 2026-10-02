@@ -5,6 +5,7 @@ mod assets;
 mod bench;
 mod gallery;
 mod graph;
+mod pieces;
 mod probe_zip;
 mod purity;
 mod render;

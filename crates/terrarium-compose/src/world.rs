@@ -446,6 +446,7 @@ mod tests {
     use super::*;
     use crate::catalog::Layer;
     use crate::slots::screen_third;
+    use terrarium_truth::scene::Weather;
 
     fn salts() -> impl Iterator<Item = InstallSalt> {
         (0..300_u128).map(|n| {
@@ -605,5 +606,50 @@ mod tests {
             .find(|keyed| keyed.key.layer == Layer::Label)
             .unwrap();
         assert_eq!((plate.draw.x, plate.draw.y), (LABEL_X, LABEL_Y));
+    }
+
+    #[test]
+    fn the_background_keeps_the_sizes_the_composer_draws_it_at() {
+        let art = Art::embedded();
+        let catalog = &art.catalog;
+        let table = table();
+        let size = |id: SpriteId| {
+            let rect = catalog.sprite(id).rect;
+            (i32::from(rect.w), i32::from(rect.h))
+        };
+        // The band is the sky's top rows, whatever each weather's tile is wide.
+        for weather in [
+            Weather::Clear,
+            Weather::Overcast,
+            Weather::Storm,
+            Weather::Haze,
+        ] {
+            let tile = table.weather(weather)[0];
+            assert_eq!(
+                size(tile).1,
+                sky::BAND_HEIGHT,
+                "{}",
+                catalog.sprite(tile).id
+            );
+        }
+        // The soil's pattern is three tiles, so its drift wraps at three tile widths, and the
+        // band fills the frame below the ground line.
+        for name in ["tmp.soil.tile.01", "tmp.soil.tile.02"] {
+            assert_eq!(
+                size(sprite(catalog, name)),
+                (SOIL_PERIOD / 3, HEIGHT - GROUND)
+            );
+        }
+        for name in ["tmp.soil.edge.01", "tmp.soil.edge.02"] {
+            assert_eq!(size(sprite(catalog, name)).0, SOIL_PERIOD / 3, "{name}");
+        }
+        // The glass runs the frame's height, and its corners are one square size.
+        for name in ["tmp.glass.edge.left", "tmp.glass.edge.right"] {
+            assert_eq!(size(sprite(catalog, name)).1, HEIGHT, "{name}");
+        }
+        let corners = table.world().corners.map(size);
+        assert!(corners.iter().all(|&c| c == corners[0] && c.0 == c.1));
+        let plate = label_area(catalog).unwrap();
+        assert_eq!((plate.w, plate.h), (90, 9));
     }
 }

@@ -824,7 +824,9 @@ fn settled_opacity(draw: &Draw, mix: u8) -> u8 {
 
 /// Once settled: every draw at its own opacity, exactly the placement drawn, the healthy
 /// subset exact, each third of the strip with at most two mature trees and never two of one
-/// species, and the one-message table kept.
+/// species, and the one-message table kept. A resident's turn goes on past the moment it
+/// settled, and a trip it ends covers one pose with the next, so of each resident's part only
+/// the strongest look is held to its own opacity.
 fn check_settled(
     composer: &Composer,
     input: &SceneInput,
@@ -833,17 +835,36 @@ fn check_settled(
     let now = composer.settled_at();
     let [day, night] = [0, 255].map(|mix| drawn(composer, mix, now));
     for (mix, draws) in [(0, &day), (255, &night)] {
+        let mut strongest: BTreeMap<(Subject, u8), &KeyedDraw> = BTreeMap::new();
         for keyed in draws {
-            // The label cycles past the moment it settled.
-            if keyed.key.subject != Subject::Label {
-                prop_assert_eq!(
+            match keyed.key.subject {
+                // The label cycles past the moment it settled.
+                Subject::Label => {}
+                Subject::Resident { .. } => {
+                    let held = strongest
+                        .entry((keyed.key.subject, keyed.key.part))
+                        .or_insert(keyed);
+                    if keyed.draw.opacity > held.draw.opacity {
+                        *held = keyed;
+                    }
+                }
+                _ => prop_assert_eq!(
                     keyed.draw.opacity,
                     settled_opacity(&keyed.draw, mix),
                     "{:?} at {}",
                     keyed.key,
                     mix
-                );
+                ),
             }
+        }
+        for keyed in strongest.values() {
+            prop_assert_eq!(
+                keyed.draw.opacity,
+                settled_opacity(&keyed.draw, mix),
+                "{:?} at {}",
+                keyed.key,
+                mix
+            );
         }
     }
     let subjects: BTreeSet<Subject> = day

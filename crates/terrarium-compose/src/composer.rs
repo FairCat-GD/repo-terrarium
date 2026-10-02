@@ -1133,7 +1133,7 @@ impl Composer {
                     next.take(widest.map(|width| self.world.cloud(i).next_seen_step(now, width)));
                 }
                 // A plain tile looks the same however far it has drifted, so it does not.
-                Subject::Weather if shown.iter().any(|&tile| !plain(art, tile)) => {
+                Subject::Weather if shown.iter().any(|&tile| !drift::plain(art, tile)) => {
                     next.take(Some(drift::next_step(now, BAND_MS_PER_PX)));
                 }
                 _ => {}
@@ -1519,18 +1519,12 @@ impl Composer {
 /// How far the sky band's `tile` has drifted at `now`: a plain tile, which drifting would not
 /// change, stays put.
 fn band_offset(art: &Art, tile: SpriteId, now: Millis) -> i32 {
-    if plain(art, tile) {
+    if drift::plain(art, tile) {
         0
     } else {
         let width = i32::from(art.catalog.sprite(tile).rect.w);
         drift::offset(now, BAND_MS_PER_PX, width)
     }
-}
-
-/// Whether a tiled sprite is the same in every column: drifting it changes no pixel.
-fn plain(art: &Art, tile: SpriteId) -> bool {
-    art.rows(tile)
-        .all(|row| row.iter().all(|&index| Some(&index) == row.first()))
 }
 
 /// The earliest of several moments, each perhaps none.
@@ -2753,13 +2747,27 @@ mod tests {
             seen[&2][1..],
             ["adult.curl", "adult.hide"].map(String::from)
         );
-        // The ladybird keeps day hours: asleep at midnight, it covers its sleep with its hide.
-        assert_eq!(seen[&3], ["adult.sleep", "adult.hide"].map(String::from));
+        // The ladybird is about at midnight too: it stops feeding and hides.
+        assert_eq!(seen[&3], ["adult.feed", "adult.hide"].map(String::from));
         // The young beetle stops feeding and shelters on its idle's first frame, never moving.
         assert_eq!(seen[&4].last().map(String::as_str), Some("juvenile.idle"));
         assert!(!seen[&4].contains(&"juvenile.move".to_owned()));
         let still = creatures(&composer, &table, 255, Millis(80_000))[&4].clone();
         assert_eq!(still, creatures(&composer, &table, 255, Millis(90_000))[&4]);
+    }
+
+    #[test]
+    fn a_firefly_asleep_by_day_covers_its_sleep_with_its_hide_in_a_storm() {
+        let table = table();
+        let mut scene = scene("thriving");
+        scene.residents = vec![resident(5, ResidentSpecies::Firefly, LifeStage::Adult)];
+        let noon = OverlayInput::new(Vec::new(), LocalClock::noon(preset::DATE));
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.update(&scene, &noon, Millis(0));
+        scene.weather = Weather::Storm;
+        composer.update(&scene, &noon, Millis(30_000));
+        let seen = story(&composer, &table, 0, 48_000..96_000);
+        assert_eq!(seen[&5], ["adult.sleep", "adult.hide"].map(String::from));
     }
 
     #[test]

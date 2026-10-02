@@ -74,6 +74,11 @@ left:
   them.
 - `contact-sheet.png`: the grid at 1×, health falling down the rows and activity rising along
   the columns, each cell's day above its night.
+- `pieces/`: the background art on its own, for art review, at 3× by day and by night: each
+  weather's sky, the soil, the glass ends, the label plate, the padding beside a strip wider
+  than the image, and the empty terrarium (also dimmed). `contract.csv` gives each background
+  sprite's size, anchor, layer, opacity, palette slots (logical and Aseprite) and drift, read
+  from the catalog.
 - `SHA256SUMS`: the hash of every other file. The same build writes the same bytes every run,
   and a test renders it twice to hold that.
 
