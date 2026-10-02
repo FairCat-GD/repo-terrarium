@@ -5,7 +5,7 @@
   "opacityContract": "PNG stores palette-coloured binary-alpha mask. Apply sprite.opacity / 255 and blend at draw time. Indexed source layer opacity matches the manifest.",
   "origin": "Aseprite Lua native pixel artwork continuing the approved Botanical Cabinet palette and components",
   "palette": "../../../palettes/exports/palette-temperate.json",
-  "revision": 3,
+  "revision": 4,
   "schemaVersion": 1,
   "sprites": [
     {
@@ -22,10 +22,16 @@
       "paletteGroup": "soil-stone-green",
       "rect": {
         "h": 8,
-        "w": 8,
-        "x": 2,
+        "w": 48,
+        "x": 426,
         "y": 2
       },
+      "revision": 4,
+      "size": {
+        "h": 8,
+        "w": 48
+      },
+      "source": "../../source/batch-02/tmp.soil.tile.01.aseprite",
       "tileX": true
     },
     {
@@ -42,10 +48,16 @@
       "paletteGroup": "soil-stone-green",
       "rect": {
         "h": 2,
-        "w": 8,
-        "x": 12,
+        "w": 48,
+        "x": 476,
         "y": 2
       },
+      "revision": 4,
+      "size": {
+        "h": 2,
+        "w": 48
+      },
+      "source": "../../source/batch-02/tmp.soil.edge.01.aseprite",
       "tileX": true
     },
     {
@@ -62,10 +74,16 @@
       "paletteGroup": "soil-stone-green",
       "rect": {
         "h": 8,
-        "w": 8,
-        "x": 22,
+        "w": 48,
+        "x": 526,
         "y": 2
       },
+      "revision": 4,
+      "size": {
+        "h": 8,
+        "w": 48
+      },
+      "source": "../../source/batch-02/tmp.soil.tile.02.aseprite",
       "tileX": true
     },
     {
@@ -82,10 +100,16 @@
       "paletteGroup": "soil-stone-green",
       "rect": {
         "h": 2,
-        "w": 8,
-        "x": 32,
+        "w": 48,
+        "x": 576,
         "y": 2
       },
+      "revision": 4,
+      "size": {
+        "h": 2,
+        "w": 48
+      },
+      "source": "../../source/batch-02/tmp.soil.edge.02.aseprite",
       "tileX": true
     },
     {
@@ -257,7 +281,13 @@
         "w": 20,
         "x": 84,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 4,
+        "w": 20
+      },
+      "source": "../../source/batch-02/tmp.soil.fresh-patch.01.aseprite"
     },
     {
       "anchor": {
@@ -276,7 +306,13 @@
         "w": 20,
         "x": 106,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 4,
+        "w": 20
+      },
+      "source": "../../source/batch-02/tmp.soil.fresh-patch.02.aseprite"
     },
     {
       "anchor": {

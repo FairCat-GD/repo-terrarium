@@ -13,8 +13,8 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use terrarium_compose::catalog::{
-    ArtKeys, Blend, BurnoffKeys, Envelope, Flags, HoverPlate, Layer, NineSlice, PALETTE_SLOTS,
-    Palette, Point, Rect, Residents, Rgb, Size,
+    ArtKeys, Blend, BurnoffKeys, Envelope, Flags, HoverPlate, Layer, MAX_SLOTS, NineSlice, Palette,
+    Point, Rect, Residents, Rgb, SHARED_SLOTS, Size,
 };
 
 use super::package::{Contents, Package};
@@ -24,6 +24,15 @@ use super::{Check, Failure};
 const SCHEMA_VERSION: u32 = 1;
 /// A glyph cell's `part`.
 const GLYPH: &str = "glyph";
+/// `paletteMode` for art that carries its own colours: its PNG indices name its own day and
+/// night lists, and each index's pair is imported into the shared palette.
+const PAIRED: &str = "paired-palette-import";
+/// The only `nightMode` such art has: each day colour pairs with the night colour beside it.
+const PAIRED_NIGHT: &str = "paired-palette";
+/// The only viewport mode: a wider picture is cropped to the viewport, never resized.
+const CROP: &str = "crop-no-resize";
+/// The only `renderMode`: a whole scene behind everything.
+const FULL_SCENE: &str = "full-scene-background";
 
 #[expect(
     dead_code,
@@ -114,11 +123,14 @@ struct ManifestJson {
 struct SpriteJson {
     name: String,
     file: String,
-    rect: RectJson,
+    /// Absent only for art with its own colours, which no section atlas can hold.
+    rect: Option<RectJson>,
+    size: Option<SizeJson>,
     anchor: PointJson,
     layer: Option<String>,
     blend: Option<String>,
     opacity: Option<u32>,
+    night_opacity: Option<u32>,
     tile_x: Option<bool>,
     day_only: Option<bool>,
     night_only: Option<bool>,
@@ -153,8 +165,16 @@ struct SpriteJson {
     weed_opacity_at_frame_start: Option<f64>,
     fresh_soil_opacity_at_frame_start: Option<f64>,
     text_inset: Option<RectJson>,
-    /// Prose, except where it names a carved mark's points: `local top-left (3,6), …`.
-    placement: Option<String>,
+    placement: Option<PlacementJson>,
+    palette_mode: Option<String>,
+    palettes: Option<PalettesJson>,
+    night_mode: Option<String>,
+    /// Where the 640-wide scene sits in a wider backdrop.
+    preserved_center: Option<RectJson>,
+    viewport: Option<ViewportJson>,
+    render_mode: Option<String>,
+    celestial_baked: Option<bool>,
+    decorative_clouds_baked: Option<bool>,
     font: Option<String>,
     codepoint: Option<u32>,
     character: Option<String>,
@@ -171,6 +191,8 @@ struct SpriteJson {
     event_only: Option<IgnoredAny>,
     facing: Option<IgnoredAny>,
     health_state: Option<IgnoredAny>,
+    index_convention: Option<IgnoredAny>,
+    integration: Option<IgnoredAny>,
     minimum_dead_days: Option<IgnoredAny>,
     opaque_pixels: Option<IgnoredAny>,
     palette_group: Option<IgnoredAny>,
@@ -178,9 +200,53 @@ struct SpriteJson {
     placement_mode: Option<IgnoredAny>,
     replaces_foliage_family: Option<IgnoredAny>,
     replaces_individual_weeds: Option<IgnoredAny>,
+    revision: Option<IgnoredAny>,
     signal: Option<IgnoredAny>,
+    source: Option<IgnoredAny>,
     stem_policy: Option<IgnoredAny>,
     trim_offset: Option<IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PlacementJson {
+    /// Prose, except where it names a carved mark's points: `local top-left (3,6), …`.
+    Prose(String),
+    /// A fixed place in the frame, with the sprite's own size or none.
+    At(AtJson),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AtJson {
+    x: i32,
+    y: i32,
+    w: Option<u32>,
+    h: Option<u32>,
+}
+
+/// How a wider backdrop meets a viewport: cropped about its centre, never resized.
+#[expect(
+    dead_code,
+    reason = "the ignored fields only name keys, for `deny_unknown_fields`"
+)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ViewportJson {
+    height: u32,
+    max_width: u32,
+    min_recommended_width: u32,
+    mode: String,
+    /// Prose: the crop's left edge for a viewport width.
+    source_x: Option<IgnoredAny>,
+}
+
+/// Art's own colours: its PNG index n is `day[n − 1]` by day and `night[n − 1]` by night.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PalettesJson {
+    day: Vec<Rgb>,
+    night: Vec<Rgb>,
 }
 
 /// A creature routine from a manifest's `animations[]`.
@@ -417,6 +483,14 @@ pub struct ScorchDraft {
     pub shared_stem: String,
 }
 
+/// Art that carries its own colours (`paletteMode: paired-palette-import`): each PNG index it
+/// uses is one day and night pair, from its own lists.
+#[derive(Clone, Debug)]
+pub struct LocalDraft {
+    pub day: Vec<Rgb>,
+    pub night: Vec<Rgb>,
+}
+
 /// A sprite as the manifests describe it, its values checked and typed.
 #[derive(Clone, Debug)]
 pub struct SpriteDraft {
@@ -425,12 +499,15 @@ pub struct SpriteDraft {
     pub file: String,
     /// Index into [`Biome::atlases`].
     pub atlas: usize,
-    /// Where the pixels sit in the delivered atlas.
-    pub rect: Rect,
+    /// Where the pixels sit in the delivered atlas; `None` for art with its own colours.
+    pub rect: Option<Rect>,
+    pub size: Size,
     pub anchor: Point,
     pub layer: Option<Layer>,
     pub blend: Blend,
     pub opacity: u8,
+    pub night_opacity: Option<u8>,
+    pub local: Option<LocalDraft>,
     pub flags: Flags,
     pub keys: ArtKeys,
     pub attachment_point: Option<Point>,
@@ -448,6 +525,9 @@ pub struct SpriteDraft {
     pub burnoff: Option<BurnoffKeys>,
     pub text_inset: Option<Rect>,
     pub placement: Vec<Point>,
+    pub at: Option<Point>,
+    /// Where the 640-wide scene sits in a wider backdrop.
+    pub scene: Option<Rect>,
     /// A glyph cell's font and codepoint.
     pub glyph: Option<(String, u32)>,
 }
@@ -468,6 +548,7 @@ pub struct FontDraft {
 pub struct Biome {
     pub name: String,
     pub palette_png: String,
+    /// The palette file's slots; art with its own colours adds more when its pixels are read.
     pub palette: Palette,
     pub atlases: Vec<Atlas>,
     /// Sorted by ID.
@@ -614,8 +695,10 @@ impl Loader {
             )
         });
         self.expect(
-            manifest.opaque_palette_slots.is_none_or(|n| n == 32),
-            || format!("{path}: opaquePaletteSlots is not 32"),
+            manifest
+                .opaque_palette_slots
+                .is_none_or(|n| usize::try_from(n) == Ok(SHARED_SLOTS)),
+            || format!("{path}: opaquePaletteSlots is not {SHARED_SLOTS}"),
         );
         self.expect(manifest.transparent_index.is_none_or(|n| n == 0), || {
             format!("{path}: transparentIndex is not 0")
@@ -836,11 +919,11 @@ impl Loader {
         }
         let path = self.palettes.first()?.clone();
         let json = self.parse::<PaletteJson>(package, &path)?;
-        let mut day = [[0; 3]; PALETTE_SLOTS];
-        let mut night = [[0; 3]; PALETTE_SLOTS];
-        let slots_ok = json.opaque_slots == 32
+        let mut day = vec![[0; 3]; SHARED_SLOTS];
+        let mut night = vec![[0; 3]; SHARED_SLOTS];
+        let slots_ok = usize::try_from(json.opaque_slots) == Ok(SHARED_SLOTS)
             && json.transparent_index == 0
-            && json.slots.len() == PALETTE_SLOTS
+            && json.slots.len() == SHARED_SLOTS
             && json.slots.iter().enumerate().all(|(i, slot)| {
                 usize::try_from(slot.slot) == Ok(i)
                     && usize::try_from(slot.aseprite_index) == Ok(i + 1)
@@ -1039,10 +1122,29 @@ impl Loader {
 fn sprite(manifest: &str, atlas: usize, mut json: SpriteJson) -> Result<SpriteDraft, String> {
     let file = resolve(dir_of(manifest), &json.file)
         .ok_or_else(|| format!("file {} leaves the package", json.file))?;
-    let bounds = rect(json.rect)
-        .filter(|r| r.w > 0 && r.h > 0)
-        .ok_or("the rect is empty or too large")?;
+    let local = local(&mut json)?;
+    let (bounds, size) = bounds(&json, local.is_some())?;
+    let (placement, at) = match json.placement.take() {
+        None => (Vec::new(), None),
+        Some(PlacementJson::Prose(prose)) => (self::placement(&prose)?, None),
+        Some(PlacementJson::At(at)) => (Vec::new(), Some(self::at(&at, size)?)),
+    };
+    for (baked, what) in [
+        (json.celestial_baked, "the sun, the moon or stars"),
+        (json.decorative_clouds_baked, "clouds"),
+    ] {
+        if baked == Some(true) {
+            return Err(format!(
+                "it has {what} baked in, which the composer draws as sprites of their own"
+            ));
+        }
+    }
+    let scene = scene(&json, size)?;
     let (layer, blend, opacity) = looks(&json)?;
+    let night_opacity = json
+        .night_opacity
+        .map(|n| u8::try_from(n).map_err(|_| "nightOpacity exceeds 255"))
+        .transpose()?;
     let text_inset = json
         .text_inset
         .map(|r| rect(r).ok_or("the text inset is too large"))
@@ -1060,11 +1162,14 @@ fn sprite(manifest: &str, atlas: usize, mut json: SpriteJson) -> Result<SpriteDr
         file,
         atlas,
         rect: bounds,
+        size,
         anchor: point(json.anchor).ok_or("the anchor is too far out")?,
         layer,
         blend,
         opacity,
-        flags: flags(&json),
+        night_opacity,
+        local,
+        flags: flags(&json)?,
         attachment_point: optional_point(json.attachment_point)?,
         shear_pivot: optional_point(json.shear_pivot)?,
         foliage_attachment: optional_point(json.foliage_attachment)?,
@@ -1079,12 +1184,9 @@ fn sprite(manifest: &str, atlas: usize, mut json: SpriteJson) -> Result<SpriteDr
         envelope: json.transition.as_ref().map(envelope).transpose()?,
         burnoff: burnoff(&json)?,
         text_inset,
-        placement: json
-            .placement
-            .as_deref()
-            .map(placement)
-            .transpose()?
-            .unwrap_or_default(),
+        placement,
+        at,
+        scene,
         glyph: glyph(&mut json)?,
         paired_with: json.paired_with.take(),
         attachment: json.attachment.take(),
@@ -1099,6 +1201,105 @@ fn sprite(manifest: &str, atlas: usize, mut json: SpriteJson) -> Result<SpriteDr
         },
         id: json.name,
     })
+}
+
+/// The own palettes of art with `paletteMode: paired-palette-import`, and a refusal of them on
+/// any other art.
+fn local(json: &mut SpriteJson) -> Result<Option<LocalDraft>, String> {
+    match json.palette_mode.as_deref() {
+        None if json.palettes.is_some() || json.night_mode.is_some() => Err(format!(
+            "palettes of its own belong to art with `paletteMode: {PAIRED}`"
+        )),
+        None => Ok(None),
+        Some(PAIRED) => {
+            let Some(palettes) = json.palettes.take() else {
+                return Err("art with its own colours needs `palettes`".into());
+            };
+            if json.night_mode.as_deref() != Some(PAIRED_NIGHT) {
+                return Err(format!("its nightMode is not `{PAIRED_NIGHT}`"));
+            }
+            let n = palettes.day.len();
+            if n == 0 || n >= MAX_SLOTS || palettes.night.len() != n {
+                return Err(format!(
+                    "its palettes are not 1 to {} day colours with one night colour each",
+                    MAX_SLOTS - 1
+                ));
+            }
+            Ok(Some(LocalDraft {
+                day: palettes.day,
+                night: palettes.night,
+            }))
+        }
+        Some(other) => Err(format!("unknown paletteMode {other}")),
+    }
+}
+
+/// Where the 640-wide scene sits in a wider backdrop, with the viewport rule that crops it:
+/// both or neither, the scene the full height and inside the picture, and the viewport no
+/// wider than the picture.
+fn scene(json: &SpriteJson, size: Size) -> Result<Option<Rect>, String> {
+    match (json.preserved_center, &json.viewport) {
+        (None, None) => Ok(None),
+        (Some(centre), Some(viewport)) => {
+            let centre = rect(centre).ok_or("the preserved centre is too large")?;
+            let inside = u32::from(centre.x) + u32::from(centre.w) <= u32::from(size.w)
+                && centre.y == 0
+                && centre.h == size.h;
+            if !inside {
+                return Err("its preserved centre is not a full-height part of it".into());
+            }
+            let fits = viewport.mode == CROP
+                && viewport.height == u32::from(size.h)
+                && viewport.max_width == u32::from(size.w)
+                && viewport.min_recommended_width == u32::from(centre.w);
+            if !fits {
+                return Err(format!(
+                    "its viewport is not `{CROP}` from its centre's width to its own"
+                ));
+            }
+            Ok(Some(centre))
+        }
+        _ => Err("a preserved centre and a viewport come together".into()),
+    }
+}
+
+/// The section-atlas rect and the size. Shared art has a rect, and a size, when given, is the
+/// rect's. Art with its own colours has no rect, since a section atlas carries the shared
+/// palette, so its size is given.
+fn bounds(json: &SpriteJson, local: bool) -> Result<(Option<Rect>, Size), String> {
+    let size_of = |s: SizeJson| {
+        self::size(s)
+            .filter(|s| s.w > 0 && s.h > 0)
+            .ok_or("the size is empty or too large")
+    };
+    match (json.rect, json.size, local) {
+        (Some(r), size, false) => {
+            let r = rect(r)
+                .filter(|r| r.w > 0 && r.h > 0)
+                .ok_or("the rect is empty or too large")?;
+            let own = Size { w: r.w, h: r.h };
+            if size.map(size_of).transpose()?.is_some_and(|s| s != own) {
+                return Err("its size is not its rect's".into());
+            }
+            Ok((Some(r), own))
+        }
+        (None, Some(size), true) => Ok((None, size_of(size)?)),
+        (Some(_), _, true) => Err(
+            "art with its own colours has no rect: a section atlas carries the shared palette"
+                .into(),
+        ),
+        (None, None, true) => Err("art with its own colours needs a size".into()),
+        (None, _, false) => Err("a rect is needed outside art with its own colours".into()),
+    }
+}
+
+/// A fixed place in the frame. A size given with it must be the sprite's own.
+fn at(at: &AtJson, size: Size) -> Result<Point, String> {
+    let fits = |given: Option<u32>, own: u16| given.is_none_or(|n| n == u32::from(own));
+    if !fits(at.w, size.w) || !fits(at.h, size.h) {
+        return Err("its placement's size is not its own".into());
+    }
+    point(PointJson { x: at.x, y: at.y }).ok_or_else(|| "its placement is too far out".into())
 }
 
 /// What prose introduces a carved mark's points on its stone.
@@ -1155,16 +1356,22 @@ fn looks(json: &SpriteJson) -> Result<(Option<Layer>, Blend, u8), String> {
     Ok((layer, blend, opacity))
 }
 
-fn flags(json: &SpriteJson) -> Flags {
-    [
+fn flags(json: &SpriteJson) -> Result<Flags, String> {
+    let backdrop = match json.render_mode.as_deref() {
+        None => false,
+        Some(FULL_SCENE) => true,
+        Some(other) => return Err(format!("unknown renderMode {other}")),
+    };
+    Ok([
         (json.tile_x, Flags::TILE_X),
         (json.day_only, Flags::DAY_ONLY),
         (json.night_only, Flags::NIGHT_ONLY),
         (json.settled, Flags::SETTLED),
+        (Some(backdrop), Flags::BACKDROP),
     ]
     .into_iter()
     .filter(|(set, _)| *set == Some(true))
-    .fold(Flags::default(), |flags, (_, flag)| flags.with(flag))
+    .fold(Flags::default(), |flags, (_, flag)| flags.with(flag)))
 }
 
 fn frame(json: &mut SpriteJson) -> Result<Option<FrameJson>, String> {

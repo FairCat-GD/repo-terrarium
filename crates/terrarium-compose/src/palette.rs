@@ -5,9 +5,10 @@
 //! anything is composited, and nothing is ever quantized back into the palette.
 
 use crate::blend::mix;
-use crate::catalog::{PALETTE_SLOTS, Palette, Rgb};
+use crate::catalog::{MAX_SLOTS, Palette, Rgb};
 
-/// A logical palette slot, 0..=31. Its atlas byte is the slot + 1, because 0 is transparent.
+/// A logical palette slot, 0..=254. Its atlas byte is the slot + 1, because 0 is transparent.
+/// Slots 0..=31 are the biome palette's, which the constants name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Slot(u8);
 
@@ -18,11 +19,11 @@ impl Slot {
     pub const STONE_SHADOW: Slot = Slot(4);
     /// `stone.light`: glyph ink on dark panels.
     pub const STONE_LIGHT: Slot = Slot(6);
-    /// `sky.base`: the sky wherever no sky tile is drawn.
+    /// `sky.base`: what the frame holds before anything is drawn on it.
     pub const SKY_BASE: Slot = Slot(26);
 
     pub fn new(slot: u8) -> Option<Slot> {
-        (usize::from(slot) < PALETTE_SLOTS).then_some(Slot(slot))
+        (usize::from(slot) < MAX_SLOTS).then_some(Slot(slot))
     }
 
     /// The slot that an atlas byte holds; 0 is transparent and holds none.
@@ -39,18 +40,23 @@ impl Slot {
     }
 }
 
-/// Every slot's colour at one palette mix.
+/// Every slot's colour at one palette mix. Slots the palette lacks are black; the catalog
+/// check rules out an atlas byte that names one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lut([Rgb; PALETTE_SLOTS]);
+pub struct Lut([Rgb; MAX_SLOTS]);
 
 impl Lut {
     /// Day at `mix` 0, night at 255, and each slot's two colours blended in gamma-encoded sRGB
     /// between them, with the compositor's rounding.
     pub fn new(palette: &Palette, mix_by: u8) -> Lut {
-        Lut(std::array::from_fn(|slot| {
-            let (day, night) = (palette.day[slot], palette.night[slot]);
-            std::array::from_fn(|channel| mix(day[channel], night[channel], mix_by))
-        }))
+        let mut colours = [[0; 3]; MAX_SLOTS];
+        for (colour, (day, night)) in colours
+            .iter_mut()
+            .zip(palette.day.iter().zip(&palette.night))
+        {
+            *colour = std::array::from_fn(|channel| mix(day[channel], night[channel], mix_by));
+        }
+        Lut(colours)
     }
 
     pub fn colour(&self, slot: Slot) -> Rgb {
@@ -64,21 +70,22 @@ mod tests {
     use crate::catalog::Art;
 
     #[test]
-    fn slots_stop_at_the_palette_and_atlas_bytes_are_slot_plus_one() {
-        assert_eq!(Slot::new(31).map(Slot::get), Some(31));
-        assert_eq!(Slot::new(32), None);
+    fn slots_stop_below_255_and_atlas_bytes_are_slot_plus_one() {
+        assert_eq!(Slot::new(254).map(Slot::get), Some(254));
+        assert_eq!(Slot::new(255), None);
         assert_eq!(Slot::from_atlas(0), None);
         assert_eq!(Slot::from_atlas(1), Some(Slot::SOIL_DEEP));
         assert_eq!(Slot::from_atlas(27), Some(Slot::SKY_BASE));
-        assert_eq!(Slot::from_atlas(33), None);
+        assert_eq!(Slot::from_atlas(255).map(Slot::get), Some(254));
     }
 
     #[test]
-    fn mix_0_is_day_and_255_is_night() {
+    fn mix_0_is_day_and_255_is_night_in_every_slot() {
         let palette = &Art::embedded().catalog.palette;
         let day = Lut::new(palette, 0);
         let night = Lut::new(palette, 255);
-        for slot in (0..32).filter_map(Slot::new) {
+        let slots = u8::try_from(palette.slots()).unwrap();
+        for slot in (0..slots).filter_map(Slot::new) {
             assert_eq!(day.colour(slot), palette.day[slot.index()]);
             assert_eq!(night.colour(slot), palette.night[slot.index()]);
         }

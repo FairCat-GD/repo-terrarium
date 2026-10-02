@@ -5,6 +5,33 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-02
+
+The terrarium has its new environment art: a landscape behind the plants, new soil and glass,
+and a strip that fills a screen of any width without stretching.
+
+### Changed
+
+- **Each weather is a whole landscape** of sky, distant hills and woodland behind the plants,
+  by day and by night, in place of the narrow sky band over a flat beige sky. A change of
+  weather crossfades one landscape into the other.
+- **The strip fills its screen.** On a screen whose width is no multiple of 640 it shows more
+  of the landscape, up to 840 columns, with the glass at the screen's edges and the plants in
+  the middle; nothing is stretched. A screen wider still is letterboxed in black.
+- **New soil and glass.** The soil has clods, stones and root traces, and its edge is a row
+  higher; plants, monuments and creatures stand on it. The young and mature oak sink two rows
+  into it, so no ground shows between their roots. The glass is fainter and its corners no
+  longer double up over its edges.
+- **Clouds only under a clear sky**, and fainter by night. Overcast, haze and storm are cloud
+  cover in their own landscapes.
+- **The glint on the glass** now glides slowly, fades in and out, and comes every 20 to 30
+  minutes instead of every 4 to 7.
+
+### Fixed
+
+- **A gust or a creature's step could start late**, at the next other change, when nothing else
+  moved for a while: the strip now wakes for every turn's first motion.
+
 ## [0.10.1] - 2026-10-02
 
 ### Changed

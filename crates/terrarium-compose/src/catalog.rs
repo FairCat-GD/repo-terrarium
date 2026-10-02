@@ -2,21 +2,26 @@
 //! the composer draws by.
 //!
 //! `cargo xtask assets` builds it from the delivered manifests and packs every sprite's pixels
-//! into one atlas. Each atlas byte is the sprite's raw PNG index: 0 is transparent and 1..=32
-//! is logical slot + 1. Both files are committed under `assets/generated/` and embedded here.
-//! This module is the format's only home, so xtask encodes with the same types the app decodes.
+//! into one atlas. Each atlas byte is a logical slot + 1, and 0 is transparent. Slots 0..=31
+//! are the biome palette's, so shared art keeps its raw PNG index. Art that carries its own
+//! colours, such as the weather backdrops, gets further slots, one per day and night pair it
+//! uses. Both files are committed under `assets/generated/` and embedded here. This module is
+//! the format's only home, so xtask encodes with the same types the app decodes.
 
 use std::fmt;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-/// Opaque palette slots; PNG index 0 is transparency, so indices run to this value.
-pub const PALETTE_SLOTS: usize = 32;
+/// The slots the biome's palette file delivers. Shared art's PNG indices run to this value,
+/// since index 0 is transparency.
+pub const SHARED_SLOTS: usize = 32;
+/// The most slots a catalog may hold: an atlas byte is slot + 1, and byte 0 is transparent.
+pub const MAX_SLOTS: usize = 255;
 /// The largest atlas side the packer may produce.
 pub const MAX_ATLAS_SIDE: u16 = 2048;
 /// Bumped whenever the encoded layout changes, so a stale file is refused, not misread.
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 const MAGIC: [u8; 4] = *b"TRCA";
 
 const EMBEDDED_CATALOG: &[u8] = include_bytes!("../assets/generated/temperate/catalog.bin");
@@ -75,11 +80,18 @@ pub struct Rect {
 
 pub type Rgb = [u8; 3];
 
-/// Each logical slot's day and night colour. Night swaps slots before compositing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Each logical slot's day and night colour, the shared slots first. Night swaps slots before
+/// compositing, so art that brings its own night colours is never swapped twice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Palette {
-    pub day: [Rgb; PALETTE_SLOTS],
-    pub night: [Rgb; PALETTE_SLOTS],
+    pub day: Vec<Rgb>,
+    pub night: Vec<Rgb>,
+}
+
+impl Palette {
+    pub fn slots(&self) -> usize {
+        self.day.len()
+    }
 }
 
 /// The depth layers, back to front. `SoilPanel` has no sprite of its own; the UI sprites and
@@ -185,6 +197,8 @@ impl Flags {
     pub const NIGHT_ONLY: Flags = Flags(1 << 2);
     /// The final frame of a one-shot that persists: the settled crack and sinkhole.
     pub const SETTLED: Flags = Flags(1 << 3);
+    /// A whole scene behind everything else, drawn once at its place: a weather's backdrop.
+    pub const BACKDROP: Flags = Flags(1 << 4);
 
     pub const fn contains(self, other: Flags) -> bool {
         self.0 & other.0 == other.0
@@ -254,6 +268,9 @@ pub struct Sprite {
     pub blend: Blend,
     /// A missing `opacity` is 255.
     pub opacity: u8,
+    /// The opacity by night, where it differs: the sprite eases from `opacity` to this with
+    /// the palette mix.
+    pub night_opacity: Option<u8>,
     pub flags: Flags,
     pub keys: ArtKeys,
     pub attachment_point: Option<Point>,
@@ -274,6 +291,11 @@ pub struct Sprite {
     pub burnoff: Option<BurnoffKeys>,
     /// A plate's text area.
     pub text_inset: Option<Rect>,
+    /// Where a piece with a fixed place sits in the frame: the backdrops and the glass.
+    pub at: Option<Point>,
+    /// On a backdrop wider than the scene: where the 640-wide scene sits in it, so a wider
+    /// viewport crops it about its centre.
+    pub scene: Option<Rect>,
     /// Where a carved mark may sit on its stone: each point is the mark's top-left in the
     /// stone's own pixels, parsed from the manifest's placement prose. Empty for every other
     /// sprite.
@@ -478,6 +500,17 @@ impl Catalog {
             });
         }
         let invalid = |what: String| Err(DecodeError::Invalid(what));
+        // The compositor looks every atlas byte up in the palette.
+        let slots = self.palette.slots();
+        if self.palette.night.len() != slots || !(SHARED_SLOTS..=MAX_SLOTS).contains(&slots) {
+            return invalid(format!(
+                "the palette has {slots} day and {} night colours",
+                self.palette.night.len()
+            ));
+        }
+        if atlas.iter().any(|&byte| usize::from(byte) > slots) {
+            return invalid(format!("an atlas byte names a slot past the {slots}"));
+        }
         if !self.sprites.windows(2).all(|pair| pair[0].id < pair[1].id) {
             return invalid("sprites are not sorted by unique ID".into());
         }
@@ -625,13 +658,6 @@ impl<'a> Art<'a> {
         })
     }
 
-    /// Whether every row of the sprite is one colour, so a tiled band of it looks the same
-    /// however far it drifts.
-    pub fn plain(&self, id: SpriteId) -> bool {
-        self.rows(id)
-            .all(|row| row.iter().all(|&index| Some(&index) == row.first()))
-    }
-
     /// The sprite's pixel rows: raw PNG indices, 0 transparent.
     pub fn rows(&self, id: SpriteId) -> impl Iterator<Item = &'a [u8]> + use<'a> {
         let Rect { x, y, w, h } = self.catalog.sprite(id).rect;
@@ -752,8 +778,31 @@ mod tests {
 
     #[test]
     fn every_pixel_is_transparent_or_a_palette_slot() {
-        let max = u8::try_from(PALETTE_SLOTS).unwrap();
-        assert!(Art::embedded().atlas.iter().all(|&index| index <= max));
+        let art = Art::embedded();
+        let slots = art.catalog.palette.slots();
+        assert!(
+            slots > SHARED_SLOTS,
+            "the backdrops bring their own colours"
+        );
+        assert!(art.atlas.iter().all(|&index| usize::from(index) <= slots));
+    }
+
+    #[test]
+    fn a_palette_that_misses_a_slot_or_an_atlas_byte_past_it_is_refused() {
+        let mut catalog = Art::embedded().catalog.clone();
+        catalog.palette.night.pop();
+        assert!(matches!(
+            Catalog::decode(&catalog.encode(), EMBEDDED_ATLAS),
+            Err(DecodeError::Invalid(what)) if what.contains("night colours")
+        ));
+        let mut catalog = Art::embedded().catalog.clone();
+        let slots = catalog.palette.slots();
+        catalog.palette.day.truncate(slots - 1);
+        catalog.palette.night.truncate(slots - 1);
+        assert!(matches!(
+            Catalog::decode(&catalog.encode(), EMBEDDED_ATLAS),
+            Err(DecodeError::Invalid(what)) if what.contains("names a slot past")
+        ));
     }
 
     #[test]

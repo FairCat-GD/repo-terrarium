@@ -47,7 +47,8 @@ pub enum Check {
     Manifests,
     /// 3: rects inside their atlas, atlas pixels equal to the individual PNGs.
     Pixels,
-    /// 4: every index at most 32, and every file carries the biome palette.
+    /// 4: every shared index at most 32 and every shared file carrying the biome palette; art
+    /// with its own colours carrying its listed ones; the slots fitting an atlas byte.
     Palette,
     /// 5: every sequence has frames and durations, and every terminal resolves.
     Animations,
@@ -173,11 +174,11 @@ pub fn build(package: &Package) -> Report {
 
     let mut stages = Vec::new();
     for biome in &biomes {
-        let (images, failures) = pixels::check(package, biome);
+        let (images, palette, failures) = pixels::check(package, biome);
         report.failures.extend(failures);
         let (drafts, failures) = animation::build(biome);
         report.failures.extend(failures);
-        let (catalog, unresolved) = build::catalog(biome, &drafts);
+        let (catalog, unresolved) = build::catalog(biome, &drafts, palette);
         report.failures.extend(
             variants::missing(&catalog)
                 .into_iter()

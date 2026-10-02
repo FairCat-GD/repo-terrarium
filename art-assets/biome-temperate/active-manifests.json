@@ -13,19 +13,19 @@
     {
       "category": "sky",
       "manifest": "sky/exports/batch-02/sky-batch-02.json",
-      "revision": 3,
+      "revision": 4,
       "pieces": 32
     },
     {
       "category": "soil-ground",
       "manifest": "soil-ground/exports/batch-02/soil-ground-batch-02.json",
-      "revision": 3,
+      "revision": 4,
       "pieces": 25
     },
     {
       "category": "glass",
       "manifest": "glass/exports/batch-02/glass-batch-02.json",
-      "revision": 2,
+      "revision": 3,
       "pieces": 13
     },
     {

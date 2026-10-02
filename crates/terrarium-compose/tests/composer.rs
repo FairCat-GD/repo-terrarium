@@ -725,13 +725,11 @@ fn dressing(state: PresentationState) -> Dressing {
     }
 }
 
-/// The clouds each weather brings: clear, overcast, storm, haze.
+/// The clouds each weather brings: only a clear sky has fair-weather clouds.
 fn weather_clouds(weather: Weather) -> usize {
     match weather {
         Weather::Clear => 3,
-        Weather::Overcast => 4,
-        Weather::Storm => 0,
-        Weather::Haze => 2,
+        Weather::Overcast | Weather::Storm | Weather::Haze => 0,
     }
 }
 
@@ -808,17 +806,21 @@ fn check_one_message(
     Ok(())
 }
 
-/// The opacity a settled draw shows at: its sprite's own, gone by day if it shows only at
-/// night and by night if only by day.
+/// The opacity a settled draw shows at: its sprite's own by day and its night opacity, where
+/// it has one, by night; gone by day if it shows only at night and by night if only by day.
 fn settled_opacity(draw: &Draw, mix: u8) -> u8 {
     let sprite = art().catalog.sprite(draw.sprite);
     let scale = |a: u8, b: u8| u8::try_from((u16::from(a) * u16::from(b) + 127) / 255).unwrap();
+    let own = match (sprite.night_opacity, mix) {
+        (Some(night), 255) => night,
+        _ => sprite.opacity,
+    };
     if sprite.flags.contains(Flags::NIGHT_ONLY) {
-        scale(sprite.opacity, mix)
+        scale(own, mix)
     } else if sprite.flags.contains(Flags::DAY_ONLY) {
-        scale(sprite.opacity, 255 - mix)
+        scale(own, 255 - mix)
     } else {
-        sprite.opacity
+        own
     }
 }
 
@@ -979,11 +981,10 @@ fn fastest_ms(subject: Subject) -> u64 {
 const CLOUD_MS_PER_PX: u64 = 2600;
 /// The positions a cloud's path runs through before it starts again.
 const CLOUD_PATH: i32 = 673;
-/// The sky band drifts a pixel right every 12 s, the soil's texture every 3 min, its pattern
-/// repeating every 24 pixels; the sweep moves 2 pixels every 100 ms.
-const BAND_MS_PER_PX: u64 = 12_000;
+/// The soil's texture drifts a pixel right every 3 min, its pattern repeating every 144 pixels;
+/// the sweep moves 2 pixels every 100 ms. The backdrop holds still.
 const SOIL_MS_PER_PX: u64 = 180_000;
-const SOIL_PERIOD: i32 = 24;
+const SOIL_PERIOD: i32 = 144;
 const SWEEP_PX_PER_100_MS: u64 = 2;
 /// Motion comes in turns of 24 s; an update moves things from the turn after its own.
 const TURN_MS: u64 = 24_000;
@@ -1023,10 +1024,7 @@ fn check_continuity(
         let width = i32::from(art().catalog.sprite(drawn.sprite).rect.w);
         // A drifting tile, a cloud or the sweep may come and go at an edge of the frame;
         // anywhere else it fades like any other draw.
-        let drifting = matches!(
-            key.0,
-            Subject::Weather | Subject::Soil | Subject::Sweep | Subject::Cloud(_)
-        );
+        let drifting = matches!(key.0, Subject::Soil | Subject::Sweep | Subject::Cloud(_));
         if drifting && (a.is_none() || b.is_none()) && at_edge(drawn.x, width) {
             continue;
         }
@@ -1057,7 +1055,6 @@ fn check_continuity(
             };
             match key.0 {
                 Subject::Cloud(_) => drift(CLOUD_PATH, CLOUD_MS_PER_PX)?,
-                Subject::Weather => drift(width, BAND_MS_PER_PX)?,
                 Subject::Soil => drift(SOIL_PERIOD, SOIL_MS_PER_PX)?,
                 Subject::Sweep => {
                     let moved = u64::try_from(b.x - a.x).unwrap_or(u64::MAX);
@@ -1572,15 +1569,16 @@ proptest! {
 
 const WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
-/// The soil band, inside the glass edges.
-const SOIL_ROWS: std::ops::Range<i32> = 66..HEIGHT;
+/// The soil band, its top edge included, inside the glass edges.
+const SOIL_ROWS: std::ops::Range<i32> = 65..HEIGHT;
 const INSIDE: std::ops::Range<i32> = 6..WIDTH - 6;
 /// The values constraint 1 keeps apart by day, in luma out of 255.
 const MARGIN: u64 = 8;
 
 /// What a pixel shows once every opaque draw over it has painted: the sky, a plant, or
-/// something else. Translucent draws (glass, films, light, glows) tint every class alike, so
-/// they never change it.
+/// something else. The sky is the sky's pieces and the backdrop's open sky, its top row's
+/// colour; the backdrop's hills are something else. Translucent draws (glass, films, light,
+/// glows) tint every class alike, so they never change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shows {
     Sky,
@@ -1589,8 +1587,8 @@ enum Shows {
 }
 
 /// Calls `ink` with each opaque pixel of a draw inside the frame, after flip, shear and clip,
-/// as the compositor places them.
-fn coverage(draw: &Draw, mut ink: impl FnMut(i32, i32)) {
+/// as the compositor places them, and its atlas byte.
+fn coverage(draw: &Draw, mut ink: impl FnMut(i32, i32, u8)) {
     let width = i32::from(art().catalog.sprite(draw.sprite).rect.w);
     for (row, pixels) in (0_i32..).zip(art().rows(draw.sprite)) {
         let y = draw.y + row;
@@ -1605,7 +1603,7 @@ fn coverage(draw: &Draw, mut ink: impl FnMut(i32, i32)) {
                 .clip
                 .is_some_and(|c| x < c.x || y < c.y || x >= c.x + c.w || y >= c.y + c.h);
             if index != 0 && (0..WIDTH).contains(&x) && (0..HEIGHT).contains(&y) && !clipped {
-                ink(x, y);
+                ink(x, y, index);
             }
         }
     }
@@ -1630,7 +1628,24 @@ fn shows(draws: &[KeyedDraw], scenery: &[KeyedDraw]) -> Vec<Shows> {
             _ if keyed.draw.layer == Layer::Sky => Shows::Sky,
             _ => Shows::Other,
         };
-        coverage(&keyed.draw, |x, y| {
+        let sprite = keyed.draw.sprite;
+        let open_sky = art()
+            .catalog
+            .sprite(sprite)
+            .flags
+            .contains(Flags::BACKDROP)
+            .then(|| {
+                art()
+                    .rows(sprite)
+                    .next()
+                    .and_then(|row| row.first().copied())
+            })
+            .flatten();
+        coverage(&keyed.draw, |x, y, index| {
+            let class = match open_sky {
+                Some(sky) if index != sky => Shows::Other,
+                _ => class,
+            };
             map[usize::try_from(y * WIDTH + x).unwrap()] = class;
         });
     }
@@ -1658,7 +1673,8 @@ proptest! {
     #![proptest_config(config(2000))]
 
     /// Constraint 1, measured on rendered frames: by day the soil band is darker than the
-    /// plants, and the plants darker than the sky; at night the soil band stays the darkest.
+    /// plants, and the plants darker than the open sky but a storm's; at night the soil band
+    /// stays the darkest.
     /// Constraint 4 on the pixels: with every translucent draw left out, each pixel is exactly
     /// a colour of its palette row.
     #[test]
@@ -1686,7 +1702,8 @@ proptest! {
             prop_assert!(soil + MARGIN <= sky, "soil {} against sky {} at {}", soil, sky, mix);
             if let Some(plants) = plants {
                 prop_assert!(soil + MARGIN <= plants, "soil {} against plants {} at {}", soil, plants, mix);
-                if mix == 0 {
+                // A storm's sky may be as dark as the plants.
+                if mix == 0 && scene.weather != Weather::Storm {
                     prop_assert!(plants + MARGIN <= sky, "plants {} against sky {}", plants, sky);
                 }
             }

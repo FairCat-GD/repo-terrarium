@@ -21,6 +21,8 @@ const MONUMENTS: &str = "biome-temperate/monuments/exports/batch-03/monuments-ba
 const CREATURES_06: &str = "biome-temperate/creatures/exports/batch-06/creatures-batch-06.json";
 const CREATURES_07: &str = "biome-temperate/creatures/exports/batch-07/creatures-batch-07.json";
 const PALETTE: &str = "biome-temperate/palettes/exports/palette-temperate.json";
+const CLEAR: &str = "biome-temperate/sky/exports/batch-02/individual/tmp.sky.clear.tile.png";
+const GLASS: &str = "biome-temperate/glass/exports/batch-02/glass-batch-02.json";
 
 fn delivered() -> Package {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -112,6 +114,9 @@ fn the_delivered_package_passes_and_packs_the_same_bytes_twice() {
     )
     .unwrap();
     assert_eq!(catalog.sprites.len(), 778, "every ID keeps its own entry");
+    // The 32 shared slots, then ten of each weather's own day and night pairs; the storm
+    // front's are the storm's.
+    assert_eq!(catalog.palette.slots(), 72);
     assert!(
         first.notes[0].contains("661 distinct images"),
         "{}",
@@ -566,4 +571,162 @@ fn git_keeps_the_generated_files_binary() {
 fn checks_are_numbered_in_their_order() {
     let numbers: Vec<usize> = Check::ALL.iter().map(|c| c.number()).collect();
     assert_eq!(numbers, [1, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn check_2_refuses_new_fields_with_values_it_does_not_know() {
+    for (key, value, expected) in [
+        (
+            "paletteMode",
+            "shared-ish",
+            "unknown paletteMode shared-ish",
+        ),
+        ("renderMode", "parallax", "unknown renderMode parallax"),
+        (
+            "nightMode",
+            "swap-again",
+            "its nightMode is not `paired-palette`",
+        ),
+        (
+            "celestialBaked",
+            "true",
+            "it has the sun, the moon or stars baked in",
+        ),
+    ] {
+        let mut package = delivered();
+        edit_json(&mut package, SKY, |sky| {
+            let value: Value = serde_json::from_str(value).unwrap_or_else(|_| value.into());
+            sprite(sky, "tmp.sky.clear.tile")[key] = value;
+        });
+        let messages = only(&build(&package), Check::Manifests);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("sprite tmp.sky.clear.tile") && m.contains(expected)),
+            "{key}: {messages:?}"
+        );
+    }
+}
+
+#[test]
+fn check_2_refuses_own_palettes_on_shared_art_a_night_file_and_a_rect_on_art_with_its_own_colours()
+{
+    let mut package = delivered();
+    edit_json(&mut package, SKY, |sky| {
+        sprite(sky, "tmp.sky.sun")["palettes"] = serde_json::json!({"day": [], "night": []});
+        sprite(sky, "tmp.sky.moon.phase.1")["nightFile"] = "individual/tmp.sky.moon.png".into();
+        sprite(sky, "tmp.sky.clear.tile")["rect"] =
+            serde_json::json!({"x": 0, "y": 0, "w": 840, "h": 74});
+    });
+    let messages = only(&build(&package), Check::Manifests);
+    assert!(
+        messages.iter().any(|m| m.contains("sprite tmp.sky.sun")
+            && m.contains("belong to art with `paletteMode: paired-palette-import`")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("sprite tmp.sky.moon.phase.1: unknown field `nightFile`")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("sprite tmp.sky.clear.tile") && m.contains("has no rect")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn check_2_refuses_a_placement_of_another_size() {
+    let mut package = delivered();
+    edit_json(&mut package, GLASS, |glass| {
+        sprite(glass, "tmp.glass.edge.left")["placement"] =
+            serde_json::json!({"x": 0, "y": 0, "w": 6, "h": 70});
+    });
+    let messages = only(&build(&package), Check::Manifests);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("sprite tmp.glass.edge.left")
+                && m.contains("its placement's size is not its own")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn check_3_fails_on_a_backdrop_with_a_hole() {
+    let mut package = delivered();
+    edit_png(&mut package, CLEAR, |image, _, _| {
+        set_pixel(image, 300, 0, 0);
+    });
+    let messages = only(&build(&package), Check::Pixels);
+    assert_eq!(messages, [BACKDROP_RULE]);
+}
+
+const BACKDROP_RULE: &str = "tmp.sky.clear.tile: a backdrop covers the 640×74 frame from (0, 0), or a wider one centred on it, with no transparent pixel";
+
+#[test]
+fn check_3_fails_on_a_backdrop_whose_scene_is_off_centre() {
+    let mut package = delivered();
+    edit_json(&mut package, SKY, |sky| {
+        sprite(sky, "tmp.sky.clear.tile")["preservedCenter"]["x"] = 90.into();
+    });
+    let messages = only(&build(&package), Check::Pixels);
+    assert_eq!(messages, [BACKDROP_RULE]);
+}
+
+#[test]
+fn check_2_refuses_a_viewport_its_picture_cannot_fill_and_a_centre_alone() {
+    let mut package = delivered();
+    edit_json(&mut package, SKY, |sky| {
+        sprite(sky, "tmp.sky.clear.tile")["viewport"]["maxWidth"] = 900.into();
+        let haze = sprite(sky, "tmp.sky.haze.tile");
+        haze.as_object_mut().unwrap().remove("viewport");
+    });
+    let messages = only(&build(&package), Check::Manifests);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("sprite tmp.sky.clear.tile")
+                && m.contains("its viewport is not `crop-no-resize`")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("sprite tmp.sky.haze.tile")
+                && m.contains("a preserved centre and a viewport come together")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn check_4_fails_on_own_colours_the_manifest_does_not_list() {
+    let mut package = delivered();
+    edit_png(&mut package, CLEAR, |_, plte, _| plte[3 * 4] ^= 1);
+    let messages = only(&build(&package), Check::Palette);
+    assert_eq!(
+        messages,
+        [format!(
+            "{CLEAR}: its PLTE is not index 0 plus the 25 colours its manifest lists"
+        )]
+    );
+}
+
+#[test]
+fn check_4_fails_on_an_index_past_the_own_colours() {
+    let mut package = delivered();
+    edit_png(&mut package, CLEAR, |image, _, _| {
+        set_pixel(image, 0, 0, 30);
+    });
+    let messages = only(&build(&package), Check::Palette);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages
+            .iter()
+            .all(|m| m.contains("1 pixels use an index above 25, the first 30")),
+        "{messages:?}"
+    );
 }

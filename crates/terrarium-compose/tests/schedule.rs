@@ -1,7 +1,8 @@
 //! The frame scheduler over a simulated hour (I-10, N-03): the app draws only when the
 //! composer's picture changes, never more than 15 times a second, and a quiet scene changes
-//! only by the slow motions that keep an OLED strip from holding still. The rules are written
-//! out here, never taken from the crate.
+//! only by the slow motions that keep an OLED strip from holding still, which reach every 8×8
+//! block of it within the hour (N-12). The rules are written out here, never taken from the
+//! crate.
 
 #![forbid(unsafe_code)]
 
@@ -10,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use terrarium_compose::catalog::Art;
 use terrarium_compose::clock::LocalClock;
 use terrarium_compose::composer::{Composer, OverlayInput};
-use terrarium_compose::frame::Draw;
+use terrarium_compose::compositor::composite;
+use terrarium_compose::frame::{Draw, NATIVE_HEIGHT, Viewport};
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::preset;
 use terrarium_compose::schedule::Pacer;
@@ -20,13 +22,17 @@ use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{Energy, LifeStage, ResidentSpecies, ResidentView, Weather};
 
 const HOUR_MS: u64 = 3_600_000;
-/// The sky band moves every 12 s, the soil's texture every 3 minutes.
-const BAND_MS: u64 = 12_000;
+/// The soil's texture moves every 3 minutes; the backdrop holds still.
 const SOIL_MS: u64 = 180_000;
-/// A sweep comes once in each 330 s slot but the first, and crosses in 332 steps: in at
-/// x = −22, two pixels at a time to 638, then out.
-const SWEEP_SLOT_MS: u64 = 330_000;
-const SWEEP_STEPS: usize = 332;
+/// Dim mode darkens the frame over 10 s.
+const DIM_DOWN_MS: u32 = 10_000;
+/// The blocks N-12 counts, and how many fit down the frame.
+const BLOCK: u32 = 8;
+const BLOCKS_DOWN: u32 = NATIVE_HEIGHT.div_ceil(BLOCK);
+/// A sweep comes once in each 25-minute slot but the first, and crosses the scene in 664
+/// steps: in at x = −23, a pixel at a time to 639, then out.
+const SWEEP_SLOT_MS: u64 = 1_500_000;
+const SWEEP_STEPS: usize = 664;
 /// At most 15 frames in any second.
 const MOST_PER_SECOND: usize = 15;
 
@@ -102,7 +108,6 @@ fn a_quiet_hour_draws_only_its_slow_motions() {
         );
         for subject in moved {
             let kind = match subject {
-                Subject::Weather => "band",
                 Subject::Soil => "soil",
                 Subject::Sweep => "sweep",
                 other => panic!("{other:?} changed at {wake:?} in a quiet scene"),
@@ -117,11 +122,10 @@ fn a_quiet_hour_draws_only_its_slow_motions() {
 
     // A drift steps at every multiple of its pace after the settled moment, to the hour.
     let steps = |every: u64| usize::try_from(HOUR_MS / every - settled.0 / every).unwrap();
-    // The settled moment lies before the first step of each drift.
-    assert!(settled.0 < BAND_MS);
-    assert_eq!(counts.get("band"), Some(&steps(BAND_MS)));
+    // The settled moment lies before the soil's first step.
+    assert!(settled.0 < SOIL_MS);
     assert_eq!(counts.get("soil"), Some(&steps(SOIL_MS)));
-    // Slots 1 to 10 begin within the hour, and the last sweep is across by 3423 s.
+    // Slots 1 and 2 begin within the hour, and the second sweep is across by 3380 s.
     let sweeps = usize::try_from(HOUR_MS / SWEEP_SLOT_MS).unwrap();
     assert_eq!(counts.get("sweep"), Some(&(sweeps * SWEEP_STEPS)));
     for (i, &frame) in frames.iter().enumerate() {
@@ -176,4 +180,75 @@ fn a_lively_hour_draws_only_changes_and_never_more_than_15_a_second() {
         );
     }
     println!("a lively hour: {} frames", frames.len());
+}
+
+#[test]
+fn no_region_holds_still_for_an_hour() {
+    let art = Art::embedded();
+    let table = ArtTable::new(&art.catalog).expect("the embedded art is complete");
+    // The quietest scene the strip shows: a dead terrarium under a storm, so no plant,
+    // resident, cloud, sun, moon or star moves, and the backdrop holds still. The label has
+    // the two lines the app always gives it, so it cycles.
+    let mut scene = preset::bare(PresentationState::Dead, Vec::new());
+    scene.weather = Weather::Storm;
+    let lines = vec!["repo-terrarium".to_owned(), "main - storm".to_owned()];
+    // The scene alone, and the 735 columns a 2940 px screen shows at 4×.
+    let views = [Viewport::SCENE, Viewport::new(735)];
+    let cases = views.into_iter().flat_map(|viewport| {
+        [
+            LocalClock::noon(preset::DATE),
+            LocalClock::midnight(preset::DATE),
+        ]
+        .into_iter()
+        .flat_map(move |clock| [false, true].map(|dim| (viewport, clock, dim)))
+    });
+    for (viewport, clock, dim) in cases {
+        let overlay = OverlayInput {
+            dim,
+            ..OverlayInput::new(lines.clone(), clock)
+        };
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.set_viewport(viewport);
+        composer.update(&scene, &overlay, Millis(0));
+        let scenery = composer.scenery(art, &table);
+        let picture = |now: Millis| {
+            let mix = composer.palette_mix(now);
+            composite(art, &composer.frame(art, &table, &scenery, mix, now))
+        };
+        // From once the scene, and dim mode, have settled.
+        let start = composer.settled_at().plus(DIM_DOWN_MS);
+        let across = viewport.width().div_ceil(BLOCK);
+        let mut changed = vec![vec![false; across as usize]; BLOCKS_DOWN as usize];
+        let mut shown = picture(start);
+        let mut pacer = Pacer::default();
+        pacer.composed(start);
+        let mut now = start;
+        while let Some(wake) = pacer.wake(composer.next_change(art, &table, now)) {
+            if wake.0 > start.0 + HOUR_MS || changed.iter().flatten().all(|&c| c) {
+                break;
+            }
+            let next = picture(wake);
+            for y in 0..NATIVE_HEIGHT {
+                let pairs = shown.row(y).iter().zip(next.row(y));
+                for (x, _) in (0..viewport.width())
+                    .zip(pairs)
+                    .filter(|(_, (a, b))| a != b)
+                {
+                    changed[(y / BLOCK) as usize][(x / BLOCK) as usize] = true;
+                }
+            }
+            pacer.composed(wake);
+            shown = next;
+            now = wake;
+        }
+        let still: Vec<(u32, u32)> = (0..BLOCKS_DOWN)
+            .flat_map(|row| (0..across).map(move |column| (column, row)))
+            .filter(|&(column, row)| !changed[row as usize][column as usize])
+            .collect();
+        assert!(
+            still.is_empty(),
+            "{} blocks (column, row) hold still for an hour in {viewport:?} at {clock:?}, dim {dim}: {still:?}",
+            still.len()
+        );
+    }
 }

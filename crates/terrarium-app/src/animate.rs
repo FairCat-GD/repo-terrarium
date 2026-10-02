@@ -7,13 +7,13 @@
 use terrarium_compose::catalog::Art;
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite_into;
-use terrarium_compose::frame::Rgba640x74;
+use terrarium_compose::frame::{NativeImage, Viewport};
 use terrarium_compose::preset;
-use terrarium_compose::scale::{Damage, Padding};
+use terrarium_compose::scale::Damage;
 use terrarium_compose::schedule::Pacer;
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::world::{self, Scenery};
+use terrarium_compose::world::Scenery;
 use terrarium_truth::scene::SceneInput;
 
 pub struct Living {
@@ -24,10 +24,9 @@ pub struct Living {
     pacer: Pacer,
     /// The moment last composed, and its pixels.
     at: Millis,
-    image: Rgba640x74,
-    padding: Padding,
+    image: NativeImage,
     /// A spare image to compose into, so a frame that changes nothing costs no allocation.
-    spare: Rgba640x74,
+    spare: NativeImage,
     /// When it next wants composing, worked out once per composition or update: the loop asks
     /// on every event it handles.
     due: Option<Millis>,
@@ -45,7 +44,7 @@ impl Living {
         let mut composer = Composer::new(&table, preset::SALT);
         composer.update(scene, overlay, now);
         let scenery = composer.scenery(art, &table);
-        let blank = Rgba640x74::filled([0, 0, 0, u8::MAX]);
+        let blank = NativeImage::filled([0, 0, 0, u8::MAX]);
         let mut living = Living {
             art,
             table,
@@ -54,7 +53,6 @@ impl Living {
             pacer: Pacer::default(),
             at: now,
             image: blank.clone(),
-            padding: [[0; 4]; terrarium_compose::frame::NATIVE_HEIGHT as usize],
             spare: blank,
             due: None,
             compositions: 0,
@@ -84,12 +82,22 @@ impl Living {
         self.compose(now)
     }
 
-    pub fn image(&self) -> &Rgba640x74 {
+    pub fn image(&self) -> &NativeImage {
         &self.image
     }
 
-    pub fn padding(&self) -> &Padding {
-        &self.padding
+    /// Composes for `viewport` from now on, at once at `now` if it is another; true then, since
+    /// the strip's width changed and its whole picture is new.
+    pub fn fit(&mut self, viewport: Viewport, now: Millis) -> bool {
+        if self.composer.viewport() == viewport {
+            return false;
+        }
+        self.composer.set_viewport(viewport);
+        self.scenery = self.composer.scenery(self.art, &self.table);
+        self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
+        self.compose(now);
+        self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
+        true
     }
 
     /// Compositions since it was made, presented or not.
@@ -98,24 +106,22 @@ impl Living {
         self.compositions
     }
 
-    /// Composes `now`; true if any pixel, of the image or of the padding beside it, changed.
+    /// Composes `now`; true if any pixel changed.
     fn compose(&mut self, now: Millis) -> bool {
         let mix = self.composer.palette_mix(now);
         let frame = self
             .composer
             .frame(self.art, &self.table, &self.scenery, mix, now);
         composite_into(self.art, &frame, &mut self.spare);
-        let padding = world::padding(self.art, mix, frame.dim);
         self.at = now;
         self.compositions += 1;
         self.pacer.composed(now);
         self.due = self
             .pacer
             .wake(self.composer.next_change(self.art, &self.table, now));
-        let changed = Damage::between(&self.image, &self.padding, &self.spare, &padding).is_some();
+        let changed = Damage::between(&self.image, &self.spare).is_some();
         if changed {
             std::mem::swap(&mut self.image, &mut self.spare);
-            self.padding = padding;
         }
         changed
     }

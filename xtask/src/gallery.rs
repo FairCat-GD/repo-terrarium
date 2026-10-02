@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Rgba640x74};
+use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, NativeImage, Rgba};
 use terrarium_compose::synthetic::{self, Cell};
 use terrarium_compose::variants::ArtTable;
 use terrarium_truth::canon::to_hex;
@@ -83,14 +83,8 @@ pub fn render() -> Result<Files, String> {
         let shown = number(index, cells.len());
         let day = compose(art, &table, cell, 0, false);
         let night = compose(art, &table, cell, 255, false);
-        files.push((
-            format!("states/{shown:02}-day.png"),
-            large_png(art, &day, 0, 0)?,
-        ));
-        files.push((
-            format!("states/{shown:02}-night.png"),
-            large_png(art, &night, 255, 0)?,
-        ));
+        files.push((format!("states/{shown:02}-day.png"), large_png(&day)?));
+        files.push((format!("states/{shown:02}-night.png"), large_png(&night)?));
         let activity = cell
             .activity
             .map_or_else(|| "inactive".to_owned(), |a| a.to_string());
@@ -106,10 +100,7 @@ pub fn render() -> Result<Files, String> {
         for (suffix, mix, dim) in [("day", 0, false), ("night", 255, false), ("dim", 0, true)] {
             let frame = synthetic::frame(art, &table, &knobs, LABEL, mix, dim);
             let image = composite(art, &frame);
-            files.push((
-                format!("named/{name}-{suffix}.png"),
-                large_png(art, &image, frame.palette_mix, frame.dim)?,
-            ));
+            files.push((format!("named/{name}-{suffix}.png"), large_png(&image)?));
         }
     }
     files.extend(pieces::render(art, &table, LABEL)?);
@@ -125,7 +116,7 @@ pub fn render() -> Result<Files, String> {
 }
 
 /// A grid cell's terrarium, settled, by day or by night.
-fn compose(art: &Art, table: &ArtTable, cell: &Cell, mix: u8, dim: bool) -> Rgba640x74 {
+fn compose(art: &Art, table: &ArtTable, cell: &Cell, mix: u8, dim: bool) -> NativeImage {
     composite(
         art,
         &synthetic::frame(art, table, &cell.knobs, LABEL, mix, dim),
@@ -133,7 +124,7 @@ fn compose(art: &Art, table: &ArtTable, cell: &Cell, mix: u8, dim: bool) -> Rgba
 }
 
 /// The grid at 1×: each cell's day above its night, in grid order.
-fn contact_sheet(cells: &[(usize, usize, Rgba640x74, Rgba640x74)]) -> Vec<u8> {
+fn contact_sheet(cells: &[(usize, usize, NativeImage, NativeImage)]) -> Vec<u8> {
     let columns = u32::try_from(synthetic::GALLERY_ACTIVITY.len()).unwrap_or(1);
     let rows = u32::try_from(synthetic::GALLERY_HEALTH.len()).unwrap_or(1);
     let cell_height = 2 * NATIVE_HEIGHT + GAP;
@@ -177,7 +168,7 @@ mod tests {
         let named = |prefix: &str| first.iter().filter(|(n, _)| n.starts_with(prefix)).count();
         assert_eq!(named("states/"), 60);
         assert_eq!(named("named/"), 21);
-        assert_eq!(named("pieces/"), 20);
+        assert_eq!(named("pieces/"), 21);
         let key = &first.iter().find(|(n, _)| n == "key.csv").unwrap().1;
         assert_eq!(String::from_utf8_lossy(key).lines().count(), 31);
         let sums = &first.iter().find(|(n, _)| n == "SHA256SUMS").unwrap().1;

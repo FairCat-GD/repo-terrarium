@@ -75,10 +75,10 @@ left:
 - `contact-sheet.png`: the grid at 1×, health falling down the rows and activity rising along
   the columns, each cell's day above its night.
 - `pieces/`: the background art on its own, for art review, at 3× by day and by night: each
-  weather's sky, the soil, the glass ends, the label plate, the padding beside a strip wider
-  than the image, and the empty terrarium (also dimmed). `contract.csv` gives each background
-  sprite's size, anchor, layer, opacity, palette slots (logical and Aseprite) and drift, read
-  from the catalog.
+  weather's backdrop, the soil, the glass ends, the label plate, the empty terrarium (also
+  dimmed), and the empty terrarium in the 735 columns a 2940 px screen shows at 4× and in all
+  840 the art covers. `contract.csv` gives each background sprite's size, anchor, place, layer,
+  opacity by day and night, palette (shared or its own), slots and drift, read from the catalog.
 - `SHA256SUMS`: the hash of every other file. The same build writes the same bytes every run,
   and a test renders it twice to hold that.
 
@@ -98,9 +98,14 @@ Finder's `.DS_Store` files are never read (I-14). The checks:
 3. **Pixels.** Every PNG is read as raw indices, never expanded.
    - Every rect lies inside its atlas.
    - The atlas holds exactly the individual PNG's pixels.
+   - A backdrop is opaque and covers the 640×74 scene from (0, 0), or a wider picture with the
+     scene at its centre, for wider viewports to crop.
    - The packed runtime atlas is read back against every sprite.
-4. **Palette**. Every index is at most 32. Every file's `PLTE` and `tRNS` are the biome palette:
-   index 0 the only transparent entry, 1..=32 the day colours. The palette PNG matches the
+4. **Palette**. Every shared index is at most 32, and every shared file's `PLTE` and `tRNS` are
+   the biome palette: index 0 the only transparent entry, 1..=32 the day colours. Art with its
+   own colours (`paletteMode: paired-palette-import`) carries its manifest's day list instead
+   and uses no index past it; each day and night pair it uses becomes a runtime slot after the
+   shared 32, reused where a slot already holds it, up to 255. The palette PNG matches the
    palette JSON.
 5. **Animations.** Every sequence has frames and durations.
    - A creature routine's terminal names a routine of the same species that exists; the

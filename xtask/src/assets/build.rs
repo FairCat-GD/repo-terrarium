@@ -6,16 +6,21 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use terrarium_compose::catalog::{
-    Animation, AnimationId, Catalog, EventGroup, Font, FrameMotion, Next, Rect, Scorch, Size,
-    Sprite, SpriteId, Ui,
+    Animation, AnimationId, Catalog, EventGroup, Font, FrameMotion, Next, Palette, Rect, Scorch,
+    Size, Sprite, SpriteId, Ui,
 };
 
 use super::animation::{AnimationDraft, NextDraft};
 use super::manifest::{Biome, FontDraft, SpriteDraft};
 
-/// The catalog, and every reference that did not resolve. A reference that fails to resolve
-/// has already failed check 2 or 5, so the list only matters once those pass.
-pub fn catalog(biome: &Biome, drafts: &[AnimationDraft]) -> (Catalog, Vec<String>) {
+/// The catalog, with the runtime palette the pixel check built, and every reference that did
+/// not resolve. A reference that fails to resolve has already failed check 2 or 5, so the
+/// list only matters once those pass.
+pub fn catalog(
+    biome: &Biome,
+    drafts: &[AnimationDraft],
+    palette: Palette,
+) -> (Catalog, Vec<String>) {
     let ids = Resolver {
         sprites: biome
             .sprites
@@ -33,7 +38,7 @@ pub fn catalog(biome: &Biome, drafts: &[AnimationDraft]) -> (Catalog, Vec<String
     let catalog = Catalog {
         biome: biome.name.clone(),
         atlas: Size::default(),
-        palette: biome.palette,
+        palette,
         sprites: biome
             .sprites
             .iter()
@@ -161,14 +166,15 @@ fn convert(draft: &SpriteDraft, ids: &Resolver) -> Sprite {
     Sprite {
         id: draft.id.clone(),
         rect: Rect {
-            w: draft.rect.w,
-            h: draft.rect.h,
+            w: draft.size.w,
+            h: draft.size.h,
             ..Rect::default()
         },
         anchor: draft.anchor,
         layer: draft.layer,
         blend: draft.blend,
         opacity: draft.opacity,
+        night_opacity: draft.night_opacity,
         flags: draft.flags,
         keys: draft.keys.clone(),
         attachment_point: draft.attachment_point,
@@ -190,6 +196,8 @@ fn convert(draft: &SpriteDraft, ids: &Resolver) -> Sprite {
         scorch,
         burnoff: draft.burnoff,
         text_inset: draft.text_inset,
+        at: draft.at,
+        scene: draft.scene,
         placement: draft.placement.clone(),
     }
 }

@@ -5,19 +5,13 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 
 use softbuffer::{Context, SoftBufferError, Surface};
-use terrarium_compose::frame::{NATIVE_HEIGHT, Rgba, Rgba640x74};
+use terrarium_compose::frame::{NativeImage, Rgba};
 use terrarium_compose::scale::{SizeMismatch, StripScale, upscale_into};
 use winit::window::Window;
 
 pub trait Presenter {
-    /// Scales `frame` by `scale` into the window, padding either side with each native row's
-    /// colour from `padding`, and shows it.
-    fn present(
-        &mut self,
-        frame: &Rgba640x74,
-        scale: &StripScale,
-        padding: &[Rgba; NATIVE_HEIGHT as usize],
-    ) -> Result<(), PresentError>;
+    /// Scales `frame`, `scale.columns` wide, by `scale` into the window, and shows it.
+    fn present(&mut self, frame: &NativeImage, scale: &StripScale) -> Result<(), PresentError>;
 }
 
 /// Its wording is in the copy module.
@@ -49,12 +43,7 @@ impl SoftbufferPresenter {
 }
 
 impl Presenter for SoftbufferPresenter {
-    fn present(
-        &mut self,
-        frame: &Rgba640x74,
-        scale: &StripScale,
-        padding: &[Rgba; NATIVE_HEIGHT as usize],
-    ) -> Result<(), PresentError> {
+    fn present(&mut self, frame: &NativeImage, scale: &StripScale) -> Result<(), PresentError> {
         let (Some(width), Some(height)) =
             (NonZeroU32::new(scale.width), NonZeroU32::new(scale.height))
         else {
@@ -62,7 +51,7 @@ impl Presenter for SoftbufferPresenter {
         };
         self.surface.resize(width, height)?;
         let mut buffer = self.surface.buffer_mut()?;
-        upscale_into(frame, scale, padding, zero_rgb, &mut buffer).map_err(PresentError::Size)?;
+        upscale_into(frame, scale, zero_rgb, &mut buffer).map_err(PresentError::Size)?;
         buffer.present()?;
         Ok(())
     }

@@ -4,7 +4,8 @@ use serde::Serialize;
 use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
 use terrarium_compose::scale::StripScale;
 
-/// Where the pointer is, in the scene's own 640×74 pixels.
+/// Where the pointer is, in the scene's own 640×74 pixels. A wider viewport's columns either
+/// side of the scene, and any letterbox, are not the scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativePoint {
@@ -12,7 +13,7 @@ pub enum NativePoint {
         x: u32,
         y: u32,
     },
-    /// Over the padding either side of the scaled image.
+    /// Beside the scene: the viewport's columns either side of it, or the letterbox.
     Padding,
 }
 
@@ -24,7 +25,11 @@ pub fn to_native(x: f64, y: f64, scale: &StripScale) -> NativePoint {
     let Some(image_x) = x.checked_sub(scale.image_x) else {
         return NativePoint::Padding;
     };
-    let (x, y) = (image_x / scale.scale, y / scale.scale);
+    let inset = u32::try_from(scale.viewport().inset()).unwrap_or(0);
+    let Some(x) = (image_x / scale.scale).checked_sub(inset) else {
+        return NativePoint::Padding;
+    };
+    let y = y / scale.scale;
     if x < NATIVE_WIDTH && y < NATIVE_HEIGHT {
         NativePoint::Scene { x, y }
     } else {
@@ -77,7 +82,7 @@ mod tests {
 
     use super::*;
 
-    /// 4× with 232 px of padding each side, as on a 3024 px wide display.
+    /// 4× on a 3024 px wide display: 756 columns, the scene 58 of them (232 px) in.
     fn scale() -> StripScale {
         StripScale::for_physical_width(3024, SizeStep::Full)
     }
@@ -104,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn the_padding_and_the_outside_are_not_the_scene() {
+    fn the_viewport_beside_the_scene_and_the_outside_are_not_the_scene() {
         let scale = scale();
         assert_eq!(to_native(231.9, 10.0, &scale), NativePoint::Padding);
         assert_eq!(to_native(2792.0, 10.0, &scale), NativePoint::Padding);

@@ -18,7 +18,7 @@ pub enum Subject {
     Scenery(u16),
     /// The soil band, its tiles and its top edge, drifting.
     Soil,
-    /// The weather band across the top of the sky.
+    /// The weather's backdrop: the whole scene behind everything.
     Weather,
     /// A cloud, by its path.
     Cloud(u8),
@@ -70,6 +70,34 @@ pub enum Subject {
 }
 
 impl Subject {
+    /// Whether it stands in the 640-wide scene, which a wider viewport shows in its middle.
+    /// The rest belong to the viewport and reach its edges: the backdrop, the clouds, the
+    /// soil, the glass and its films and sweep, the light and the label.
+    pub const fn in_scene(self) -> bool {
+        match self {
+            Subject::Sun
+            | Subject::Moon
+            | Subject::Star(_)
+            | Subject::Monument { .. }
+            | Subject::Fossil { .. }
+            | Subject::Dressing(_)
+            | Subject::Weed { .. }
+            | Subject::Fill { .. }
+            | Subject::Plant { .. }
+            | Subject::Resident { .. }
+            | Subject::Litter(_)
+            | Subject::Fungus(_) => true,
+            Subject::Film(_)
+            | Subject::Scenery(_)
+            | Subject::Soil
+            | Subject::Weather
+            | Subject::Cloud(_)
+            | Subject::Light
+            | Subject::Label
+            | Subject::Sweep => false,
+        }
+    }
+
     /// The cell a plant, a filler or a weed stands in.
     pub const fn cell(self) -> Option<u8> {
         match self {

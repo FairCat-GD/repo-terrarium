@@ -4,17 +4,17 @@ Depiction: from `SceneInput` to pixels.
 
 ## Owns
 
-- The native frame, `Rgba640x74`, and the scene's fixed geometry.
-- The integer scale policy and the upscaler that applies it with padding, shared by the
-  presenter and, later, every export.
-- The CPU compositor (`compositor`), which paints a `Frame` of sprite draws into the 640×74
-  RGBA image, the one blend rule it and the palette share (`blend`), and the palette
+- The native frame, `NativeImage`, the scene's fixed geometry and the wider `Viewport`.
+- The integer scale policy: as many native columns as reach the screen's edge, up to the widest
+  the art covers, and the upscaler that applies it, shared by the presenter and every export.
+- The CPU compositor (`compositor`), which paints a `Frame` of sprite draws into the RGBA image
+  of its viewport, the one blend rule it and the palette share (`blend`), and the palette
   crossfade it paints with (`palette`).
 - Bitmap text and the label plate (`text`), and the nine-slice panel (`nine_slice`).
 - Damage: rewriting only what changed, equal to a full redraw (`scale::Damage`).
 - The one PNG encoder (`export`), for exports, `cargo xtask render` and the snapshot tests.
-- A sample scene assembled by hand (`sample`), shown until the live terrarium reaches the
-  strip. It keeps its own bottom-right label, so its pictures never move.
+- A sample scene assembled by hand (`sample`), which the pinning probe shows and `cargo xtask
+  render --demo` writes. It keeps its own bottom-right label.
 - The asset catalog (`catalog`): every delivered sprite under its semantic ID, with its
   metadata and the atlas its pixels are packed into.
 - The variant table (`variants`, `ArtTable`): the art that depicts each `SceneInput` variant,
@@ -26,8 +26,8 @@ Depiction: from `SceneInput` to pixels.
 - The composer (`composer`), with its slots (`slots`), placement (`place`), plant assembly
   (`plant`), tweens (`tween`) and draw order (`order`), and the presets it is shown with
   (`preset`).
-- The world around the plants: where each piece stands on an install, the fixed scenery and
-  the padding (`world`); the sky's rules, from the moon's phase to the clouds a weather brings
+- The world around the plants: where each piece stands on an install, and the fixed scenery
+  in its viewport (`world`); the sky's rules, from the moon's phase to the clouds a weather brings
   (`sky`); and the one-message table (`rules`).
 - `InstallSalt` (`salt`).
 - Motion (`motion`): global turns of 24 s, and the scene each turn reads, recorded by update
@@ -38,8 +38,8 @@ Depiction: from `SceneInput` to pixels.
   storms, lifecycle steps through the art's own hand-offs, and each turn's plan: at most three
   travelling, one of them in the air.
 - Sway (`sway`): stepped shears of living foliage, six cells in thirty each turn.
-- Day and night on the local clock, and dim mode (`clock`); the drifts of the sky band and the
-  soil, and the reflection sweep (`drift`).
+- Day and night on the local clock, and dim mode (`clock`); the soil's drift and the
+  reflection sweep (`drift`).
 - The frame scheduler: `Composer::next_change` names the next moment the picture may change,
   and `schedule::Pacer` keeps every composition to 15 a second.
 - GIF encoding, still to come.

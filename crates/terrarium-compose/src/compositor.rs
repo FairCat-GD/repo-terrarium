@@ -1,4 +1,4 @@
-//! The CPU compositor: paints a `Frame` into the 640×74 native image.
+//! The CPU compositor: paints a `Frame` into the native image of its viewport.
 //!
 //! Each frame first looks every palette slot up at its `palette_mix`, then paints its draws in
 //! order over a sky of flat `sky.base`, each meeting the pixels below by the rule in
@@ -6,31 +6,47 @@
 //! nothing is quantized back into the palette.
 
 use crate::blend::{blend, dim};
-use crate::catalog::{Art, Blend, Layer, PALETTE_SLOTS, Rgb};
-use crate::frame::{Area, Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Rgba640x74};
+use crate::catalog::{Art, Blend, Layer, MAX_SLOTS, Rgb};
+use crate::frame::{Area, Draw, Frame, NATIVE_HEIGHT, NativeImage, Rgba};
 use crate::palette::{Lut, Slot};
 
 const OPAQUE: u8 = u8::MAX;
-const FRAME_WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const FRAME_HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
 
-/// Paints `frame` over a sky of flat `sky.base`.
-pub fn composite(art: &Art, frame: &Frame) -> Rgba640x74 {
-    let mut out = Rgba640x74::filled([0, 0, 0, OPAQUE]);
+/// Paints `frame` over a buffer of flat `sky.base`, as wide as its viewport.
+pub fn composite(art: &Art, frame: &Frame) -> NativeImage {
+    let mut out = NativeImage::new(frame.viewport, [0, 0, 0, OPAQUE]);
     composite_into(art, frame, &mut out);
     out
 }
 
-/// Paints `frame` into `out`, replacing every pixel. The sky starts as flat `sky.base`, which
-/// shows wherever no sky tile is drawn.
-pub fn composite_into(art: &Art, frame: &Frame, out: &mut Rgba640x74) {
-    composite_area(art, frame, out, FRAME);
+/// Paints `frame` into `out`, replacing every pixel. The buffer starts as flat `sky.base`, which
+/// a backdrop covers; it shows only before one has faded in.
+///
+/// # Panics
+/// If `out` is not as wide as the frame's viewport.
+pub fn composite_into(art: &Art, frame: &Frame, out: &mut NativeImage) {
+    let whole = Area {
+        x: 0,
+        y: 0,
+        w: i32::try_from(out.width()).unwrap_or(0),
+        h: FRAME_HEIGHT,
+    };
+    composite_area(art, frame, out, whole);
 }
 
 /// As [`composite_into`], but paints only the pixels inside `area` and leaves the rest of
 /// `out` as it was. Each of those pixels is exactly what a whole composite would give it.
-pub fn composite_area(art: &Art, frame: &Frame, out: &mut Rgba640x74, area: Area) {
-    let region = Visible::FRAME.within(Some(area));
+///
+/// # Panics
+/// If `out` is not as wide as the frame's viewport.
+pub fn composite_area(art: &Art, frame: &Frame, out: &mut NativeImage, area: Area) {
+    assert_eq!(
+        out.width(),
+        frame.viewport.width(),
+        "the image is not as wide as the frame's viewport"
+    );
+    let region = Visible::of(out).within(Some(area));
     let (Ok(top), Ok(bottom), Ok(left), Ok(right)) = (
         u32::try_from(region.top),
         u32::try_from(region.bottom),
@@ -66,7 +82,7 @@ pub fn composite_area(art: &Art, frame: &Frame, out: &mut Rgba640x74, area: Area
     }
 }
 
-fn paint(art: &Art, lut: &Lut, draw: &Draw, region: &Visible, out: &mut Rgba640x74) {
+fn paint(art: &Art, lut: &Lut, draw: &Draw, region: &Visible, out: &mut NativeImage) {
     let opacity = draw.opacity;
     if opacity == 0 {
         return;
@@ -100,7 +116,7 @@ fn over(pixel: &mut Rgba, src: Rgb, opacity: u8, mode: Blend) {
 
 /// Each atlas byte's colour for this draw: its slot's, or the tint's. Byte 0 is transparent
 /// and never painted.
-fn source_colours(lut: &Lut, tint: Option<Slot>) -> [Rgb; PALETTE_SLOTS + 1] {
+fn source_colours(lut: &Lut, tint: Option<Slot>) -> [Rgb; MAX_SLOTS + 1] {
     std::array::from_fn(|index| {
         let slot = u8::try_from(index).ok().and_then(Slot::from_atlas);
         slot.map_or([0; 3], |slot| lut.colour(tint.unwrap_or(slot)))
@@ -113,7 +129,7 @@ fn each_pixel(
     art: &Art,
     draw: &Draw,
     visible: &Visible,
-    out: &mut Rgba640x74,
+    out: &mut NativeImage,
     mut ink: impl FnMut(&mut Rgba, usize),
 ) {
     let width = i32::from(art.catalog.sprite(draw.sprite).rect.w);
@@ -165,14 +181,6 @@ fn each_pixel(
     }
 }
 
-/// The whole native frame, as an area.
-const FRAME: Area = Area {
-    x: 0,
-    y: 0,
-    w: FRAME_WIDTH,
-    h: FRAME_HEIGHT,
-};
-
 /// The part of the frame a draw may paint, as half-open bounds.
 struct Visible {
     left: i32,
@@ -182,12 +190,15 @@ struct Visible {
 }
 
 impl Visible {
-    const FRAME: Visible = Visible {
-        left: 0,
-        top: 0,
-        right: FRAME_WIDTH,
-        bottom: FRAME_HEIGHT,
-    };
+    /// The whole image.
+    fn of(image: &NativeImage) -> Visible {
+        Visible {
+            left: 0,
+            top: 0,
+            right: i32::try_from(image.width()).unwrap_or(0),
+            bottom: FRAME_HEIGHT,
+        }
+    }
 
     /// These bounds cut down to an area, if there is one.
     fn within(&self, clip: Option<Area>) -> Visible {
@@ -207,7 +218,7 @@ impl Visible {
 mod tests {
     use super::*;
     use crate::catalog::SpriteId;
-    use crate::frame::Shear;
+    use crate::frame::{NATIVE_WIDTH, Shear, Viewport};
 
     fn art() -> &'static Art<'static> {
         Art::embedded()
@@ -232,19 +243,24 @@ mod tests {
         opaque(Lut::new(&art().catalog.palette, mix_by).colour(Slot::SKY_BASE))
     }
 
+    /// The first opaque column of a sprite's first row.
+    fn first_opaque(sprite: SpriteId) -> u32 {
+        let row = art().rows(sprite).next().expect("a row");
+        let column = row.iter().position(|&i| i != 0).expect("an opaque pixel");
+        u32::try_from(column).unwrap()
+    }
+
     #[test]
-    fn the_glass_edge_over_the_sky_is_the_reference_colour() {
-        // Slot 4 at opacity 150 over sky.base is #A5A38D by day, #48565C by night.
+    fn slot_4_at_opacity_150_over_the_sky_is_the_reference_colour() {
+        // From the reference scenes: slot 4 at opacity 150 over sky.base is #A5A38D by day and
+        // #48565C by night, so blending happens in gamma-encoded sRGB.
         let edge = id("tmp.glass.edge.left");
-        let stone_shadow = Slot::STONE_SHADOW.get() + 1;
-        let (row, column) = art()
-            .rows(edge)
-            .enumerate()
-            .find_map(|(y, row)| row.iter().position(|&i| i == stone_shadow).map(|x| (y, x)))
-            .expect("the edge has a slot-4 pixel");
-        let (x, y) = (u32::try_from(column).unwrap(), u32::try_from(row).unwrap());
-        let draw = Draw::new(&art().catalog, edge, 0, 0);
-        assert_eq!(draw.opacity, 150, "the catalog's own opacity");
+        let (x, y) = (first_opaque(edge), 10);
+        let draw = Draw {
+            tint: Some(Slot::STONE_SHADOW),
+            opacity: 150,
+            ..Draw::new(&art().catalog, edge, 0, 0)
+        };
         let mut day = frame(vec![draw]);
         assert_eq!(composite(art(), &day).pixel(x, y), [0xA5, 0xA3, 0x8D, 255]);
         day.palette_mix = 255;
@@ -270,11 +286,12 @@ mod tests {
     #[test]
     fn transparent_pixels_and_a_zero_opacity_leave_the_sky() {
         let catalog = &art().catalog;
-        let right = Draw::new(catalog, id("tmp.glass.edge.right"), 100, 0);
+        let edge = id("tmp.glass.edge.right");
+        let right = Draw::new(catalog, edge, 100, 0);
         let out = composite(art(), &frame(vec![right]));
-        // Column 0 of the right edge is transparent; column 5 is its stone line.
+        // Column 0 of the right edge is transparent; its lines stand further in.
         assert_eq!(out.pixel(100, 10), sky(0));
-        assert_ne!(out.pixel(105, 10), sky(0));
+        assert_ne!(out.pixel(100 + first_opaque(edge), 10), sky(0));
         let hidden = Draw {
             opacity: 0,
             ..right
@@ -304,7 +321,11 @@ mod tests {
     fn a_shear_slides_each_row_about_the_pivot() {
         let catalog = &art().catalog;
         let edge = Draw::new(catalog, id("tmp.glass.edge.left"), 300, 0);
-        let line = composite(art(), &frame(vec![edge])).pixel(300, 0);
+        // The edge's first line, one column wide, with sky left of it.
+        let column = first_opaque(edge.sprite);
+        let x = |at: u32| at + column;
+        let line = composite(art(), &frame(vec![edge])).pixel(x(300), 0);
+        assert_ne!(line, sky(0));
         let sheared = Draw {
             // One pixel per row: row 20 stays, row 10 slides right by 10, row 30 left by 10.
             shear: Shear {
@@ -314,9 +335,9 @@ mod tests {
             ..edge
         };
         let out = composite(art(), &frame(vec![sheared]));
-        for (row, x) in [(20, 300), (10, 310), (30, 290), (0, 320)] {
-            assert_eq!(out.pixel(x, row), line, "row {row}");
-            assert_eq!(out.pixel(x - 1, row), sky(0), "row {row}");
+        for (row, at) in [(20, 300), (10, 310), (30, 290), (0, 320)] {
+            assert_eq!(out.pixel(x(at), row), line, "row {row}");
+            assert_eq!(out.pixel(x(at) - 1, row), sky(0), "row {row}");
         }
     }
 
@@ -332,7 +353,7 @@ mod tests {
             ..Draw::new(catalog, id("tmp.glass.edge.left"), 400, 0)
         };
         let whole = composite(art(), &frame(vec![draw]));
-        // Row r lands at 400 + r, flipped: rows 3..7 reach columns 403..411.
+        // Row r slides r columns right, so the flipped lines cross the area.
         let area = Area {
             x: 404,
             y: 3,
@@ -353,7 +374,8 @@ mod tests {
                 assert_eq!(clipped.pixel(x, y), want, "({x}, {y})");
             }
         }
-        assert_ne!(whole.pixel(404, 3), sky(0), "the clip holds painted pixels");
+        let painted = (404..409).any(|x| (3..7).any(|y| whole.pixel(x, y) != sky(0)));
+        assert!(painted, "the clip holds painted pixels");
     }
 
     #[test]
@@ -367,12 +389,13 @@ mod tests {
             Draw::new(catalog, edge, 700, 0),
         ];
         let out = composite(art(), &frame(draws));
-        // The left edge's columns 3.. land at 0.. and its stone line at column 0 is off-frame.
+        // The left edge's columns 3.. land at 0.., and its lines stand left of them, off-frame.
+        assert!(first_opaque(edge) < 3);
         assert_eq!(
             out.pixel(0, 0),
             composite(art(), &Frame::default()).pixel(0, 0)
         );
-        assert_ne!(out.pixel(637, 50), sky(0));
+        assert_ne!(out.pixel(637 + first_opaque(edge), 50), sky(0));
     }
 
     #[test]
@@ -431,6 +454,7 @@ mod tests {
         let frame = Frame {
             draws,
             palette_mix: 90,
+            viewport: Viewport::SCENE,
             dim: 40,
         };
         let whole = composite(art(), &frame);
@@ -442,7 +466,7 @@ mod tests {
         };
         // Bright, so a dim pass that spilled outside the area would show on it.
         let marker = [200, 120, 60, 255];
-        let mut out = Rgba640x74::filled(marker);
+        let mut out = NativeImage::filled(marker);
         composite_area(art(), &frame, &mut out, area);
         for y in 0..NATIVE_HEIGHT {
             for x in 0..NATIVE_WIDTH {

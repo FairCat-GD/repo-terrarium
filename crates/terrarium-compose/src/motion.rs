@@ -31,14 +31,17 @@ pub const fn turn_start(w: u64) -> Millis {
     Millis(w.saturating_mul(TURN_MS))
 }
 
+/// In dim mode one turn in this many moves (a quarter of the motion).
+pub const DIM_EVERY: u64 = 4;
+
 /// Whether turn `w` carries motion, and if so the count its rotations use. In dim mode only
-/// every fourth turn moves (a quarter of the motion), and the rotations count those turns
-/// alone, so every resident and plant still takes its turn.
+/// every [`DIM_EVERY`]th turn moves, and the rotations count those turns alone, so every
+/// resident and plant still takes its turn.
 pub const fn motion_turn(w: u64, dim: bool) -> Option<u64> {
     if !dim {
         Some(w)
-    } else if w.is_multiple_of(4) {
-        Some(w / 4)
+    } else if w.is_multiple_of(DIM_EVERY) {
+        Some(w / DIM_EVERY)
     } else {
         None
     }

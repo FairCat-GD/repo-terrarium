@@ -18,7 +18,7 @@ use terrarium_compose::clock::LocalClock;
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
-use terrarium_compose::frame::{Area, Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba, Shear};
+use terrarium_compose::frame::{Area, Draw, Frame, NATIVE_HEIGHT, Rgba, Shear, Viewport};
 use terrarium_compose::nine_slice::NineSlice;
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::palette::Slot;
@@ -26,7 +26,7 @@ use terrarium_compose::scale::{SizeStep, StripScale, upscale_into};
 use terrarium_compose::text::{Face, Label, Text};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::{preset, sample, synthetic, world};
+use terrarium_compose::{preset, sample, synthetic};
 use terrarium_truth::scene::{Weather, Wind};
 
 fn art() -> &'static Art<'static> {
@@ -60,7 +60,7 @@ fn snapshot(name: &str, width: u32, height: u32, pixels: &[Rgba]) {
 
 fn snapshot_frame(name: &str, frame: &Frame) {
     let image = composite(art(), frame);
-    snapshot(name, NATIVE_WIDTH, NATIVE_HEIGHT, image.pixels());
+    snapshot(name, image.width(), NATIVE_HEIGHT, image.pixels());
 }
 
 fn sample_frame(mix: u8) -> Frame {
@@ -183,6 +183,26 @@ fn the_synthetic_states_by_day_and_night() {
     }
 }
 
+/// The thriving look in the 735 columns a 2940 px screen shows at 4×, by day and night: the
+/// scene 48 columns in, the backdrop, soil, glass, clouds and label to the edges.
+#[test]
+fn the_thriving_terrarium_in_a_wider_viewport() {
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    let knobs = synthetic::named("thriving").unwrap();
+    for (mix, suffix) in [(0, ""), (255, "-night")] {
+        let frame = synthetic::frame_in(
+            art(),
+            &table,
+            &knobs,
+            "repo-terrarium",
+            mix,
+            false,
+            Viewport::new(735),
+        );
+        snapshot_frame(&format!("wide-thriving{suffix}"), &frame);
+    }
+}
+
 /// The one sky state no preset holds: the mature terrarium under a storm, by day and night.
 #[test]
 fn a_storm_sky_by_day_and_night() {
@@ -214,14 +234,14 @@ fn living(clock: LocalClock, wind: Wind, dim: bool) -> (Composer, ArtTable) {
 }
 
 /// The first moment, in 167 ms steps from the first turn that moves, at which `wanted` holds
-/// of the draws.
+/// of the draws: within the first 33 minutes, by which the first sweep has crossed.
 fn first(
     composer: &Composer,
     table: &ArtTable,
     mix: u8,
     wanted: impl Fn(&[KeyedDraw]) -> bool,
 ) -> Millis {
-    (24_000..900_000)
+    (24_000..2_000_000)
         .step_by(167)
         .map(Millis)
         .find(|&now| wanted(&composer.draws(art(), table, mix, now)))
@@ -392,13 +412,14 @@ fn nine_slice_panels_at_and_past_the_minimum() {
 }
 
 #[test]
-fn the_sample_upscaled_2x_with_odd_padding() {
-    let image = composite(art(), &sample_frame(0));
-    let padding = world::padding(art(), 0, 0);
-    // 1301 is 2 × 640 plus 21: 10 columns of padding on the left and 11 on the right.
+fn the_sample_upscaled_2x_in_a_wider_viewport() {
+    // 1301 at 2× shows 651 columns, the scene 6 in, and the last column cut to one pixel.
     let scale = StripScale::for_physical_width(1301, SizeStep::Full);
-    assert_eq!((scale.scale, scale.image_x), (2, 10));
+    assert_eq!((scale.scale, scale.columns, scale.image_x), (2, 651, 0));
+    let table = ArtTable::new(&art().catalog).unwrap();
+    let frame = sample::frame_in(art(), &table, "repo-terrarium", 0, 0, scale.viewport());
+    let image = composite(art(), &frame);
     let mut pixels = vec![[0; 4]; scale.pixel_count()];
-    upscale_into(&image, &scale, &padding, |colour| colour, &mut pixels).unwrap();
+    upscale_into(&image, &scale, |colour| colour, &mut pixels).unwrap();
     snapshot("upscale-2x", scale.width, scale.height, &pixels);
 }

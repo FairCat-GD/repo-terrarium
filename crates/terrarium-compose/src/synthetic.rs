@@ -18,7 +18,7 @@ use terrarium_truth::{PresentationState, Tick};
 
 use crate::catalog::Art;
 use crate::composer::{Composer, OverlayInput};
-use crate::frame::Frame;
+use crate::frame::{Frame, Viewport};
 use crate::preset;
 use crate::tween::Millis;
 use crate::variants::ArtTable;
@@ -583,7 +583,21 @@ pub fn frame(
     palette_mix: u8,
     dim: bool,
 ) -> Frame {
+    frame_in(art, table, knobs, label, palette_mix, dim, Viewport::SCENE)
+}
+
+/// As [`frame`], in `viewport`.
+pub fn frame_in(
+    art: &Art,
+    table: &ArtTable,
+    knobs: &Knobs,
+    label: &str,
+    palette_mix: u8,
+    dim: bool,
+    viewport: Viewport,
+) -> Frame {
     let mut composer = Composer::new(table, preset::SALT);
+    composer.set_viewport(viewport);
     let overlay = OverlayInput {
         dim,
         ..OverlayInput::new(

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite_into;
-use terrarium_compose::frame::{Draw, Frame, Rgba640x74};
+use terrarium_compose::frame::{Draw, Frame, NativeImage};
 use terrarium_compose::sample;
 use terrarium_compose::variants::ArtTable;
 
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let frame = busy_frame(art, &table);
-    let mut out = Rgba640x74::filled([0; 4]);
+    let mut out = NativeImage::filled([0; 4]);
     let mut times: Vec<Duration> = (0..RUNS)
         .map(|_| {
             let started = Instant::now();

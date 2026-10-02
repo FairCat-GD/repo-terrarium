@@ -7,12 +7,10 @@
 //! another piece. Which piece stands where is decided elsewhere, without the salt (I-2).
 
 use crate::catalog::{Art, Catalog, SpriteId};
-use crate::compositor::composite_area;
 use crate::drift::{self, SOIL_PERIOD};
-use crate::frame::{Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, Rgba640x74};
+use crate::frame::{Area, Draw, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, SOIL_Y, Viewport};
 use crate::order::{KeyedDraw, Subject};
 use crate::salt::{InstallSalt, Purpose};
-use crate::scale::Padding;
 use crate::sky::{self, Drift};
 use crate::slots::boundary;
 use crate::text::Label;
@@ -21,10 +19,11 @@ use crate::variants::{ArtTable, WorldArt};
 const WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
 const GROUND: i32 = GROUND_Y.cast_signed();
+const SOIL: i32 = SOIL_Y.cast_signed();
 
-/// The label plate's top-left: top-left in the sky, just inside the left glass edge, as in the
-/// reference scene.
-pub const LABEL_X: i32 = 9;
+/// The label plate's top-left in the viewport: top-left in the sky, just inside the left glass
+/// edge, as the art places it.
+pub const LABEL_X: i32 = 10;
 pub const LABEL_Y: i32 = 2;
 
 /// How many of each piece the world has places for.
@@ -45,7 +44,7 @@ const RESIDENTS_TO: i32 = WIDTH - 24;
 /// cell, clear of the tree cells.
 const MONUMENT_BOUNDARIES: [usize; MONUMENTS] = [9, 15, 24];
 /// Each cloud path's pace: different, so the clouds pass one another.
-const CLOUD_MS_PER_PX: [u32; sky::MAX_CLOUDS] = [3000, 3700, 2600, 4300];
+const CLOUD_MS_PER_PX: [u32; sky::MAX_CLOUDS] = [3000, 3700, 2600];
 /// The stars' left edge: right of the label plate.
 const STARS_FROM: i32 = 106;
 /// The row the sun and the moon stand on.
@@ -290,45 +289,25 @@ fn stratum(from: i32, to: i32, n: usize, i: usize) -> i32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scenery {
     keyed: Vec<KeyedDraw>,
+    viewport: Viewport,
 }
 
 impl Scenery {
-    /// The scenery of one install.
+    /// The scenery of one install, in `viewport`: the glass at its edges, the label at its
+    /// left, and the pebbles with the scene in its middle.
     ///
     /// # Panics
     /// If the catalog lacks the label plate, which the embedded art has.
-    pub fn new(art: &Art, table: &ArtTable, layout: &WorldLayout) -> Scenery {
+    pub fn new(art: &Art, table: &ArtTable, layout: &WorldLayout, viewport: Viewport) -> Scenery {
         let catalog = &art.catalog;
         let world = table.world();
-        let mut draws = glass_edges(catalog).to_vec();
+        let mut draws = glass(art, world.corners, viewport);
         for (i, &(x, y)) in layout.pebbles.iter().enumerate() {
             let item = u64::try_from(i).unwrap_or(0);
             if let Some(pebble) = pick(layout.salt, Kind::Pebble, item, &world.pebbles) {
-                draws.push(Draw::anchored(catalog, pebble, x, y));
+                draws.push(Draw::anchored(catalog, pebble, x + viewport.inset(), y));
             }
         }
-        // The corners after the edges: where they meet, the corner is the one on top.
-        let [top_left, top_right, bottom_left, bottom_right] = world.corners;
-        let size = |id: SpriteId| catalog.sprite(id).rect;
-        draws.push(Draw::new(catalog, top_left, 0, 0));
-        draws.push(Draw::new(
-            catalog,
-            top_right,
-            WIDTH - i32::from(size(top_right).w),
-            0,
-        ));
-        draws.push(Draw::new(
-            catalog,
-            bottom_left,
-            0,
-            HEIGHT - i32::from(size(bottom_left).h),
-        ));
-        draws.push(Draw::new(
-            catalog,
-            bottom_right,
-            WIDTH - i32::from(size(bottom_right).w),
-            HEIGHT - i32::from(size(bottom_right).h),
-        ));
         let label = Label::new(catalog).expect("the delivered label plate");
         draws.push(label.plate(LABEL_X, LABEL_Y));
         let mut keyed: Vec<KeyedDraw> = (0_u16..)
@@ -336,42 +315,42 @@ impl Scenery {
             .map(|(i, draw)| KeyedDraw::new(catalog, Subject::Scenery(i), 0, 0, draw))
             .collect();
         keyed.sort_by_key(|keyed| keyed.key);
-        Scenery { keyed }
+        Scenery { keyed, viewport }
     }
 
     /// The draws in depth order, with their keys.
     pub fn keyed(&self) -> &[KeyedDraw] {
         &self.keyed
     }
+
+    /// The viewport it stands in.
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
 }
 
-/// Each row's colour beyond the image: the outer column of the glass and the soil alone,
-/// whatever the scene draws beside them, so nothing in the scene is ever stretched across the
-/// monitor's spare width. The corners and the weather band belong to the image, not to it.
-pub fn padding(art: &Art, palette_mix: u8, dim: u8) -> Padding {
-    let frame = Frame {
-        draws: soil_and_glass(&art.catalog, 1),
-        palette_mix,
-        dim,
-    };
-    let column = Area {
-        x: 0,
-        y: 0,
-        w: 1,
-        h: HEIGHT,
-    };
-    let mut image = Rgba640x74::filled([0; 4]);
-    composite_area(art, &frame, &mut image, column);
-    std::array::from_fn(|y| image.pixel(0, u32::try_from(y).unwrap_or(0)))
-}
-
-/// The soil band and its top edge from the left edge to `width`, then both glass edges.
-pub(crate) fn soil_and_glass(catalog: &Catalog, width: i32) -> Vec<Draw> {
+/// The soil band and its top edge across `viewport`, then the glass at its edges.
+///
+/// # Panics
+/// If the catalog lacks the soil or the glass, which the embedded art has.
+pub(crate) fn soil_and_glass(art: &Art, viewport: Viewport) -> Vec<Draw> {
+    let catalog = &art.catalog;
+    let width = i32::try_from(viewport.width()).unwrap_or(WIDTH);
     let mut draws: Vec<Draw> = soil(catalog, width, 0)
         .into_iter()
         .map(|(_, _, draw)| draw)
         .collect();
-    draws.extend(glass_edges(catalog));
+    let corners = [
+        "tmp.glass.corner.top-left",
+        "tmp.glass.corner.top-right",
+        "tmp.glass.corner.bottom-left",
+        "tmp.glass.corner.bottom-right",
+    ];
+    draws.extend(glass(
+        art,
+        corners.map(|name| sprite(catalog, name)),
+        viewport,
+    ));
     draws
 }
 
@@ -399,7 +378,7 @@ pub(crate) fn soil(catalog: &Catalog, width: i32, offset: i32) -> Vec<(u8, u16, 
             (
                 0,
                 column,
-                Draw::new(catalog, tiles[variant(column, 0)], x, GROUND),
+                Draw::new(catalog, tiles[variant(column, 0)], x, SOIL),
             )
         })
         .collect();
@@ -410,14 +389,75 @@ pub(crate) fn soil(catalog: &Catalog, width: i32, offset: i32) -> Vec<(u8, u16, 
     draws
 }
 
-/// The left and right glass edges.
-fn glass_edges(catalog: &Catalog) -> [Draw; 2] {
-    let right = sprite(catalog, "tmp.glass.edge.right");
-    let right_x = WIDTH - i32::from(catalog.sprite(right).rect.w);
-    [
-        Draw::new(catalog, sprite(catalog, "tmp.glass.edge.left"), 0, 0),
-        Draw::new(catalog, right, right_x, 0),
-    ]
+/// The glass at its places in `viewport`: the left and right edges, then the four corners.
+/// Each edge is clipped to the rows between its corners, so a corner replaces the edge's
+/// pixels rather than stacking on them, and the glass is never denser where they meet.
+fn glass(art: &Art, corners: [SpriteId; 4], viewport: Viewport) -> Vec<Draw> {
+    let catalog = &art.catalog;
+    let corners: Vec<Draw> = corners.iter().map(|&id| fixed(art, id, viewport)).collect();
+    let mut draws: Vec<Draw> = ["tmp.glass.edge.left", "tmp.glass.edge.right"]
+        .iter()
+        .map(|name| {
+            let edge = fixed(art, sprite(catalog, name), viewport);
+            let width = i32::from(catalog.sprite(edge.sprite).rect.w);
+            // The rows the corners on this edge's side leave it.
+            let (mut top, mut bottom) = (0, HEIGHT);
+            for corner in corners.iter().filter(|corner| corner.x == edge.x) {
+                let height = i32::from(catalog.sprite(corner.sprite).rect.h);
+                if corner.y == 0 {
+                    top = top.max(height);
+                } else {
+                    bottom = bottom.min(corner.y);
+                }
+            }
+            Draw {
+                clip: Some(Area {
+                    x: edge.x,
+                    y: top,
+                    w: width,
+                    h: bottom - top,
+                }),
+                ..edge
+            }
+        })
+        .collect();
+    draws.extend(corners);
+    draws
+}
+
+/// A piece with a fixed place, drawn in `viewport`. A backdrop wider than the scene is cropped
+/// about its centre, so the scene's part of it stands under the scene. Any other piece stands
+/// at its side of the viewport, flush with the edge: the glass on the right at the right edge,
+/// and the blank columns a piece has towards its edge lying beyond it.
+///
+/// # Panics
+/// If the sprite has no place, which every delivered backdrop and piece of glass has.
+pub(crate) fn fixed(art: &Art, id: SpriteId, viewport: Viewport) -> Draw {
+    let catalog = &art.catalog;
+    let sprite = catalog.sprite(id);
+    let at = sprite
+        .at
+        .unwrap_or_else(|| panic!("the delivered {} has its place", sprite.id));
+    let (x, w) = (i32::from(at.x), i32::from(sprite.rect.w));
+    let (left, right) = blank_columns(art, id);
+    let x = match sprite.scene {
+        Some(scene) => x + viewport.inset() - i32::from(scene.x),
+        None if 2 * x + w > WIDTH => x + viewport.extra() + right,
+        None => x - left,
+    };
+    Draw::new(catalog, id, x, i32::from(at.y))
+}
+
+/// How many of a sprite's columns are wholly transparent on its left, and on its right.
+fn blank_columns(art: &Art, id: SpriteId) -> (i32, i32) {
+    let w = usize::from(art.catalog.sprite(id).rect.w);
+    let blank = |column: usize| art.rows(id).all(|row| row[column] == 0);
+    let left = (0..w).take_while(|&c| blank(c)).count();
+    let right = (0..w).rev().take_while(|&c| blank(c)).count().min(w - left);
+    (
+        i32::try_from(left).unwrap_or(0),
+        i32::try_from(right).unwrap_or(0),
+    )
 }
 
 /// A sprite the delivered art is known to hold, by its ID.
@@ -443,8 +483,11 @@ pub fn label_area(catalog: &Catalog) -> Option<Area> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::catalog::Layer;
+    use crate::catalog::{Flags, Layer, Point};
+    use crate::frame::PLANT_GROUND_Y;
     use crate::slots::screen_third;
     use terrarium_truth::scene::Weather;
 
@@ -483,7 +526,7 @@ mod tests {
             Kind::Mark,
             Kind::Resident,
         ];
-        let codes: std::collections::BTreeSet<u64> = kinds.iter().map(|k| k.code()).collect();
+        let codes: BTreeSet<u64> = kinds.iter().map(|k| k.code()).collect();
         assert_eq!(codes.len(), kinds.len());
         // The largest item any sprite choice draws: the last mark of the largest monument id.
         let largest = (u64::from(u32::MAX) << 2) | 3;
@@ -563,41 +606,88 @@ mod tests {
     }
 
     #[test]
-    fn clouds_keep_rows_of_their_own_below_the_band() {
+    fn clouds_keep_rows_of_their_own_between_the_bodies_and_the_hills() {
+        let catalog = &Art::embedded().catalog;
+        let table = table();
+        let tallest = [
+            sky::CloudSize::Small,
+            sky::CloudSize::Medium,
+            sky::CloudSize::Large,
+        ]
+        .iter()
+        .flat_map(|&size| table.world().clouds(size))
+        .map(|&id| i32::from(catalog.sprite(id).rect.h))
+        .max()
+        .unwrap();
+        let label = (LABEL_X, LABEL_Y, 90, 9);
         for salt in salts() {
-            let layout = WorldLayout::new(salt, table().world());
-            let rows: Vec<i32> = (0..4_u8).map(|i| layout.cloud(i).y).collect();
+            let layout = WorldLayout::new(salt, table.world());
+            let paths = u8::try_from(sky::MAX_CLOUDS).unwrap();
+            let rows: Vec<i32> = (0..paths).map(|i| layout.cloud(i).y).collect();
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?}");
-            assert!(rows.iter().all(|&y| y >= sky::BAND_HEIGHT));
+            for y in rows {
+                assert!(y > *sky::BODY_ROWS.end() && y >= sky::CLOUD_TOP, "{y}");
+                // Any cloud on any path stays above the floor and clear of the label's rows.
+                assert!(y + tallest <= sky::CLOUD_FLOOR, "{y} + {tallest}");
+                assert!(!touch((0, y, WIDTH, tallest), label), "{y}");
+            }
         }
     }
 
     #[test]
-    fn the_corners_paint_over_the_edges_and_the_films_under_both() {
+    fn the_corners_replace_the_edge_pixels_and_the_films_lie_under_both() {
         let art = Art::embedded();
         let table = table();
         let scenery = Scenery::new(
             art,
             &table,
             &WorldLayout::new(crate::preset::SALT, table.world()),
+            Viewport::SCENE,
         );
         let glass: Vec<&KeyedDraw> = scenery
             .keyed()
             .iter()
             .filter(|keyed| keyed.key.layer == Layer::Glass)
             .collect();
-        let ids: Vec<&str> = glass
-            .iter()
-            .map(|keyed| art.catalog.sprite(keyed.draw.sprite).id.as_str())
-            .collect();
-        let at = |id: &str| ids.iter().position(|&found| found == id).unwrap();
-        assert!(at("tmp.glass.edge.left") < at("tmp.glass.corner.top-left"));
-        assert!(at("tmp.glass.edge.right") < at("tmp.glass.corner.top-right"));
         assert_eq!(
             glass.len(),
             6,
             "two edges and four corners, no top or bottom edge"
         );
+        // No pixel of an edge is painted where a corner stands.
+        let area = |keyed: &KeyedDraw| {
+            let rect = art.catalog.sprite(keyed.draw.sprite).rect;
+            let mut area = (
+                keyed.draw.x,
+                keyed.draw.y,
+                i32::from(rect.w),
+                i32::from(rect.h),
+            );
+            if let Some(clip) = keyed.draw.clip {
+                let bottom = (area.1 + area.3).min(clip.y + clip.h);
+                area.1 = area.1.max(clip.y);
+                area.3 = bottom - area.1;
+            }
+            area
+        };
+        let overlap = |a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)| {
+            a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+        };
+        let (edges, corners): (Vec<&KeyedDraw>, Vec<&KeyedDraw>) = glass
+            .iter()
+            .partition(|keyed| art.catalog.sprite(keyed.draw.sprite).id.contains(".edge."));
+        assert_eq!((edges.len(), corners.len()), (2, 4));
+        for edge in &edges {
+            let edge = area(edge);
+            assert_eq!(
+                edge.3,
+                HEIGHT - 12,
+                "an edge spans the rows between its corners"
+            );
+            for corner in &corners {
+                assert!(!overlap(edge, area(corner)));
+            }
+        }
         // A film keys at the frame's top-left, like the left edge: its subject goes first.
         assert!(Subject::Film(crate::variants::GlassFilm::Dust) < Subject::Scenery(0));
         let plate = scenery
@@ -617,39 +707,84 @@ mod tests {
             let rect = catalog.sprite(id).rect;
             (i32::from(rect.w), i32::from(rect.h))
         };
-        // The band is the sky's top rows, whatever each weather's tile is wide.
-        for weather in [
-            Weather::Clear,
-            Weather::Overcast,
-            Weather::Storm,
-            Weather::Haze,
-        ] {
-            let tile = table.weather(weather)[0];
+        let at = |id: SpriteId| {
+            catalog
+                .sprite(id)
+                .at
+                .map(|p| (i32::from(p.x), i32::from(p.y)))
+        };
+        // Each weather's backdrop is the widest viewport from its top-left, with the scene in
+        // its middle, so every viewport crops it about its centre.
+        let widest = i32::try_from(crate::frame::WIDEST).unwrap();
+        for weather in Weather::ALL {
+            let backdrop = table.weather(*weather)[0];
+            let sprite = catalog.sprite(backdrop);
+            assert_eq!(size(backdrop), (widest, HEIGHT), "{}", sprite.id);
+            assert!(sprite.flags.contains(Flags::BACKDROP), "{}", sprite.id);
+            assert_eq!(sprite.at, Some(Point::default()), "{}", sprite.id);
+            let scene = sprite.scene.unwrap();
             assert_eq!(
-                size(tile).1,
-                sky::BAND_HEIGHT,
+                (i32::from(scene.x), i32::from(scene.w), i32::from(scene.h)),
+                ((widest - WIDTH) / 2, WIDTH, HEIGHT),
                 "{}",
-                catalog.sprite(tile).id
+                sprite.id
             );
+            for columns in [640, 641, 735, 840] {
+                let viewport = Viewport::new(columns);
+                let draw = fixed(art, backdrop, viewport);
+                let right = i32::try_from(columns).unwrap();
+                assert!(draw.x <= 0 && draw.x + widest >= right, "{columns}");
+                assert_eq!(
+                    draw.x + i32::from(scene.x),
+                    viewport.inset(),
+                    "the scene's part under it"
+                );
+            }
         }
-        // The soil's pattern is three tiles, so its drift wraps at three tile widths, and the
-        // band fills the frame below the ground line.
+        // The soil's pattern is three tiles, so its drift wraps at three tile widths. The body
+        // fills the frame below the edge's first row, and the edge is the ground line and the
+        // row below it.
         for name in ["tmp.soil.tile.01", "tmp.soil.tile.02"] {
             assert_eq!(
                 size(sprite(catalog, name)),
-                (SOIL_PERIOD / 3, HEIGHT - GROUND)
+                (SOIL_PERIOD / 3, HEIGHT - SOIL)
             );
         }
         for name in ["tmp.soil.edge.01", "tmp.soil.edge.02"] {
-            assert_eq!(size(sprite(catalog, name)).0, SOIL_PERIOD / 3, "{name}");
+            assert_eq!(
+                size(sprite(catalog, name)),
+                (SOIL_PERIOD / 3, SOIL - GROUND + 1),
+                "{name}"
+            );
         }
-        // The glass runs the frame's height, and its corners are one square size.
+        // The glass runs the frame's height at its two ends, and its corners are one square
+        // size at the frame's four corners.
         for name in ["tmp.glass.edge.left", "tmp.glass.edge.right"] {
-            assert_eq!(size(sprite(catalog, name)).1, HEIGHT, "{name}");
+            let edge = sprite(catalog, name);
+            assert_eq!(size(edge).1, HEIGHT, "{name}");
+            let x = at(edge).unwrap().0;
+            assert!(x == 0 || x == WIDTH - size(edge).0, "{name} at {x}");
         }
-        let corners = table.world().corners.map(size);
-        assert!(corners.iter().all(|&c| c == corners[0] && c.0 == c.1));
+        let corners = table.world().corners;
+        let corner = size(corners[0]).0;
+        assert!(corners.iter().all(|&c| size(c) == (corner, corner)));
+        let places: BTreeSet<(i32, i32)> = corners.iter().filter_map(|&c| at(c)).collect();
+        let frame_corners = [0, WIDTH - corner]
+            .into_iter()
+            .flat_map(|x| [(x, 0), (x, HEIGHT - corner)])
+            .collect();
+        assert_eq!(places, frame_corners);
         let plate = label_area(catalog).unwrap();
         assert_eq!((plate.w, plate.h), (90, 9));
+    }
+
+    #[test]
+    fn plants_stand_on_the_row_above_the_soil_s_edge() {
+        let catalog = &Art::embedded().catalog;
+        assert_eq!((PLANT_GROUND_Y, GROUND, SOIL), (64, 65, 66));
+        for (part, _, draw) in soil(catalog, WIDTH, 0) {
+            let y = if part == 0 { SOIL } else { GROUND };
+            assert_eq!(draw.y, y, "{}", catalog.sprite(draw.sprite).id);
+        }
     }
 }

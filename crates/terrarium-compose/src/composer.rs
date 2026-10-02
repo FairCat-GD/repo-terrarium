@@ -5,7 +5,7 @@
 //! Each update places the plants, weeds and filler ([`crate::place`]) and gives monuments and
 //! fossils their spots, then moves every subject's looks toward what the scene holds. A subject
 //! is anything drawn that can change: a plant, a filler, the weeds in a cell, a monument, a
-//! fossil, a piece of litter or fungus, a decorative tuft, the weather band, a cloud, the sun,
+//! fossil, a piece of litter or fungus, a decorative tuft, the weather's backdrop, a cloud, the sun,
 //! the moon, a star, the light, a glass film, or the label's text. Each has up to five parts
 //! (a plant's stem, foliage, bloom and glow; a monument's stone, three marks and glow), and
 //! each part keeps its looks oldest first, the newest being the one it is becoming.
@@ -33,14 +33,17 @@ use terrarium_truth::scene::{
 };
 
 use crate::anim;
+use crate::blend::mix;
 use crate::catalog::{Art, Flags, SpriteId};
 use crate::clock::{DAY_MS, DayNight, LocalClock};
-use crate::drift::{self, BAND_MS_PER_PX, SOIL_MS_PER_PX, SOIL_PERIOD};
-use crate::frame::{Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Shear};
-use crate::motion::{Clock, Eras, Snapshot, motion_turn, turn, turn_start};
+use crate::drift::{self, SOIL_MS_PER_PX, SOIL_PERIOD};
+use crate::frame::{
+    Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Shear, Viewport,
+};
+use crate::motion::{Clock, DIM_EVERY, Eras, Snapshot, motion_turn, turn, turn_start};
 use crate::order::{KeyedDraw, Place, Subject, merged};
 use crate::place::{Bands, FillForm, Placement, WeedForm, assign_spots, place};
-use crate::plant::shows_bloom;
+use crate::plant::{self, shows_bloom};
 use crate::resident::{self, Enter, Resident, Segment, TRANSITION_MS, TurnPlan, Way};
 use crate::rules::dressing;
 use crate::salt::{InstallSalt, Purpose};
@@ -58,6 +61,10 @@ use crate::world::{self, Kind, LABEL_X, LABEL_Y, Scenery, WorldLayout};
 
 const SHOWN: u8 = u8::MAX;
 const HALF_RESTYLE: u32 = RESTYLE_MS / 2;
+/// How many turns past the running one the next motion may lie: a cell gusts once in every
+/// [`sway::GUST_EVERY`] motion turns, and in dim mode one turn in [`DIM_EVERY`] moves. Once a
+/// turn's gust is over, the plant's next is that many turns on.
+const MOTION_AHEAD: u64 = sway::GUST_EVERY * DIM_EVERY;
 const FRAME_WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const FRAME_HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
 const GROUND: i32 = GROUND_Y.cast_signed();
@@ -510,6 +517,8 @@ pub struct Composer {
     light_ms: u32,
     label_capacity: usize,
     sweep_width: i32,
+    /// The columns it composes for; the scene stands in their middle.
+    viewport: Viewport,
     placement: Placement,
     monuments: BTreeMap<u32, u8>,
     fossils: BTreeMap<u32, u8>,
@@ -561,6 +570,7 @@ impl Composer {
             light_ms: table.world().light_ms,
             label_capacity: table.world().label_capacity,
             sweep_width: table.world().sweep_width,
+            viewport: Viewport::SCENE,
             placement: Placement::default(),
             monuments: BTreeMap::new(),
             fossils: BTreeMap::new(),
@@ -605,7 +615,7 @@ impl Composer {
 
     /// The fixed scenery of this install, from the composer's own salt.
     pub fn scenery(&self, art: &Art, table: &ArtTable) -> Scenery {
-        Scenery::new(art, table, &self.world)
+        Scenery::new(art, table, &self.world, self.viewport)
     }
 
     /// Moves the depiction toward `input` and `overlay` from `now`. The frame at `now` does
@@ -1124,23 +1134,23 @@ impl Composer {
                 .filter(|look| look.opacity.value(now) > 0)
                 .filter_map(|look| look.piece.sprite(table, self.salt, subject, 0))
                 .collect();
-            match subject {
-                Subject::Cloud(i) => {
-                    let widest = shown
-                        .iter()
-                        .map(|&s| i32::from(art.catalog.sprite(s).rect.w))
-                        .max();
-                    next.take(widest.map(|width| self.world.cloud(i).next_seen_step(now, width)));
-                }
-                // A plain tile looks the same however far it has drifted, so it does not.
-                Subject::Weather if shown.iter().any(|&tile| !art.plain(tile)) => {
-                    next.take(Some(drift::next_step(now, BAND_MS_PER_PX)));
-                }
-                _ => {}
+            if let Subject::Cloud(i) = subject {
+                let widest = shown
+                    .iter()
+                    .map(|&s| i32::from(art.catalog.sprite(s).rect.w))
+                    .max();
+                let drift = self.world.cloud(i);
+                let viewport = self.viewport_width();
+                next.take(widest.map(|width| drift.next_seen_step(now, width, viewport)));
             }
         }
         next.take(Some(drift::next_step(now, SOIL_MS_PER_PX)));
-        next.take(Some(drift::sweep_next(self.salt, now, self.sweep_width)));
+        next.take(Some(drift::sweep_next(
+            self.salt,
+            now,
+            self.sweep_width,
+            self.viewport_width(),
+        )));
         for look in &self.label {
             next.take(look.opacity.next_step(now));
             if look.opacity.value(now) > 0 || look.opacity.target() == SHOWN {
@@ -1162,10 +1172,10 @@ impl Composer {
     }
 
     /// The first moment after `now` at which a turn's motion changes the frame. Turns to come
-    /// are searched until one moves; in dim mode three in four are still, so five suffice.
+    /// are searched until one moves, as far as the longest wait for a gust.
     fn motion_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
         let running = turn(now);
-        for w in running..running + 5 {
+        for w in running..=running + MOTION_AHEAD {
             let start = turn_start(w);
             // Into the running turn; any moment of a turn to come is after `now`.
             let since = now.0.saturating_sub(start.0);
@@ -1188,11 +1198,26 @@ impl Composer {
                     plan_next(&art.catalog, table, plan, now, start).filter(|&moment| moment < end),
                 );
             }
+            // A turn to come begins with each resident where its plan puts it, which need not
+            // be where the turn before left it: another place, facing or routine.
+            if start > now && self.residents_change_at(art, table, start) {
+                next.take(Some(start));
+            }
             if next.0.is_some() {
                 return next.0;
             }
         }
         None
+    }
+
+    /// Whether any resident is drawn otherwise at `at` than just before it.
+    fn residents_change_at(&self, art: &Art, table: &ArtTable, at: Millis) -> bool {
+        let residents = |now: Millis| {
+            let mut out = Vec::new();
+            self.push_residents(art, table, self.palette_mix(now), now, &mut out);
+            out
+        };
+        residents(Millis(at.0.saturating_sub(1))) != residents(at)
     }
 
     /// When the last tween ends, and the changes of rest an update brought are over. From
@@ -1276,8 +1301,34 @@ impl Composer {
         self.push_label(art, now, &mut keyed);
         self.push_drifts(art, table, now, &mut keyed);
         self.push_residents(art, table, palette_mix, now, &mut keyed);
+        // The scene stands in the middle of the viewport; everything else is laid out across
+        // the viewport already.
+        let inset = self.viewport.inset();
+        for keyed in keyed
+            .iter_mut()
+            .filter(|keyed| keyed.key.subject.in_scene())
+        {
+            keyed.key.x += inset;
+            keyed.draw.x += inset;
+            if let Some(clip) = &mut keyed.draw.clip {
+                clip.x += inset;
+            }
+        }
         keyed.sort_by_key(|keyed| keyed.key);
         keyed
+    }
+
+    /// Composes for `viewport` from now on; its scenery is [`Composer::scenery`]'s anew.
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        self.viewport = viewport;
+    }
+
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    fn viewport_width(&self) -> i32 {
+        i32::try_from(self.viewport.width()).unwrap_or(FRAME_WIDTH)
     }
 
     /// Every resident at `now`: its turn's pose, a cover or a move over the one before while
@@ -1335,17 +1386,23 @@ impl Composer {
     fn push_drifts(&self, art: &Art, table: &ArtTable, now: Millis, out: &mut Vec<KeyedDraw>) {
         let catalog = &art.catalog;
         let offset = drift::offset(now, SOIL_MS_PER_PX, SOIL_PERIOD);
-        for (part, item, draw) in world::soil(catalog, FRAME_WIDTH, offset) {
+        let width = self.viewport_width();
+        for (part, item, draw) in world::soil(catalog, width, offset) {
             // Keyed at the band's origin, so the tiles paint before anything lying on them.
             let place = Place::new(Subject::Soil, part, 0).item(item);
             out.push(KeyedDraw::at(place, (0, GROUND), draw));
         }
         let world = table.world();
-        if let Some(x) = drift::sweep_x(self.salt, now, world.sweep_width) {
+        if let Some(x) = drift::sweep_x(self.salt, now, world.sweep_width, width) {
             let draw = Draw::new(catalog, world.sweep, x, 0);
+            let fade = drift::sweep_fade(x, world.sweep_width, width);
+            let draw = Draw {
+                opacity: times_opacity(draw.opacity, fade),
+                ..draw
+            };
             // Keyed past the frame's far corner: it paints over all the rest of the glass.
             let place = Place::new(Subject::Sweep, 0, 0);
-            out.push(KeyedDraw::at(place, (FRAME_WIDTH, FRAME_HEIGHT), draw));
+            out.push(KeyedDraw::at(place, (width, FRAME_HEIGHT), draw));
         }
     }
 
@@ -1381,24 +1438,17 @@ impl Composer {
         let ground = |x| Draw::anchored(catalog, sprite, x, PLANT_GROUND_Y);
         match place.subject {
             Subject::Weather => {
-                // A whole look paints together at the band's origin, so a new weather covers
-                // the old in every column, whatever the two tiles' widths. The band drifts
-                // right; a tile keeps its item as it drifts, entering and leaving at an edge.
-                let step = i32::from(rect.w);
-                let offset = band_offset(art, sprite, now);
-                for (tile, x) in drift::columns(offset, step, 1, FRAME_WIDTH) {
-                    push(
-                        place.item(tile),
-                        Some((0, 0)),
-                        Draw::new(catalog, sprite, x, 0),
-                    );
-                }
+                // The backdrop is the whole scene, held still at its place: a new weather
+                // covers the old one everywhere.
+                let backdrop = world::fixed(art, sprite, self.viewport);
+                push(place, Some((0, 0)), backdrop);
             }
             Subject::Cloud(i) => {
                 // Wholly out of sight, a cloud is not drawn, so its drift there changes nothing.
                 let drift = self.world.cloud(i);
-                let x = drift.x(now);
-                if x + i32::from(rect.w) > 0 && x < FRAME_WIDTH {
+                let viewport = self.viewport_width();
+                let x = drift.x(now, viewport);
+                if x + i32::from(rect.w) > 0 && x < viewport {
                     push(place, None, Draw::new(catalog, sprite, x, drift.y));
                 }
             }
@@ -1420,7 +1470,13 @@ impl Composer {
                 push(place, None, Draw::new(catalog, sprite, x, y));
             }
             Subject::Light | Subject::Film(_) => {
-                push(place, None, Draw::new(catalog, sprite, 0, 0));
+                let draws = match place.subject {
+                    Subject::Light => light(catalog, sprite, self.viewport),
+                    _ => film(catalog, sprite, self.viewport),
+                };
+                for (item, draw) in (0_u16..).zip(draws) {
+                    push(place.item(item), None, draw);
+                }
             }
             Subject::Monument { spot, .. } => {
                 let x = self.world.monument(spot);
@@ -1452,6 +1508,9 @@ impl Composer {
                     Piece::PlantGlow { species, stage } => {
                         let (cx, cy) = foliage_centre(art, table, species, stage, x);
                         Draw::anchored(catalog, sprite, cx, cy)
+                    }
+                    Piece::Stem { .. } | Piece::Foliage { .. } | Piece::Bloom { .. } => {
+                        Draw::anchored(catalog, sprite, x, standing(piece))
                     }
                     _ => ground(x),
                 };
@@ -1508,22 +1567,76 @@ impl Composer {
         palette_mix: u8,
         now: Millis,
     ) -> Frame {
+        debug_assert_eq!(
+            scenery.viewport(),
+            self.viewport,
+            "scenery of another viewport"
+        );
         Frame {
             draws: merged(&self.draws(art, table, palette_mix, now), scenery.keyed()),
             palette_mix,
+            viewport: self.viewport,
             dim: self.dim(now),
         }
     }
 }
 
-/// How far the sky band's `tile` has drifted at `now`: a plain tile, which drifting would not
-/// change, stays put.
-fn band_offset(art: &Art, tile: SpriteId, now: Millis) -> i32 {
-    if art.plain(tile) {
-        0
-    } else {
-        let width = i32::from(art.catalog.sprite(tile).rect.w);
-        drift::offset(now, BAND_MS_PER_PX, width)
+/// The row a plant's part stands on: its plant's ground row.
+fn standing(piece: Piece) -> i32 {
+    match piece {
+        Piece::Stem { species, stage } | Piece::Foliage { species, stage, .. } => {
+            plant::ground_y(species, stage)
+        }
+        // Only a mature plant blooms.
+        Piece::Bloom { species } => plant::ground_y(species, GrowthStage::Mature),
+        _ => PLANT_GROUND_Y,
+    }
+}
+
+/// A light across `viewport`. It is one colour across the scene, so a wider viewport takes a
+/// second copy, cut where the first ends, and is one colour to both edges.
+fn light(catalog: &crate::catalog::Catalog, sprite: SpriteId, viewport: Viewport) -> Vec<Draw> {
+    let width = i32::try_from(viewport.width()).unwrap_or(FRAME_WIDTH);
+    let own = i32::from(catalog.sprite(sprite).rect.w);
+    let mut draws = vec![Draw::new(catalog, sprite, 0, 0)];
+    if width > own {
+        draws.push(Draw {
+            clip: Some(beyond(own, width)),
+            ..Draw::new(catalog, sprite, width - own, 0)
+        });
+    }
+    draws
+}
+
+/// A glass film across `viewport`. It lies over the scene, and a wider viewport repeats its
+/// droplets out to the edges, each copy cut where the film itself begins and ends.
+fn film(catalog: &crate::catalog::Catalog, sprite: SpriteId, viewport: Viewport) -> Vec<Draw> {
+    let width = i32::try_from(viewport.width()).unwrap_or(FRAME_WIDTH);
+    let (inset, own) = (viewport.inset(), i32::from(catalog.sprite(sprite).rect.w));
+    let copies = [
+        (inset - own, beyond(0, inset)),
+        (inset + own, beyond(inset + own, width)),
+    ];
+    let mut draws = vec![Draw::new(catalog, sprite, inset, 0)];
+    draws.extend(
+        copies
+            .into_iter()
+            .filter(|(_, clip)| clip.w > 0)
+            .map(|(x, clip)| Draw {
+                clip: Some(clip),
+                ..Draw::new(catalog, sprite, x, 0)
+            }),
+    );
+    draws
+}
+
+/// The full-height columns `from..to` of a viewport.
+fn beyond(from: i32, to: i32) -> Area {
+    Area {
+        x: from,
+        y: 0,
+        w: to - from,
+        h: FRAME_HEIGHT,
     }
 }
 
@@ -1759,7 +1872,7 @@ fn foliage_centre(
     };
     let sprite = art.catalog.sprite(foliage);
     let left = x - i32::from(sprite.anchor.x);
-    let top = PLANT_GROUND_Y - i32::from(sprite.anchor.y);
+    let top = plant::ground_y(species, stage) - i32::from(sprite.anchor.y);
     (
         left + i32::from(sprite.rect.w) / 2,
         top + i32::from(sprite.rect.h) / 2,
@@ -1767,7 +1880,7 @@ fn foliage_centre(
 }
 
 /// How brightly a look is drawn: its own opacity, and the time of day for art that shows only
-/// by day or only by night.
+/// by day or only by night, or that has an opacity of its own by night.
 #[derive(Clone, Copy, Debug)]
 struct Lit {
     value: u8,
@@ -1776,10 +1889,15 @@ struct Lit {
 
 impl Lit {
     /// The draw at the look's opacity, scaled down by day for night-only art and by night for
-    /// day-only art; `None` once nothing of it shows.
+    /// day-only art, and eased to its night opacity with the palette; `None` once nothing of
+    /// it shows.
     fn apply(self, art: &Art, draw: Draw) -> Option<Draw> {
-        let flags = art.catalog.sprite(draw.sprite).flags;
-        let mut opacity = times_opacity(draw.opacity, self.value);
+        let sprite = art.catalog.sprite(draw.sprite);
+        let flags = sprite.flags;
+        let own = sprite.night_opacity.map_or(draw.opacity, |night| {
+            mix(draw.opacity, night, self.palette_mix)
+        });
+        let mut opacity = times_opacity(own, self.value);
         if flags.contains(Flags::NIGHT_ONLY) {
             opacity = times_opacity(opacity, self.palette_mix);
         }
@@ -2155,31 +2273,31 @@ mod tests {
 
     #[test]
     fn a_whole_weather_look_covers_the_old_one_in_every_column() {
-        // Clear tiles are 8 wide and overcast ones 16: keyed by x, they would interleave.
         let table = table();
-        let mut composer = Composer::new(&table, preset::SALT);
-        let mut clear = preset::bare(PresentationState::Thriving, Vec::new());
-        composer.update(&clear, &overlay(&[]), Millis(0));
-        clear.weather = Weather::Overcast;
-        let settled = composer.settled_at();
-        composer.update(&clear, &overlay(&[]), settled);
-        let mid = settled.plus(HALF_RESTYLE / 2);
-        let tiles = of(&composer, &table, 0, mid, Subject::Weather);
-        let looks: Vec<u16> = tiles.iter().map(|keyed| keyed.key.look).collect();
-        let first_new = looks
-            .iter()
-            .position(|&look| look == 1)
-            .expect("the new weather");
-        assert!(looks[..first_new].iter().all(|&look| look == 0));
-        assert!(looks[first_new..].iter().all(|&look| look == 1));
-        let width = |look| -> i32 {
-            tiles
-                .iter()
-                .filter(|keyed| keyed.key.look == look)
-                .map(|keyed| i32::from(Art::embedded().catalog.sprite(keyed.draw.sprite).rect.w))
-                .sum()
-        };
-        assert_eq!((width(0), width(1)), (640, 640));
+        for viewport in [Viewport::SCENE, Viewport::new(735)] {
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.set_viewport(viewport);
+            let mut clear = preset::bare(PresentationState::Thriving, Vec::new());
+            composer.update(&clear, &overlay(&[]), Millis(0));
+            clear.weather = Weather::Overcast;
+            let settled = composer.settled_at();
+            composer.update(&clear, &overlay(&[]), settled);
+            let mid = settled.plus(HALF_RESTYLE / 2);
+            let looks = of(&composer, &table, 0, mid, Subject::Weather);
+            // One draw a look, the new one on top, each across every column of the viewport.
+            assert_eq!(
+                looks.iter().map(|keyed| keyed.key.look).collect::<Vec<_>>(),
+                [0, 1]
+            );
+            let width = i32::try_from(viewport.width()).unwrap();
+            for keyed in looks {
+                let w = i32::from(Art::embedded().catalog.sprite(keyed.draw.sprite).rect.w);
+                assert!(
+                    keyed.draw.x <= 0 && keyed.draw.x + w >= width,
+                    "{viewport:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2360,6 +2478,60 @@ mod tests {
             subjects,
             leaning.iter().map(|keyed| keyed.key.part).collect(),
         )
+    }
+
+    #[test]
+    fn a_gust_turns_ahead_is_named_however_long_the_frame_holds_before_it() {
+        use crate::motion::TURN_MS;
+        // One swaying fern under a storm: no clouds, sun or residents, and one label line, so
+        // after a gust the frame holds for turns, until the plant's next gust.
+        let art = Art::embedded();
+        let table = table();
+        let fern = PlantView {
+            id: 1,
+            species: PlantSpecies::Fern,
+            stage: GrowthStage::Young,
+            state: PlantState::Thriving,
+            bloom: false,
+            scorched: false,
+            order: 0,
+        };
+        let mut scene = preset::bare(PresentationState::Thriving, vec![fern]);
+        scene.weather = Weather::Storm;
+        scene.wind = Wind::Breezy;
+        for dim in [false, true] {
+            let overlay = OverlayInput {
+                dim,
+                ..overlay(&["main"])
+            };
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.update(&scene, &overlay, Millis(0));
+            let scenery = composer.scenery(art, &table);
+            let frame = |now: Millis| {
+                let draws = composer.frame(art, &table, &scenery, composer.palette_mix(now), now);
+                draws.draws
+            };
+            let mut moment = composer.settled_at();
+            let mut longest = 0;
+            // Past the longest wait between one cell's gusts, in either mode.
+            while moment.0 < turn_start(MOTION_AHEAD + 2).0 {
+                let next = composer.next_change(art, &table, moment).unwrap();
+                let held = frame(moment);
+                // A gust holds each pose at least 300 ms, so 100 ms steps see every one.
+                for inside in (moment.0 + 1..next.0).step_by(100) {
+                    assert!(
+                        frame(Millis(inside)) == held,
+                        "changed at {inside} before {next:?}"
+                    );
+                }
+                longest = longest.max(next.0 - moment.0);
+                moment = next;
+            }
+            assert!(
+                longest > 2 * TURN_MS,
+                "the frame never held for long: {longest} ms"
+            );
+        }
     }
 
     #[test]

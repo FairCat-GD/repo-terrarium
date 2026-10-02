@@ -18,10 +18,13 @@ const GALE: [(i32, u64); 5] = [(1, 300), (2, 700), (1, 300), (2, 700), (1, 300)]
 /// A cell's second gust comes this long after its first, both within the turn.
 const SECOND_GUST_MS: u64 = 9000;
 
+/// A cell gusts in one motion turn of every this many.
+pub const GUST_EVERY: u64 = 5;
+
 /// Whether a plant in `cell` gusts in the turn whose motion count is `j`: six cells in thirty,
 /// spread along the strip and different every turn.
 pub const fn gusts(cell: u8, j: u64) -> bool {
-    (cell as u64 * 7 + j).is_multiple_of(5)
+    (cell as u64 * 7 + j).is_multiple_of(GUST_EVERY)
 }
 
 /// How far into its turn a cell's first gust starts: staggered by cell, so neighbours never

@@ -1,21 +1,21 @@
 //! The sky's own rules: the moon of the local date, the clouds a weather brings, which bodies a
 //! weather lets through, and how the clouds drift.
 //!
-//! The weather band is the top 13 rows, tiled from x = 0; below it the sky is flat `sky.base`.
-//! The sun, the moon and the stars stand inside the band's rows and the clouds drift below
-//! them, so no two kinds of sky piece ever overlap, and the depth order's y-then-x rule is the
-//! right one within the sky layer too.
+//! Each weather's backdrop is a whole scene, sky to soil, drawn once behind everything. Its sky
+//! is open and holds no bodies or clouds: the sun, the moon and the stars stand in the top
+//! rows, and the clouds drift below them and above the hills, so no two kinds of sky piece
+//! ever overlap, and the depth order's y-then-x rule is the right one within the sky layer too.
 
 use terrarium_truth::scene::Weather;
 
-/// The rows the weather band covers, from the top.
-pub const BAND_HEIGHT: i32 = 13;
-/// The rows the sun, the moon and the stars may use: inside the band, above the clouds.
+/// The rows the sun, the moon and the stars may use: the open sky above the clouds.
 pub const BODY_ROWS: std::ops::RangeInclusive<i32> = 1..=11;
-/// The top row of the highest cloud path, just below the band. Each further path is
-/// [`CLOUD_PATH_STEP`] rows lower, so no two paths share a top row.
-pub const CLOUD_TOP: i32 = BAND_HEIGHT + 1;
+/// The top row of the highest cloud path, just below the bodies and clear of the label. Each
+/// further path is [`CLOUD_PATH_STEP`] rows lower, so no two paths share a top row.
+pub const CLOUD_TOP: i32 = 12;
 pub const CLOUD_PATH_STEP: i32 = 4;
+/// No cloud reaches this row, so every cloud stays in the open sky above the hills.
+pub const CLOUD_FLOOR: i32 = 30;
 
 /// A calendar date on the local clock. Day and night, and the moon, are the composer's, never
 /// truth's.
@@ -117,17 +117,15 @@ pub enum CloudSize {
 }
 
 /// The most clouds any weather brings.
-pub const MAX_CLOUDS: usize = 4;
+pub const MAX_CLOUDS: usize = 3;
 
-/// The clouds a weather brings, by place: cloud `i` of every weather drifts along the same
-/// path, so a change of weather restyles a cloud where it stands. A storm's sky is its band.
+/// The clouds a weather brings, by place. Only a clear sky has fair-weather clouds: overcast,
+/// haze and storm are cloud cover in their backdrops, which suppresses them.
 pub const fn clouds(weather: Weather) -> &'static [CloudSize] {
-    use CloudSize::{Large, Medium, Small};
+    use CloudSize::{Medium, Small};
     match weather {
         Weather::Clear => &[Small, Medium, Small],
-        Weather::Haze => &[Large, Medium],
-        Weather::Overcast => &[Medium, Large, Small, Large],
-        Weather::Storm => &[],
+        Weather::Haze | Weather::Overcast | Weather::Storm => &[],
     }
 }
 
@@ -144,10 +142,15 @@ pub const fn shows_stars(weather: Weather) -> bool {
 /// The far left a cloud reaches before it wraps: wider than the widest cloud, so a cloud
 /// wraps only while it is wholly outside the frame.
 const CLOUD_MARGIN: i32 = 32;
-/// The positions a cloud's left edge cycles through: `-CLOUD_MARGIN..=640`.
-const CLOUD_SPAN: i64 = 640 + 32 + 1;
 
-/// One cloud's path: where it starts, its row, and how long it takes to move a pixel right.
+/// The positions a cloud's left edge cycles through in a viewport `width` columns wide:
+/// `-CLOUD_MARGIN..=width`.
+fn span(width: i32) -> i64 {
+    i64::from(width) + i64::from(CLOUD_MARGIN) + 1
+}
+
+/// One cloud's path across the whole viewport: where it starts, its row, and how long it
+/// takes to move a pixel right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drift {
     pub start: i32,
@@ -156,24 +159,29 @@ pub struct Drift {
 }
 
 impl Drift {
-    /// The cloud's left edge at `now`.
-    pub fn x(self, now: crate::tween::Millis) -> i32 {
+    /// The cloud's left edge at `now`, in a viewport `viewport` columns wide.
+    pub fn x(self, now: crate::tween::Millis, viewport: i32) -> i32 {
         let moved = i64::try_from(now.0 / u64::from(self.ms_per_px.max(1))).unwrap_or(0);
-        let at = (i64::from(self.start) + moved).rem_euclid(CLOUD_SPAN);
+        let at = (i64::from(self.start) + moved).rem_euclid(span(viewport));
         i32::try_from(at).unwrap_or(0) - CLOUD_MARGIN
     }
 
-    /// When a cloud `width` pixels wide next changes what is seen of it after `now`: its next
-    /// pixel while any of it is in the frame or about to be, else the step that brings it back
-    /// into sight.
-    pub fn next_seen_step(self, now: crate::tween::Millis, width: i32) -> crate::tween::Millis {
+    /// When a cloud `width` pixels wide next changes what is seen of it after `now`, in a
+    /// viewport `viewport` columns wide: its next pixel while any of it is in the frame or
+    /// about to be, else the step that brings it back into sight.
+    pub fn next_seen_step(
+        self,
+        now: crate::tween::Millis,
+        width: i32,
+        viewport: i32,
+    ) -> crate::tween::Millis {
         let ms = u64::from(self.ms_per_px.max(1));
         let moved = now.0 / ms;
         let seen = |steps: u64| {
-            let x = self.x(crate::tween::Millis(steps * ms));
-            x + width > 0 && x < 640
+            let x = self.x(crate::tween::Millis(steps * ms), viewport);
+            x + width > 0 && x < viewport
         };
-        let span = u64::try_from(CLOUD_SPAN).unwrap_or(1);
+        let span = u64::try_from(span(viewport)).unwrap_or(1);
         let ahead = if seen(moved) {
             1
         } else {
@@ -256,10 +264,10 @@ mod tests {
             y: 20,
             ms_per_px: 3000,
         };
-        let mut last = drift.x(Millis(0));
+        let mut last = drift.x(Millis(0), 640);
         assert_eq!(last, -CLOUD_MARGIN);
-        for step in 1..=2 * CLOUD_SPAN {
-            let x = drift.x(Millis(u64::try_from(step).unwrap() * 3000));
+        for step in 1..=2 * span(640) {
+            let x = drift.x(Millis(u64::try_from(step).unwrap() * 3000), 640);
             if x < last {
                 // The jump: from past the right edge to wholly left of the frame.
                 assert!(last >= 640 && x + 30 <= 0, "{last} → {x}");
@@ -268,7 +276,7 @@ mod tests {
             }
             last = x;
         }
-        assert_eq!(drift.x(Millis(2999)), -CLOUD_MARGIN);
+        assert_eq!(drift.x(Millis(2999), 640), -CLOUD_MARGIN);
     }
 
     #[test]
@@ -279,24 +287,33 @@ mod tests {
             ms_per_px: 100,
         };
         // At start a 30-wide cloud stands at x = −32, wholly left: it shows at x = −29.
-        assert_eq!(drift.next_seen_step(Millis(0), 30), Millis(300));
-        assert_eq!(drift.x(Millis(300)), -29);
+        assert_eq!(drift.next_seen_step(Millis(0), 30, 640), Millis(300));
+        assert_eq!(drift.x(Millis(300), 640), -29);
         // In sight it moves a pixel at a time, and its last step, out of sight, counts.
-        assert_eq!(drift.next_seen_step(Millis(300), 30), Millis(400));
+        assert_eq!(drift.next_seen_step(Millis(300), 30, 640), Millis(400));
         let leaving = Millis(u64::try_from(32 + 639).unwrap() * 100);
-        assert_eq!(drift.x(leaving), 639);
-        assert_eq!(drift.next_seen_step(leaving, 30), Millis(leaving.0 + 100));
+        assert_eq!(drift.x(leaving, 640), 639);
+        assert_eq!(
+            drift.next_seen_step(leaving, 30, 640),
+            Millis(leaving.0 + 100)
+        );
         // Past the right edge it waits for the wrap and the steps back into sight.
         let gone = Millis(leaving.0 + 100);
-        assert_eq!(drift.x(gone), 640);
-        assert_eq!(drift.next_seen_step(gone, 30), Millis(gone.0 + 4 * 100));
+        assert_eq!(drift.x(gone, 640), 640);
+        assert_eq!(
+            drift.next_seen_step(gone, 30, 640),
+            Millis(gone.0 + 4 * 100)
+        );
     }
 
     #[test]
     fn weather_decides_which_bodies_and_clouds_show() {
         assert!(shows_sun_and_moon(Weather::Haze) && !shows_stars(Weather::Haze));
         assert!(!shows_sun_and_moon(Weather::Overcast) && !shows_sun_and_moon(Weather::Storm));
-        assert!(clouds(Weather::Storm).is_empty());
+        for weather in [Weather::Overcast, Weather::Haze, Weather::Storm] {
+            assert!(clouds(weather).is_empty(), "{weather:?}");
+        }
+        assert!(!clouds(Weather::Clear).is_empty());
         assert!(Weather::ALL.iter().all(|&w| clouds(w).len() <= MAX_CLOUDS));
     }
 }

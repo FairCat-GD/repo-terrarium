@@ -5,7 +5,7 @@
   "opacityContract": "PNG stores palette-coloured binary-alpha mask. Apply sprite.opacity / 255 and blend at draw time. Indexed source layer opacity matches the manifest.",
   "origin": "Aseprite Lua native pixel artwork continuing the approved Botanical Cabinet palette and components",
   "palette": "../../../palettes/exports/palette-temperate.json",
-  "revision": 3,
+  "revision": 4,
   "schemaVersion": 1,
   "sprites": [
     {
@@ -15,18 +15,300 @@
       },
       "blend": "normal",
       "category": "sky",
+      "celestialBaked": false,
+      "decorativeCloudsBaked": false,
       "file": "individual/tmp.sky.clear.tile.png",
+      "indexConvention": "PNG index 0 is transparent; index i corresponds to palettes.day[i-1] and palettes.night[i-1] in JSON arrays. Preserve day/night RGB pairs when merging into the application shared palette.",
+      "integration": "Draw the center crop at unchanged pixel scale. Soil and glass use viewport coordinates, not panorama coordinates. No baked sky objects.",
       "layer": "sky",
       "name": "tmp.sky.clear.tile",
+      "nightMode": "paired-palette",
       "opacity": 255,
-      "paletteGroup": "sky",
-      "rect": {
-        "h": 13,
-        "w": 8,
-        "x": 2,
-        "y": 2
+      "paletteGroup": "background-local",
+      "paletteMode": "paired-palette-import",
+      "palettes": {
+        "day": [
+          [
+            173,
+            199,
+            216
+          ],
+          [
+            183,
+            205,
+            218
+          ],
+          [
+            194,
+            212,
+            217
+          ],
+          [
+            210,
+            222,
+            219
+          ],
+          [
+            217,
+            226,
+            215
+          ],
+          [
+            228,
+            231,
+            213
+          ],
+          [
+            239,
+            235,
+            210
+          ],
+          [
+            248,
+            239,
+            207
+          ],
+          [
+            177,
+            196,
+            206
+          ],
+          [
+            164,
+            186,
+            197
+          ],
+          [
+            148,
+            173,
+            184
+          ],
+          [
+            133,
+            159,
+            169
+          ],
+          [
+            126,
+            153,
+            150
+          ],
+          [
+            145,
+            167,
+            153
+          ],
+          [
+            166,
+            181,
+            160
+          ],
+          [
+            173,
+            187,
+            161
+          ],
+          [
+            198,
+            203,
+            152
+          ],
+          [
+            180,
+            191,
+            135
+          ],
+          [
+            164,
+            177,
+            128
+          ],
+          [
+            149,
+            166,
+            117
+          ],
+          [
+            135,
+            152,
+            109
+          ],
+          [
+            118,
+            139,
+            108
+          ],
+          [
+            104,
+            127,
+            104
+          ],
+          [
+            94,
+            117,
+            102
+          ],
+          [
+            83,
+            107,
+            97
+          ]
+        ],
+        "night": [
+          [
+            38,
+            59,
+            82
+          ],
+          [
+            43,
+            66,
+            88
+          ],
+          [
+            48,
+            73,
+            96
+          ],
+          [
+            44,
+            69,
+            93
+          ],
+          [
+            61,
+            90,
+            113
+          ],
+          [
+            70,
+            99,
+            122
+          ],
+          [
+            81,
+            110,
+            131
+          ],
+          [
+            92,
+            121,
+            140
+          ],
+          [
+            82,
+            120,
+            138
+          ],
+          [
+            70,
+            108,
+            127
+          ],
+          [
+            85,
+            116,
+            137
+          ],
+          [
+            73,
+            104,
+            125
+          ],
+          [
+            53,
+            92,
+            104
+          ],
+          [
+            69,
+            109,
+            117
+          ],
+          [
+            99,
+            134,
+            138
+          ],
+          [
+            82,
+            119,
+            121
+          ],
+          [
+            122,
+            151,
+            147
+          ],
+          [
+            101,
+            135,
+            129
+          ],
+          [
+            63,
+            96,
+            85
+          ],
+          [
+            69,
+            106,
+            94
+          ],
+          [
+            53,
+            90,
+            84
+          ],
+          [
+            45,
+            80,
+            77
+          ],
+          [
+            46,
+            76,
+            73
+          ],
+          [
+            40,
+            67,
+            64
+          ],
+          [
+            35,
+            59,
+            57
+          ]
+        ]
       },
-      "tileX": true
+      "placement": {
+        "h": 74,
+        "w": 840,
+        "x": 0,
+        "y": 0
+      },
+      "preservedCenter": {
+        "h": 74,
+        "w": 640,
+        "x": 100,
+        "y": 0
+      },
+      "renderMode": "full-scene-background",
+      "revision": 6,
+      "size": {
+        "h": 74,
+        "w": 840
+      },
+      "source": "../../source/batch-02/tmp.sky.clear.tile.aseprite",
+      "tileX": false,
+      "viewport": {
+        "height": 74,
+        "maxWidth": 840,
+        "minRecommendedWidth": 640,
+        "mode": "crop-no-resize",
+        "sourceX": "floor((840 - viewportNativeWidth) / 2)"
+      }
     },
     {
       "anchor": {
@@ -198,6 +480,7 @@
       "file": "individual/tmp.sky.cloud.small.01.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.small.01",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -205,7 +488,13 @@
         "w": 10,
         "x": 62,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 4,
+        "w": 10
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.small.01.aseprite"
     },
     {
       "anchor": {
@@ -217,6 +506,7 @@
       "file": "individual/tmp.sky.cloud.small.02.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.small.02",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -224,7 +514,13 @@
         "w": 10,
         "x": 74,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 4,
+        "w": 10
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.small.02.aseprite"
     },
     {
       "anchor": {
@@ -236,6 +532,7 @@
       "file": "individual/tmp.sky.cloud.small.03.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.small.03",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -243,7 +540,13 @@
         "w": 10,
         "x": 86,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 4,
+        "w": 10
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.small.03.aseprite"
     },
     {
       "anchor": {
@@ -255,6 +558,7 @@
       "file": "individual/tmp.sky.cloud.medium.01.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.medium.01",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -262,7 +566,13 @@
         "w": 18,
         "x": 98,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 6,
+        "w": 18
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.medium.01.aseprite"
     },
     {
       "anchor": {
@@ -274,6 +584,7 @@
       "file": "individual/tmp.sky.cloud.medium.02.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.medium.02",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -281,7 +592,13 @@
         "w": 18,
         "x": 118,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 6,
+        "w": 18
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.medium.02.aseprite"
     },
     {
       "anchor": {
@@ -293,6 +610,7 @@
       "file": "individual/tmp.sky.cloud.medium.03.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.medium.03",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -300,7 +618,13 @@
         "w": 18,
         "x": 138,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 6,
+        "w": 18
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.medium.03.aseprite"
     },
     {
       "anchor": {
@@ -312,6 +636,7 @@
       "file": "individual/tmp.sky.cloud.large.01.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.large.01",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -319,7 +644,13 @@
         "w": 30,
         "x": 158,
         "y": 2
-      }
+      },
+      "revision": 4,
+      "size": {
+        "h": 8,
+        "w": 30
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.large.01.aseprite"
     },
     {
       "anchor": {
@@ -331,6 +662,7 @@
       "file": "individual/tmp.sky.cloud.large.02.png",
       "layer": "sky",
       "name": "tmp.sky.cloud.large.02",
+      "nightOpacity": 110,
       "opacity": 255,
       "paletteGroup": "sky",
       "rect": {
@@ -338,6 +670,314 @@
         "w": 30,
         "x": 190,
         "y": 2
+      },
+      "revision": 4,
+      "size": {
+        "h": 8,
+        "w": 30
+      },
+      "source": "../../source/batch-02/tmp.sky.cloud.large.02.aseprite"
+    },
+    {
+      "anchor": {
+        "x": 0,
+        "y": 0
+      },
+      "blend": "normal",
+      "category": "sky",
+      "celestialBaked": false,
+      "decorativeCloudsBaked": false,
+      "file": "individual/tmp.sky.overcast.tile.png",
+      "indexConvention": "PNG index 0 is transparent; index i corresponds to palettes.day[i-1] and palettes.night[i-1] in JSON arrays. Preserve day/night RGB pairs when merging into the application shared palette.",
+      "integration": "Draw the center crop at unchanged pixel scale. Soil and glass use viewport coordinates, not panorama coordinates. No baked sky objects.",
+      "layer": "sky",
+      "name": "tmp.sky.overcast.tile",
+      "nightMode": "paired-palette",
+      "opacity": 255,
+      "paletteGroup": "background-local",
+      "paletteMode": "paired-palette-import",
+      "palettes": {
+        "day": [
+          [
+            166,
+            188,
+            197
+          ],
+          [
+            173,
+            192,
+            198
+          ],
+          [
+            180,
+            196,
+            197
+          ],
+          [
+            191,
+            203,
+            199
+          ],
+          [
+            195,
+            206,
+            196
+          ],
+          [
+            203,
+            209,
+            195
+          ],
+          [
+            210,
+            212,
+            193
+          ],
+          [
+            216,
+            214,
+            191
+          ],
+          [
+            169,
+            186,
+            190
+          ],
+          [
+            160,
+            179,
+            184
+          ],
+          [
+            150,
+            171,
+            176
+          ],
+          [
+            140,
+            161,
+            166
+          ],
+          [
+            135,
+            157,
+            153
+          ],
+          [
+            148,
+            167,
+            155
+          ],
+          [
+            162,
+            176,
+            160
+          ],
+          [
+            166,
+            180,
+            160
+          ],
+          [
+            183,
+            190,
+            154
+          ],
+          [
+            171,
+            183,
+            143
+          ],
+          [
+            160,
+            173,
+            139
+          ],
+          [
+            150,
+            166,
+            131
+          ],
+          [
+            141,
+            157,
+            126
+          ],
+          [
+            130,
+            148,
+            125
+          ],
+          [
+            121,
+            140,
+            123
+          ],
+          [
+            114,
+            134,
+            121
+          ],
+          [
+            107,
+            127,
+            118
+          ]
+        ],
+        "night": [
+          [
+            44,
+            65,
+            84
+          ],
+          [
+            47,
+            70,
+            88
+          ],
+          [
+            51,
+            74,
+            94
+          ],
+          [
+            48,
+            72,
+            92
+          ],
+          [
+            59,
+            86,
+            105
+          ],
+          [
+            65,
+            92,
+            111
+          ],
+          [
+            73,
+            99,
+            117
+          ],
+          [
+            80,
+            106,
+            123
+          ],
+          [
+            73,
+            105,
+            121
+          ],
+          [
+            65,
+            97,
+            114
+          ],
+          [
+            75,
+            103,
+            121
+          ],
+          [
+            67,
+            95,
+            113
+          ],
+          [
+            54,
+            87,
+            99
+          ],
+          [
+            65,
+            98,
+            107
+          ],
+          [
+            84,
+            115,
+            121
+          ],
+          [
+            73,
+            105,
+            110
+          ],
+          [
+            100,
+            126,
+            127
+          ],
+          [
+            86,
+            115,
+            115
+          ],
+          [
+            61,
+            90,
+            86
+          ],
+          [
+            65,
+            96,
+            92
+          ],
+          [
+            54,
+            86,
+            86
+          ],
+          [
+            49,
+            79,
+            81
+          ],
+          [
+            49,
+            76,
+            78
+          ],
+          [
+            45,
+            70,
+            73
+          ],
+          [
+            42,
+            65,
+            68
+          ]
+        ]
+      },
+      "placement": {
+        "h": 74,
+        "w": 840,
+        "x": 0,
+        "y": 0
+      },
+      "preservedCenter": {
+        "h": 74,
+        "w": 640,
+        "x": 100,
+        "y": 0
+      },
+      "renderMode": "full-scene-background",
+      "revision": 6,
+      "size": {
+        "h": 74,
+        "w": 840
+      },
+      "source": "../../source/batch-02/tmp.sky.overcast.tile.aseprite",
+      "tileX": false,
+      "viewport": {
+        "height": 74,
+        "maxWidth": 840,
+        "minRecommendedWidth": 640,
+        "mode": "crop-no-resize",
+        "sourceX": "floor((840 - viewportNativeWidth) / 2)"
       }
     },
     {
@@ -347,39 +987,301 @@
       },
       "blend": "normal",
       "category": "sky",
-      "file": "individual/tmp.sky.overcast.tile.png",
-      "layer": "sky",
-      "name": "tmp.sky.overcast.tile",
-      "opacity": 255,
-      "paletteGroup": "sky",
-      "rect": {
-        "h": 13,
-        "w": 16,
-        "x": 222,
-        "y": 2
-      },
-      "tileX": true
-    },
-    {
-      "anchor": {
-        "x": 0,
-        "y": 0
-      },
-      "blend": "normal",
-      "category": "sky",
+      "celestialBaked": false,
+      "decorativeCloudsBaked": false,
       "file": "individual/tmp.sky.haze.tile.png",
+      "indexConvention": "PNG index 0 is transparent; index i corresponds to palettes.day[i-1] and palettes.night[i-1] in JSON arrays. Preserve day/night RGB pairs when merging into the application shared palette.",
+      "integration": "Draw the center crop at unchanged pixel scale. Soil and glass use viewport coordinates, not panorama coordinates. No baked sky objects.",
       "layer": "sky",
       "name": "tmp.sky.haze.tile",
+      "nightMode": "paired-palette",
       "opacity": 255,
-      "paletteGroup": "sky",
-      "rect": {
-        "h": 13,
-        "w": 16,
-        "x": 240,
-        "y": 2
+      "paletteGroup": "background-local",
+      "paletteMode": "paired-palette-import",
+      "palettes": {
+        "day": [
+          [
+            191,
+            206,
+            207
+          ],
+          [
+            197,
+            209,
+            208
+          ],
+          [
+            204,
+            214,
+            208
+          ],
+          [
+            214,
+            220,
+            209
+          ],
+          [
+            218,
+            223,
+            206
+          ],
+          [
+            225,
+            226,
+            205
+          ],
+          [
+            232,
+            228,
+            203
+          ],
+          [
+            238,
+            231,
+            201
+          ],
+          [
+            193,
+            204,
+            201
+          ],
+          [
+            185,
+            197,
+            195
+          ],
+          [
+            175,
+            189,
+            187
+          ],
+          [
+            166,
+            180,
+            178
+          ],
+          [
+            161,
+            177,
+            166
+          ],
+          [
+            173,
+            186,
+            167
+          ],
+          [
+            186,
+            194,
+            172
+          ],
+          [
+            191,
+            198,
+            172
+          ],
+          [
+            207,
+            208,
+            167
+          ],
+          [
+            195,
+            201,
+            156
+          ],
+          [
+            185,
+            192,
+            152
+          ],
+          [
+            176,
+            185,
+            145
+          ],
+          [
+            167,
+            176,
+            140
+          ],
+          [
+            156,
+            168,
+            139
+          ],
+          [
+            147,
+            160,
+            137
+          ],
+          [
+            141,
+            154,
+            135
+          ],
+          [
+            134,
+            148,
+            132
+          ]
+        ],
+        "night": [
+          [
+            57,
+            78,
+            96
+          ],
+          [
+            60,
+            83,
+            100
+          ],
+          [
+            63,
+            87,
+            105
+          ],
+          [
+            61,
+            85,
+            103
+          ],
+          [
+            71,
+            98,
+            116
+          ],
+          [
+            77,
+            103,
+            122
+          ],
+          [
+            84,
+            110,
+            127
+          ],
+          [
+            91,
+            117,
+            133
+          ],
+          [
+            85,
+            117,
+            132
+          ],
+          [
+            77,
+            109,
+            125
+          ],
+          [
+            86,
+            114,
+            131
+          ],
+          [
+            79,
+            107,
+            124
+          ],
+          [
+            66,
+            99,
+            110
+          ],
+          [
+            76,
+            110,
+            118
+          ],
+          [
+            95,
+            125,
+            132
+          ],
+          [
+            85,
+            116,
+            121
+          ],
+          [
+            110,
+            136,
+            137
+          ],
+          [
+            97,
+            126,
+            126
+          ],
+          [
+            73,
+            102,
+            98
+          ],
+          [
+            76,
+            108,
+            104
+          ],
+          [
+            66,
+            98,
+            98
+          ],
+          [
+            61,
+            91,
+            93
+          ],
+          [
+            62,
+            89,
+            91
+          ],
+          [
+            58,
+            83,
+            85
+          ],
+          [
+            55,
+            78,
+            81
+          ]
+        ]
       },
+      "placement": {
+        "h": 74,
+        "w": 840,
+        "x": 0,
+        "y": 0
+      },
+      "preservedCenter": {
+        "h": 74,
+        "w": 640,
+        "x": 100,
+        "y": 0
+      },
+      "renderMode": "full-scene-background",
+      "revision": 6,
       "signal": "unknown weather; never storm",
-      "tileX": true
+      "size": {
+        "h": 74,
+        "w": 840
+      },
+      "source": "../../source/batch-02/tmp.sky.haze.tile.aseprite",
+      "tileX": false,
+      "viewport": {
+        "height": 74,
+        "maxWidth": 840,
+        "minRecommendedWidth": 640,
+        "mode": "crop-no-resize",
+        "sourceX": "floor((840 - viewportNativeWidth) / 2)"
+      }
     },
     {
       "anchor": {
@@ -388,18 +1290,300 @@
       },
       "blend": "normal",
       "category": "sky",
+      "celestialBaked": false,
+      "decorativeCloudsBaked": false,
       "file": "individual/tmp.sky.storm.body.png",
+      "indexConvention": "PNG index 0 is transparent; index i corresponds to palettes.day[i-1] and palettes.night[i-1] in JSON arrays. Preserve day/night RGB pairs when merging into the application shared palette.",
+      "integration": "Draw the center crop at unchanged pixel scale. Soil and glass use viewport coordinates, not panorama coordinates. No baked sky objects.",
       "layer": "sky",
       "name": "tmp.sky.storm.body",
+      "nightMode": "paired-palette",
       "opacity": 255,
-      "paletteGroup": "sky",
-      "rect": {
-        "h": 13,
-        "w": 16,
-        "x": 258,
-        "y": 2
+      "paletteGroup": "background-local",
+      "paletteMode": "paired-palette-import",
+      "palettes": {
+        "day": [
+          [
+            131,
+            157,
+            168
+          ],
+          [
+            136,
+            160,
+            170
+          ],
+          [
+            142,
+            164,
+            169
+          ],
+          [
+            150,
+            169,
+            170
+          ],
+          [
+            154,
+            171,
+            168
+          ],
+          [
+            160,
+            173,
+            167
+          ],
+          [
+            166,
+            175,
+            165
+          ],
+          [
+            170,
+            178,
+            164
+          ],
+          [
+            133,
+            155,
+            163
+          ],
+          [
+            127,
+            150,
+            159
+          ],
+          [
+            118,
+            143,
+            152
+          ],
+          [
+            110,
+            136,
+            144
+          ],
+          [
+            107,
+            133,
+            134
+          ],
+          [
+            117,
+            140,
+            136
+          ],
+          [
+            128,
+            147,
+            139
+          ],
+          [
+            131,
+            151,
+            140
+          ],
+          [
+            144,
+            159,
+            135
+          ],
+          [
+            135,
+            153,
+            126
+          ],
+          [
+            127,
+            145,
+            123
+          ],
+          [
+            119,
+            140,
+            117
+          ],
+          [
+            111,
+            132,
+            113
+          ],
+          [
+            103,
+            126,
+            112
+          ],
+          [
+            95,
+            119,
+            110
+          ],
+          [
+            90,
+            114,
+            109
+          ],
+          [
+            84,
+            109,
+            107
+          ]
+        ],
+        "night": [
+          [
+            35,
+            54,
+            74
+          ],
+          [
+            37,
+            58,
+            77
+          ],
+          [
+            40,
+            61,
+            81
+          ],
+          [
+            38,
+            59,
+            80
+          ],
+          [
+            47,
+            70,
+            90
+          ],
+          [
+            51,
+            75,
+            95
+          ],
+          [
+            57,
+            81,
+            99
+          ],
+          [
+            63,
+            86,
+            104
+          ],
+          [
+            58,
+            86,
+            103
+          ],
+          [
+            51,
+            80,
+            97
+          ],
+          [
+            59,
+            84,
+            102
+          ],
+          [
+            53,
+            78,
+            96
+          ],
+          [
+            42,
+            71,
+            85
+          ],
+          [
+            51,
+            80,
+            92
+          ],
+          [
+            66,
+            93,
+            103
+          ],
+          [
+            58,
+            85,
+            94
+          ],
+          [
+            78,
+            102,
+            108
+          ],
+          [
+            67,
+            94,
+            98
+          ],
+          [
+            48,
+            73,
+            75
+          ],
+          [
+            51,
+            79,
+            80
+          ],
+          [
+            42,
+            70,
+            75
+          ],
+          [
+            38,
+            65,
+            71
+          ],
+          [
+            39,
+            63,
+            69
+          ],
+          [
+            36,
+            58,
+            64
+          ],
+          [
+            33,
+            54,
+            61
+          ]
+        ]
       },
-      "tileX": true
+      "placement": {
+        "h": 74,
+        "w": 840,
+        "x": 0,
+        "y": 0
+      },
+      "preservedCenter": {
+        "h": 74,
+        "w": 640,
+        "x": 100,
+        "y": 0
+      },
+      "renderMode": "full-scene-background",
+      "revision": 6,
+      "size": {
+        "h": 74,
+        "w": 840
+      },
+      "source": "../../source/batch-02/tmp.sky.storm.body.aseprite",
+      "tileX": false,
+      "viewport": {
+        "height": 74,
+        "maxWidth": 840,
+        "minRecommendedWidth": 640,
+        "mode": "crop-no-resize",
+        "sourceX": "floor((840 - viewportNativeWidth) / 2)"
+      }
     },
     {
       "anchor": {
@@ -410,16 +1594,276 @@
       "category": "sky",
       "direction": "enters from left; mirror for right",
       "file": "individual/tmp.sky.storm.front.png",
+      "indexConvention": "PNG index 0 is transparent; index i corresponds to palettes.day[i-1] and palettes.night[i-1] in JSON arrays. Preserve day/night RGB pairs when merging into the application shared palette.",
+      "integration": "24x74 storm curtain. Its right edge matches the full panorama right edge. For other crops reveal/crossfade the storm panorama with a viewport clip; do not assume this curtain matches an arbitrary interior crop edge.",
       "layer": "sky",
       "name": "tmp.sky.storm.front",
+      "nightMode": "paired-palette",
       "opacity": 255,
-      "paletteGroup": "sky",
-      "rect": {
-        "h": 13,
-        "w": 24,
-        "x": 276,
-        "y": 2
-      }
+      "paletteGroup": "background-local",
+      "paletteMode": "paired-palette-import",
+      "palettes": {
+        "day": [
+          [
+            131,
+            157,
+            168
+          ],
+          [
+            136,
+            160,
+            170
+          ],
+          [
+            142,
+            164,
+            169
+          ],
+          [
+            150,
+            169,
+            170
+          ],
+          [
+            154,
+            171,
+            168
+          ],
+          [
+            160,
+            173,
+            167
+          ],
+          [
+            166,
+            175,
+            165
+          ],
+          [
+            170,
+            178,
+            164
+          ],
+          [
+            133,
+            155,
+            163
+          ],
+          [
+            127,
+            150,
+            159
+          ],
+          [
+            118,
+            143,
+            152
+          ],
+          [
+            110,
+            136,
+            144
+          ],
+          [
+            107,
+            133,
+            134
+          ],
+          [
+            117,
+            140,
+            136
+          ],
+          [
+            128,
+            147,
+            139
+          ],
+          [
+            131,
+            151,
+            140
+          ],
+          [
+            144,
+            159,
+            135
+          ],
+          [
+            135,
+            153,
+            126
+          ],
+          [
+            127,
+            145,
+            123
+          ],
+          [
+            119,
+            140,
+            117
+          ],
+          [
+            111,
+            132,
+            113
+          ],
+          [
+            103,
+            126,
+            112
+          ],
+          [
+            95,
+            119,
+            110
+          ],
+          [
+            90,
+            114,
+            109
+          ],
+          [
+            84,
+            109,
+            107
+          ]
+        ],
+        "night": [
+          [
+            35,
+            54,
+            74
+          ],
+          [
+            37,
+            58,
+            77
+          ],
+          [
+            40,
+            61,
+            81
+          ],
+          [
+            38,
+            59,
+            80
+          ],
+          [
+            47,
+            70,
+            90
+          ],
+          [
+            51,
+            75,
+            95
+          ],
+          [
+            57,
+            81,
+            99
+          ],
+          [
+            63,
+            86,
+            104
+          ],
+          [
+            58,
+            86,
+            103
+          ],
+          [
+            51,
+            80,
+            97
+          ],
+          [
+            59,
+            84,
+            102
+          ],
+          [
+            53,
+            78,
+            96
+          ],
+          [
+            42,
+            71,
+            85
+          ],
+          [
+            51,
+            80,
+            92
+          ],
+          [
+            66,
+            93,
+            103
+          ],
+          [
+            58,
+            85,
+            94
+          ],
+          [
+            78,
+            102,
+            108
+          ],
+          [
+            67,
+            94,
+            98
+          ],
+          [
+            48,
+            73,
+            75
+          ],
+          [
+            51,
+            79,
+            80
+          ],
+          [
+            42,
+            70,
+            75
+          ],
+          [
+            38,
+            65,
+            71
+          ],
+          [
+            39,
+            63,
+            69
+          ],
+          [
+            36,
+            58,
+            64
+          ],
+          [
+            33,
+            54,
+            61
+          ]
+        ]
+      },
+      "revision": 6,
+      "size": {
+        "h": 74,
+        "w": 24
+      },
+      "source": "../../source/batch-02/tmp.sky.storm.front.aseprite"
     },
     {
       "anchor": {

@@ -15,11 +15,11 @@ use global_hotkey::GlobalHotKeyEvent;
 use muda::MenuId;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
-use terrarium_compose::frame::{NATIVE_HEIGHT, Rgba, Rgba640x74};
+use terrarium_compose::frame::{NativeImage, Viewport};
+use terrarium_compose::sample;
 use terrarium_compose::scale::{SizeStep, StripScale};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
-use terrarium_compose::{sample, world};
 use terrarium_platform::SystemEvent;
 use terrarium_platform::geometry::Edge;
 use winit::application::ApplicationHandler;
@@ -64,8 +64,7 @@ pub enum Mode {
 /// idle step counts on a strip that draws nothing; otherwise a feed, living.
 enum Scene {
     Still {
-        frame: Rgba640x74,
-        padding: Box<[Rgba; NATIVE_HEIGHT as usize]>,
+        frame: NativeImage,
     },
     Living {
         living: Box<Living>,
@@ -81,18 +80,7 @@ impl Scene {
             Mode::Live(feed) => feed.clone(),
             #[cfg(feature = "dev")]
             Mode::Probe(ProbeKind::Egui) => Feed::Thriving,
-            Mode::Probe(ProbeKind::Pinning) => {
-                let art = Art::embedded();
-                // `cargo xtask verify` checks the embedded art is complete, so this table
-                // builds.
-                let table =
-                    ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
-                let frame = sample::frame(art, &table, copy::sample_label(), 0, 0);
-                return Scene::Still {
-                    frame: composite(art, &frame),
-                    padding: Box::new(world::padding(art, 0, 0)),
-                };
-            }
+            Mode::Probe(ProbeKind::Pinning) => return Scene::still(Viewport::SCENE),
         };
         let feeder = Box::new(Feeder::new(feed, Millis(0), &Os::read()));
         Scene::Living {
@@ -179,10 +167,36 @@ impl Scene {
         }
     }
 
-    fn pixels(&self) -> (&Rgba640x74, &[Rgba; NATIVE_HEIGHT as usize]) {
+    /// The sample, composed once for `viewport`.
+    fn still(viewport: Viewport) -> Scene {
+        let art = Art::embedded();
+        // `cargo xtask verify` checks the embedded art is complete, so this table builds.
+        let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
+        let frame = sample::frame_in(art, &table, copy::sample_label(), 0, 0, viewport);
+        Scene::Still {
+            frame: composite(art, &frame),
+        }
+    }
+
+    /// Shows `viewport` from `now` on, the strip's columns at its scale; true if that is
+    /// another, so its pixels are new.
+    fn fit(&mut self, viewport: Viewport, now: Instant) -> bool {
         match self {
-            Scene::Still { frame, padding } => (frame, padding),
-            Scene::Living { living, .. } => (living.image(), living.padding()),
+            Scene::Still { frame } if frame.width() != viewport.width() => {
+                *self = Scene::still(viewport);
+                true
+            }
+            Scene::Still { .. } => false,
+            Scene::Living { living, origin, .. } => {
+                living.fit(viewport, Self::millis(*origin, now))
+            }
+        }
+    }
+
+    fn pixels(&self) -> &NativeImage {
+        match self {
+            Scene::Still { frame } => frame,
+            Scene::Living { living, .. } => living.image(),
         }
     }
 }
@@ -468,12 +482,12 @@ impl Strip {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                let changed = self.scene.advance(now);
+                let fitted = self.scene.fit(view.scale.viewport(), now);
+                let changed = self.scene.advance(now) || fitted;
                 // The OS's own requests always present; the schedule's only on a change.
                 let wanted = changed || !std::mem::take(&mut self.scheduled);
                 if wanted && self.gate.should_present() {
-                    let (frame, padding) = self.scene.pixels();
-                    match view.presenter.present(frame, &view.scale, padding) {
+                    match view.presenter.present(self.scene.pixels(), &view.scale) {
                         Ok(()) => {
                             self.gate.presented();
                             #[cfg(feature = "dev")]

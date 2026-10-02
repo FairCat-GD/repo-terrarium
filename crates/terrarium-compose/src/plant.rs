@@ -8,6 +8,16 @@ use crate::catalog::{Catalog, SpriteId};
 use crate::frame::{Draw, PLANT_GROUND_Y};
 use crate::variants::{ArtTable, PlantArt};
 
+/// The row a plant's ground point stands on: the row above the soil's edge, so its last row
+/// sits on the edge. A young or mature oak's roots flare out over its last rows, so it stands
+/// two rows deeper, those rows in the edge, and no ground shows between its roots.
+pub fn ground_y(species: PlantSpecies, stage: GrowthStage) -> i32 {
+    match (species, stage) {
+        (PlantSpecies::Oak, GrowthStage::Young | GrowthStage::Mature) => PLANT_GROUND_Y + 2,
+        _ => PLANT_GROUND_Y,
+    }
+}
+
 /// The sprites a plant is drawn with, bottom to top.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Parts {
@@ -17,6 +27,8 @@ pub struct Parts {
     /// override of the stem.
     pub foliage: SpriteId,
     pub bloom: Option<SpriteId>,
+    /// The row its ground point stands on.
+    pub ground: i32,
 }
 
 impl Parts {
@@ -35,6 +47,7 @@ impl Parts {
             stem,
             foliage,
             bloom: shows_bloom(growth, health, bloom).then(|| table.bloom(species)),
+            ground: ground_y(species, growth),
         }
     }
 
@@ -49,7 +62,7 @@ impl Parts {
     /// Every part anchored on the ground point at `x`, bottom to top.
     pub fn draws(self, catalog: &Catalog, x: i32) -> Vec<Draw> {
         self.sprites()
-            .map(|sprite| Draw::anchored(catalog, sprite, x, PLANT_GROUND_Y))
+            .map(|sprite| Draw::anchored(catalog, sprite, x, self.ground))
             .collect()
     }
 }
@@ -127,5 +140,27 @@ mod tests {
             assert_eq!(draw.x + i32::from(anchor.x), 300);
             assert_eq!(draw.y + i32::from(anchor.y), PLANT_GROUND_Y);
         }
+    }
+
+    #[test]
+    fn a_rooted_oak_stands_two_rows_deeper_and_its_seedling_does_not() {
+        let table = table();
+        let ground = |stage| {
+            Parts::new(
+                &table,
+                PlantSpecies::Oak,
+                stage,
+                PlantState::Thriving,
+                false,
+            )
+            .ground
+        };
+        assert_eq!(ground(GrowthStage::Mature), PLANT_GROUND_Y + 2);
+        assert_eq!(ground(GrowthStage::Young), PLANT_GROUND_Y + 2);
+        assert_eq!(ground(GrowthStage::Seedling), PLANT_GROUND_Y);
+        assert_eq!(
+            ground_y(PlantSpecies::Birch, GrowthStage::Mature),
+            PLANT_GROUND_Y
+        );
     }
 }

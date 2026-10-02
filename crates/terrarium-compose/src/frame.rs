@@ -1,15 +1,65 @@
 //! The native frame, and the `Frame` of draws the compositor paints into it. Every pixel is
-//! composed at 640×74 and only ever scaled by an integer (I-11).
+//! composed natively and only ever scaled by an integer (I-11). The scene is 640×74; a screen
+//! whose width is no multiple of 640 shows a wider [`Viewport`] of it.
 
 use std::fmt;
 
 use crate::catalog::{Blend, Catalog, Layer, SpriteId};
 use crate::palette::Slot;
 
+/// The scene's width: what every screen shows, and all a screen 640 times an integer wide shows.
 pub const NATIVE_WIDTH: u32 = 640;
 pub const NATIVE_HEIGHT: u32 = 74;
-/// The ground line. The soil band is this row and the seven below it.
-pub const GROUND_Y: u32 = 66;
+/// The widest viewport the art covers: the weather backdrops' width.
+pub const WIDEST: u32 = 840;
+
+/// The native columns a strip shows: the scene's 640, or more, up to [`WIDEST`], on a screen
+/// whose width is no multiple of 640, so nothing is ever stretched across its spare width. The
+/// scene stands in the middle. The backdrop, the soil, the glass, the label and the sky's
+/// drifting pieces reach the viewport's edges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Viewport {
+    width: u32,
+}
+
+impl Viewport {
+    pub const SCENE: Viewport = Viewport {
+        width: NATIVE_WIDTH,
+    };
+
+    /// `columns`, kept between the scene's width and the widest the art covers.
+    pub fn new(columns: u32) -> Viewport {
+        Viewport {
+            width: columns.clamp(NATIVE_WIDTH, WIDEST),
+        }
+    }
+
+    pub fn width(self) -> u32 {
+        self.width
+    }
+
+    /// Where the scene's left edge stands: half the extra columns, an odd one on the left, as
+    /// the backdrop's crop has it.
+    pub fn inset(self) -> i32 {
+        i32::try_from((self.width - NATIVE_WIDTH).div_ceil(2)).unwrap_or(0)
+    }
+
+    /// The columns beyond the scene, both sides together.
+    pub fn extra(self) -> i32 {
+        i32::try_from(self.width - NATIVE_WIDTH).unwrap_or(0)
+    }
+}
+
+impl Default for Viewport {
+    fn default() -> Viewport {
+        Viewport::SCENE
+    }
+}
+/// The ground line: the soil's top edge, the first of its two rows. The soil band is this row
+/// and the eight below it.
+pub const GROUND_Y: u32 = 65;
+/// The soil's body: the edge's second row and the seven below it.
+pub const SOIL_Y: u32 = 66;
 /// Where plants and filler stand: the row above the ground line. Their anchor row is their
 /// last, so they sit on the soil's opaque top edge rather than under it.
 pub const PLANT_GROUND_Y: i32 = GROUND_Y.cast_signed() - 1;
@@ -17,43 +67,58 @@ pub const PLANT_GROUND_Y: i32 = GROUND_Y.cast_signed() - 1;
 /// One pixel: red, green, blue, alpha.
 pub type Rgba = [u8; 4];
 
-/// A native frame in RGBA8, row-major, top row first.
+/// A native frame in RGBA8, row-major, top row first, as wide as its viewport.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Rgba640x74 {
+pub struct NativeImage {
+    width: u32,
     pixels: Box<[Rgba]>,
 }
 
-impl Rgba640x74 {
+impl NativeImage {
+    /// The scene's width, one colour.
     pub fn filled(colour: Rgba) -> Self {
+        Self::new(Viewport::SCENE, colour)
+    }
+
+    /// `viewport`'s width, one colour.
+    pub fn new(viewport: Viewport, colour: Rgba) -> Self {
+        let width = viewport.width();
         Self {
-            pixels: vec![colour; (NATIVE_WIDTH * NATIVE_HEIGHT) as usize].into_boxed_slice(),
+            width,
+            pixels: vec![colour; (width * NATIVE_HEIGHT) as usize].into_boxed_slice(),
         }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
     }
 
     /// # Panics
     /// If `(x, y)` lies outside the frame.
     pub fn pixel(&self, x: u32, y: u32) -> Rgba {
-        self.pixels[index(x, y)]
+        self.pixels[self.index(x, y)]
     }
 
     /// # Panics
     /// If `(x, y)` lies outside the frame.
     pub fn set_pixel(&mut self, x: u32, y: u32, colour: Rgba) {
-        self.pixels[index(x, y)] = colour;
+        let at = self.index(x, y);
+        self.pixels[at] = colour;
     }
 
     /// # Panics
     /// If `y` lies outside the frame.
     pub fn row(&self, y: u32) -> &[Rgba] {
-        let start = index(0, y);
-        &self.pixels[start..start + NATIVE_WIDTH as usize]
+        let start = self.index(0, y);
+        &self.pixels[start..start + self.width as usize]
     }
 
     /// # Panics
     /// If `y` lies outside the frame.
     pub fn row_mut(&mut self, y: u32) -> &mut [Rgba] {
-        let start = index(0, y);
-        &mut self.pixels[start..start + NATIVE_WIDTH as usize]
+        let start = self.index(0, y);
+        let width = self.width as usize;
+        &mut self.pixels[start..start + width]
     }
 
     /// Every pixel, row-major.
@@ -66,17 +131,19 @@ impl Rgba640x74 {
     }
 }
 
-fn index(x: u32, y: u32) -> usize {
-    assert!(
-        x < NATIVE_WIDTH && y < NATIVE_HEIGHT,
-        "({x}, {y}) is outside the native frame"
-    );
-    (y * NATIVE_WIDTH + x) as usize
+impl NativeImage {
+    fn index(&self, x: u32, y: u32) -> usize {
+        assert!(
+            x < self.width && y < NATIVE_HEIGHT,
+            "({x}, {y}) is outside the native frame"
+        );
+        (y * self.width + x) as usize
+    }
 }
 
-impl fmt::Debug for Rgba640x74 {
+impl fmt::Debug for NativeImage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Rgba640x74 {{ .. }}")
+        write!(f, "NativeImage {{ {}×{NATIVE_HEIGHT} }}", self.width)
     }
 }
 
@@ -89,6 +156,8 @@ pub struct Frame {
     pub draws: Vec<Draw>,
     /// 0 is day and 255 is night; between them, each slot's two colours are blended.
     pub palette_mix: u8,
+    /// The columns it is composed for; draws stand in its coordinates.
+    pub viewport: Viewport,
     /// How much the finished frame is darkened toward black: 0 leaves it as it is.
     pub dim: u8,
 }
@@ -226,7 +295,7 @@ mod tests {
 
     #[test]
     fn pixels_are_row_major() {
-        let mut frame = Rgba640x74::filled([0, 0, 0, 255]);
+        let mut frame = NativeImage::filled([0, 0, 0, 255]);
         frame.set_pixel(639, 73, [1, 2, 3, 255]);
         frame.set_pixel(5, 1, [9, 9, 9, 255]);
         assert_eq!(frame.pixel(639, 73), [1, 2, 3, 255]);
@@ -239,7 +308,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "outside the native frame")]
     fn a_pixel_outside_the_frame_panics() {
-        let _ = Rgba640x74::filled([0; 4]).pixel(640, 0);
+        let _ = NativeImage::filled([0; 4]).pixel(640, 0);
     }
 
     #[test]
@@ -249,7 +318,7 @@ mod tests {
         let draw = Draw::new(catalog, edge, 0, 0);
         assert_eq!(
             (draw.layer, draw.blend, draw.opacity),
-            (Layer::Glass, Blend::Normal, 150)
+            (Layer::Glass, Blend::Normal, 65)
         );
         let dusk = catalog.id("tmp.sky.light.dusk").unwrap();
         let draw = Draw::new(catalog, dusk, 0, 0);
