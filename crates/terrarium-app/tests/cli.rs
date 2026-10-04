@@ -300,6 +300,45 @@ mod record_tests {
         );
     }
 
+    /// Ctrl-C reaches the wrapper and the command alike. Here only the wrapper gets the
+    /// interrupt, so a wrapper that keeps waiting is plainly seen: it ends when the command ends,
+    /// with its code, and records the run.
+    #[cfg(unix)]
+    #[test]
+    fn record_tests_waits_for_its_command_through_an_interrupt() {
+        use std::process::Command;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo");
+        let status_file = repo(&path);
+        // The command marks that it started, so the interrupt reaches the wrapper only once it
+        // is waiting (a freshly built binary can take a while to start).
+        let started = dir.path().join("started");
+        let script = format!("touch '{}'; sleep 2; exit 4", started.display());
+        let mut wrapper = Command::new(BINARY)
+            .args(["record-tests", "--", "sh", "-c", &script])
+            .current_dir(&path)
+            .env("TERRARIUM_DATA_DIR", dir.path().join("data"))
+            .spawn()
+            .unwrap();
+        for _ in 0..200 {
+            if started.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(started.exists(), "the command started");
+        let sent = Command::new("kill")
+            .args(["-INT", &wrapper.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let ended = wrapper.wait().unwrap();
+        assert_eq!(ended.code(), Some(4), "{ended:?}");
+        assert_eq!(status(&status_file)["exit_code"], 4);
+    }
+
     #[test]
     fn record_tests_runs_nothing_it_cannot_record_and_reports_a_missing_command() {
         let dir = tempfile::tempdir().unwrap();

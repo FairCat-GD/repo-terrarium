@@ -18,11 +18,15 @@ already write, and to say what your repository has and what it lacks.
   one line on how it connects. It reads, and never runs or writes anything.
 - **`repo-terrarium record-tests -- <command>`** runs your test command exactly as you typed it
   and remembers whether it passed, so local test runs can become the weather. Its exit code is
-  your command's, so scripts see no difference. The result is kept in the app's data folder,
-  never in your repository.
+  your command's, so scripts see no difference, and Ctrl-C reaches your command while
+  `record-tests` waits for it to finish. On Windows it finds `npm`, `npx`, `yarn` and `pnpm`
+  as a terminal does. The result is kept in the app's data folder, never in your repository.
 - **Coverage from lcov and Cobertura,** the formats Jest, Vitest, c8, nyc, cargo-llvm-cov,
   tarpaulin, coverage.py and istanbul write, several files merged into one reading.
 - **Test results from `JUnit` XML,** as Maven Surefire, jest-junit, pytest and Vitest write it.
+- **Reports are read in UTF-8 or UTF-16,** so a report saved from Windows PowerShell reads too,
+  and paths in a report written inside a sub-folder (a monorepo package) point at the right
+  files.
 - **Knip 6's JSON report is read and checked.** Dead code joins soil once the code reader can
   count every export.
 - **A report caught half-written, broken, or in a format the terrarium does not read never

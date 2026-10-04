@@ -11,7 +11,8 @@ truth.
 - Discovery of what a repository has, and what it lacks.
 - The GitHub Actions client.
 - The single `exec` module, the only place a process starts: the command a person gives
-  `record-tests`, and later a tool behind its per-adapter opt-in.
+  `record-tests` (on Windows, a bare name is looked up with `PATHEXT`, so `.cmd` scripts such
+  as `npm` run), and later a tool behind its per-adapter opt-in.
 
 ## Why it is a crate of its own
 
@@ -50,8 +51,11 @@ facts, and the security boundary has one home.
   reading.
 - XML goes through quick-xml with no DTD processing: a `<!DOCTYPE>` is skipped, and only the
   predefined entities and character references resolve.
-- Paths a report names are made repository-relative; a path outside the repository still
-  counts in the totals but never becomes a contributor, so no home directory reaches the store.
+- A report is read as UTF-8, with or without a byte-order mark, or as UTF-16 with one.
+- Paths a report names are made repository-relative; a relative one is read from the deepest
+  directory holding the report under which it names an existing file, else from the root. A
+  path outside the repository still counts in the totals but never becomes a contributor, so
+  no home directory reaches the store.
 - `local_tests` reads and writes the status file `record-tests` keeps in the data directory,
   whole or not at all.
 - Knip's report lists only what is unused, so dead code has no normalized value until the
@@ -59,7 +63,7 @@ facts, and the security boundary has one home.
 
 ## Discovery (`discovery`)
 
-`discover(root, overrides, status_file)` says what a repository has: git and its default
+`discover(root, default_branch, overrides, status_file)` says what a repository has: git and its default
 branch, a coverage report (lcov first, then Cobertura), a `JUnit` report, a `record-tests`
 status file, a Knip report and configuration, CI workflows and test runners. It looks only at
 fixed lists of paths (a `*` matches within one segment) and the configured overrides, which must

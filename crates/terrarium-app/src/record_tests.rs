@@ -37,6 +37,7 @@ pub fn run(args: &RecordTestsArgs) -> i32 {
         }
     };
     let started_at = now_secs();
+    terrarium_platform::interrupt::defer_to_child();
     match exec::run_user_command(&args.program, &args.args) {
         Ok(Finished::Code(code)) => {
             let status = Status::new(i64::from(code), started_at, now_secs());

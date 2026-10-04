@@ -88,7 +88,7 @@ pub(crate) fn parse(files: &[Loaded]) -> Parsed {
         path: file.path.clone(),
         line: None,
     };
-    let status: Status = serde_json::from_str(text(file)?).map_err(|_| malformed())?;
+    let status: Status = serde_json::from_str(&text(file)?).map_err(|_| malformed())?;
     if status.format != FORMAT || status.format_version != FORMAT_VERSION {
         return Err(malformed());
     }

@@ -116,6 +116,25 @@ fn lcov_paths_become_repository_relative_and_outside_ones_only_count() {
 }
 
 #[test]
+fn a_package_s_relative_paths_are_read_from_the_package() {
+    // A monorepo package's tool ran in `packages/fern` and wrote paths relative to it.
+    let dir = stage(&[("lcov/jest.info", "packages/fern/coverage/lcov.info")]);
+    for file in ["src/fern.ts", "src/reed.ts"] {
+        let full = dir.path().join("packages/fern").join(file);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, "").unwrap();
+    }
+    let report = read(&dir, Format::Lcov, &["packages/fern/coverage/lcov.info"]);
+    assert_eq!(
+        known(&report).contributors,
+        contributors(&[
+            ("packages/fern/src/reed.ts", 3),
+            ("packages/fern/src/fern.ts", 2)
+        ])
+    );
+}
+
+#[test]
 fn lcov_tracefiles_merge_as_lcov_merges_them() {
     let dir = stage(&[
         ("lcov/unit.info", "out/unit.info"),
@@ -316,7 +335,8 @@ fn surefire_files_merge_and_flaky_runs_pass() {
         Reading::Tests {
             tests: 5,
             failed: 1,
-            skipped: 1
+            skipped: 1,
+            suite_failed: false
         }
     );
     assert_eq!(known.reading.normalized(), Some(Q16::ZERO));
@@ -350,7 +370,8 @@ fn jest_junit_pytest_and_vitest_read_alike() {
         Reading::Tests {
             tests: 4,
             failed: 1,
-            skipped: 1
+            skipped: 1,
+            suite_failed: false
         }
     );
     assert_eq!(
@@ -363,7 +384,8 @@ fn jest_junit_pytest_and_vitest_read_alike() {
         Reading::Tests {
             tests: 4,
             failed: 1,
-            skipped: 1
+            skipped: 1,
+            suite_failed: false
         },
         "a setup error fails, an xfail is skipped"
     );
@@ -398,6 +420,20 @@ fn a_suite_that_failed_before_its_cases_ran_fails() {
             panic!("known: {text}");
         };
         assert_eq!(known.reading.passed(), Some(false), "{text}");
+        assert_eq!(known.reading.normalized(), Some(Q16::ZERO), "{text}");
+        let Reading::Tests {
+            failed,
+            suite_failed,
+            ..
+        } = known.reading
+        else {
+            panic!("tests");
+        };
+        assert_eq!(
+            (failed, suite_failed),
+            (0, true),
+            "no test case is made up: {text}"
+        );
     }
 }
 
@@ -417,6 +453,81 @@ fn junit_refuses_what_is_not_junit() {
             "{text:?}"
         );
     }
+}
+
+#[test]
+fn a_suite_that_announces_only_its_cases_failures_is_no_suite_failure() {
+    let text = r#"<testsuites failures="1" errors="1"><testsuite failures="1" errors="1"><testcase name="a"><failure/></testcase><testcase name="b"><error/></testcase><testcase name="c"/></testsuite></testsuites>"#;
+    let Outcome::Known(known) = parse_bytes(Format::JUnit, text.as_bytes()) else {
+        panic!("known");
+    };
+    assert_eq!(
+        known.reading,
+        Reading::Tests {
+            tests: 3,
+            failed: 2,
+            skipped: 0,
+            suite_failed: false
+        }
+    );
+}
+
+// Encodings
+
+#[test]
+fn reports_with_a_byte_order_mark_or_in_utf_16_read() {
+    let lcov = "SF:src/a.ts\nDA:1,1\nDA:2,0\nend_of_record\n";
+    let with_bom = [&[0xef, 0xbb, 0xbf][..], lcov.as_bytes()].concat();
+    assert!(matches!(
+        parse_bytes(Format::Lcov, &with_bom),
+        Outcome::Known(_)
+    ));
+    // What Windows PowerShell 5's `>` writes: UTF-16, little-endian, with its mark.
+    let utf16 = |text: &str, big_endian: bool| -> Vec<u8> {
+        let mut bytes = if big_endian {
+            vec![0xfe, 0xff]
+        } else {
+            vec![0xff, 0xfe]
+        };
+        for unit in text.encode_utf16() {
+            bytes.extend(if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            });
+        }
+        bytes
+    };
+    let knip = r#"{"issues":[{"file":"src/a.ts","exports":[{"name":"x"}]}]}"#;
+    for big_endian in [false, true] {
+        let Outcome::Known(known) = parse_bytes(Format::Knip, &utf16(knip, big_endian)) else {
+            panic!("known");
+        };
+        let Reading::DeadCode(counts) = known.reading else {
+            panic!("dead code");
+        };
+        assert_eq!(counts.unused_exports, 1);
+    }
+    let junit = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n<testsuite><testcase name=\"a\"/></testsuite>\r\n";
+    let Outcome::Known(known) = parse_bytes(Format::JUnit, &utf16(junit, false)) else {
+        panic!("known");
+    };
+    assert_eq!(known.reading.passed(), Some(true));
+    let Outcome::Known(known) = parse_bytes(Format::Lcov, &utf16(lcov, false)) else {
+        panic!("known");
+    };
+    assert_eq!(known.reading, coverage(2, 1));
+    // An odd byte, or a lone surrogate, is not UTF-16.
+    let mut odd = utf16(lcov, false);
+    odd.push(b'\n');
+    assert!(matches!(
+        parse_bytes(Format::Lcov, &odd),
+        Outcome::Unknown(Why::Malformed { line: None, .. })
+    ));
+    assert!(matches!(
+        parse_bytes(Format::Lcov, &[0xff, 0xfe, 0x00, 0xd8]),
+        Outcome::Unknown(Why::Malformed { line: None, .. })
+    ));
 }
 
 // Knip
@@ -562,7 +673,7 @@ fn only_regular_files_inside_the_repository_are_read() {
         &Why::TooLarge("big.xml".into())
     );
     assert!(matches!(
-        parse_bytes(Format::Lcov, &[0xff, 0xfe, b'\n']),
+        parse_bytes(Format::Lcov, &[b'S', b'F', 0xff, b'\n']),
         Outcome::Unknown(Why::Malformed { line: Some(1), .. })
     ));
 }

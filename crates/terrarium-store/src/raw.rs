@@ -49,6 +49,10 @@ pub struct WeatherRaw {
     pub skipped: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i64>,
+    /// A test report's failure outside any test case: a suite that did not load, an unhandled
+    /// error. Present only when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_failed: Option<bool>,
 }
 
 impl WeatherRaw {
@@ -60,6 +64,7 @@ impl WeatherRaw {
             failed: None,
             skipped: None,
             exit_code: None,
+            suite_failed: None,
         }
     }
 }
@@ -180,6 +185,17 @@ mod tests {
         assert_eq!(
             tests.to_raw(),
             r#"{"state":"fail","tests":12,"failed":1,"skipped":2}"#
+        );
+        let suite = WeatherRaw {
+            tests: Some(3),
+            failed: Some(0),
+            skipped: Some(0),
+            suite_failed: Some(true),
+            ..WeatherRaw::of(WeatherState::Fail)
+        };
+        assert_eq!(
+            suite.to_raw(),
+            r#"{"state":"fail","tests":3,"failed":0,"skipped":0,"suite_failed":true}"#
         );
         let run = WeatherRaw {
             exit_code: Some(0),

@@ -9,6 +9,8 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io;
+#[cfg(any(windows, test))]
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 /// How a command ended.
@@ -32,7 +34,7 @@ pub enum ExecError {
 /// Runs `program` with `args`, inheriting stdin, stdout, stderr, the environment and the
 /// working directory, and waits for it to end.
 pub fn run_user_command(program: &OsStr, args: &[OsString]) -> Result<Finished, ExecError> {
-    let status = Command::new(program)
+    let status = Command::new(resolve(program))
         .args(args)
         .status()
         .map_err(|err| match err.kind() {
@@ -40,6 +42,51 @@ pub fn run_user_command(program: &OsStr, args: &[OsString]) -> Result<Finished, 
             _ => ExecError::CannotRun(err),
         })?;
     Ok(finished(status))
+}
+
+/// The program as given. Unix searches `PATH` for it as a shell would.
+#[cfg(not(windows))]
+fn resolve(program: &OsStr) -> OsString {
+    program.to_owned()
+}
+
+/// On Windows, `Command` looks only for `<name>.exe`, and `npm`, `npx`, `yarn` and `pnpm` are
+/// `.cmd` scripts. A bare name is looked up on `PATH` with each `PATHEXT` extension, as
+/// `cmd.exe` would; `Command` then runs a script found that way through `cmd.exe`, quoting its
+/// arguments, or refuses arguments it cannot quote safely.
+#[cfg(windows)]
+fn resolve(program: &OsStr) -> OsString {
+    let path = std::env::var_os("PATH");
+    let pathext = std::env::var_os("PATHEXT");
+    find_on_path(program, path.as_deref(), pathext.as_deref(), Path::is_file)
+        .map_or_else(|| program.to_owned(), PathBuf::into_os_string)
+}
+
+/// The first `<dir>\<program><ext>` that exists, for each `PATH` directory in order and each
+/// `PATHEXT` extension in order; nothing for a program named with a directory or an extension.
+#[cfg(any(windows, test))]
+fn find_on_path(
+    program: &OsStr,
+    path: Option<&OsStr>,
+    pathext: Option<&OsStr>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let name = Path::new(program);
+    if name.extension().is_some() || name.components().count() != 1 {
+        return None;
+    }
+    let pathext = pathext
+        .and_then(OsStr::to_str)
+        .unwrap_or(".COM;.EXE;.BAT;.CMD");
+    let extensions: Vec<&str> = pathext.split(';').filter(|ext| !ext.is_empty()).collect();
+    std::env::split_paths(path?).find_map(|dir| {
+        extensions.iter().find_map(|ext| {
+            let mut file = program.to_owned();
+            file.push(ext);
+            let candidate = dir.join(file);
+            exists(&candidate).then_some(candidate)
+        })
+    })
 }
 
 #[cfg(unix)]
@@ -70,6 +117,39 @@ mod tests {
             run_user_command(missing, &[]),
             Err(ExecError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn a_bare_name_is_found_with_the_path_extensions_in_order() {
+        let dirs = std::env::join_paths([Path::new("/tools/a"), Path::new("/tools/b")]).unwrap();
+        let present = |path: &Path| {
+            [
+                Path::new("/tools/b/npm.CMD"),
+                Path::new("/tools/b/npm.EXE"),
+                Path::new("/tools/a/node.EXE"),
+            ]
+            .contains(&path)
+        };
+        let find = |program: &str| {
+            find_on_path(
+                OsStr::new(program),
+                Some(&dirs),
+                Some(OsStr::new(".COM;.EXE;.BAT;.CMD")),
+                present,
+            )
+        };
+        assert_eq!(find("npm"), Some(PathBuf::from("/tools/b/npm.EXE")));
+        assert_eq!(find("node"), Some(PathBuf::from("/tools/a/node.EXE")));
+        assert_eq!(find("cargo"), None);
+        assert_eq!(find("npm.cmd"), None, "an extension is used as given");
+        assert_eq!(find("bin/npm"), None, "a directory is used as given");
+        let only_cmd = |path: &Path| path == Path::new("/tools/b/npm.CMD");
+        assert_eq!(
+            find_on_path(OsStr::new("npm"), Some(&dirs), None, only_cmd),
+            Some(PathBuf::from("/tools/b/npm.CMD")),
+            "without PATHEXT, Windows' default list"
+        );
+        assert_eq!(find_on_path(OsStr::new("npm"), None, None, only_cmd), None);
     }
 
     #[cfg(unix)]

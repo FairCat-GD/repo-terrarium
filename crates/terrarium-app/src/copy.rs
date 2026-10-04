@@ -269,7 +269,15 @@ fn located_text(located: &Located, read: Option<&AdapterReport>) -> String {
     let format = format_name(located.format);
     let place = match located.files.as_slice() {
         [only] if *only == located.pattern => format!("{only}, {format}"),
-        files => format!("{}, {} {format} files", located.pattern, files.len()),
+        files => format!(
+            "{}, {}",
+            located.pattern,
+            plural(
+                u64::try_from(files.len()).unwrap_or(u64::MAX),
+                &format!("{format} file"),
+                &format!("{format} files")
+            )
+        ),
     };
     match read {
         Some(report) => format!("{place}: {}", outcome_text(report)),
@@ -297,9 +305,12 @@ fn reading_text(reading: &Reading) -> String {
             tests,
             failed,
             skipped,
+            suite_failed,
         } => {
             let mut text = format!("{}, ", plural(*tests, "test", "tests"));
-            if *failed == 0 {
+            if *failed == 0 && *suite_failed {
+                text.push_str("none failing, but a suite failed outside its tests");
+            } else if *failed == 0 {
                 text.push_str("none failing");
             } else {
                 let _ = write!(text, "{failed} failing");
@@ -1550,6 +1561,7 @@ mod tests {
                         tests: 120,
                         failed: 3,
                         skipped: 1,
+                        suite_failed: false,
                     },
                 )),
                 local_tests: Some(known(
@@ -1615,6 +1627,35 @@ mod tests {
                 ..nothing()
             };
             assert!(!discovery_report(&recorded, &no_reads()).contains("  test report"));
+        }
+
+        #[test]
+        fn one_file_of_many_and_a_suite_failure_read_plainly() {
+            let discovery = Discovery {
+                test_report: found(
+                    Format::JUnit,
+                    "target/surefire-reports/TEST-*.xml",
+                    &["target/surefire-reports/TEST-moss.FernTest.xml"],
+                ),
+                ..nothing()
+            };
+            let reads = Reads {
+                test_report: Some(known(
+                    Format::JUnit,
+                    &["target/surefire-reports/TEST-moss.FernTest.xml"],
+                    Reading::Tests {
+                        tests: 1,
+                        failed: 0,
+                        skipped: 0,
+                        suite_failed: true,
+                    },
+                )),
+                ..no_reads()
+            };
+            assert!(discovery_report(&discovery, &reads).contains(
+                "  test report       target/surefire-reports/TEST-*.xml, 1 JUnit file: 1 test, \
+                 none failing, but a suite failed outside its tests\n"
+            ));
         }
 
         #[test]

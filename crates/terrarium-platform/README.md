@@ -35,6 +35,9 @@ Operating-system integration that needs FFI.
   `GetLocalTime` on Windows).
 - `idle`: how long the machine has gone without input, for dim mode (`CGEventSource` on macOS,
   `GetLastInputInfo` on Windows). Neither asks the user for permission.
+- `interrupt`: Ctrl-C left to the command `record-tests` runs, so the wrapper keeps waiting
+  for it instead of ending first (a do-nothing signal handler on macOS, which a started
+  program does not inherit; a console control handler on Windows).
 - `memory`: the process's resident size, and on macOS its footprint, for the debug window and
   the egui memory probe.
 - On macOS, the app the user was in, so an egui window that took the keyboard can give it back

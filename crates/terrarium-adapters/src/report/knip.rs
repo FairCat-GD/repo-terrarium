@@ -55,7 +55,7 @@ pub fn installed_knip(root: &Path) -> Option<String> {
         MANIFEST_MAX_BYTES,
     )
     .ok()?;
-    let value: Value = serde_json::from_slice(&manifest.bytes).ok()?;
+    let value: Value = serde_json::from_str(&text(&manifest).ok()?).ok()?;
     value.get("version")?.as_str().map(str::to_owned)
 }
 
@@ -100,7 +100,7 @@ fn read_file(
         line,
     };
     let text = text(file)?;
-    let root: Value = serde_json::from_str(text)
+    let root: Value = serde_json::from_str(&text)
         .map_err(|err| malformed(u64::try_from(err.line()).ok().filter(|&l| l > 0)))?;
     let root = root.as_object().ok_or_else(|| malformed(None))?;
     if root.contains_key("files") {

@@ -20,6 +20,7 @@ mod paths;
 mod tests;
 mod xml;
 
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read as _};
 use std::path::Path;
@@ -110,11 +111,13 @@ pub struct Known {
 pub enum Reading {
     /// Lines instrumented and lines run; `lines_found` is never zero.
     Coverage { lines_found: u64, lines_hit: u64 },
-    /// Test cases, those that failed or errored, and those skipped. Some test ran or failed.
+    /// Test cases, those that failed or errored, and those skipped; `suite_failed` when a
+    /// failure stood outside any test case. Some test ran, or something failed.
     Tests {
         tests: u64,
         failed: u64,
         skipped: u64,
+        suite_failed: bool,
     },
     /// A `record-tests` run and its exit code.
     LocalRun { exit_code: i64 },
@@ -147,7 +150,11 @@ impl Reading {
     /// fails, as it fails a CI job).
     pub fn passed(&self) -> Option<bool> {
         match self {
-            Reading::Tests { failed, .. } => Some(*failed == 0),
+            Reading::Tests {
+                failed,
+                suite_failed,
+                ..
+            } => Some(*failed == 0 && !*suite_failed),
             Reading::LocalRun { exit_code } => Some(*exit_code == 0),
             Reading::Coverage { .. } | Reading::DeadCode(_) => None,
         }
@@ -354,12 +361,36 @@ pub(crate) fn top(mut contributors: Vec<Contributor>) -> Vec<Contributor> {
     contributors
 }
 
-/// A file's text, or [`Why::Malformed`] when it is not UTF-8.
-pub(crate) fn text(file: &Loaded) -> Result<&str, Why> {
-    std::str::from_utf8(&file.bytes).map_err(|err| Why::Malformed {
+/// A file's text: UTF-8, with or without a byte-order mark, or UTF-16 with one (what Windows
+/// PowerShell 5's `>` writes). Anything else is [`Why::Malformed`].
+pub(crate) fn text(file: &Loaded) -> Result<Cow<'_, str>, Why> {
+    let malformed = |line| Why::Malformed {
         path: file.path.clone(),
-        line: Some(line_at(&file.bytes, err.valid_up_to())),
-    })
+        line,
+    };
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let (pairs, odd) = rest.as_chunks::<2>();
+        if !odd.is_empty() {
+            return Err(malformed(None));
+        }
+        char::decode_utf16(pairs.iter().map(|pair| unit(*pair)))
+            .collect::<Result<String, _>>()
+            .map(Cow::Owned)
+            .map_err(|_| malformed(None))
+    };
+    if let Some(rest) = file.bytes.strip_prefix(&[0xff, 0xfe]) {
+        return utf16(rest, u16::from_le_bytes);
+    }
+    if let Some(rest) = file.bytes.strip_prefix(&[0xfe, 0xff]) {
+        return utf16(rest, u16::from_be_bytes);
+    }
+    let bytes = file
+        .bytes
+        .strip_prefix(&[0xef, 0xbb, 0xbf])
+        .unwrap_or(&file.bytes);
+    std::str::from_utf8(bytes)
+        .map(Cow::Borrowed)
+        .map_err(|err| malformed(Some(line_at(bytes, err.valid_up_to()))))
 }
 
 /// The 1-based line holding byte `offset`.

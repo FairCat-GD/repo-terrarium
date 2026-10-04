@@ -11,7 +11,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::git::{GitError, GitRepo};
+use crate::git::GitError;
 use crate::report::{Format, MAX_FILES, installed_knip, read_bounded};
 
 /// lcov first, then Cobertura, each in the order tools write them: Jest, Vitest, c8 and nyc;
@@ -197,10 +197,15 @@ pub struct Discovery {
     pub runners: Vec<RunnerFound>,
 }
 
-/// Discovers what the repository at `root` has. `status_file` is where `record-tests` would
+/// Discovers what the repository at `root` has. `git` is its default branch, or why it could
+/// not be read, from the caller's own open of it; `status_file` is where `record-tests` would
 /// have written its file for this repository, when the data directory is known.
-pub fn discover(root: &Path, overrides: &Overrides, status_file: Option<&Path>) -> Discovery {
-    let git = GitRepo::open(root).and_then(|repo| repo.default_branch());
+pub fn discover(
+    root: &Path,
+    git: Result<String, GitError>,
+    overrides: &Overrides,
+    status_file: Option<&Path>,
+) -> Discovery {
     let coverage = match &overrides.coverage {
         Some(path) => configured(root, path, coverage_format(path)),
         None => first_of(
@@ -368,7 +373,7 @@ fn is_file(path: &Path) -> bool {
 fn package_keys(root: &Path) -> Vec<String> {
     read_bounded(&root.join(PACKAGE_JSON), PACKAGE_JSON, CONFIG_MAX_BYTES)
         .ok()
-        .and_then(|file| serde_json::from_slice::<Value>(&file.bytes).ok())
+        .and_then(|file| serde_json::from_str::<Value>(&crate::report::text(&file).ok()?).ok())
         .and_then(|value| match value {
             Value::Object(map) => Some(map.keys().cloned().collect()),
             _ => None,
@@ -379,9 +384,8 @@ fn package_keys(root: &Path) -> Vec<String> {
 fn runners(root: &Path, package: &[String]) -> Vec<RunnerFound> {
     let has_section = |path: &str, section: &str| {
         read_bounded(&root.join(path), path, CONFIG_MAX_BYTES).is_ok_and(|file| {
-            String::from_utf8_lossy(&file.bytes)
-                .lines()
-                .any(|line| line.trim() == section)
+            crate::report::text(&file)
+                .is_ok_and(|text| text.lines().any(|line| line.trim() == section))
         })
     };
     Runner::ALL
@@ -414,6 +418,12 @@ fn runners(root: &Path, package: &[String]) -> Vec<RunnerFound> {
 mod tests {
     use super::*;
     use crate::fixture::{Edit, FixtureRepo, Stamp};
+    use crate::git::GitRepo;
+
+    fn discover_in(root: &Path, overrides: &Overrides, status_file: Option<&Path>) -> Discovery {
+        let git = GitRepo::open(root).and_then(|repo| repo.default_branch());
+        discover(root, git, overrides, status_file)
+    }
 
     /// A repository with one commit, and these files written into its worktree.
     fn repo_with(files: &[(&str, &str)]) -> (tempfile::TempDir, FixtureRepo) {
@@ -451,7 +461,7 @@ mod tests {
     #[test]
     fn an_empty_repository_has_git_and_nothing_else() {
         let (_dir, repo) = repo_with(&[]);
-        let found = discover(repo.path(), &Overrides::default(), None);
+        let found = discover_in(repo.path(), &Overrides::default(), None);
         assert_eq!(found.git, Ok("main".to_owned()));
         assert_eq!(found.coverage, Search::NotFound);
         assert_eq!(found.test_report, Search::NotFound);
@@ -466,7 +476,7 @@ mod tests {
     #[test]
     fn a_folder_that_is_not_a_repository_says_so() {
         let dir = tempfile::tempdir().unwrap();
-        let found = discover(dir.path(), &Overrides::default(), None);
+        let found = discover_in(dir.path(), &Overrides::default(), None);
         assert!(matches!(found.git, Err(GitError::Open(_))));
     }
 
@@ -499,7 +509,7 @@ mod tests {
         ]);
         let status = repo.path().join("status.json");
         fs::write(&status, "{}").unwrap();
-        let found = discover(repo.path(), &Overrides::default(), Some(&status));
+        let found = discover_in(repo.path(), &Overrides::default(), Some(&status));
         assert_eq!(
             found.coverage,
             Search::Found(Located {
@@ -553,7 +563,7 @@ mod tests {
     #[test]
     fn cobertura_is_found_without_lcov() {
         let (_dir, repo) = repo_with(&[("coverage.xml", "<coverage/>")]);
-        let found = discover(repo.path(), &Overrides::default(), None);
+        let found = discover_in(repo.path(), &Overrides::default(), None);
         assert_eq!(
             found
                 .coverage
@@ -576,7 +586,7 @@ mod tests {
             dead_code: Some("../elsewhere/knip.json".into()),
             weather: Some(r"out\tests\*.xml".into()),
         };
-        let found = discover(repo.path(), &overrides, None);
+        let found = discover_in(repo.path(), &overrides, None);
         assert_eq!(
             found.coverage,
             Search::Found(Located {
@@ -596,7 +606,7 @@ mod tests {
                 ..Overrides::default()
             };
             assert_eq!(
-                discover(repo.path(), &overrides, None).coverage,
+                discover_in(repo.path(), &overrides, None).coverage,
                 Search::Refused(outside.into())
             );
         }
@@ -605,7 +615,7 @@ mod tests {
             ..Overrides::default()
         };
         assert_eq!(
-            discover(repo.path(), &missing, None).coverage,
+            discover_in(repo.path(), &missing, None).coverage,
             Search::NotFound
         );
     }
@@ -614,7 +624,7 @@ mod tests {
     fn only_regular_files_are_found() {
         let (_dir, repo) = repo_with(&[]);
         fs::create_dir_all(repo.path().join("junit.xml")).unwrap();
-        let found = discover(repo.path(), &Overrides::default(), None);
+        let found = discover_in(repo.path(), &Overrides::default(), None);
         assert_eq!(found.test_report, Search::NotFound);
     }
 }

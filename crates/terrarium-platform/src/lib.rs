@@ -6,6 +6,7 @@ pub mod appbar;
 pub mod clock;
 pub mod geometry;
 pub mod idle;
+pub mod interrupt;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod memory;

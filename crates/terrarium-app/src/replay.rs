@@ -4,7 +4,7 @@
 //! so it never reads or writes the data directory.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,11 +13,11 @@ use terrarium_store::DataDir;
 use terrarium_truth::canonical_dump;
 
 use crate::cli::ReplayArgs;
-use crate::copy;
+use crate::{copy, output};
 
 pub fn run(args: &ReplayArgs) -> ExitCode {
     match dump(args) {
-        Ok(text) => write_out(&text),
+        Ok(text) => output::print(&text, copy::replay_write_failed),
         Err(message) => {
             eprintln!("{message}");
             ExitCode::FAILURE
@@ -52,17 +52,4 @@ pub(crate) fn now_secs() -> i64 {
         .map_or(0, |since| {
             i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
         })
-}
-
-/// Writes the dump to stdout. A reader that stops early, as `head` does, is not a failure.
-fn write_out(text: &str) -> ExitCode {
-    let mut out = std::io::stdout().lock();
-    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) if err.kind() == ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("{}", copy::replay_write_failed(&err));
-            ExitCode::FAILURE
-        }
-    }
 }

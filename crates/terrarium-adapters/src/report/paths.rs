@@ -3,10 +3,10 @@
 //! Tools write source paths relative to where they ran, or absolute. Absolute ones hold the
 //! person's home directory, which must not reach a stored contributor or an export, so a path
 //! that does not lead into the repository is left out of contributors. Paths are compared as
-//! text with `/` separators; nothing here touches the file system except finding the root's real
-//! path once.
+//! text with `/` separators. A relative path is relative to wherever the tool ran, which a
+//! report does not say, so the worktree is asked which reading names a file that exists.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The parts of a repository-relative path, without `.`; `None` when it is absolute or climbs
 /// out of the root with `..`.
@@ -34,8 +34,9 @@ fn is_absolute(path: &str) -> bool {
         || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
 }
 
-/// The repository root's spellings a report may use.
+/// The repository root, and its spellings a report may use.
 pub(crate) struct Context {
+    root: PathBuf,
     roots: Vec<String>,
 }
 
@@ -55,7 +56,10 @@ impl Context {
                 roots.push(text);
             }
         }
-        Context { roots }
+        Context {
+            root: root.to_path_buf(),
+            roots,
+        }
     }
 
     /// `path` as a repository-relative path with `/`, or `None` when it leads outside the
@@ -69,6 +73,28 @@ impl Context {
             let rest = strip_root(&path, root)?;
             relative_parts(rest).map(|parts| parts.join("/"))
         })
+    }
+
+    /// `path` as the report at `report` (repository-relative) names it. A relative path is read
+    /// against each directory holding the report, deepest first, and the first that names an
+    /// existing file wins; otherwise it is read against the root. A tool usually runs in the
+    /// project directory above its `coverage/`, which in a monorepo is not the root.
+    pub(crate) fn locate(&self, path: &str, report: &str) -> Option<String> {
+        let path = slashed(path);
+        if is_absolute(&path) {
+            return self.relative(&path);
+        }
+        let dirs = relative_parts(report).unwrap_or_default();
+        for depth in (1..dirs.len()).rev() {
+            let joined = format!("{}/{path}", dirs[..depth].join("/"));
+            if let Some(parts) = relative_parts(&joined) {
+                let candidate = parts.join("/");
+                if self.root.join(&candidate).is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        self.relative(&path)
     }
 
     /// `path` read against `base` (a Cobertura `<source>`), as [`Context::relative`] reads it.
@@ -132,6 +158,7 @@ mod tests {
     #[test]
     fn absolute_paths_inside_the_root_become_relative() {
         let context = Context {
+            root: PathBuf::from("/home/fern/moss"),
             roots: vec!["/home/fern/moss".into(), "C:/work/moss".into()],
         };
         assert_eq!(
@@ -167,5 +194,35 @@ mod tests {
             Some("src/a.ts")
         );
         assert_eq!(context.relative_to("/elsewhere", "a.ts"), None);
+    }
+
+    #[test]
+    fn a_relative_path_is_read_from_the_project_that_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["packages/fern/src/a.ts", "src/b.ts"] {
+            let full = dir.path().join(file);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, "").unwrap();
+        }
+        let context = Context::new(dir.path());
+        let report = "packages/fern/coverage/lcov.info";
+        assert_eq!(
+            context.locate("src/a.ts", report).as_deref(),
+            Some("packages/fern/src/a.ts")
+        );
+        // Found under no directory of the report: read from the root.
+        assert_eq!(
+            context.locate("src/b.ts", report).as_deref(),
+            Some("src/b.ts")
+        );
+        assert_eq!(
+            context.locate("src/c.ts", report).as_deref(),
+            Some("src/c.ts")
+        );
+        assert_eq!(
+            context.locate("src/b.ts", "coverage/lcov.info").as_deref(),
+            Some("src/b.ts")
+        );
+        assert_eq!(context.locate("../../../x.ts", report), None);
     }
 }

@@ -20,6 +20,7 @@ mod hover;
 mod idle;
 mod menu;
 mod monitor;
+mod output;
 mod pinning;
 mod present;
 mod probe;

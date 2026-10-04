@@ -6,11 +6,12 @@
 //! root's `lines-valid` and `lines-covered` are used only by a report with no line at all. Class
 //! file names are read against each `<source>`.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use super::paths::Context;
 use super::xml::{Step, attribute, walk};
-use super::{Contributor, Loaded, Parsed, Reading, Why, count, hits, text};
+use super::{Contributor, Loaded, Parsed, Reading, Why, count, hits};
 
 #[derive(Default)]
 struct Source {
@@ -40,7 +41,7 @@ pub(crate) fn parse(context: &Context, files: &[Loaded]) -> Parsed {
             root_hit = root_hit.saturating_add(hit.min(found));
         }
         for (name, lines) in document.classes {
-            let path = resolve(context, &document.sources, &name);
+            let path = resolve(context, &document.sources, &name, &file.path);
             let source = merged.entry(path.clone().unwrap_or(name)).or_default();
             source.path = path;
             for (number, ran) in lines {
@@ -79,32 +80,36 @@ pub(crate) fn parse(context: &Context, files: &[Loaded]) -> Parsed {
     ))
 }
 
-/// The first reading of `name` against a source that lands inside the repository, or the
-/// name alone.
-fn resolve(context: &Context, sources: &[String], name: &str) -> Option<String> {
+/// The first reading of `name` against a source that lands inside the repository, or the name
+/// as the report at `report` names it.
+fn resolve(context: &Context, sources: &[String], name: &str, report: &str) -> Option<String> {
     sources
         .iter()
         .find_map(|source| context.relative_to(source, name))
-        .or_else(|| context.relative(name))
+        .or_else(|| context.locate(name, report))
 }
 
 fn read_file(file: &Loaded) -> Result<Document, Why> {
-    let text = text(file)?;
     let mut document = Document::default();
     let mut class: Option<String> = None;
     let mut root: Option<String> = None;
-    walk(file, text, |around, step| match step {
-        Step::Start { name, attributes } => {
+    walk(file, |around, step| match step {
+        Step::Start { name, element } => {
             if around.is_empty() {
                 root = Some(name.to_owned());
-                let totals = attribute(attributes, "lines-valid")
+                let totals = attribute(element, "lines-valid")
+                    .as_deref()
                     .and_then(count)
-                    .zip(attribute(attributes, "lines-covered").and_then(count));
+                    .zip(
+                        attribute(element, "lines-covered")
+                            .as_deref()
+                            .and_then(count),
+                    );
                 document.root_totals = totals;
             }
             match (name, around.last().map(String::as_str)) {
                 ("class", _) => {
-                    class = attribute(attributes, "filename").map(str::to_owned);
+                    class = attribute(element, "filename").map(Cow::into_owned);
                 }
                 // Only a class's own lines: `class > lines > line`.
                 ("line", Some("lines"))
@@ -112,8 +117,8 @@ fn read_file(file: &Loaded) -> Result<Document, Why> {
                 {
                     let (Some(file_name), Some(number), Some(ran)) = (
                         class.as_ref(),
-                        attribute(attributes, "number").and_then(count),
-                        attribute(attributes, "hits").and_then(hits),
+                        attribute(element, "number").as_deref().and_then(count),
+                        attribute(element, "hits").as_deref().and_then(hits),
                     ) else {
                         document.bad_line = true;
                         return;

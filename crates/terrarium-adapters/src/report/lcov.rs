@@ -5,6 +5,9 @@
 //! it. `LF`/`LH` count only for a record with no `DA` line, since summaries cannot be merged.
 //! Function, branch and MC/DC records, and any record type added later, are skipped.
 //!
+//! A source path is read as the tool wrote it: absolute, or relative to the project it ran in
+//! (`paths::Context::locate`).
+//!
 //! A record runs from `SF:` to `end_of_record`, and a file must end outside one. lcov has no
 //! end-of-document marker, so a file cut between two records reads as the records before the
 //! cut; one cut anywhere else is malformed.
@@ -86,6 +89,8 @@ fn read_file(
 ) -> Result<(), Why> {
     let text = text(file)?;
     let mut record: Option<Record> = None;
+    // Where each named file lies, asked of the worktree once per name.
+    let mut located: BTreeMap<String, Option<String>> = BTreeMap::new();
     for (index, line) in text.split('\n').enumerate() {
         let line_no = u64::try_from(index).map_or(u64::MAX, |i| i.saturating_add(1));
         let malformed = || Why::Malformed {
@@ -98,7 +103,11 @@ fn read_file(
         }
         if line == "end_of_record" {
             let done = record.take().ok_or_else(malformed)?;
-            close(context, done, sources);
+            let path = located
+                .entry(done.key.clone())
+                .or_insert_with(|| context.locate(&done.key, &file.path))
+                .clone();
+            close(path, done, sources);
             continue;
         }
         let Some((tag, value)) = line.split_once(':') else {
@@ -150,8 +159,8 @@ fn read_file(
     Ok(())
 }
 
-fn close(context: &Context, record: Record, sources: &mut BTreeMap<String, Source>) {
-    let path = context.relative(&record.key);
+/// Merges a finished record into its source file, at `path` in the repository if it lies there.
+fn close(path: Option<String>, record: Record, sources: &mut BTreeMap<String, Source>) {
     // The same file named two ways (absolute and relative) is one source.
     let key = path.clone().unwrap_or(record.key);
     let source = sources.entry(key).or_default();

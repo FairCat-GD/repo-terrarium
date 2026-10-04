@@ -47,6 +47,7 @@ pub fn record(
                 tests,
                 failed,
                 skipped,
+                suite_failed,
             },
             Format::JUnit,
         ) => {
@@ -54,6 +55,7 @@ pub fn record(
                 tests: Some(*tests),
                 failed: Some(*failed),
                 skipped: Some(*skipped),
+                suite_failed: suite_failed.then_some(true),
                 ..WeatherRaw::of(state(&known.reading))
             };
             (Some(WeatherSource::Local), raw.to_raw())

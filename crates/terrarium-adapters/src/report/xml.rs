@@ -5,6 +5,9 @@
 //! and character references resolve; any other is malformed. The walk fails on anything not well
 //! formed, and on a document that ends before its root element does, which is how a file caught
 //! half-written shows.
+//!
+//! A report can hold millions of elements, so an element is handed to the visitor as quick-xml
+//! read it, and an attribute is decoded only when asked for.
 
 use std::borrow::Cow;
 
@@ -12,14 +15,14 @@ use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
-use super::{Loaded, Why, line_at};
+use super::{Loaded, Why, line_at, text};
 
 /// One step of the walk. `Start` comes for every element, `End` after its content (an empty
 /// element gets both).
 pub(crate) enum Step<'e> {
     Start {
         name: &'e str,
-        attributes: &'e [(String, String)],
+        element: &'e BytesStart<'e>,
     },
     End {
         name: &'e str,
@@ -29,19 +32,16 @@ pub(crate) enum Step<'e> {
 
 /// Walks `file`, calling `visit` with each step and the names of the elements around it,
 /// outermost first (for `Start` and `End`, not including the element itself).
-pub(crate) fn walk(
-    file: &Loaded,
-    text: &str,
-    mut visit: impl FnMut(&[String], Step<'_>),
-) -> Result<(), Why> {
+pub(crate) fn walk(file: &Loaded, mut visit: impl FnMut(&[String], Step<'_>)) -> Result<(), Why> {
+    let text = text(file)?;
     let malformed = |offset: u64| Why::Malformed {
         path: file.path.clone(),
         line: Some(line_at(
-            &file.bytes,
+            text.as_bytes(),
             usize::try_from(offset).unwrap_or(usize::MAX),
         )),
     };
-    let mut reader = Reader::from_str(text);
+    let mut reader = Reader::from_str(&text);
     let mut stack: Vec<String> = Vec::new();
     let mut root_closed = false;
     let mut pending = String::new();
@@ -58,32 +58,29 @@ pub(crate) fn walk(
             return Err(malformed(position));
         }
         match event {
-            Event::Start(start) | Event::Empty(start) if root_closed => {
-                // A second root element.
-                let _ = start;
-                return Err(malformed(position));
-            }
-            Event::Start(start) => {
-                let (name, attributes) = element(&start).ok_or_else(|| malformed(position))?;
+            // A second root element.
+            Event::Start(_) | Event::Empty(_) if root_closed => return Err(malformed(position)),
+            Event::Start(element) => {
+                let name = checked_name(&element).ok_or_else(|| malformed(position))?;
                 visit(
                     &stack,
                     Step::Start {
-                        name: &name,
-                        attributes: &attributes,
+                        name,
+                        element: &element,
                     },
                 );
-                stack.push(name);
+                stack.push(name.to_owned());
             }
-            Event::Empty(start) => {
-                let (name, attributes) = element(&start).ok_or_else(|| malformed(position))?;
+            Event::Empty(element) => {
+                let name = checked_name(&element).ok_or_else(|| malformed(position))?;
                 visit(
                     &stack,
                     Step::Start {
-                        name: &name,
-                        attributes: &attributes,
+                        name,
+                        element: &element,
                     },
                 );
-                visit(&stack, Step::End { name: &name });
+                visit(&stack, Step::End { name });
                 root_closed = stack.is_empty();
             }
             Event::End(_) => {
@@ -137,26 +134,21 @@ fn flush(
     ok
 }
 
-/// An element's local name and its attributes, unescaped, or `None` when either is malformed.
-fn element(start: &BytesStart<'_>) -> Option<(String, Vec<(String, String)>)> {
-    let name = start.local_name().into_inner().to_owned();
-    let mut attributes = Vec::new();
-    for attribute in start.attributes() {
-        let attribute = attribute.ok()?;
-        let key = attribute.key.local_name().into_inner().to_owned();
-        let value = attribute
-            .normalized_value(XmlVersion::Implicit1_0)
-            .ok()?
-            .into_owned();
-        attributes.push((key, value));
+/// An element's local name, once its attributes are checked to be well formed (which needs no
+/// allocation).
+fn checked_name<'e>(element: &'e BytesStart<'_>) -> Option<&'e str> {
+    if element.attributes().any(|attribute| attribute.is_err()) {
+        return None;
     }
-    Some((name, attributes))
+    Some(element.local_name().into_inner())
 }
 
-/// The value of attribute `key`.
-pub(crate) fn attribute<'a>(attributes: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    attributes
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
+/// The value of attribute `key`, unescaped; `None` when it is absent or does not unescape.
+pub(crate) fn attribute<'e>(element: &'e BytesStart<'_>, key: &str) -> Option<Cow<'e, str>> {
+    element
+        .attributes()
+        .filter_map(Result::ok)
+        .find(|attribute| attribute.key.local_name().into_inner() == key)?
+        .normalized_value(XmlVersion::Implicit1_0)
+        .ok()
 }
