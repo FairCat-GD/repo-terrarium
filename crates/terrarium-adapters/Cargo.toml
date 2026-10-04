@@ -10,6 +10,25 @@ publish.workspace = true
 
 [dependencies]
 terrarium-truth.workspace = true
+gix.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+
+# `fixture` builds deterministic git repositories for tests, benches and xtask. It writes, so it
+# never ships: only xtask and dev-dependencies may turn it on (`cargo xtask verify`'s graph
+# check).
+[features]
+default = []
+fixture = []
+
+# The release-build budget for reading 10,000 commits, run by `cargo xtask bench`.
+[[bench]]
+name = "history"
+harness = false
+required-features = ["fixture"]
 
 [lints]
 workspace = true

@@ -14,6 +14,10 @@ crates/terrarium-compose/assets/generated/** binary
 # Golden files are compared byte for byte.
 **/golden/** binary
 
+# The arc's observations, an input `cargo xtask fixture --bless` writes and a test compares
+# byte for byte.
+tests/fixtures/arc/** binary
+
 # The art package is kept byte-for-byte as delivered; its SHA-256s are checked against
 # PACKAGE-CONTENTS.json, so git must never rewrite line endings inside it.
 art-assets/** -text

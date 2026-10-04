@@ -91,6 +91,22 @@ Otherwise each line merges by (`kind`, `source`, `head_commit`, `recorded_at`):
 
 A line's `id` belongs to the install that exported it and is not kept.
 
+## Raw shapes (`raw`)
+
+Each kind's `raw` is a JSON object. Shapes are keyed by kind, not `adapter_version`, and only
+ever gain optional keys; readers ignore keys they do not know.
+
+| kind | shape | enforced |
+|---|---|---|
+| `coverage` | `{"format":"lcov"\|"cobertura","lines_found":n,"lines_hit":n}` | JSON only |
+| `dead_code` | `{"unused_items":n,"exported_items":n}` | yes |
+| `weather` | `{"state":"pass"\|"fail"\|"unknown"}` | JSON only |
+| `ref_rewrite` | `{"ref":"<ref>","old":"<hex>","new":"<hex>"}`, `normalized` null | yes |
+| `complexity`, `todo_density` | defined by the tree-sitter adapter | JSON only |
+
+The store enforces what truth reads, so every stored row converts:
+`StoredObservation::to_observation` gives replay its `Observation`.
+
 ## Requirements
 
 Invariants I-4, I-12 and I-14.

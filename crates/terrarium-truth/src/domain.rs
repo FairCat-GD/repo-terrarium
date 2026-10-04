@@ -353,7 +353,8 @@ impl Canonical for ObservationValue {
 /// report, its hash and mtime, the contributors) serve the store and the soil panel, not truth.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
-    /// The store's row id; replay orders same-tick observations by it.
+    /// The store's row id. It is install-local, so replay never orders by it: same-tick
+    /// observations follow their merge key (`recorded_at`, `kind`, `source`, `head_commit`).
     pub id: i64,
     /// Unix seconds, UTC.
     pub recorded_at: i64,

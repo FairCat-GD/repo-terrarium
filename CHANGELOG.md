@@ -5,6 +5,29 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-04
+
+Nothing changes on screen. This release adds the reader that will turn a repository's history
+into the terrarium's rain, wind and terrain.
+
+### Added
+
+- **Git history is read inside the app,** without the git command line, so no git install is
+  needed and every computer reads the same repository the same way.
+- **A repository cannot run anything through the terrarium.** Hooks, filters, text conversion,
+  external diff tools and file-system monitors set in a repository are never started, and
+  nothing is ever written into it.
+- **Settings in one copy of a repository never change its history.** Its diff and rename
+  settings, its attributes and its replace refs are ignored, so two clones of the same
+  repository always agree.
+- **Every local branch counts toward activity,** each commit once. Line counts leave out
+  lockfiles, vendored and generated folders, minified files and binary files; a moved folder
+  is a rename, never a deletion.
+- **The default branch is found the way people expect:** the one the remote points at, then
+  `main`, `master`, or the branch you are on.
+- **Shallow clones work:** the oldest commit present stands in for the first.
+- **Large histories read quickly:** 10,000 commits in about 3.5 seconds on a recent Mac.
+
 ## [0.11.0] - 2026-10-04
 
 Nothing changes on screen. This release adds the database that will keep a terrarium's history:

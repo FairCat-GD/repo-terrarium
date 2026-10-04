@@ -8,6 +8,7 @@
 pub mod canon;
 pub mod domain;
 pub mod fixed;
+pub mod history;
 pub mod identity;
 pub mod rng;
 pub mod scene;

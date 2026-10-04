@@ -7,6 +7,7 @@ mod error;
 pub mod identifiers;
 mod jsonl;
 mod observations;
+pub mod raw;
 mod schema;
 mod settings;
 mod terrariums;

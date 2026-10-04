@@ -63,6 +63,10 @@ const REQUIRED_ROOT_ATTRIBUTES: &[(&str, &str)] = &[
 /// workspace crate it depends on.
 const DEV_FEATURE: &str = "dev";
 
+/// The adapters feature that builds fixture git repositories (I-5): it writes, so it never
+/// ships. It is never on by default, and only xtask or a dev-dependency may turn it on.
+const FIXTURE_FEATURE: &str = "fixture";
+
 /// Package fields every member inherits from `[workspace.package]`.
 const INHERITED_FIELDS: &[&str] = &[
     "version",
@@ -145,6 +149,7 @@ pub fn check(ws: &Workspace) -> Vec<String> {
     for member in &ws.members {
         check_edges(member, &names, &mut violations);
         check_manifest(member, &mut violations);
+        check_fixture(member, &mut violations);
         check_roots(member, &mut violations);
         if member.name == TRUTH {
             check_truth_externals(member, &names, &mut violations);
@@ -211,6 +216,39 @@ fn check_manifest(member: &Member, out: &mut Vec<String>) {
                 "{} must not turn on `{DEV_FEATURE}` in {}: the debug window never ships in \
                  release builds",
                 member.name, dep.name
+            ));
+        }
+    }
+}
+
+fn check_fixture(member: &Member, out: &mut Vec<String>) {
+    let why = "it writes git repositories and never ships (I-5)";
+    if member.name == ADAPTERS && default_features(&member.features).contains(FIXTURE_FEATURE) {
+        out.push(format!(
+            "{ADAPTERS} must not enable `{FIXTURE_FEATURE}` by default: {why}"
+        ));
+    }
+    if member.name == XTASK {
+        return;
+    }
+    let names_fixture = |entry: &String| {
+        entry.split_once('/').is_some_and(|(krate, feature)| {
+            krate.trim_end_matches('?') == ADAPTERS && feature == FIXTURE_FEATURE
+        })
+    };
+    if member.features.values().flatten().any(names_fixture) {
+        out.push(format!(
+            "{} must not name `{ADAPTERS}/{FIXTURE_FEATURE}` in a feature: {why}",
+            member.name
+        ));
+    }
+    for dep in &member.deps {
+        let linked = matches!(dep.kind, Kind::Normal | Kind::Build);
+        if linked && dep.name == ADAPTERS && dep.features.iter().any(|f| f == FIXTURE_FEATURE) {
+            out.push(format!(
+                "{} must not turn on `{FIXTURE_FEATURE}` in {ADAPTERS} except as a \
+                 dev-dependency: {why}",
+                member.name
             ));
         }
     }
@@ -923,6 +961,53 @@ mod tests {
             &ws,
             "xtask must not turn on `dev` in terrarium-app: the debug window never ships in \
              release builds",
+        );
+    }
+
+    fn adapters_dep(kind: Kind, features: &[&str]) -> Dep {
+        Dep {
+            name: ADAPTERS.to_owned(),
+            kind,
+            features: features.iter().map(|f| (*f).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn fixture_repositories_are_built_only_by_xtask_and_tests() {
+        let mut ws = workspace();
+        member_mut(&mut ws, ADAPTERS).features = features(&[("default", &[]), ("fixture", &[])]);
+        member_mut(&mut ws, XTASK)
+            .deps
+            .push(adapters_dep(Kind::Normal, &["fixture"]));
+        member_mut(&mut ws, ENGINE)
+            .deps
+            .push(adapters_dep(Kind::Dev, &["fixture"]));
+        assert_eq!(check(&ws), Vec::<String>::new());
+
+        let mut on_by_default = ws.clone();
+        member_mut(&mut on_by_default, ADAPTERS).features =
+            features(&[("default", &["fixture"]), ("fixture", &[])]);
+        fails_with(
+            &on_by_default,
+            "terrarium-adapters must not enable `fixture` by default",
+        );
+
+        let mut engine = ws.clone();
+        member_mut(&mut engine, ENGINE)
+            .deps
+            .push(adapters_dep(Kind::Normal, &["fixture"]));
+        fails_with(
+            &engine,
+            "terrarium-engine must not turn on `fixture` in terrarium-adapters except as a \
+             dev-dependency",
+        );
+
+        let mut app = ws;
+        member_mut(&mut app, APP).features =
+            features(&[("default", &[]), ("dev", &["terrarium-adapters?/fixture"])]);
+        fails_with(
+            &app,
+            "terrarium-app must not name `terrarium-adapters/fixture` in a feature",
         );
     }
 

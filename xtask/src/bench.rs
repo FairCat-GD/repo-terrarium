@@ -6,27 +6,40 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
-/// (package, bench target, what it holds to its budget).
-const BENCHES: &[(&str, &str, &str)] = &[
+/// (package, bench target, features it needs, what it holds to its budget).
+const BENCHES: &[(&str, &str, &[&str], &str)] = &[
     (
         "terrarium-compose",
         "catalog",
+        &[],
         "loading the embedded art, under 20 ms",
     ),
     (
         "terrarium-compose",
         "compositor",
+        &[],
         "compositing a busy frame, median under 1 ms",
+    ),
+    (
+        "terrarium-adapters",
+        "history",
+        &["fixture"],
+        "reading a synthetic 10,000-commit history, under 10 s",
     ),
 ];
 
 pub fn run(root: &Path) -> ExitCode {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut failed = Vec::new();
-    for (package, bench, budget) in BENCHES {
+    for (package, bench, features, budget) in BENCHES {
         println!("\n==> {package} {bench}: {budget}");
+        let mut args = vec!["bench", "--locked", "-p", package, "--bench", bench];
+        let features = features.join(",");
+        if !features.is_empty() {
+            args.extend(["--features", &features]);
+        }
         let passed = Command::new(&cargo)
-            .args(["bench", "--locked", "-p", package, "--bench", bench])
+            .args(&args)
             .current_dir(root)
             .status()
             .is_ok_and(|status| status.success());

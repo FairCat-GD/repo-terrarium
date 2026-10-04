@@ -5,18 +5,19 @@
 use rusqlite::{Connection, OptionalExtension, Row, Statement, params};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
-use terrarium_truth::domain::{ObservationHead, WeatherSource};
+use terrarium_truth::domain::{Observation, ObservationHead, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind, Q16};
 
 use crate::error::is_unique_violation;
-use crate::{Invalid, Store, StoreError, TerrariumId};
+use crate::{Invalid, Store, StoreError, TerrariumId, raw};
 
 /// At most this many contributors per observation.
 pub const MAX_CONTRIBUTORS: usize = 20;
 /// The largest `raw` the store accepts, in bytes. Adapters keep theirs well below it.
 pub const MAX_RAW_BYTES: usize = 64 * 1024;
 
-/// An observation's row id. Replay orders same-tick observations by it.
+/// An observation's row id. It is local to this install: an import appends its rows after the
+/// ones already stored, so replay orders by the merge key instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObservationId(i64);
 
@@ -91,7 +92,10 @@ impl ObservationRecord {
         if serde_json::from_str::<IgnoredAny>(&self.raw).is_err() {
             return Err(Invalid::RawNotJson);
         }
-        Ok(())
+        if self.kind == ObservationKind::RefRewrite && self.normalized.is_some() {
+            return Err(Invalid::NormalizedOnRefRewrite);
+        }
+        raw::value(self.kind, self.source.as_ref(), &self.raw).map(|_| ())
     }
 
     /// The `source` column's text: `''` for every kind but weather.
@@ -108,6 +112,26 @@ pub struct StoredObservation {
     pub id: ObservationId,
     pub terrarium: TerrariumId,
     pub record: ObservationRecord,
+}
+
+impl StoredObservation {
+    /// The observation as replay reads it (I-4): its kind-specific value comes from `raw` and,
+    /// for weather, the source column. Every stored row converts, because
+    /// [`ObservationRecord::check`] refused any that would not; one that still fails is
+    /// [`StoreError::Corrupt`].
+    pub fn to_observation(&self) -> Result<Observation, StoreError> {
+        let record = &self.record;
+        let value = raw::value(record.kind, record.source.as_ref(), &record.raw)
+            .map_err(|_| StoreError::Corrupt("raw"))?;
+        Ok(Observation {
+            id: self.id.get(),
+            recorded_at: record.recorded_at,
+            head: record.head.clone(),
+            normalized: record.normalized,
+            confidence: record.confidence,
+            value,
+        })
+    }
 }
 
 /// The columns in schema order, as [`Row`]s are read by [`read_row`].
@@ -334,6 +358,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use terrarium_truth::domain::ObservationValue;
+
     use crate::test_support::{Fixture, commit, new_terrarium, record, weather};
 
     fn stored_text(fx: &Fixture, column: &str, id: ObservationId) -> String {
@@ -378,6 +404,52 @@ mod tests {
         assert_eq!(stored, expected);
         assert_eq!(stored_text(&fx, "source", ids[0]), "");
         assert_eq!(stored_text(&fx, "kind", ids[1]), "dead_code");
+    }
+
+    #[test]
+    fn every_stored_kind_converts_to_what_replay_reads() {
+        let mut fx = Fixture::new();
+        let id = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
+        for (&kind, at) in ObservationKind::ALL.iter().zip(100..) {
+            fx.store.append_observation(id, &record(kind, at)).unwrap();
+        }
+        let values: Vec<ObservationValue> = fx
+            .store
+            .observations(id, None, None)
+            .unwrap()
+            .iter()
+            .map(|stored| {
+                let observation = stored.to_observation().unwrap();
+                assert_eq!(observation.id, stored.id.get());
+                assert_eq!(observation.recorded_at, stored.record.recorded_at);
+                assert_eq!(observation.head, stored.record.head);
+                assert_eq!(observation.normalized, stored.record.normalized);
+                assert_eq!(observation.confidence, stored.record.confidence);
+                observation.value
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                ObservationValue::Coverage,
+                ObservationValue::DeadCode {
+                    unused_items: 4,
+                    exported_items: 80
+                },
+                ObservationValue::Complexity,
+                ObservationValue::TodoDensity,
+                ObservationValue::Weather {
+                    source: WeatherSource::Ci {
+                        branch: "main".into()
+                    }
+                },
+                ObservationValue::RefRewrite {
+                    reference: "refs/heads/main".into(),
+                    old: commit('b'),
+                    new: commit('c')
+                },
+            ]
+        );
     }
 
     #[test]
@@ -510,6 +582,25 @@ mod tests {
             (
                 with(&|r| r.raw = format!("\"{}\"", "x".repeat(MAX_RAW_BYTES))),
                 Invalid::RawTooLarge(MAX_RAW_BYTES + 2),
+            ),
+            (
+                with(&|r| r.kind = ObservationKind::DeadCode),
+                Invalid::RawShape(ObservationKind::DeadCode),
+            ),
+            (
+                with(&|r| {
+                    r.kind = ObservationKind::RefRewrite;
+                    r.normalized = None;
+                }),
+                Invalid::RawShape(ObservationKind::RefRewrite),
+            ),
+            (
+                {
+                    let mut rewrite = record(ObservationKind::RefRewrite, 100);
+                    rewrite.normalized = Some(Q16::ZERO);
+                    rewrite
+                },
+                Invalid::NormalizedOnRefRewrite,
             ),
         ];
         for (bad, why) in cases {

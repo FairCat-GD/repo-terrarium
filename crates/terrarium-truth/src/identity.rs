@@ -1,6 +1,7 @@
 //! What a terrarium is keyed by, and which version of the sim produced it.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// The version of truth's output (I-13). Any change to what truth computes bumps it, including
 /// a change to the postcard or canonical-dump encodings. It is independent of the product
@@ -27,6 +28,18 @@ impl RepoSeed {
     /// Lowercase hex, 64 characters.
     pub fn to_hex(&self) -> String {
         crate::canon::to_hex(&self.0)
+    }
+
+    /// The seed of a repository whose first-parent walk from the default tip ends at `root`:
+    /// the SHA-256 of the root commit id's bytes, not of its hex text. Stored terrariums are
+    /// keyed by it, so it never changes.
+    ///
+    /// # Panics
+    ///
+    /// Never: a [`CommitId`] is lowercase hex of even length by construction.
+    pub fn from_root_commit(root: &CommitId) -> RepoSeed {
+        let bytes = crate::canon::from_hex(root.as_str()).expect("a commit id is lowercase hex");
+        RepoSeed(Sha256::digest(&bytes).into())
     }
 
     /// The inverse of [`RepoSeed::to_hex`]; only lowercase hex of the right length parses.
@@ -85,6 +98,17 @@ mod tests {
         assert_eq!(RepoSeed::from_hex(&hex.to_uppercase()), None);
         assert_eq!(RepoSeed::from_hex(&hex[2..]), None);
         assert_eq!(RepoSeed::from_hex(&hex[1..]), None);
+    }
+
+    #[test]
+    fn the_seed_hashes_the_root_commit_ids_bytes() {
+        // Pinned: stored terrariums are found by this value. The SHA-256 of the 20 bytes
+        // 0x01 0x23 … 0x67, as `printf '0123…4567' | xxd -r -p | shasum -a 256` prints it.
+        let root = CommitId::from_hex("0123456789abcdef0123456789abcdef01234567").expect("an id");
+        assert_eq!(
+            RepoSeed::from_root_commit(&root).to_hex(),
+            "7e74ce75b5f2f89240b33afff241e209f98f7b8920af1b572957c8b030430d7a"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify`, `assets`, `bench`, `gallery`, `probe-zip` and `render`.
+The tasks are `verify`, `assets`, `bench`, `fixture`, `gallery`, `probe-zip` and `render`.
 
 ## `verify`
 
@@ -43,6 +43,9 @@ targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the 
 - Every manifest inherits the workspace package fields and lints.
 - No member enables `dev` by default, directly or through another feature, and none turns it
   on in a workspace crate it depends on: the debug window never ships in release builds.
+- `terrarium-adapters`' `fixture` feature, which writes git repositories, is never on by
+  default and is turned on only by xtask or a dev-dependency, never named in another
+  member's features: the fixture code never ships (I-5).
 - No dependency declares a `rust-version` above the workspace's.
 
 ### The scan of truth's sources
@@ -145,6 +148,30 @@ profile, so the timings are those of a shipped build.
   runs. The frame is the sample scene plus a full-frame dusk overlay, rain across the width
   and the heaviest condensation, more than any one presentation state draws. It also prints
   the 99th percentile and the slowest run.
+- `terrarium-adapters` `history` (built with `fixture`): reading a synthetic 10,000-commit
+  history into `CommitFacts` takes under 10 s (N-05). The history is 3,000 files four
+  directories deep plus three large blobs, then commits of one to three changes with merged
+  side branches, renames and deletions, so a reader that walked whole trees would blow the
+  budget. It is generated in a temporary directory and read once untimed, because a read
+  straight after writing 100,000 loose objects races the file system flushing them; the
+  second read is timed.
+
+## `fixture`
+
+The scripted arc (`terrarium_adapters::fixture::arc`): about two years of a fictional
+repository that thrives, struggles, falls silent and recovers, with tags, a merged feature
+branch, a rename, a 660-line directory deletion and an unmerged experiment.
+
+- `cargo xtask fixture <dir>` writes it to `<dir>/repo`, and its observations to
+  `<dir>/observations.jsonl`, for running the app or a replay against it.
+- `cargo xtask fixture --bless` rewrites `tests/fixtures/arc/observations.jsonl`, the copy
+  golden replays and the engine's tests import. A test fails while the committed file differs
+  from a fresh build in any observation line, or in the header's format or seed; the header's
+  `sim_version` is not compared, so a `SIM_VERSION` bump does not touch an input.
+
+The observations are written through a temporary store and its own export: weekly coverage,
+weekly dead code and twice-weekly weather, following the arc's phases, plus two readings on side
+branches that replay must never apply.
 
 ## `render`
 

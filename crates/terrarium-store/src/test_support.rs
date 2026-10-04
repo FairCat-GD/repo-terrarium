@@ -65,6 +65,20 @@ pub fn new_terrarium(n: u8) -> NewTerrarium {
     }
 }
 
+/// A `raw` of `kind`'s shape.
+pub fn raw_for(kind: ObservationKind) -> String {
+    match kind {
+        ObservationKind::DeadCode => r#"{"unused_items":4,"exported_items":80}"#.to_owned(),
+        ObservationKind::Weather => r#"{"state":"pass"}"#.to_owned(),
+        ObservationKind::RefRewrite => format!(
+            r#"{{"ref":"refs/heads/main","old":"{}","new":"{}"}}"#,
+            "b".repeat(40),
+            "c".repeat(40)
+        ),
+        _ => r#"{"format":"lcov","lines_found":120,"lines_hit":90}"#.to_owned(),
+    }
+}
+
 /// A valid observation of `kind`; weather comes from CI on `main`.
 pub fn record(kind: ObservationKind, recorded_at: i64) -> ObservationRecord {
     ObservationRecord {
@@ -81,8 +95,8 @@ pub fn record(kind: ObservationKind, recorded_at: i64) -> ObservationRecord {
         }),
         report_mtime: Some(recorded_at - 10),
         content_hash: [0x5a; 32],
-        raw: r#"{"lines_found":120,"lines_hit":90}"#.to_owned(),
-        normalized: Some(Q16::from_ratio(3, 4)),
+        raw: raw_for(kind),
+        normalized: (kind != ObservationKind::RefRewrite).then(|| Q16::from_ratio(3, 4)),
         confidence: Q16::ONE,
         contributors: vec![
             Contributor {

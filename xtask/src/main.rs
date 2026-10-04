@@ -3,6 +3,7 @@
 
 mod assets;
 mod bench;
+mod fixture;
 mod gallery;
 mod graph;
 mod pieces;
@@ -31,6 +32,10 @@ fn main() -> ExitCode {
             assets::run(root, assets::Mode::Check)
         }
         [task] if task == "bench" => bench::run(root),
+        [task, flag] if task == "fixture" && flag == "--bless" => fixture::bless(root),
+        [task, out] if task == "fixture" && !out.starts_with('-') => {
+            fixture::run(std::path::Path::new(out))
+        }
         [task] if task == "gallery" => gallery::run(root),
         [task] if task == "probe-zip" => probe_zip::run(root),
         [task, flag, out] if task == "render" && flag == "--demo" => {
@@ -41,8 +46,9 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask verify | assets [--check] | bench | gallery | probe-zip \
-                 | render --demo <out.png> | render --preset <name> <out.png>"
+                "usage: cargo xtask verify | assets [--check] | bench | fixture <dir> | fixture \
+                 --bless | gallery | probe-zip | render --demo <out.png> | render --preset <name> \
+                 <out.png>"
             );
             ExitCode::from(2)
         }

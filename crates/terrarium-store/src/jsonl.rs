@@ -454,7 +454,7 @@ mod tests {
     use super::*;
     use crate::MAX_CONTRIBUTORS;
     use crate::test_support::{
-        Fixture, commit, new_terrarium, proptest_config, record, seed, weather,
+        Fixture, commit, new_terrarium, proptest_config, raw_for, record, seed, weather,
     };
 
     fn export(fx: &Fixture, id: TerrariumId) -> Vec<u8> {
@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn a_conflict_keeps_the_stored_row_and_names_the_columns() {
         let mut changed = sample();
-        changed[1].raw = r#"{"unused":4}"#.to_owned();
+        changed[1].raw = r#"{"unused_items":5,"exported_items":80}"#.to_owned();
         changed[1].confidence = Q16::HALF;
         changed[1].head.at_default_tip = false;
         let extra = record(ObservationKind::Coverage, 5_000);
@@ -839,8 +839,20 @@ mod tests {
                 }),
                 report_mtime,
                 content_hash,
-                raw: serde_json::to_string(&raw_text).unwrap(),
-                normalized: normalized.map(Q16::from_raw),
+                // Dead code and ref rewrites need what truth reads; other kinds take any JSON.
+                raw: match kind {
+                    ObservationKind::DeadCode => serde_json::json!({
+                        "unused_items": confidence,
+                        "exported_items": normalized.unwrap_or(0),
+                        "note": raw_text,
+                    })
+                    .to_string(),
+                    ObservationKind::RefRewrite => raw_for(kind),
+                    _ => serde_json::to_string(&raw_text).unwrap(),
+                },
+                normalized: normalized
+                    .filter(|_| kind != ObservationKind::RefRewrite)
+                    .map(Q16::from_raw),
                 confidence: Q16::from_raw(confidence),
                 contributors: contributors
                     .into_iter()

@@ -11,4 +11,8 @@ Shared input files for tests: report files, fixture repositories, sample observa
 - **Tests never touch a real data directory.** They resolve it from `TERRARIUM_DATA_DIR`,
   pointed at a temporary directory the test owns (I-14).
 
+- `arc/observations.jsonl`: the observations recorded alongside the scripted arc repository
+  (`terrarium_adapters::fixture::arc`), in the store's export format. Written by
+  `cargo xtask fixture --bless`; a test fails while it is stale.
+
 A crate reaches this folder as `concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures")`.

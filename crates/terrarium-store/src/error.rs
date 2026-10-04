@@ -40,6 +40,10 @@ pub enum Invalid {
     TooManyContributors(usize),
     RawNotJson,
     RawTooLarge(usize),
+    /// `raw` lacks what truth reads for this kind (dead code's counts, a ref rewrite's refs).
+    RawShape(terrarium_truth::ObservationKind),
+    /// A ref rewrite carries no health value; its `normalized` is null.
+    NormalizedOnRefRewrite,
 }
 
 impl fmt::Display for StoreError {
@@ -69,6 +73,8 @@ impl fmt::Display for Invalid {
             Invalid::TooManyContributors(n) => write!(f, "{n} contributors"),
             Invalid::RawNotJson => f.write_str("raw is not JSON"),
             Invalid::RawTooLarge(bytes) => write!(f, "raw is {bytes} bytes"),
+            Invalid::RawShape(kind) => write!(f, "raw is not a {} report", kind.as_column()),
+            Invalid::NormalizedOnRefRewrite => f.write_str("a ref rewrite with a value"),
         }
     }
 }

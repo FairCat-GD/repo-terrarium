@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -45,6 +45,15 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 rusqlite_migration = "2.6.0"
 directories = "6.0.0"
 tempfile = "3.27.0"
+# Git, read in process and never through the git command line, pinned exactly because a bump can
+# change truth. `sha1` is the only object format; `blob-diff` gives tree diffs with rename
+# tracking; the dynamic pack cache speeds delta resolution. The defaults are off: they add
+# worktree, network-free but large, features and an MPL cache crate.
+gix = { version = "=0.88.0", default-features = false, features = [
+    "sha1",
+    "blob-diff",
+    "pack-cache-lru-dynamic",
+] }
 
 # macOS FFI, used only by terrarium-platform. winit links objc2 0.5; these are 0.6, and the two
 # never exchange types. The framework crates enable every framework by default.
