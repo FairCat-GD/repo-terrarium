@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
-use crate::{assets, graph, windows};
+use crate::{assets, golden, graph, windows};
 
 enum Step {
     /// A cargo subcommand. `tool` names a third-party subcommand to check for first; `env` is
@@ -21,6 +21,8 @@ enum Step {
     Graph,
     /// `cargo xtask assets --check`, in process.
     Assets,
+    /// `cargo xtask golden --check`, in process.
+    Golden,
 }
 
 /// A third-party cargo subcommand, pinned to the exact version its configuration is written
@@ -153,6 +155,10 @@ const STAGES: &[Stage] = &[
         name: "assets",
         step: Step::Assets,
     },
+    Stage {
+        name: "golden",
+        step: Step::Golden,
+    },
 ];
 
 pub fn run(root: &Path) -> ExitCode {
@@ -167,6 +173,7 @@ pub fn run(root: &Path) -> ExitCode {
             Step::Cargo { args, tool, env } => run_cargo(&cargo, root, args, tool.as_ref(), env),
             Step::Graph => run_graph(root),
             Step::Assets => run_assets(root),
+            Step::Golden => run_golden(root),
         };
         let seconds = started.elapsed().as_secs_f64();
         let verdict = if passed { "ok" } else { "FAILED" };
@@ -260,6 +267,14 @@ fn run_graph(root: &Path) -> bool {
 fn run_assets(root: &Path) -> bool {
     std::panic::catch_unwind(|| assets::check(root)).unwrap_or_else(|_| {
         println!("assets: the pipeline panicked");
+        false
+    })
+}
+
+/// A panic in the golden replay fails its stage; the summary still runs.
+fn run_golden(root: &Path) -> bool {
+    std::panic::catch_unwind(|| golden::check(root)).unwrap_or_else(|_| {
+        println!("golden: the replay panicked");
         false
     })
 }

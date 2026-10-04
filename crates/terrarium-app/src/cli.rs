@@ -1,6 +1,7 @@
 //! The command line, parsed by hand: a few commands do not justify a parser dependency.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 /// What the process was asked to do.
 #[derive(Debug, PartialEq, Eq)]
@@ -16,6 +17,18 @@ pub enum Command {
     /// `--probe-readme`: print the Windows probe's tester instructions, which
     /// `cargo xtask probe-zip` puts in the zip beside the exe.
     ProbeReadme,
+    /// `replay <path> --dump`: replay a repository with no window and print truth's canonical
+    /// dump.
+    Replay(ReplayArgs),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplayArgs {
+    pub repo: PathBuf,
+    /// `--observations <file>`: an observations export to replay with.
+    pub observations: Option<PathBuf>,
+    /// `--at <unix-seconds>`: the moment to replay through; now when absent.
+    pub at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +45,13 @@ pub enum ProbeKind {
 pub enum UsageError {
     Unexpected(OsString),
     MissingProbeKind,
+    MissingReplayRepo,
+    /// `replay` has one output so far, the dump, and is asked for it by name.
+    MissingDump,
+    /// A flag given without its value.
+    MissingValue(&'static str),
+    /// An `--at` that is not a whole number of seconds.
+    BadTime(OsString),
 }
 
 /// macOS `LaunchServices` can append a process serial number (`-psn_0_12345`) when it launches
@@ -52,6 +72,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         Command::Demo
     } else if first == "--probe-readme" {
         Command::ProbeReadme
+    } else if first == "replay" {
+        return parse_replay(&mut args);
     } else if first == "--probe" {
         match args.next() {
             None => return Err(UsageError::MissingProbeKind),
@@ -67,6 +89,38 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         None => Ok(command),
         Some(extra) => Err(UsageError::Unexpected(extra)),
     }
+}
+
+fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let repo = args
+        .next()
+        .filter(|repo| !repo.to_string_lossy().starts_with("--"))
+        .ok_or(UsageError::MissingReplayRepo)?;
+    let (mut dump, mut observations, mut at) = (false, None, None);
+    while let Some(arg) = args.next() {
+        if arg == "--dump" && !dump {
+            dump = true;
+        } else if arg == "--observations" && observations.is_none() {
+            let path = args
+                .next()
+                .ok_or(UsageError::MissingValue("--observations"))?;
+            observations = Some(PathBuf::from(path));
+        } else if arg == "--at" && at.is_none() {
+            let value = args.next().ok_or(UsageError::MissingValue("--at"))?;
+            let secs = value.to_str().and_then(|text| text.parse().ok());
+            at = Some(secs.ok_or(UsageError::BadTime(value))?);
+        } else {
+            return Err(UsageError::Unexpected(arg));
+        }
+    }
+    if !dump {
+        return Err(UsageError::MissingDump);
+    }
+    Ok(Command::Replay(ReplayArgs {
+        repo: PathBuf::from(repo),
+        observations,
+        at,
+    }))
 }
 
 #[cfg(test)]
@@ -138,6 +192,70 @@ mod tests {
     fn the_probe_readme_is_a_command_of_its_own() {
         assert_eq!(parse_strs(&["--probe-readme"]), Ok(Command::ProbeReadme));
         assert_eq!(parse_strs(&["--probe-readme", "x"]), unexpected("x"));
+    }
+
+    #[test]
+    fn replay_takes_a_repository_the_dump_and_two_options() {
+        let replay = |observations: Option<&str>, at| {
+            Ok(Command::Replay(ReplayArgs {
+                repo: PathBuf::from("moss"),
+                observations: observations.map(PathBuf::from),
+                at,
+            }))
+        };
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump"]),
+            replay(None, None)
+        );
+        assert_eq!(
+            parse_strs(&[
+                "replay",
+                "moss",
+                "--at",
+                "1700000000",
+                "--dump",
+                "--observations",
+                "fern.jsonl"
+            ]),
+            replay(Some("fern.jsonl"), Some(1_700_000_000))
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--at", "-5", "--dump"]),
+            replay(None, Some(-5))
+        );
+    }
+
+    #[test]
+    fn replay_refuses_what_it_does_not_take() {
+        assert_eq!(parse_strs(&["replay"]), Err(UsageError::MissingReplayRepo));
+        assert_eq!(
+            parse_strs(&["replay", "--dump"]),
+            Err(UsageError::MissingReplayRepo)
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss"]),
+            Err(UsageError::MissingDump)
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--at"]),
+            Err(UsageError::MissingValue("--at"))
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--observations"]),
+            Err(UsageError::MissingValue("--observations"))
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--at", "noon"]),
+            Err(UsageError::BadTime("noon".into()))
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--dump"]),
+            unexpected("--dump")
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "x"]),
+            unexpected("x")
+        );
     }
 
     #[test]

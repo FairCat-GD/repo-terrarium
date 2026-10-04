@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Development tasks: cargo xtask verify, assets, bench, fixture, gallery, probe-zip and render."
+description = "Development tasks: cargo xtask verify, assets, bench, fixture, gallery, golden, probe-zip and render."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,7 @@ proc-macro2.workspace = true
 terrarium-compose.workspace = true
 terrarium-truth.workspace = true
 terrarium-store.workspace = true
+terrarium-engine.workspace = true
 # The fixture repositories (`cargo xtask fixture`), which only xtask and tests may build.
 terrarium-adapters = { workspace = true, features = ["fixture"] }
 tempfile.workspace = true

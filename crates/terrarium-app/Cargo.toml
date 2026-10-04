@@ -25,6 +25,7 @@ global-hotkey.workspace = true
 muda.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 egui = { workspace = true, optional = true }
 egui-winit = { workspace = true, optional = true }
 egui-wgpu = { workspace = true, optional = true }
@@ -36,6 +37,9 @@ pollster = { workspace = true, optional = true }
 [features]
 default = []
 dev = ["dep:egui", "dep:egui-winit", "dep:egui-wgpu", "dep:wgpu", "dep:pollster"]
+
+[dev-dependencies]
+terrarium-adapters = { workspace = true, features = ["fixture"] }
 
 [lints]
 workspace = true

@@ -13,5 +13,10 @@ terrarium-truth.workspace = true
 terrarium-adapters.workspace = true
 terrarium-store.workspace = true
 
+[dev-dependencies]
+terrarium-adapters = { workspace = true, features = ["fixture"] }
+postcard.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

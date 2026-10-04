@@ -13,6 +13,11 @@ Shared input files for tests: report files, fixture repositories, sample observa
 
 - `arc/observations.jsonl`: the observations recorded alongside the scripted arc repository
   (`terrarium_adapters::fixture::arc`), in the store's export format. Written by
-  `cargo xtask fixture --bless`; a test fails while it is stale.
+  `cargo xtask fixture --bless`; a test fails while it is stale. Coverage jumps when the arc
+  recovers, so its replay passes through every presentation state.
+
+Beside it, `tests/golden/` holds outputs rather than inputs: `arc.dump`, the canonical dump of
+the arc's replay, and `arc.sha256`, its hash. `cargo xtask golden --bless` writes them, and
+`verify`'s `golden` stage fails while they differ from a fresh replay.
 
 A crate reaches this folder as `concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures")`.

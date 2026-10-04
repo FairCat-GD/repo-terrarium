@@ -5,6 +5,9 @@
 use std::fmt::{self, Display, Write as _};
 use std::path::Path;
 
+use terrarium_engine::headless::HeadlessError;
+use terrarium_truth::ReplayError;
+
 use crate::cli::UsageError;
 use crate::hover::NativePoint;
 use crate::pinning::{AppBarPlaced, AttachError, LevelMode, OsSnapshot, PxRect};
@@ -41,6 +44,13 @@ pub fn usage_error(err: &UsageError) -> String {
         UsageError::MissingProbeKind => {
             format!("--probe needs a kind: {}", PROBE_KINDS.join(" or "))
         }
+        UsageError::MissingReplayRepo => "replay needs a repository path".to_owned(),
+        UsageError::MissingDump => "replay prints its result only with --dump".to_owned(),
+        UsageError::MissingValue(flag) => format!("{flag} needs a value"),
+        UsageError::BadTime(value) => format!(
+            "'{}' is not a time in whole Unix seconds",
+            value.to_string_lossy()
+        ),
     };
     let probes: Vec<String> = PROBE_KINDS
         .iter()
@@ -48,9 +58,47 @@ pub fn usage_error(err: &UsageError) -> String {
         .collect();
     format!(
         "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--version | --demo | {} | \
-         --probe-readme]",
+         --probe-readme]\n       {BINARY_NAME} replay <path> --dump [--observations <file>] \
+         [--at <unix-seconds>]",
         probes.join(" | ")
     )
+}
+
+/// Why a headless replay printed nothing.
+pub fn replay_failed(repo: &Path, err: &HeadlessError) -> String {
+    let repo = repo.display();
+    let problem = match err {
+        HeadlessError::Git(err) => format!("{repo} could not be read as a git repository: {err}"),
+        HeadlessError::Store(err) => format!("the temporary store failed: {err}"),
+        HeadlessError::Import(err) => format!("the observations could not be imported: {err}"),
+        HeadlessError::Replay(ReplayError::CommitsOutOfOrder { commit }) => format!(
+            "the history of {repo} came out of order at commit {}",
+            commit.as_str()
+        ),
+        HeadlessError::Replay(ReplayError::DuplicateObservation { recorded_at, kind }) => format!(
+            "two {} observations share the time {recorded_at}, source and commit",
+            kind.as_column()
+        ),
+        HeadlessError::Replay(ReplayError::BasisChanged | ReplayError::NeedsFullReplay) => {
+            "the replay could not continue from its own state".to_owned()
+        }
+        HeadlessError::BeforeHistory => {
+            format!("the time asked for is outside the history of {repo}")
+        }
+    };
+    format!("{BINARY_NAME}: {problem}")
+}
+
+pub fn replay_observations_unreadable(path: &Path, err: &impl Display) -> String {
+    format!("{BINARY_NAME}: {} could not be read: {err}", path.display())
+}
+
+pub fn replay_store_unavailable(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: no temporary directory for the replay's store: {err}")
+}
+
+pub fn replay_write_failed(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the dump could not be written: {err}")
 }
 
 /// The probes this build runs: the egui memory probe exists only in dev builds.

@@ -3376,7 +3376,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "gix",
  "proptest",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-app"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -3398,6 +3398,7 @@ dependencies = [
  "serde",
  "serde_json",
  "softbuffer",
+ "tempfile",
  "terrarium-adapters",
  "terrarium-compose",
  "terrarium-engine",
@@ -3410,7 +3411,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "insta",
  "png",
@@ -3423,8 +3424,10 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
+ "postcard",
+ "tempfile",
  "terrarium-adapters",
  "terrarium-store",
  "terrarium-truth",
@@ -3432,7 +3435,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "block2 0.6.2",
  "libc",
@@ -3449,7 +3452,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "directories",
  "proptest",
@@ -3464,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-truth"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -4419,7 +4422,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cargo_metadata",
  "png",
@@ -4430,6 +4433,7 @@ dependencies = [
  "tempfile",
  "terrarium-adapters",
  "terrarium-compose",
+ "terrarium-engine",
  "terrarium-store",
  "terrarium-truth",
  "toml",

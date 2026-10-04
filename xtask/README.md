@@ -1,7 +1,8 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify`, `assets`, `bench`, `fixture`, `gallery`, `probe-zip` and `render`.
+The tasks are `verify`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `probe-zip` and
+`render`.
 
 ## `verify`
 
@@ -22,6 +23,7 @@ summary. The stages:
 9. **graph**: the crate-graph check below, including the scan of truth's sources.
 10. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
     this stage.
+11. **golden**: `cargo xtask golden --check`, below, in process like `assets`.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
 tool is missing, or at another version, fails and names the install command.
@@ -173,7 +175,23 @@ branch, a rename, a 660-line directory deletion and an unmerged experiment.
 
 The observations are written through a temporary store and its own export: weekly coverage,
 weekly dead code and twice-weekly weather, following the arc's phases, plus two readings on side
-branches that replay must never apply.
+branches that replay must never apply. Coverage jumps as the arc recovers, so its replay passes
+through all six presentation states.
+
+## `golden`
+
+The golden replay (I-13). It builds the arc in a temporary directory, replays it through the
+engine's headless pipeline with `tests/fixtures/arc/observations.jsonl`, through five months
+past its last commit, and compares the canonical dump with `tests/golden/arc.dump`.
+`tests/golden/arc.sha256` holds the dump's SHA-256 in `shasum` format. The dump's first line
+names the `SIM_VERSION` that wrote it.
+
+- `cargo xtask golden` or `--check` replays and compares byte for byte. A difference at the
+  same `SIM_VERSION` is reported as truth's output changing without a bump.
+- `cargo xtask golden --bless` rewrites both files and prints the difference, line by line
+  paired by path, for review. It refuses a changed dump at the `SIM_VERSION` already on disk:
+  bump `SIM_VERSION` first. `--bless --same-version` overrides that, only to re-bless a version
+  whose golden is not committed yet.
 
 ## `render`
 

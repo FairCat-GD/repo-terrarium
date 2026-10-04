@@ -5,6 +5,7 @@ mod assets;
 mod bench;
 mod fixture;
 mod gallery;
+mod golden;
 mod graph;
 mod pieces;
 mod probe_zip;
@@ -37,6 +38,21 @@ fn main() -> ExitCode {
             fixture::run(std::path::Path::new(out))
         }
         [task] if task == "gallery" => gallery::run(root),
+        [task] if task == "golden" => golden::run(root, golden::Mode::Check),
+        [task, flag] if task == "golden" && flag == "--check" => {
+            golden::run(root, golden::Mode::Check)
+        }
+        [task, flag] if task == "golden" && flag == "--bless" => golden::run(
+            root,
+            golden::Mode::Bless {
+                same_version: false,
+            },
+        ),
+        [task, bless, same]
+            if task == "golden" && bless == "--bless" && same == "--same-version" =>
+        {
+            golden::run(root, golden::Mode::Bless { same_version: true })
+        }
         [task] if task == "probe-zip" => probe_zip::run(root),
         [task, flag, out] if task == "render" && flag == "--demo" => {
             render::run(std::path::Path::new(out))
@@ -47,8 +63,8 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "usage: cargo xtask verify | assets [--check] | bench | fixture <dir> | fixture \
-                 --bless | gallery | probe-zip | render --demo <out.png> | render --preset <name> \
-                 <out.png>"
+                 --bless | gallery | golden [--check | --bless [--same-version]] | probe-zip | \
+                 render --demo <out.png> | render --preset <name> <out.png>"
             );
             ExitCode::from(2)
         }

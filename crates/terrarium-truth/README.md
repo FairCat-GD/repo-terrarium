@@ -7,6 +7,7 @@ and the observations recorded about it.
 
 - Fixed point (`Q16`, `Q32`), the PCG32 random number generator and the one-hour UTC tick grid.
 - Domain types, climate and habitat math, and the presentation timeline.
+- The compiled tuning values (`tuning`), every one under `SIM_VERSION`.
 - The sim, events and their arbitration, and the replay core.
 - `project()`, which turns sim state into `SceneInput`, the composer's only truth-derived input.
   `SceneInput` is frozen: any change to it is an amendment and a `SIM_VERSION` bump.

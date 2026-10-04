@@ -49,6 +49,10 @@ that span crates, such as salt independence across engine and compose, live here
 - `repo-terrarium` runs the strip. Right-click it and choose **Quit** to close it.
 - `repo-terrarium --demo` runs the strip through the named looks, a quarter of an hour each.
 - `repo-terrarium --version` prints the version.
+- `repo-terrarium replay <path> --dump` replays a repository through the engine's headless
+  pipeline and prints truth's canonical dump (`replay`). `--observations <file>` imports an
+  export into its store first, and `--at <unix-seconds>` replays to that moment instead of
+  now. Its store lives in a temporary directory, so it never opens the data directory.
 - `repo-terrarium --probe pinning` runs the strip and walks through the pinning checklist on
   stdout. Each answer is a line on stdin: Enter moves on, and text typed first is kept as a
   note. The JSON and text reports are rewritten after every step, in the current directory.

@@ -170,7 +170,8 @@ fn coverage(day: i64) -> Option<i64> {
         Phase::Thriving => Some(820 - (day % 3) * 5),
         Phase::Struggling => Some(ramp(day, struggling, dead, 780, 380)),
         Phase::Dead => None,
-        Phase::Recovering => Some(ramp(day, recovering, recovering + 120, 420, 820)),
+        // Tests come back first: a jump that the presentation reads as recovering.
+        Phase::Recovering => Some(ramp(day, recovering, recovering + 90, 600, 820)),
     }
 }
 

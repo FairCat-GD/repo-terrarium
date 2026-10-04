@@ -5,6 +5,31 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-04
+
+Nothing changes on screen. This release adds the heart of the terrarium: it turns a
+repository's history and its recorded readings into climate, and climate into the state the
+strip will show.
+
+### Added
+
+- **Climate from history and readings.** Rain and wind follow how often you commit and how much
+  you change, each against your repository's own usual pace over the last three months, so a
+  steady rhythm reads as a normal day whether you commit every weekday or twice a week. Light
+  and soil follow coverage and code health as recorded on the default branch; weather follows
+  CI or your local test runs.
+- **Readings never fake decay.** A missing reading counts as neutral, a reading the default
+  branch has moved past is held as it was and marked stale, and a reading taken on a feature
+  branch is kept but never applied.
+- **The terrarium's state over time:** thriving, struggling, mature, dormant, dead and
+  recovering, with condensation on the glass while it sleeps and dust after a year dead.
+- **`repo-terrarium replay <path> --dump`** replays a repository from its first commit and
+  prints everything the terrarium makes of it, as text. `--observations <file>` adds readings
+  from an export, and `--at <unix-seconds>` replays to another moment. It opens no window and
+  leaves your stored data alone.
+- **The same history gives the same terrarium on every computer:** a recorded replay of the
+  fixture repository is checked byte for byte before every commit.
+
 ## [0.12.0] - 2026-10-04
 
 Nothing changes on screen. This release adds the reader that will turn a repository's history

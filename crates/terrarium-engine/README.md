@@ -9,6 +9,9 @@ The headless live pipeline, run on a worker thread.
 - Incremental and full replay, cache use, and catch-up after sleep.
 - The repository-not-found state.
 - Panic containment: a truth panic freezes the scene and never crashes the app.
+- The headless replay (`headless`): read a repository, import an observations export into a
+  store in a directory the caller owns, and dump truth's replay. `repo-terrarium replay
+  --dump` and `cargo xtask golden` run through it.
 
 ## Why it is a crate of its own
 

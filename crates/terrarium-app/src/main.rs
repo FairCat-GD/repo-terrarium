@@ -25,6 +25,7 @@ mod probe;
 mod raise;
 #[cfg(feature = "dev")]
 mod repaint;
+mod replay;
 mod strip;
 
 use std::process::ExitCode;
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
             print!("{}", copy::PROBE_README);
             ExitCode::SUCCESS
         }
+        Ok(Command::Replay(args)) => replay::run(&args),
         Err(err) => {
             eprintln!("{}", copy::usage_error(&err));
             ExitCode::from(USAGE_EXIT)
