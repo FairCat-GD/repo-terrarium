@@ -12,6 +12,7 @@ mod render;
 #[cfg(test)]
 mod test_support;
 mod verify;
+mod windows;
 
 use std::path::Path;
 use std::process::ExitCode;

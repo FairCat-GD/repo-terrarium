@@ -5,8 +5,7 @@
 //!   cache outside the repository. Microsoft's license for them is accepted by a person, when
 //!   they run the one-time command this prints; this task never accepts it.
 //! - Linking uses the `rust-lld` the toolchain ships, so no LLVM install is needed.
-//! - The C a dependency compiles for the target (bundled SQLite) is compiled by the Mac's own
-//!   clang against the splat's headers and archived by `rust-lld` acting as `lib.exe`.
+//! - The C a dependency compiles for the target (bundled SQLite) is compiled as `windows` says.
 //! - The C runtime is linked statically, so testers need no Visual C++ redistributable.
 
 use std::ffi::{OsStr, OsString};
@@ -14,7 +13,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-const TARGET: &str = "x86_64-pc-windows-msvc";
+use crate::windows::{self, TARGET};
+
 /// The `xwin` version the flags and the splat layout below are written for.
 const XWIN_VERSION: &str = "0.10.0";
 /// Where the splatted libraries live unless `TERRARIUM_XWIN_DIR` says otherwise.
@@ -42,9 +42,16 @@ pub fn run(root: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let Some(lld) = toolchain_lld(root) else {
+    let Some(lld) = windows::toolchain_lld(root) else {
         println!("probe-zip: the toolchain's rust-lld was not found");
         return ExitCode::FAILURE;
+    };
+    let c_env = match windows::c_build_env(&xwin_dir, &lld, std::env::var_os("DYLD_LIBRARY_PATH")) {
+        Ok(env) => env,
+        Err(err) => {
+            println!("probe-zip: {err}");
+            return ExitCode::FAILURE;
+        }
     };
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
@@ -57,15 +64,7 @@ pub fn run(root: &Path) -> ExitCode {
         .env("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER", "rust-lld")
         // With `--target`, these reach only the Windows artifacts, never the build scripts.
         .env("CARGO_ENCODED_RUSTFLAGS", encoded_rustflags(&xwin_dir))
-        // cc-rs, for the target's C only: the splat's headers, and `rust-lld` as `lib.exe`.
-        // It names the archiver by exact path, so a path with spaces stays one program, and
-        // parses the flags as shell words.
-        .env("CC_SHELL_ESCAPED_FLAGS", "1")
-        .env("CFLAGS_x86_64_pc_windows_msvc", c_flags(&xwin_dir))
-        .env("AR_x86_64_pc_windows_msvc", &lld.program)
-        .env("ARFLAGS_x86_64_pc_windows_msvc", "-flavor link /lib")
-        // rustc points its `rust-lld` at the LLVM library itself; run directly, it needs this.
-        .env("DYLD_LIBRARY_PATH", &lld.library_dir)
+        .envs(c_env)
         .current_dir(root)
         .status();
     if !built.is_ok_and(|status| status.success()) {
@@ -135,63 +134,6 @@ fn lib_dirs(xwin_dir: &Path) -> [PathBuf; 3] {
         xwin_dir.join("sdk/lib/um/x86_64"),
         xwin_dir.join("sdk/lib/ucrt/x86_64"),
     ]
-}
-
-/// The CRT's and the SDK's headers, in `xwin splat`'s default layout.
-fn include_dirs(xwin_dir: &Path) -> [PathBuf; 4] {
-    [
-        xwin_dir.join("crt/include"),
-        xwin_dir.join("sdk/include/ucrt"),
-        xwin_dir.join("sdk/include/um"),
-        xwin_dir.join("sdk/include/shared"),
-    ]
-}
-
-/// The target's `CFLAGS`, as shell words: each header directory quoted.
-fn c_flags(xwin_dir: &Path) -> String {
-    include_dirs(xwin_dir)
-        .iter()
-        .map(|dir| format!("-isystem {}", shell_quote(&dir.to_string_lossy())))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
-}
-
-/// The toolchain's `rust-lld`, and the directory of the LLVM library it loads.
-struct Lld {
-    program: PathBuf,
-    library_dir: PathBuf,
-}
-
-/// Asks the workspace's own `rustc` (pinned by `rust-toolchain.toml`) where its `rust-lld` is.
-fn toolchain_lld(root: &Path) -> Option<Lld> {
-    let rustc = |args: &[&str]| -> Option<String> {
-        let out = Command::new("rustc")
-            .args(args)
-            .current_dir(root)
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-    };
-    let sysroot = PathBuf::from(rustc(&["--print", "sysroot"])?.trim());
-    let version = rustc(&["-vV"])?;
-    let host = version
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))?;
-    let program = sysroot
-        .join("lib/rustlib")
-        .join(host.trim())
-        .join("bin/rust-lld");
-    program.is_file().then(|| Lld {
-        program,
-        library_dir: sysroot.join("lib"),
-    })
 }
 
 /// The Windows target's rustflags, separated by 0x1f as `CARGO_ENCODED_RUSTFLAGS` expects, so a
@@ -438,17 +380,6 @@ mod tests {
             "{cmd:?}"
         );
         assert!(cmd.contains("cd /d \"%~dp0\"\r\nrepo-terrarium.exe --probe pinning\r\n"));
-    }
-
-    #[test]
-    fn the_c_flags_name_the_splatted_headers_as_quoted_shell_words() {
-        assert_eq!(
-            c_flags(Path::new("/a dir/it's/xwin")),
-            "-isystem '/a dir/it'\\''s/xwin/crt/include' \
-             -isystem '/a dir/it'\\''s/xwin/sdk/include/ucrt' \
-             -isystem '/a dir/it'\\''s/xwin/sdk/include/um' \
-             -isystem '/a dir/it'\\''s/xwin/sdk/include/shared'"
-        );
     }
 
     #[test]

@@ -8,10 +8,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
-use crate::{assets, graph};
-
-/// The Windows target linted on macOS, since nothing else compiles the Windows code.
-const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
+use crate::{assets, graph, windows};
 
 enum Step {
     /// A cargo subcommand. `tool` names a third-party subcommand to check for first; `env` is
@@ -90,18 +87,15 @@ const STAGES: &[Stage] = &[
                 "--all-targets",
                 "--all-features",
                 "--target",
-                WINDOWS_TARGET,
+                windows::TARGET,
                 "--",
                 "-D",
                 "warnings",
             ],
             tool: None,
-            // Bundled SQLite compiles C in libsqlite3-sys's build script, and the Mac has no
-            // Windows headers. This variable sends that script down its linked path, which
-            // compiles nothing and uses the same bundled bindings; a lint never links, so the
-            // Rust it checks is the same. It is undocumented: re-check it when libsqlite3-sys
-            // moves. The probe build compiles the C for real (`probe_zip.rs`).
-            env: &[("LIBSQLITE3_SYS_USE_PKG_CONFIG", "1")],
+            // The Windows target, linted on macOS since nothing else compiles its code here. A
+            // lint never links, so the target's C is skipped (`windows.rs`).
+            env: windows::LINT_ENV,
         },
     },
     Stage {

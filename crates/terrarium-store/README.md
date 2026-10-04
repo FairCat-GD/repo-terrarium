@@ -73,7 +73,9 @@ The example is wrapped here; in a file each observation is one line.
 - `raw` is the stored text, itself JSON.
 - `normalized` and `confidence` are Q16.16 integers in [0, 65536].
 - `at_default_tip` is a boolean.
-- `head_branch`, `report_mtime` and `normalized` may be `null`.
+- `head_branch`, `report_mtime` and `normalized` may be `null`, but are never left out: a line
+  missing any column is refused.
+- A line holds at most 1 MiB, not counting its `\n` or `\r\n` ending.
 
 Import refuses, writing nothing, any of these:
 - a file whose first line is not this header;

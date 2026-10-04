@@ -10,18 +10,18 @@ use terrarium_truth::canon::{from_hex, to_hex};
 use terrarium_truth::domain::{ObservationHead, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind, Q16, RepoSeed, SIM_VERSION, SimVersion};
 
-use crate::observations::{COLUMNS, find_by_key, insert, read_row, source_from_column};
+use crate::observations::{COLUMNS, Inserter, KeyLookup, read_row, source_from_column};
 use crate::{
     Contributor, Invalid, ObservationRecord, Store, StoreError, StoredObservation, TerrariumId,
 };
 
 /// The header's `format`.
-pub const FORMAT: &str = "repo-terrarium-observations";
+pub const EXPORT_FORMAT: &str = "repo-terrarium-observations";
 /// The header's `format_version`: the only one this version reads and writes.
-pub const FORMAT_VERSION: u32 = 1;
-/// The longest line an import reads, in bytes. The largest `raw`, escaped, and twenty
-/// contributors fit with room to spare.
-pub const MAX_LINE_BYTES: usize = 1024 * 1024;
+pub const EXPORT_FORMAT_VERSION: u32 = 1;
+/// The longest line an import reads, in bytes, not counting its line ending. The largest
+/// `raw`, escaped, and twenty contributors fit with room to spare.
+pub const MAX_IMPORT_LINE_BYTES: usize = 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,7 +33,9 @@ struct Header {
 }
 
 /// One observation per line: every column in schema order but `terrarium_id`, which the
-/// header's seed stands for. BLOBs are lowercase hex; `raw` is its stored text.
+/// header's seed stands for. BLOBs are lowercase hex; `raw` is its stored text. The nullable
+/// columns must be present too, as `null` when empty: a missing one is a malformed line, never
+/// a silent unknown (`Option::deserialize` turns off serde's default for a missing `Option`).
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Line {
@@ -42,12 +44,15 @@ struct Line {
     adapter_version: u32,
     recorded_at: i64,
     head_commit: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     head_branch: Option<String>,
     at_default_tip: bool,
     source: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     report_mtime: Option<i64>,
     content_hash: String,
     raw: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     normalized: Option<i32>,
     confidence: i32,
     contributors: Vec<Contributor>,
@@ -74,9 +79,10 @@ impl Line {
         }
     }
 
-    /// The line as a record to merge. Its `id` belongs to the exporting install and is not kept.
+    /// The line as a record to merge, not yet checked. Its `id` belongs to the exporting
+    /// install and is not kept.
     fn into_record(self) -> Result<ObservationRecord, LineProblem> {
-        let record = ObservationRecord {
+        Ok(ObservationRecord {
             kind: ObservationKind::from_column(&self.kind).ok_or(LineProblem::BadColumn("kind"))?,
             adapter_version: self.adapter_version,
             recorded_at: self.recorded_at,
@@ -95,9 +101,7 @@ impl Line {
             normalized: self.normalized.map(Q16::from_raw),
             confidence: Q16::from_raw(self.confidence),
             contributors: self.contributors,
-        };
-        record.check().map_err(LineProblem::Invalid)?;
-        Ok(record)
+        })
     }
 }
 
@@ -149,7 +153,7 @@ pub enum ImportError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineProblem {
-    /// Longer than [`MAX_LINE_BYTES`].
+    /// Longer than [`MAX_IMPORT_LINE_BYTES`].
     TooLong,
     /// Not UTF-8, not JSON, or not this format's fields, with the parser's message.
     Malformed(String),
@@ -180,7 +184,7 @@ impl fmt::Display for ImportError {
 impl fmt::Display for LineProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LineProblem::TooLong => write!(f, "longer than {MAX_LINE_BYTES} bytes"),
+            LineProblem::TooLong => write!(f, "longer than {MAX_IMPORT_LINE_BYTES} bytes"),
             LineProblem::Malformed(why) => f.write_str(why),
             LineProblem::BadColumn(column) => write!(f, "{column} does not decode"),
             LineProblem::Invalid(why) => why.fmt(f),
@@ -222,11 +226,11 @@ enum Next {
     Problem(LineProblem),
 }
 
-/// The next line without its ending, read at most [`MAX_LINE_BYTES`] at a time so an endless
-/// line cannot exhaust memory.
+/// The next line without its ending, read at most [`MAX_IMPORT_LINE_BYTES`] and a CRLF ending
+/// at a time, so an endless line cannot exhaust memory.
 fn next_line(input: &mut impl BufRead) -> std::io::Result<Next> {
     let mut buf = Vec::new();
-    let limit = u64::try_from(MAX_LINE_BYTES + 1).unwrap_or(u64::MAX);
+    let limit = u64::try_from(MAX_IMPORT_LINE_BYTES + 2).unwrap_or(u64::MAX);
     input.by_ref().take(limit).read_until(b'\n', &mut buf)?;
     if buf.is_empty() {
         return Ok(Next::End);
@@ -236,7 +240,8 @@ fn next_line(input: &mut impl BufRead) -> std::io::Result<Next> {
         if buf.last() == Some(&b'\r') {
             buf.pop();
         }
-    } else if buf.len() > MAX_LINE_BYTES {
+    }
+    if buf.len() > MAX_IMPORT_LINE_BYTES {
         return Ok(Next::Problem(LineProblem::TooLong));
     }
     Ok(match String::from_utf8(buf) {
@@ -248,11 +253,11 @@ fn next_line(input: &mut impl BufRead) -> std::io::Result<Next> {
 /// Checks the header against the terrarium being imported into and returns its sim version.
 fn read_header(text: &str, seed: &RepoSeed) -> Result<SimVersion, ImportError> {
     let value: Value = serde_json::from_str(text).map_err(|_| ImportError::NotAnExport)?;
-    if value.get("format").and_then(Value::as_str) != Some(FORMAT) {
+    if value.get("format").and_then(Value::as_str) != Some(EXPORT_FORMAT) {
         return Err(ImportError::NotAnExport);
     }
     match value.get("format_version").and_then(Value::as_u64) {
-        Some(v) if v == u64::from(FORMAT_VERSION) => {}
+        Some(v) if v == u64::from(EXPORT_FORMAT_VERSION) => {}
         Some(v) => return Err(ImportError::FormatVersion(v)),
         None => return Err(ImportError::NotAnExport),
     }
@@ -274,6 +279,44 @@ fn parse_line(text: &str) -> Result<ObservationRecord, LineProblem> {
     serde_json::from_str::<Line>(text)
         .map_err(|err| LineProblem::Malformed(err.to_string()))?
         .into_record()
+}
+
+/// Merges one line's record: inserted, a duplicate, or a conflict added to the report.
+fn merge(
+    lookup: &mut KeyLookup<'_>,
+    inserter: &mut Inserter<'_>,
+    terrarium: TerrariumId,
+    number: u64,
+    text: &str,
+    report: &mut ImportReport,
+) -> Result<(), ImportError> {
+    let line_problem = |problem| ImportError::Line { number, problem };
+    let record = parse_line(text).map_err(line_problem)?;
+    let checked = record
+        .checked()
+        .map_err(|why| line_problem(LineProblem::Invalid(why)))?;
+    match lookup.find(terrarium, &record)? {
+        None => {
+            inserter.insert(terrarium, checked)?;
+            report.inserted += 1;
+        }
+        Some(stored) => {
+            let columns = differing(&stored.record, &record);
+            if columns.is_empty() {
+                report.duplicates += 1;
+            } else {
+                report.conflicts.push(Conflict {
+                    line: number,
+                    kind: record.kind,
+                    source: record.source,
+                    head_commit: record.head.commit,
+                    recorded_at: record.recorded_at,
+                    columns,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The columns, in schema order, whose values differ between two records with the same merge
@@ -334,8 +377,8 @@ impl Store {
             .terrarium(terrarium)?
             .ok_or(StoreError::NoSuchTerrarium(terrarium))?;
         let header = Header {
-            format: FORMAT.to_owned(),
-            format_version: FORMAT_VERSION,
+            format: EXPORT_FORMAT.to_owned(),
+            format_version: EXPORT_FORMAT_VERSION,
             seed: target.seed.to_hex(),
             sim_version: SIM_VERSION.0,
         };
@@ -378,35 +421,23 @@ impl Store {
             conflicts: Vec::new(),
         };
         let tx = self.conn.transaction()?;
-        let mut number = 1;
-        loop {
-            number += 1;
-            let text = match next_line(&mut input)? {
-                Next::End => break,
-                Next::Problem(problem) => return Err(ImportError::Line { number, problem }),
-                Next::Line(text) => text,
-            };
-            let record =
-                parse_line(&text).map_err(|problem| ImportError::Line { number, problem })?;
-            match find_by_key(&tx, terrarium, &record)? {
-                None => {
-                    insert(&tx, terrarium, &record)?;
-                    report.inserted += 1;
-                }
-                Some(stored) => {
-                    let columns = differing(&stored.record, &record);
-                    if columns.is_empty() {
-                        report.duplicates += 1;
-                    } else {
-                        report.conflicts.push(Conflict {
-                            line: number,
-                            kind: record.kind,
-                            source: record.source,
-                            head_commit: record.head.commit,
-                            recorded_at: record.recorded_at,
-                            columns,
-                        });
-                    }
+        {
+            let mut lookup = KeyLookup::new(&tx)?;
+            let mut inserter = Inserter::new(&tx)?;
+            let mut number = 1;
+            loop {
+                number += 1;
+                match next_line(&mut input)? {
+                    Next::End => break,
+                    Next::Problem(problem) => return Err(ImportError::Line { number, problem }),
+                    Next::Line(text) => merge(
+                        &mut lookup,
+                        &mut inserter,
+                        terrarium,
+                        number,
+                        &text,
+                        &mut report,
+                    )?,
                 }
             }
         }
@@ -594,7 +625,7 @@ mod tests {
         let (mut fx, id) = holding(&[]);
         let header = |value: Value| format!("{value}\n");
         let good = json!({
-            "format": FORMAT, "format_version": 1, "seed": seed(1).to_hex(), "sim_version": 1
+            "format": EXPORT_FORMAT, "format_version": 1, "seed": seed(1).to_hex(), "sim_version": 1
         });
         let with = |key: &str, value: Value| {
             let mut h = good.clone();
@@ -642,11 +673,12 @@ mod tests {
         let (header, valid, weather_line) = (lines[0], lines[1], lines[2]);
         let edit = |line: &str, key: &str, value: Value| {
             let mut v: Value = serde_json::from_str(line).unwrap();
-            if value.is_null() && key != "head_branch" {
-                v.as_object_mut().unwrap().remove(key);
-            } else {
-                v[key] = value;
-            }
+            v[key] = value;
+            v.to_string()
+        };
+        let without = |line: &str, key: &str| {
+            let mut v: Value = serde_json::from_str(line).unwrap();
+            assert!(v.as_object_mut().unwrap().remove(key).is_some(), "{key}");
             v.to_string()
         };
         let contributors: Vec<Value> = (0..21)
@@ -658,8 +690,18 @@ mod tests {
                 edit(valid, "extra", json!(1)),
                 LineProblem::Malformed(String::new()),
             ),
+            (without(valid, "raw"), LineProblem::Malformed(String::new())),
+            // A nullable column must still be there, if only as null.
             (
-                edit(valid, "raw", Value::Null),
+                without(valid, "head_branch"),
+                LineProblem::Malformed(String::new()),
+            ),
+            (
+                without(valid, "report_mtime"),
+                LineProblem::Malformed(String::new()),
+            ),
+            (
+                without(valid, "normalized"),
                 LineProblem::Malformed(String::new()),
             ),
             (
@@ -694,7 +736,12 @@ mod tests {
                 edit(valid, "raw", json!("{oops")),
                 LineProblem::Invalid(Invalid::RawNotJson),
             ),
-            ("x".repeat(MAX_LINE_BYTES + 1), LineProblem::TooLong),
+            ("x".repeat(MAX_IMPORT_LINE_BYTES + 1), LineProblem::TooLong),
+            // At the cap with a CRLF ending, the line is read whole and parsed.
+            (
+                format!("{}\r", "x".repeat(MAX_IMPORT_LINE_BYTES)),
+                LineProblem::Malformed(String::new()),
+            ),
         ];
         let mut fx = Fixture::new();
         let there = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
@@ -717,6 +764,16 @@ mod tests {
             }
             assert_eq!(count(&fx), 0, "{bad:.80}");
         }
+    }
+
+    #[test]
+    fn lines_are_utf8_and_may_end_in_crlf() {
+        let (source, id) = holding(&[record(ObservationKind::Coverage, 1), weather(2)]);
+        let file = String::from_utf8(export(&source, id)).unwrap();
+        let lines: Vec<&str> = file.lines().collect();
+        let (header, valid, weather_line) = (lines[0], lines[1], lines[2]);
+        let mut fx = Fixture::new();
+        let there = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
         let mut not_utf8 = format!("{header}\n").into_bytes();
         not_utf8.extend_from_slice(&[0xff, 0xfe, b'\n']);
         assert!(matches!(
@@ -728,7 +785,6 @@ mod tests {
                 problem: LineProblem::Malformed(_)
             }
         ));
-        // The same file without the bad line imports, CRLF endings included.
         let good = format!("{header}\r\n{valid}\r\n{weather_line}");
         let report = fx
             .store

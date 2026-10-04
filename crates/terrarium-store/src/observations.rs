@@ -2,7 +2,7 @@
 //! triggers in migration 1 refuse every update and every delete outside the guarded path; this
 //! module only ever inserts.
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, Statement, params};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use terrarium_truth::domain::{ObservationHead, WeatherSource};
@@ -203,21 +203,39 @@ impl RawRow {
     }
 }
 
-/// Checks and inserts one observation: the one way observations are written, by append and by
-/// import. Never `INSERT OR REPLACE`, which would replace a row (and which the triggers refuse).
-pub(crate) fn insert(
-    conn: &Connection,
-    terrarium: TerrariumId,
-    record: &ObservationRecord,
-) -> Result<ObservationId, StoreError> {
-    record.check()?;
-    let contributors = serde_json::to_string(&record.contributors)?;
-    let inserted = conn.execute(
-        "INSERT INTO observations (terrarium_id, kind, adapter_version, recorded_at, \
-         head_commit, head_branch, at_default_tip, source, report_mtime, content_hash, raw, \
-         normalized, confidence, contributors) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
+/// A record that passed [`ObservationRecord::check`]: the only kind [`Inserter`] writes.
+pub(crate) struct Checked<'r>(&'r ObservationRecord);
+
+impl ObservationRecord {
+    pub(crate) fn checked(&self) -> Result<Checked<'_>, Invalid> {
+        self.check()?;
+        Ok(Checked(self))
+    }
+}
+
+/// The one way observations are written, by append and by import, prepared once so an import
+/// does not compile it per line. Never `INSERT OR REPLACE`, which would replace a row (and
+/// which the triggers refuse).
+pub(crate) struct Inserter<'c>(Statement<'c>);
+
+impl<'c> Inserter<'c> {
+    pub(crate) fn new(conn: &'c Connection) -> rusqlite::Result<Inserter<'c>> {
+        conn.prepare(
+            "INSERT INTO observations (terrarium_id, kind, adapter_version, recorded_at, \
+             head_commit, head_branch, at_default_tip, source, report_mtime, content_hash, raw, \
+             normalized, confidence, contributors) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        )
+        .map(Inserter)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        terrarium: TerrariumId,
+        Checked(record): Checked<'_>,
+    ) -> Result<ObservationId, StoreError> {
+        let contributors = serde_json::to_string(&record.contributors)?;
+        let inserted = self.0.insert(params![
             terrarium.get(),
             record.kind.as_column(),
             record.adapter_version,
@@ -232,40 +250,48 @@ pub(crate) fn insert(
             record.normalized.map(Q16::raw),
             record.confidence.raw(),
             contributors,
-        ],
-    );
-    match inserted {
-        Ok(_) => Ok(ObservationId(conn.last_insert_rowid())),
-        Err(err) if is_unique_violation(&err) => Err(StoreError::AlreadyRecorded),
-        Err(err) => Err(err.into()),
+        ]);
+        match inserted {
+            Ok(id) => Ok(ObservationId(id)),
+            Err(err) if is_unique_violation(&err) => Err(StoreError::AlreadyRecorded),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
-/// The stored observation with `record`'s merge key (`kind`, `source`, `head_commit`,
-/// `recorded_at`), if any.
-pub(crate) fn find_by_key(
-    conn: &Connection,
-    terrarium: TerrariumId,
-    record: &ObservationRecord,
-) -> Result<Option<StoredObservation>, StoreError> {
-    let sql = format!(
-        "SELECT {COLUMNS} FROM observations WHERE terrarium_id = ?1 AND kind = ?2 \
-         AND source = ?3 AND head_commit = ?4 AND recorded_at = ?5"
-    );
-    conn.query_row(
-        &sql,
-        params![
-            terrarium.get(),
-            record.kind.as_column(),
-            record.source_column(),
-            record.head.commit.as_str(),
-            record.recorded_at,
-        ],
-        read_row,
-    )
-    .optional()?
-    .map(RawRow::decode)
-    .transpose()
+/// Finds the stored observation with a record's merge key (`kind`, `source`, `head_commit`,
+/// `recorded_at`), prepared once for an import's every line.
+pub(crate) struct KeyLookup<'c>(Statement<'c>);
+
+impl<'c> KeyLookup<'c> {
+    pub(crate) fn new(conn: &'c Connection) -> rusqlite::Result<KeyLookup<'c>> {
+        conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM observations WHERE terrarium_id = ?1 AND kind = ?2 \
+             AND source = ?3 AND head_commit = ?4 AND recorded_at = ?5"
+        ))
+        .map(KeyLookup)
+    }
+
+    pub(crate) fn find(
+        &mut self,
+        terrarium: TerrariumId,
+        record: &ObservationRecord,
+    ) -> Result<Option<StoredObservation>, StoreError> {
+        self.0
+            .query_row(
+                params![
+                    terrarium.get(),
+                    record.kind.as_column(),
+                    record.source_column(),
+                    record.head.commit.as_str(),
+                    record.recorded_at,
+                ],
+                read_row,
+            )
+            .optional()?
+            .map(RawRow::decode)
+            .transpose()
+    }
 }
 
 impl Store {
@@ -276,7 +302,8 @@ impl Store {
         terrarium: TerrariumId,
         record: &ObservationRecord,
     ) -> Result<ObservationId, StoreError> {
-        insert(&self.conn, terrarium, record)
+        let checked = record.checked()?;
+        Inserter::new(&self.conn)?.insert(terrarium, checked)
     }
 
     /// A terrarium's observations in id order: of one kind or all, and only those after `after`
