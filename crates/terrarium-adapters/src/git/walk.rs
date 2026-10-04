@@ -78,13 +78,13 @@ fn read_node(
     outside: &mut Outside,
 ) -> Result<Node, GitError> {
     let commit = repo.find_commit(id).map_err(read_err)?;
-    let decoded = commit.decode().map_err(read_err)?;
-    let own_secs = decoded
-        .committer()
-        .ok()
-        .and_then(|sig| sig.time().ok())
-        .map(|time| time.seconds.max(EARLIEST_COMMIT_SECS));
-    let listed: Vec<gix::ObjectId> = decoded.parents().collect();
+    let Header {
+        tree,
+        parents: listed,
+        committer_secs,
+    } = header(&commit.data, repo.object_hash())
+        .ok_or_else(|| GitError::Read(format!("commit {} has no tree", id.to_hex())))?;
+    let own_secs = committer_secs.map(|secs| secs.max(EARLIEST_COMMIT_SECS));
     let cut = shallow.contains(&id);
     if cut {
         outside.shallow_boundary.insert(id);
@@ -108,10 +108,52 @@ fn read_node(
         .copied();
     Ok(Node {
         own_secs,
-        tree: decoded.tree(),
+        tree,
         listed_parents: u32::try_from(listed.len()).unwrap_or(u32::MAX),
         walked_parents,
         first_parent,
+    })
+}
+
+/// The parts of a commit the walk reads.
+pub(crate) struct Header {
+    pub tree: gix::ObjectId,
+    pub parents: Vec<gix::ObjectId>,
+    /// `None` when the committer line or its date does not parse.
+    pub committer_secs: Option<i64>,
+}
+
+/// Reads a commit's header. A commit gix cannot decode, such as one whose committer line is
+/// malformed, is read leniently: its tree and parent lines are enough, and its date is
+/// unparseable. `None` only when no tree line can be read.
+pub(crate) fn header(data: &[u8], hash: gix::hash::Kind) -> Option<Header> {
+    if let Ok(commit) = gix::objs::CommitRef::from_bytes(data, hash) {
+        return Some(Header {
+            tree: commit.tree(),
+            parents: commit.parents().collect(),
+            committer_secs: commit
+                .committer()
+                .ok()
+                .and_then(|sig| sig.time().ok())
+                .map(|time| time.seconds),
+        });
+    }
+    let mut tree = None;
+    let mut parents = Vec::new();
+    for line in data
+        .split(|&b| b == b'\n')
+        .take_while(|line| !line.is_empty())
+    {
+        if let Some(hex) = line.strip_prefix(b"tree ") {
+            tree = gix::ObjectId::from_hex(hex).ok();
+        } else if let Some(hex) = line.strip_prefix(b"parent ") {
+            parents.extend(gix::ObjectId::from_hex(hex).ok());
+        }
+    }
+    Some(Header {
+        tree: tree?,
+        parents,
+        committer_secs: None,
     })
 }
 

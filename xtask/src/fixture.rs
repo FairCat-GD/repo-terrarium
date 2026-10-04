@@ -13,7 +13,7 @@
 //! climbing back as it recovers; weather from local test runs at first and CI on `main` later,
 //! with failing stretches.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use sha2::{Digest, Sha256};
@@ -113,7 +113,7 @@ fn export(arc: &Arc) -> Result<String, String> {
         .create_terrarium(&NewTerrarium {
             seed: seed(arc),
             repo: RepoLocation {
-                path: PathBuf::from("/fixtures/arc").display().to_string(),
+                path: "/fixtures/arc".to_owned(),
                 name: "arc".into(),
                 default_branch: arc.default_branch.into(),
             },
@@ -154,13 +154,17 @@ struct Reading {
     contributors: Vec<Contributor>,
 }
 
+/// The arc's day on which `phase` begins.
+fn first_day(phase: Phase) -> i64 {
+    (phase.start_secs() - fixture::ARC_START_SECS) / DAY
+}
+
 /// Coverage on day `day` of the arc, in thousandths.
 fn coverage(day: i64) -> Option<i64> {
-    let phase_day = |phase: Phase| (phase.start_secs() - fixture::ARC_START_SECS) / DAY;
     let (struggling, dead, recovering) = (
-        phase_day(Phase::Struggling),
-        phase_day(Phase::Dead),
-        phase_day(Phase::Recovering),
+        first_day(Phase::Struggling),
+        first_day(Phase::Dead),
+        first_day(Phase::Recovering),
     );
     match Phase::at(fixture::ARC_START_SECS + day * DAY) {
         Phase::Thriving => Some(820 - (day % 3) * 5),
@@ -175,7 +179,9 @@ fn dead_code(day: i64) -> Option<(u32, u32)> {
     let exported = 120 + u32::try_from(day / 7).unwrap_or(0);
     let unused = match Phase::at(fixture::ARC_START_SECS + day * DAY) {
         Phase::Thriving => 3 + u32::try_from(day % 4).unwrap_or(0),
-        Phase::Struggling => 6 + u32::try_from((day - 267) / 5).unwrap_or(0),
+        Phase::Struggling => {
+            6 + u32::try_from((day - first_day(Phase::Struggling)) / 5).unwrap_or(0)
+        }
         Phase::Dead => return None,
         // A clearing on day 640: from about 40 unused items down to 12.
         Phase::Recovering if day < 640 => 40,

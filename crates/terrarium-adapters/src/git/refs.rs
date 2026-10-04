@@ -51,10 +51,17 @@ pub(crate) fn to_object_id(id: &CommitId) -> gix::ObjectId {
 pub(crate) fn state(repo: &gix::Repository) -> Result<RepoState, GitError> {
     let platform = repo.references().map_err(read_err)?;
     let mut branches = BTreeMap::new();
+    // A ref that does not parse, or does not resolve to an object the repository has, holds no
+    // history: it is skipped, as git skips a dangling ref, rather than failing the whole read.
     for reference in platform.local_branches().map_err(read_err)? {
-        let mut reference = reference.map_err(read_err)?;
+        let Ok(mut reference) = reference else {
+            continue;
+        };
         let name = reference.name().shorten().to_str_lossy().into_owned();
-        let id = reference.peel_to_id().map_err(read_err)?.detach();
+        let Ok(id) = reference.peel_to_id() else {
+            continue;
+        };
+        let id = id.detach();
         // A branch names a commit; one that names anything else holds no history.
         let is_commit = repo
             .try_find_header(id)
@@ -66,10 +73,13 @@ pub(crate) fn state(repo: &gix::Repository) -> Result<RepoState, GitError> {
     }
     let mut tags = BTreeMap::new();
     for reference in platform.tags().map_err(read_err)? {
-        let mut reference = reference.map_err(read_err)?;
+        let Ok(mut reference) = reference else {
+            continue;
+        };
         let name = reference.name().shorten().to_str_lossy().into_owned();
-        let id = reference.follow_to_object().map_err(read_err)?.detach();
-        tags.insert(name, to_commit_id(id));
+        if let Ok(id) = reference.follow_to_object() {
+            tags.insert(name, to_commit_id(id.detach()));
+        }
     }
     let shallow = repo
         .shallow_commits()

@@ -17,7 +17,7 @@ use std::path::Path;
 
 use terrarium_truth::{CommitId, RepoSeed};
 
-pub use history::{Change, History, HistoryNotes, HistoryUpdate, Progress, RewriteReason};
+pub use history::{Change, History, HistoryNotes, Progress, RewriteReason};
 pub use refs::RepoState;
 
 /// Bytes of decoded objects kept in memory while reading: trees are read again for every
@@ -131,14 +131,15 @@ impl GitRepo {
         history::read(&self.repo, default_branch, progress)
     }
 
-    /// Brings `previous` up to date, reading only new commits when the repository grew and
-    /// everything again when its history changed.
+    /// Brings `history` up to date in place, reading only new commits when the repository grew
+    /// and everything again when its history changed, and says which happened. On an error,
+    /// `history` is as it was.
     pub fn read_since(
         &self,
-        previous: &History,
+        history: &mut History,
         default_branch: &str,
         progress: &mut dyn FnMut(Progress) -> std::ops::ControlFlow<()>,
-    ) -> Result<HistoryUpdate, GitError> {
-        history::read_since(&self.repo, previous, default_branch, progress)
+    ) -> Result<Change, GitError> {
+        history::read_since(&self.repo, history, default_branch, progress)
     }
 }

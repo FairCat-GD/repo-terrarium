@@ -45,7 +45,9 @@ targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the 
   on in a workspace crate it depends on: the debug window never ships in release builds.
 - `terrarium-adapters`' `fixture` feature, which writes git repositories, is never on by
   default and is turned on only by xtask or a dev-dependency, never named in another
-  member's features: the fixture code never ships (I-5).
+  member's features: the fixture code never ships (I-5). Cargo unifies features across the
+  packages a build selects, so this holds for builds of the app alone (`-p terrarium-app`,
+  as `probe-zip` does and a test pins), never for `--workspace` release builds.
 - No dependency declares a `rust-version` above the workspace's.
 
 ### The scan of truth's sources

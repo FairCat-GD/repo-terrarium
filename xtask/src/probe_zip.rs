@@ -20,6 +20,10 @@ const XWIN_VERSION: &str = "0.10.0";
 /// Where the splatted libraries live unless `TERRARIUM_XWIN_DIR` says otherwise.
 const XWIN_DIR_ENV: &str = "TERRARIUM_XWIN_DIR";
 
+/// The release build of the app alone. Building the workspace would unify xtask's features
+/// into the app's dependencies, and with them `terrarium-adapters/fixture`, which never ships.
+const BUILD: [&str; 5] = ["build", "--release", "--locked", "-p", "terrarium-app"];
+
 pub fn run(root: &Path) -> ExitCode {
     let Some(xwin_dir) = xwin_dir() else {
         println!("probe-zip: HOME is not set, and neither is {XWIN_DIR_ENV}");
@@ -57,7 +61,7 @@ pub fn run(root: &Path) -> ExitCode {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let build_dir = root.join("target").join("probe-build");
     let built = Command::new(&cargo)
-        .args(["build", "--release", "--locked", "-p", "terrarium-app"])
+        .args(BUILD)
         .args(["--target", TARGET])
         .arg("--target-dir")
         .arg(&build_dir)
@@ -302,6 +306,12 @@ fn package(root: &Path, build_dir: &Path, readme: &str) -> Result<PathBuf, Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_release_build_selects_the_app_alone() {
+        assert_eq!(super::BUILD[3..], ["-p", "terrarium-app"]);
+        assert!(!super::BUILD.contains(&"--workspace"));
+    }
+
     use super::*;
 
     /// A minimal PE32+ image: one section at RVA 0x1000 (file offset 0x200) holding an import

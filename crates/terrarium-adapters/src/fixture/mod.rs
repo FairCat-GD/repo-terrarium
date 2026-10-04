@@ -362,6 +362,42 @@ impl FixtureRepo {
         Ok(commit_id(self.repo.write_object(&commit)?.detach()))
     }
 
+    /// Writes a commit on `branch`, with its files unchanged, whose author and committer lines
+    /// end in `time` exactly as given, which need not be a valid git date.
+    pub fn commit_with_raw_time(
+        &mut self,
+        branch: &str,
+        time: &str,
+        message: &str,
+    ) -> FixtureResult<CommitId> {
+        use gix::objs::Write as _;
+        let mut state = self.branches.remove(branch).unwrap_or_default();
+        let tree = state.files.write(&self.repo);
+        let result = tree.and_then(|tree| {
+            let parent = state
+                .tip
+                .map(|tip| format!("parent {}\n", tip.to_hex()))
+                .unwrap_or_default();
+            let (name, email) = AUTHORS[0];
+            let text = format!(
+                "tree {}\n{parent}author {name} <{email}> {time}\n\
+                 committer {name} <{email}> {time}\n\n{message}\n",
+                tree.to_hex()
+            );
+            self.repo
+                .objects
+                .write_buf(gix::objs::Kind::Commit, text.as_bytes())
+                .map_err(|err| FixtureError::from(err.to_string()))
+        });
+        if let Ok(id) = &result {
+            state.tip = Some(*id);
+        }
+        self.branches.insert(branch.to_owned(), state);
+        let id = result?;
+        self.write_ref_to(&format!("refs/heads/{branch}"), id)?;
+        Ok(commit_id(id))
+    }
+
     /// Merges `from` into `into` with a merge commit: every file of `from` that `into` lacks or
     /// holds differently is taken from `from`.
     pub fn merge(

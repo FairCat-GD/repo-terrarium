@@ -37,10 +37,22 @@ fn read(repo: &FixtureRepo) -> History {
     open(repo).read_history("main", &mut go).expect("reads")
 }
 
-fn since(repo: &FixtureRepo, previous: &History) -> HistoryUpdate {
-    open(repo)
-        .read_since(previous, &previous.default_branch, &mut go)
-        .expect("reads")
+/// A history brought up to date, and what changed.
+struct Update {
+    history: History,
+    change: Change,
+}
+
+fn since_on(repo: &FixtureRepo, previous: &History, branch: &str) -> Update {
+    let mut history = previous.clone();
+    let change = open(repo)
+        .read_since(&mut history, branch, &mut go)
+        .expect("reads");
+    Update { history, change }
+}
+
+fn since(repo: &FixtureRepo, previous: &History) -> Update {
+    since_on(repo, previous, &previous.default_branch)
 }
 
 fn at(hours: i64) -> Stamp {
@@ -173,6 +185,30 @@ fn a_rename_is_listed_and_is_not_a_deletion() {
     );
     assert_eq!(d.removed, 90);
     assert!(d.renames.is_empty());
+}
+
+#[test]
+fn a_directory_moved_unchanged_is_renamed_file_by_file() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    let names = ["loam", "clay", "humus"];
+    let mut edits: Vec<Edit> = names
+        .iter()
+        .map(|n| Edit::write(&format!("src/soil/{n}.rs"), &text(n, 30)))
+        .collect();
+    edits.push(Edit::write("src/lib.rs", "pub mod soil;\n"));
+    commit(&mut repo, "main", 0, &edits);
+    let mut moved = Vec::new();
+    for n in names {
+        moved.push(Edit::Remove(format!("src/soil/{n}.rs")));
+        moved.push(Edit::write(&format!("src/ground/{n}.rs"), &text(n, 30)));
+    }
+    let rename = commit(&mut repo, "main", 1, &moved);
+    let history = read(&repo);
+    let r = facts(&history, &rename);
+    assert_eq!((r.added, r.removed), (0, 0));
+    assert!(r.deleted_dirs.is_empty(), "{:?}", r.deleted_dirs);
+    assert_eq!(r.renames.len(), 3, "{:?}", r.renames);
 }
 
 #[test]
@@ -356,6 +392,61 @@ fn dates_before_1970_are_read_as_1970() {
 }
 
 #[test]
+fn an_unparseable_date_takes_its_parents_time_or_1970() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    commit(&mut repo, "main", 10, &[Edit::write("a.rs", "a\n")]);
+    let garbled = repo
+        .commit_with_raw_time("main", "not-a-time", "garbled")
+        .unwrap();
+    let history = read(&repo);
+    assert_eq!(history.grid.origin_secs(), T0 + 10 * HOUR);
+    assert_eq!(
+        facts(&history, &garbled).tick,
+        Tick::ZERO,
+        "the parent's time"
+    );
+
+    let mut orphan = FixtureRepo::init(&dir.path().join("orphan")).unwrap();
+    let root = orphan
+        .commit_with_raw_time("main", "never", "a root without a date")
+        .unwrap();
+    let child = commit(&mut orphan, "main", 3, &[Edit::write("b.rs", "b\n")]);
+    let history = read(&orphan);
+    assert_eq!(
+        history.grid.origin_secs(),
+        0,
+        "a root without a date is 1970"
+    );
+    assert_eq!(facts(&history, &root).tick, Tick::ZERO);
+    assert!(facts(&history, &child).tick > Tick::new(400_000));
+}
+
+#[test]
+fn a_dangling_ref_is_skipped() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    let tip = commit(&mut repo, "main", 0, &[Edit::write("a.rs", "a\n")]);
+    let ghost = "ef".repeat(20);
+    repo.write_git_file("refs/heads/pruned", format!("{ghost}\n").as_bytes())
+        .unwrap();
+    repo.write_git_file("refs/heads/garbled", b"not a ref\n")
+        .unwrap();
+    repo.write_git_file("refs/tags/gone", format!("{ghost}\n").as_bytes())
+        .unwrap();
+    let git = open(&repo);
+    let state = git.state().unwrap();
+    assert_eq!(
+        state.branches,
+        BTreeMap::from([("main".to_owned(), tip.clone())])
+    );
+    assert_eq!(git.default_branch(), Ok("main".into()));
+    let history = read(&repo);
+    assert_eq!(history.commits.len(), 1);
+    assert!(history.commits[0].tags.is_empty());
+}
+
+#[test]
 fn a_missing_parent_is_noted_and_still_counted() {
     let dir = temp();
     let mut repo = new_repo(&dir);
@@ -514,7 +605,7 @@ fn base(dir: &TempDir) -> (FixtureRepo, Vec<CommitId>) {
     (repo, ids)
 }
 
-fn assert_full(repo: &FixtureRepo, update: &HistoryUpdate) {
+fn assert_full(repo: &FixtureRepo, update: &Update) {
     let full = open(repo)
         .read_history(&update.history.default_branch, &mut go)
         .unwrap();
@@ -547,6 +638,18 @@ fn new_commits_are_appended() {
         }
     );
     assert_full(&repo, &update);
+}
+
+#[test]
+fn a_cancelled_update_leaves_the_history_as_it_was() {
+    let dir = temp();
+    let (mut repo, _) = base(&dir);
+    let previous = read(&repo);
+    commit(&mut repo, "main", 20, &[Edit::write("b.rs", "b\n")]);
+    let mut history = previous.clone();
+    let stopped = open(&repo).read_since(&mut history, "main", &mut |_| ControlFlow::Break(()));
+    assert_eq!(stopped, Err(GitError::Cancelled));
+    assert_eq!(history, previous);
 }
 
 #[test]
@@ -646,7 +749,7 @@ fn another_default_branch_reads_again() {
     let (mut repo, _) = base(&dir);
     repo.branch("trunk", "main").unwrap();
     let previous = read(&repo);
-    let update = open(&repo).read_since(&previous, "trunk", &mut go).unwrap();
+    let update = since_on(&repo, &previous, "trunk");
     assert_eq!(
         update.change,
         Change::Rewritten(RewriteReason::DefaultBranchChanged)
@@ -787,7 +890,8 @@ fn read_every_way(repo: &FixtureRepo) -> History {
     git.identity(&branch).unwrap();
     git.state().unwrap();
     let history = git.read_history(&branch, &mut go).unwrap();
-    git.read_since(&history, &branch, &mut go).unwrap();
+    let mut again = history.clone();
+    git.read_since(&mut again, &branch, &mut go).unwrap();
     history
 }
 

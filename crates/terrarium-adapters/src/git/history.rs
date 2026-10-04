@@ -51,7 +51,7 @@ struct Indexed {
     first_parent: Option<gix::ObjectId>,
 }
 
-/// How a history changed since the one it was brought up to date from.
+/// How a history changed when it was brought up to date.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     Unchanged,
@@ -83,13 +83,6 @@ pub enum RewriteReason {
     GridMoved,
     /// A commit read before joined or left the default branch's first-parent chain.
     FirstParentChanged,
-}
-
-/// The new history, and how it differs from the one it came from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryUpdate {
-    pub history: History,
-    pub change: Change,
 }
 
 /// The ticks of `grid` for a UTC time, saturating at both ends.
@@ -226,7 +219,9 @@ fn tree_of(
         return Ok(node.tree);
     }
     let commit = repo.find_commit(id).map_err(read_err)?;
-    Ok(commit.decode().map_err(read_err)?.tree())
+    walk::header(&commit.data, repo.object_hash())
+        .map(|header| header.tree)
+        .ok_or_else(|| GitError::Read(format!("commit {} has no tree", id.to_hex())))
 }
 
 fn sort_key(
@@ -315,57 +310,53 @@ pub(crate) fn read(
 
 pub(crate) fn read_since(
     repo: &gix::Repository,
-    previous: &History,
+    history: &mut History,
     default_branch: &str,
     progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
-) -> Result<HistoryUpdate, GitError> {
+) -> Result<Change, GitError> {
     let state = refs::state(repo)?;
     let appeared = || {
-        previous
+        history
             .notes
             .missing_objects
             .iter()
             .any(|id| repo.has_object(to_object_id(id)))
     };
-    let reason = if default_branch != previous.default_branch {
+    let reason = if default_branch != history.default_branch {
         Some(RewriteReason::DefaultBranchChanged)
     } else if appeared() {
         Some(RewriteReason::ObjectAppeared)
-    } else if state == previous.state {
+    } else if state == history.state {
         default_tip(&state, default_branch)?;
-        return Ok(HistoryUpdate {
-            history: previous.clone(),
-            change: Change::Unchanged,
-        });
-    } else if state.tags != previous.state.tags {
+        return Ok(Change::Unchanged);
+    } else if state.tags != history.state.tags {
         Some(RewriteReason::TagsChanged)
-    } else if state.shallow != previous.state.shallow {
+    } else if state.shallow != history.state.shallow {
         Some(RewriteReason::ShallowChanged)
     } else {
         None
     };
-    let grown = match reason {
-        Some(reason) => Err(reason),
-        None => grow(repo, previous, state, progress)?,
+    let reason = match reason {
+        Some(reason) => reason,
+        None => match grow(repo, history, state, progress)? {
+            Ok(change) => return Ok(change),
+            Err(reason) => reason,
+        },
     };
-    match grown {
-        Ok(update) => Ok(update),
-        Err(reason) => Ok(HistoryUpdate {
-            history: read(repo, default_branch, progress)?,
-            change: Change::Rewritten(reason),
-        }),
-    }
+    *history = read(repo, default_branch, progress)?;
+    Ok(Change::Rewritten(reason))
 }
 
-/// Reads only the commits `previous` lacks, or says why every earlier fact no longer holds.
+/// Reads only the commits `history` lacks into it, or says why every earlier fact no longer
+/// holds, leaving `history` as it was.
 fn grow(
     repo: &gix::Repository,
-    previous: &History,
+    history: &mut History,
     state: RepoState,
     progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
-) -> Result<Result<HistoryUpdate, RewriteReason>, GitError> {
-    let known = &previous.index;
-    let tip = default_tip(&state, &previous.default_branch)?;
+) -> Result<Result<Change, RewriteReason>, GitError> {
+    let known = &history.index;
+    let tip = default_tip(&state, &history.default_branch)?;
     let tips: Vec<gix::ObjectId> = state.branches.values().map(to_object_id).collect();
     let (nodes, outside) = walk::walk(
         repo,
@@ -383,7 +374,7 @@ fn grow(
             .map(|k| k.placed)
             .chain(placed.values().copied()),
     );
-    if grid != previous.grid {
+    if grid != history.grid {
         return Ok(Err(RewriteReason::GridMoved));
     }
     let first_parent = |id: &gix::ObjectId| {
@@ -396,7 +387,7 @@ fn grow(
     let chain: BTreeSet<gix::ObjectId> = walk::first_parent_chain(tip, &first_parent)
         .into_iter()
         .collect();
-    if chain_moved(previous, &chain) {
+    if chain_moved(history, &chain) {
         return Ok(Err(RewriteReason::FirstParentChanged));
     }
 
@@ -412,8 +403,8 @@ fn grow(
     };
     let mut missing = BTreeSet::new();
     let new_facts = facts(repo, &graph, &new_ids, &mut missing, progress)?;
-    Ok(Ok(extended(
-        previous, state, &graph, new_facts, &outside, &missing,
+    Ok(Ok(extend(
+        history, state, &graph, new_facts, &outside, &missing,
     )))
 }
 
@@ -440,8 +431,8 @@ fn drops_commits(
 }
 
 /// Whether a commit read before joined or left the default branch's first-parent chain.
-fn chain_moved(previous: &History, chain: &BTreeSet<gix::ObjectId>) -> bool {
-    let was: BTreeSet<CommitId> = previous
+fn chain_moved(history: &History, chain: &BTreeSet<gix::ObjectId>) -> bool {
+    let was: BTreeSet<CommitId> = history
         .commits
         .iter()
         .filter(|c| c.on_default_first_parent)
@@ -449,25 +440,24 @@ fn chain_moved(previous: &History, chain: &BTreeSet<gix::ObjectId>) -> bool {
         .collect();
     let is: BTreeSet<CommitId> = chain
         .iter()
-        .filter(|id| previous.index.contains_key(*id))
+        .filter(|id| history.index.contains_key(*id))
         .copied()
         .map(to_commit_id)
         .collect();
     was != is
 }
 
-/// `previous` with `new_facts` merged in, in order.
-fn extended(
-    previous: &History,
+/// Merges `new_facts` (in order) into `history`, and says what changed.
+fn extend(
+    history: &mut History,
     state: RepoState,
     graph: &Graph<'_>,
     new_facts: Vec<CommitFacts>,
     outside: &Outside,
     missing: &BTreeSet<gix::ObjectId>,
-) -> HistoryUpdate {
-    let mut index = previous.index.clone();
+) -> Change {
     for (id, node) in graph.nodes {
-        index.insert(
+        history.index.insert(
             *id,
             Indexed {
                 placed: graph.placed[id],
@@ -476,38 +466,52 @@ fn extended(
             },
         );
     }
-    let earliest_tick = new_facts.iter().map(|c| c.tick).min();
-    let ids: Vec<CommitId> = new_facts.iter().map(|c| c.id.clone()).collect();
-    let mut commits = previous.commits.clone();
-    commits.extend(new_facts);
-    let placed_all: BTreeMap<gix::ObjectId, Placed> =
-        index.iter().map(|(id, k)| (*id, k.placed)).collect();
-    commits.sort_by_key(|c| sort_key(&placed_all, &to_object_id(&c.id)));
+    let change = match new_facts.iter().map(|c| c.tick).min() {
+        Some(earliest_tick) => Change::Appended {
+            ids: new_facts.iter().map(|c| c.id.clone()).collect(),
+            earliest_tick,
+        },
+        None => Change::Unchanged,
+    };
+    // Both lists are already in order: one merge, each key computed once.
+    let old = std::mem::take(&mut history.commits);
+    let keyed = |list: Vec<CommitFacts>, index: &BTreeMap<gix::ObjectId, Indexed>| {
+        list.into_iter()
+            .map(|c| {
+                let id = to_object_id(&c.id);
+                let placed = index[&id].placed;
+                ((placed.clamped, placed.generation, id), c)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut old = keyed(old, &history.index).into_iter().peekable();
+    let mut new = keyed(new_facts, &history.index).into_iter().peekable();
+    let mut merged = Vec::with_capacity(old.len() + new.len());
+    loop {
+        let take_old = match (old.peek(), new.peek()) {
+            (Some((a, _)), Some((b, _))) => a <= b,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        let next = if take_old { old.next() } else { new.next() };
+        merged.extend(next.map(|(_, c)| c));
+    }
+    history.commits = merged;
 
     let mut outside_all = outside.clone();
     outside_all
         .shallow_boundary
-        .extend(previous.notes.shallow_boundary.iter().map(to_object_id));
-    let mut missing_all: BTreeSet<gix::ObjectId> = previous
+        .extend(history.notes.shallow_boundary.iter().map(to_object_id));
+    let mut missing_all: BTreeSet<gix::ObjectId> = history
         .notes
         .missing_objects
         .iter()
         .map(to_object_id)
         .collect();
     missing_all.extend(missing);
-    let change = match earliest_tick {
-        Some(earliest_tick) => Change::Appended { ids, earliest_tick },
-        None => Change::Unchanged,
-    };
-    HistoryUpdate {
-        history: History {
-            default_branch: previous.default_branch.clone(),
-            grid: graph.grid,
-            commits,
-            state,
-            notes: notes(&outside_all, &missing_all),
-            index,
-        },
-        change,
-    }
+    history.notes = notes(&outside_all, &missing_all);
+    history.grid = graph.grid;
+    history.state = state;
+    change
 }
