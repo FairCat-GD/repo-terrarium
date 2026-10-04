@@ -30,10 +30,6 @@ use terrarium_truth::canonical_dump;
 pub const DUMP: &str = "tests/golden/arc.dump";
 pub const SHA: &str = "tests/golden/arc.sha256";
 
-const DAY: i64 = 86_400;
-/// Five months past the arc's last commit: long enough for dormancy to mist the glass.
-pub const THROUGH_SECS: i64 = fixture::ARC_END_SECS + 150 * DAY;
-
 /// The most diff lines `--bless` prints before it only counts.
 const DIFF_LINES: usize = 200;
 
@@ -99,7 +95,7 @@ pub fn build(root: &Path) -> Result<String, String> {
         repo: &repo,
         data: &DataDir::at(dir.path().join("data")),
         observations: Some(&mut reader as &mut dyn BufRead),
-        at_secs: THROUGH_SECS,
+        at_secs: fixture::ARC_REPLAY_END_SECS,
         install_salt: [0; 16],
     })
     .map_err(|e| format!("the replay failed: {e:?}"))?;
@@ -187,7 +183,11 @@ fn bless(root: &Path, same_version: bool) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(&path, &fresh).map_err(|e| e.to_string())?;
-    std::fs::write(root.join(SHA), sha_line(&fresh)).map_err(|e| e.to_string())?;
+    let sha = sha_line(&fresh);
+    if read(root, SHA).as_deref() != Some(sha.as_str()) {
+        std::fs::write(root.join(SHA), &sha).map_err(|e| e.to_string())?;
+        println!("golden: rewrote {SHA}");
+    }
     match old {
         Some(old) if old == fresh => println!("golden: {DUMP} is unchanged"),
         Some(old) => {

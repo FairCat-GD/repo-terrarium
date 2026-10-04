@@ -18,8 +18,8 @@ use gix::refs::transaction::{Change as RefChange, LogChange, PreviousValue, RefE
 use terrarium_truth::CommitId;
 
 pub use arc::{
-    ARC_BRANCHES, ARC_DELETED_DIR, ARC_END_SECS, ARC_RENAMED_FROM, ARC_RENAMED_TO, ARC_START_SECS,
-    ARC_TAGS, Arc, ArcCommit, Phase, arc,
+    ARC_BRANCHES, ARC_DELETED_DIR, ARC_END_SECS, ARC_RENAMED_FROM, ARC_RENAMED_TO,
+    ARC_REPLAY_END_SECS, ARC_START_SECS, ARC_TAGS, Arc, ArcCommit, Phase, arc,
 };
 pub use synthetic::synthetic;
 

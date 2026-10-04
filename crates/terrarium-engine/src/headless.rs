@@ -69,6 +69,10 @@ pub fn replay_dump(request: Request<'_>) -> Result<ReplayDump, HeadlessError> {
     let default_branch = git.default_branch()?;
     let identity = git.identity(&default_branch)?;
     let history = git.read_history(&default_branch, &mut |_| ControlFlow::Continue(()))?;
+    let through = history
+        .grid
+        .tick_at(request.at_secs)
+        .ok_or(HeadlessError::BeforeHistory)?;
     let mut store = Store::open(request.data)?;
     let terrarium = store.create_terrarium(&NewTerrarium {
         seed: identity.seed,
@@ -92,10 +96,6 @@ pub fn replay_dump(request: Request<'_>) -> Result<ReplayDump, HeadlessError> {
         .iter()
         .map(StoredObservation::to_observation)
         .collect::<Result<Vec<_>, _>>()?;
-    let through = history
-        .grid
-        .tick_at(request.at_secs)
-        .ok_or(HeadlessError::BeforeHistory)?;
     let basis = Basis::new(identity.seed, history.grid, &history.default_branch);
     let prepared = Prepared::new(basis, &history.commits, &observations)?;
     Ok(terrarium_truth::dump(&prepared, through)?)

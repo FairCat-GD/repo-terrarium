@@ -523,13 +523,14 @@ mod tests {
         let text = String::from_utf8(export(&fx, id)).unwrap();
         let expected = format!(
             "{{\"format\":\"repo-terrarium-observations\",\"format_version\":1,\
-             \"seed\":\"{seed}\",\"sim_version\":1}}\n\
+             \"seed\":\"{seed}\",\"sim_version\":{version}}}\n\
              {{\"id\":1,\"kind\":\"weather\",\"adapter_version\":2,\"recorded_at\":1700000200,\
              \"head_commit\":\"{commit}\",\"head_branch\":\"main\",\"at_default_tip\":true,\
              \"source\":\"ci:main\",\"report_mtime\":null,\"content_hash\":\"{hash}\",\
              \"raw\":\"{{\\\"state\\\":\\\"pass\\\"}}\",\"normalized\":65536,\"confidence\":32768,\
              \"contributors\":[{{\"path\":\"tests/pond.rs\",\"value\":1}}]}}\n",
             seed = "01".repeat(32),
+            version = SIM_VERSION.0,
             commit = "d".repeat(40),
             hash = "ab".repeat(32),
         );

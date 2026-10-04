@@ -1,11 +1,13 @@
 //! Light and soil: the repository's health, from the reports recorded while HEAD was at the
 //! default tip.
 //!
-//! The newest applicable report of each kind is held as it was recorded, never decayed. Light
-//! is coverage; soil is the mean of whichever of dead code, complexity and TODO density are
-//! known. Each is smoothed with the 14-day EMA, once per UTC day. A report that could not tell
-//! makes its reading unknown: the average is dropped, and the next known report starts it again,
-//! so an unknown never drags a value toward zero (I-3).
+//! The newest applicable report of each kind is held as it was recorded, never decayed; a report
+//! applied late never replaces a newer one. Light is coverage; soil is the mean of whichever of
+//! dead code, complexity and TODO density are known. Each is smoothed with the 14-day EMA, once
+//! per UTC day, and remembers the reports it last took, which date it and decide whether it is
+//! stale. A report that could not tell makes its reading unknown at the next close: the average
+//! is dropped, and the next known report starts it again, so an unknown never drags a value
+//! toward zero (I-3).
 
 use serde::{Deserialize, Serialize};
 
@@ -23,10 +25,18 @@ pub struct Latest {
     pub value: Option<Q16>,
     /// HEAD when it was recorded, which was the default tip.
     pub head: CommitId,
+    /// The tick it was recorded in.
     pub tick: Tick,
+    /// Unix seconds, UTC: which of two reports is newer.
+    pub recorded_at: i64,
 }
 
-canonical_struct!(Latest { value, head, tick });
+canonical_struct!(Latest {
+    value,
+    head,
+    tick,
+    recorded_at
+});
 
 impl Latest {
     /// Stale once the default tip has moved past the report's commit.
@@ -58,9 +68,15 @@ pub struct Readings {
     pub dead_code: Option<Latest>,
     pub complexity: Option<Latest>,
     pub todo_density: Option<Latest>,
+    /// The value of the coverage report the newest one replaced: the light of a change.
+    pub coverage_before: Option<Q16>,
     /// Smoothed light and soil; `None` while unknown.
     pub light: Option<Q32>,
     pub soil: Option<Q32>,
+    /// The reports the last close smoothed in: the coverage report, and each known soil
+    /// component's.
+    pub light_from: Option<Latest>,
+    pub soil_from: Vec<Latest>,
 }
 
 canonical_struct!(Readings {
@@ -68,13 +84,16 @@ canonical_struct!(Readings {
     dead_code,
     complexity,
     todo_density,
+    coverage_before,
     light,
     soil,
+    light_from,
+    soil_from,
 });
 
 impl Readings {
-    /// Holds `latest` as the newest report of `kind`. Kinds that feed neither light nor soil
-    /// are ignored.
+    /// Holds `latest` as the newest report of `kind`, unless a newer one is held. Kinds that
+    /// feed neither light nor soil are ignored.
     pub fn record(&mut self, kind: ObservationKind, latest: Latest) {
         let slot = match kind {
             ObservationKind::Coverage => &mut self.coverage,
@@ -83,13 +102,38 @@ impl Readings {
             ObservationKind::TodoDensity => &mut self.todo_density,
             ObservationKind::Weather | ObservationKind::RefRewrite => return,
         };
-        *slot = Some(latest);
+        if slot
+            .as_ref()
+            .is_some_and(|held| held.recorded_at > latest.recorded_at)
+        {
+            return;
+        }
+        let before = slot.replace(latest).and_then(|held| held.value);
+        if kind == ObservationKind::Coverage {
+            self.coverage_before = before;
+        }
     }
 
     /// Steps both smoothed values with the reports held at the close of a day.
     pub fn close(&mut self) {
-        self.light = smooth(self.light, self.raw_light());
+        let light = self.raw_light();
+        self.light = smooth(self.light, light);
+        self.light_from = light.and(self.coverage.clone());
         self.soil = smooth(self.soil, self.raw_soil());
+        self.soil_from = self
+            .components()
+            .into_iter()
+            .flatten()
+            .filter(|c| c.value.is_some())
+            .cloned()
+            .collect();
+    }
+
+    /// How the newest coverage report moved from the one before it, while that report is
+    /// recent (recorded no earlier than `since`).
+    pub fn coverage_change(&self, since: Tick) -> Option<Q16> {
+        let latest = self.coverage.as_ref().filter(|c| c.tick >= since)?;
+        Some(latest.value?.saturating_sub(self.coverage_before?))
     }
 
     pub fn raw_light(&self) -> Option<Q16> {
@@ -120,9 +164,9 @@ impl Readings {
         ]
     }
 
-    /// Smoothed light, stale when its report is.
+    /// Smoothed light, dated and judged stale by the report it last took.
     pub fn light_reading(&self, tip: Option<&CommitId>) -> Reading {
-        match (self.light, &self.coverage) {
+        match (self.light, &self.light_from) {
             (Some(level), Some(latest)) => Reading::Known {
                 value: level.to_q16(),
                 stale: latest.stale(tip),
@@ -132,17 +176,17 @@ impl Readings {
         }
     }
 
-    /// Smoothed soil, stale when any known component is, as of its newest report.
+    /// Smoothed soil, stale when any component it last took is, as of the newest of them.
     pub fn soil_reading(&self, tip: Option<&CommitId>) -> Reading {
-        let Some(level) = self.soil else {
+        let (Some(level), Some(since_tick)) =
+            (self.soil, self.soil_from.iter().map(|c| c.tick).max())
+        else {
             return Reading::Unknown;
         };
-        let components = self.components();
-        let present = components.iter().flatten();
         Reading::Known {
             value: level.to_q16(),
-            stale: present.clone().any(|c| c.value.is_some() && c.stale(tip)),
-            since_tick: present.map(|c| c.tick).max().unwrap_or(Tick::ZERO),
+            stale: self.soil_from.iter().any(|c| c.stale(tip)),
+            since_tick,
         }
     }
 }
@@ -166,6 +210,7 @@ mod tests {
             value,
             head: head(digit),
             tick: Tick::new(tick),
+            recorded_at: i64::from(tick),
         }
     }
 
@@ -232,5 +277,38 @@ mod tests {
             Latest::reading(readings.complexity.as_ref(), None),
             Reading::Unknown
         );
+    }
+
+    #[test]
+    fn a_reading_is_dated_by_the_report_it_last_took() {
+        let mut readings = Readings::default();
+        readings.record(ObservationKind::Coverage, latest(Some(Q16::ONE), 'a', 3));
+        readings.record(ObservationKind::DeadCode, latest(Some(Q16::ONE), 'a', 3));
+        readings.close();
+        // Until the next close, newer reports change neither the value nor its date.
+        readings.record(ObservationKind::Coverage, latest(None, 'b', 9));
+        readings.record(ObservationKind::Complexity, latest(None, 'b', 9));
+        let known = |since| Reading::Known {
+            value: Q16::ONE,
+            stale: false,
+            since_tick: Tick::new(since),
+        };
+        assert_eq!(readings.light_reading(Some(&head('a'))), known(3));
+        assert_eq!(readings.soil_reading(Some(&head('a'))), known(3));
+        readings.close();
+        assert_eq!(readings.light_reading(Some(&head('a'))), Reading::Unknown);
+        // The unknown complexity report does not date soil.
+        assert_eq!(readings.soil_reading(Some(&head('a'))), known(3));
+    }
+
+    #[test]
+    fn an_older_report_never_replaces_a_newer_one() {
+        let mut readings = Readings::default();
+        readings.record(ObservationKind::Coverage, latest(Some(Q16::HALF), 'a', 5));
+        readings.record(ObservationKind::Coverage, latest(Some(Q16::ONE), 'b', 4));
+        assert_eq!(readings.raw_light(), Some(Q16::HALF));
+        readings.record(ObservationKind::Coverage, latest(Some(Q16::ONE), 'c', 6));
+        assert_eq!(readings.coverage_change(Tick::new(6)), Some(Q16::HALF));
+        assert_eq!(readings.coverage_change(Tick::new(7)), None);
     }
 }

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 /// The version of truth's output (I-13). Any change to what truth computes bumps it, including
 /// a change to the postcard or canonical-dump encodings. It is independent of the product
 /// version.
-pub const SIM_VERSION: SimVersion = SimVersion(1);
+pub const SIM_VERSION: SimVersion = SimVersion(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SimVersion(pub u32);
@@ -81,8 +81,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sim_is_at_version_1() {
-        assert_eq!(SIM_VERSION, SimVersion(1));
+    fn the_sim_is_at_version_2() {
+        assert_eq!(SIM_VERSION, SimVersion(2));
     }
 
     #[test]

@@ -18,6 +18,9 @@ const HOUR: i64 = 3_600;
 pub const ARC_START_SECS: i64 = 1_704_672_000;
 /// Saturday 2025-12-20, 00:00 UTC: the day after the last commit.
 pub const ARC_END_SECS: i64 = ARC_START_SECS + 712 * DAY;
+/// Five months past the last commit: where the golden replay and the engine's tests end it,
+/// long enough for dormancy to mist the glass.
+pub const ARC_REPLAY_END_SECS: i64 = ARC_END_SECS + 150 * DAY;
 
 /// The directory renamed in July of the first year, and where it went.
 pub const ARC_RENAMED_FROM: &str = "src/soil";

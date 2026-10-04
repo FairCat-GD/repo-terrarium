@@ -2,19 +2,20 @@
 //! (I-13).
 //!
 //! Its canonical text begins with `sim_version`, so a golden file's header names the version
-//! that wrote it. Beside the final state it carries the climate of every seventh UTC day, so a
-//! change anywhere along the history shows. It names no paths, only what truth reads.
+//! that wrote it; the seed, grid and default branch are in the state's basis. Beside the final
+//! state it carries the climate of every seventh UTC day, so a change anywhere along the
+//! history shows. It names no paths, only what truth reads.
 
 use serde::{Deserialize, Serialize};
 
 use crate::canon::canonical_struct;
 use crate::climate::{ClimateReport, DailyClimate};
 use crate::domain::Habitat;
-use crate::identity::{RepoSeed, SimVersion};
+use crate::identity::SimVersion;
 use crate::project::project;
 use crate::replay::{Prepared, ReplayError, SimState, first_close};
 use crate::scene::SceneInput;
-use crate::time::{Tick, TickGrid};
+use crate::time::Tick;
 
 /// A week of ticks between samples.
 const SAMPLE_TICKS: u32 = 7 * 24;
@@ -22,9 +23,6 @@ const SAMPLE_TICKS: u32 = 7 * 24;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayDump {
     pub sim_version: SimVersion,
-    pub seed: RepoSeed,
-    pub default_branch: String,
-    pub grid: TickGrid,
     /// The last tick applied.
     pub through: Tick,
     /// The record left by the first close and by every seventh close after it.
@@ -37,9 +35,6 @@ pub struct ReplayDump {
 
 canonical_struct!(ReplayDump {
     sim_version,
-    seed,
-    default_branch,
-    grid,
     through,
     samples,
     report,
@@ -62,9 +57,6 @@ pub fn dump(prepared: &Prepared<'_>, through: Tick) -> Result<ReplayDump, Replay
     state.advance_through(prepared, through)?;
     Ok(ReplayDump {
         sim_version: basis.sim_version,
-        seed: basis.seed,
-        default_branch: basis.default_branch,
-        grid: basis.grid,
         through,
         samples,
         report: state.report(),

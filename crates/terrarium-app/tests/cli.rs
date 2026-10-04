@@ -108,7 +108,10 @@ mod replay {
         );
         assert!(out.stderr.is_empty());
         let text = String::from_utf8(out.stdout).unwrap();
-        assert!(text.starts_with("sim_version = 1\n"));
+        assert!(text.starts_with(&format!(
+            "sim_version = {}\n",
+            terrarium_truth::SIM_VERSION.0
+        )));
         let printed: ReplayDump = from_canonical_dump(&text).unwrap();
         let expected = replay_dump(Request {
             repo: &repo,

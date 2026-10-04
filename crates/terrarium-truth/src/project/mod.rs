@@ -2,8 +2,8 @@
 //!
 //! The presentation, the sky and the glass are read from the climate and the timeline:
 //! - weather: a pass is clear, a failure a storm, and no source that can tell is haze;
-//! - light: the light of a coverage change, dusk while light has fallen over the last week and
-//!   sunburst while it has risen;
+//! - light: the light of a coverage change, dusk for a week after a coverage report fell by
+//!   0.02 or more from the one before it, and sunburst after one rose;
 //! - wind: calm below 0.7 of the usual pace, breezy from 0.7, a gale from 3;
 //! - glass: condensation while dormant and dust after a year dead.
 //!
@@ -13,11 +13,11 @@
 pub mod placeholder;
 
 use crate::climate::weather::InEffect;
-use crate::climate::{Trend, Trends};
 use crate::fixed::Q16;
 use crate::replay::SimState;
 use crate::scene::{Light, Presentation, SceneInput, Weather, Wind};
-use crate::tuning::{BREEZY_FROM, GALE_FROM, NEUTRAL};
+use crate::time::Tick;
+use crate::tuning::{BREEZY_FROM, GALE_FROM, LIGHT_SHIFT_STEP, LIGHT_SHIFT_TICKS, NEUTRAL};
 
 pub fn project(state: &SimState) -> SceneInput {
     let now = state.now();
@@ -42,11 +42,11 @@ pub fn project(state: &SimState) -> SceneInput {
         fossils: Vec::new(),
         ground_marks: Vec::new(),
         weather: weather(state.weather.in_effect.as_ref()),
-        light: match Trends::of(&state.daily).light {
-            Some(Trend::Down) => Light::Dusk,
-            Some(Trend::Up) => Light::Sunburst,
-            Some(Trend::Flat) | None => Light::Neutral,
-        },
+        light: light(
+            state
+                .readings
+                .coverage_change(Tick::new(now.hours().saturating_sub(LIGHT_SHIFT_TICKS))),
+        ),
         wind: wind(record.map_or(Q16::ONE, |r| r.wind)),
         condensation: state.timeline.condensation(now),
         dust: state.timeline.dust(now),
@@ -59,6 +59,14 @@ fn weather(in_effect: Option<&InEffect>) -> Weather {
         Some(InEffect { pass: true, .. }) => Weather::Clear,
         Some(InEffect { pass: false, .. }) => Weather::Storm,
         None => Weather::Haze,
+    }
+}
+
+fn light(coverage_change: Option<Q16>) -> Light {
+    match coverage_change {
+        Some(change) if change >= LIGHT_SHIFT_STEP => Light::Sunburst,
+        Some(change) if change <= Q16::ZERO.saturating_sub(LIGHT_SHIFT_STEP) => Light::Dusk,
+        _ => Light::Neutral,
     }
 }
 
@@ -91,5 +99,13 @@ mod tests {
         assert_eq!(wind(BREEZY_FROM), Wind::Breezy);
         assert_eq!(wind(Q16::ONE), Wind::Breezy);
         assert_eq!(wind(GALE_FROM), Wind::Gale);
+        let step = LIGHT_SHIFT_STEP;
+        assert_eq!(light(None), Light::Neutral);
+        assert_eq!(light(Some(step)), Light::Sunburst);
+        assert_eq!(
+            light(Some(step.saturating_sub(Q16::EPSILON))),
+            Light::Neutral
+        );
+        assert_eq!(light(Some(Q16::ZERO.saturating_sub(step))), Light::Dusk);
     }
 }

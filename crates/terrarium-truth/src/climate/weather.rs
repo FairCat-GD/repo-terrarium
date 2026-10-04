@@ -98,6 +98,8 @@ pub struct WeatherState {
     /// characters a map key in the canonical dump cannot.
     pub sources: Vec<SourceWeather>,
     pub current_branch: Option<String>,
+    /// When the observation that named the current branch was recorded.
+    pub branch_recorded_at: Option<i64>,
     pub in_effect: Option<InEffect>,
     /// The newest change of what is in effect.
     pub last_change: Option<ChangeAt>,
@@ -106,14 +108,22 @@ pub struct WeatherState {
 canonical_struct!(WeatherState {
     sources,
     current_branch,
+    branch_recorded_at,
     in_effect,
     last_change
 });
 
 impl WeatherState {
-    /// Notes where HEAD was when an observation was recorded.
-    pub fn note_head(&mut self, branch: Option<&str>) {
+    /// Notes where HEAD was when an observation was recorded, unless a newer one has.
+    pub fn note_head(&mut self, branch: Option<&str>, recorded_at: i64) {
+        if self
+            .branch_recorded_at
+            .is_some_and(|newest| newest > recorded_at)
+        {
+            return;
+        }
         self.current_branch = branch.map(str::to_owned);
+        self.branch_recorded_at = Some(recorded_at);
     }
 
     /// Records a run of `source` at `tick`.
@@ -230,10 +240,10 @@ mod tests {
     #[test]
     fn a_branch_switch_is_never_a_transition() {
         let mut weather = WeatherState::default();
-        weather.note_head(Some("main"));
+        weather.note_head(Some("main"), 0);
         weather.record(&ci("main"), Some(true), at(1));
         weather.evaluate(at(1), "main");
-        weather.note_head(Some("feature/fern"));
+        weather.note_head(Some("feature/fern"), 0);
         weather.record(&ci("feature/fern"), Some(false), at(2));
         weather.evaluate(at(2), "main");
         assert_eq!(
@@ -245,7 +255,7 @@ mod tests {
                 }
             })
         );
-        weather.note_head(Some("main"));
+        weather.note_head(Some("main"), 0);
         weather.evaluate(at(3), "main");
         assert_eq!(
             weather.last_change.clone().map(|c| c.change),
@@ -268,14 +278,14 @@ mod tests {
     #[test]
     fn a_flip_out_of_effect_is_not_a_transition_when_it_comes_into_effect() {
         let mut weather = WeatherState::default();
-        weather.note_head(Some("feature/fern"));
+        weather.note_head(Some("feature/fern"), 0);
         weather.record(&ci("feature/fern"), Some(true), at(1));
         weather.record(&ci("main"), Some(true), at(1));
         weather.evaluate(at(1), "main");
         weather.record(&ci("main"), Some(false), at(2));
         weather.evaluate(at(2), "main");
         assert_eq!(weather.last_change.as_ref().map(|c| c.tick), Some(at(1)));
-        weather.note_head(Some("main"));
+        weather.note_head(Some("main"), 0);
         weather.evaluate(at(3), "main");
         assert_eq!(
             weather.last_change.clone().map(|c| c.change),
@@ -288,7 +298,7 @@ mod tests {
     #[test]
     fn an_unknown_run_passes_the_source_over() {
         let mut weather = WeatherState::default();
-        weather.note_head(Some("main"));
+        weather.note_head(Some("main"), 0);
         weather.record(&WeatherSource::Local, Some(true), at(1));
         weather.record(&ci("main"), Some(false), at(1));
         weather.evaluate(at(1), "main");
@@ -315,6 +325,16 @@ mod tests {
                 since_tick: at(1),
             }
         );
+    }
+
+    #[test]
+    fn an_older_observation_does_not_move_the_current_branch() {
+        let mut weather = WeatherState::default();
+        weather.note_head(Some("feature/fern"), 10);
+        weather.note_head(Some("main"), 5);
+        assert_eq!(weather.current_branch.as_deref(), Some("feature/fern"));
+        weather.note_head(None, 10);
+        assert_eq!(weather.current_branch, None);
     }
 
     #[test]

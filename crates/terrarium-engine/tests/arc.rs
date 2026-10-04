@@ -8,7 +8,7 @@ use std::io::BufRead;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
-use terrarium_adapters::fixture::{self, ARC_END_SECS};
+use terrarium_adapters::fixture::{self, ARC_REPLAY_END_SECS};
 use terrarium_adapters::git::GitRepo;
 use terrarium_engine::headless::{Request, replay_dump};
 use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store, StoredObservation};
@@ -16,10 +16,6 @@ use terrarium_truth::{
     Basis, Observation, Prepared, PresentationState, ReplayDump, ReplayError, RepoSeed, SimState,
     Tick, canonical_dump, observation_tick,
 };
-
-const DAY: i64 = 86_400;
-/// Five months past the arc's last commit, long enough for dormancy to mist the glass.
-const THROUGH_SECS: i64 = ARC_END_SECS + 150 * DAY;
 
 /// `lines`, each ended with LF.
 fn joined<'a>(lines: impl Iterator<Item = &'a str>) -> String {
@@ -64,7 +60,7 @@ impl ArcDir {
             repo: &self.repo(),
             data: &self.data(name),
             observations: Some(&mut input as &mut dyn BufRead),
-            at_secs: THROUGH_SECS,
+            at_secs: ARC_REPLAY_END_SECS,
             install_salt: [salt; 16],
         })
         .expect("replays")
@@ -155,7 +151,10 @@ fn a_cached_state_resumes_to_the_full_replay() {
         .map(|stored: &StoredObservation| stored.to_observation().expect("converts"))
         .collect();
     let basis = Basis::new(seed, history.grid, "main");
-    let through = history.grid.tick_at(THROUGH_SECS).expect("on the grid");
+    let through = history
+        .grid
+        .tick_at(ARC_REPLAY_END_SECS)
+        .expect("on the grid");
     let everything = Prepared::new(basis.clone(), &history.commits, &observations).expect("valid");
     let mut full = SimState::new(basis.clone());
     full.advance_through(&everything, through).expect("replays");

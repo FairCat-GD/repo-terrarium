@@ -64,6 +64,11 @@ pub const DUST_DAYS: [u32; 3] = [365, 540, 730];
 pub const BREEZY_FROM: Q16 = Q16::from_ratio(7, 10);
 pub const GALE_FROM: Q16 = Q16::from_int(3);
 
+/// A coverage report that moved by at least 0.02 from the one before it (the sunburst and the
+/// dusk) colours the sky for a week after it was recorded.
+pub const LIGHT_SHIFT_STEP: Q16 = Q16::from_ratio(2, 100);
+pub const LIGHT_SHIFT_TICKS: u32 = 7 * 24;
+
 /// A weather reading at or above this is a pass.
 pub const PASS_FROM: Q16 = Q16::HALF;
 
@@ -94,7 +99,8 @@ mod tests {
         assert_eq!(BREEZY_FROM.raw(), 45_875);
         assert_eq!(GALE_FROM.raw(), 196_608);
         assert_eq!(THRIVING_FROM.raw(), 39_322);
-        assert_eq!(ALIVE_FROM, ACTIVE_FROM);
+        assert_eq!(ALIVE_FROM.raw(), 22_938);
+        assert_eq!(LIGHT_SHIFT_STEP.raw(), 1_311);
         assert_eq!(NEUTRAL, Q16::from_ratio(1, 2));
     }
 }

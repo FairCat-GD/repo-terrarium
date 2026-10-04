@@ -173,17 +173,42 @@ fn a_feature_branch_reading_is_never_applied() {
 }
 
 #[test]
-fn a_reading_applies_only_once_its_commit_has() {
+fn a_reading_waits_for_its_commit_and_never_outlives_a_rewrite() {
     let commits = [commit(1, 0), commit(2, 50)];
     // Its commit is not in the history at all: a rewrite removed it.
-    let unreachable = coverage(5, 9, Q16::ONE);
-    // Its commit is in the history, but later than the reading.
-    let early = coverage(10, 2, Q16::ONE);
-    for observations in [[unreachable], [early]] {
-        let state = replay(&commits, &observations, 100);
-        assert_eq!(state.readings.coverage, None);
-        assert_eq!(state.report().climate.light, Reading::Unknown);
-    }
+    let unreachable = [coverage(5, 9, Q16::ONE)];
+    let state = replay(&commits, &unreachable, 100);
+    assert_eq!(state.readings.coverage, None);
+    assert_eq!(state.report().climate.light, Reading::Unknown);
+    // Its commit is dated in a later hour: it applies when the commit does, dated as recorded.
+    let early = [coverage(10, 2, Q16::ONE)];
+    assert_eq!(replay(&commits, &early, 49).readings.coverage, None);
+    let state = replay(&commits, &early, 50);
+    let applied = state
+        .readings
+        .coverage
+        .expect("applied at the commit's tick");
+    assert_eq!(applied.tick, Tick::new(10));
+    // A newer report at the old commit, applied in between, is not replaced by it.
+    let newer = [coverage(10, 2, Q16::ONE), coverage(20, 1, Q16::HALF)];
+    let state = replay(&commits, &newer, 100);
+    assert_eq!(state.readings.raw_light(), Some(Q16::HALF));
+}
+
+#[test]
+fn a_resume_refuses_a_rewrite_that_keeps_the_count() {
+    let commits = [commit(1, 0), commit(2, 5)];
+    let state = replay(&commits, &[], 10);
+    let mut amended = commit(3, 5);
+    amended.added = 99;
+    let rewritten = [commit(1, 0), amended];
+    let prepared = Prepared::new(basis(), &rewritten, &[]).expect("valid");
+    let mut resumed = state.clone();
+    assert_eq!(
+        resumed.advance_through(&prepared, Tick::new(20)),
+        Err(ReplayError::NeedsFullReplay)
+    );
+    assert_eq!(resumed, state);
 }
 
 #[test]
@@ -360,7 +385,7 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 1\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 2\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())
@@ -522,10 +547,31 @@ proptest! {
         let bytes = postcard::to_allocvec(&cached).expect("encodes");
         let mut resumed: SimState = postcard::from_bytes(&bytes).expect("decodes");
         let everything = Prepared::new(basis(), &commits, &observations).expect("valid");
-        resumed.advance_through(&everything, Tick::new(THROUGH)).expect("resumes");
-        prop_assert_eq!(&resumed, &full);
-        // An observation before the split that the cache never saw forces a full replay.
-        if let Some(missing) = observations.iter().position(|o| tick_of(o).hours() < split) {
+        // A commit the cache had not read moves an earlier reading taken at it to its own tick,
+        // and only then may the resume refuse.
+        let moved = observations.iter().any(|o| {
+            let late = commits
+                .iter()
+                .find(|c| c.id == o.head.commit)
+                .is_some_and(|c| c.tick.hours() >= split && c.tick > tick_of(o));
+            o.head.at_default_tip
+                && tick_of(o).hours() < split
+                && late
+                && !matches!(o.value, ObservationValue::Weather { .. })
+        });
+        match resumed.advance_through(&everything, Tick::new(THROUGH)) {
+            Ok(()) => prop_assert_eq!(&resumed, &full),
+            Err(err) => {
+                prop_assert_eq!(err, ReplayError::NeedsFullReplay);
+                prop_assert!(moved, "refused with nothing moved");
+            }
+        }
+        // An observation applied before the split that the cache never saw forces a full
+        // replay. Weather applies at its own tick whatever its commit.
+        let before_split = |o: &Observation| {
+            matches!(o.value, ObservationValue::Weather { .. }) && tick_of(o).hours() < split
+        };
+        if let Some(missing) = observations.iter().position(before_split) {
             let mut fewer = observations.clone();
             fewer.remove(missing);
             let seen = Prepared::new(basis(), &commits, &fewer).expect("valid");
