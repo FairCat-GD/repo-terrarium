@@ -2,11 +2,22 @@
 //! with a whole `--probe` command: those open the strip.
 #![forbid(unsafe_code)]
 
+use std::path::Path;
 use std::process::{Command, Output};
 
 fn repo_terrarium(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_repo-terrarium"))
         .args(args)
+        .output()
+        .expect("the binary runs")
+}
+
+/// The binary run in `dir`, with its data directory at `data`.
+fn repo_terrarium_in(dir: &Path, data: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_repo-terrarium"))
+        .args(args)
+        .current_dir(dir)
+        .env("TERRARIUM_DATA_DIR", data)
         .output()
         .expect("the binary runs")
 }
@@ -155,5 +166,178 @@ mod replay {
         assert_eq!(out.status.code(), Some(2));
         assert!(out.stdout.is_empty());
         assert!(String::from_utf8(out.stderr).unwrap().contains("--dump"));
+    }
+}
+
+mod discover {
+    use std::fs;
+
+    use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp};
+
+    use super::repo_terrarium;
+
+    #[test]
+    fn discover_reports_what_a_repository_has_and_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo");
+        let mut repo = FixtureRepo::init(&path).unwrap();
+        repo.commit(
+            "main",
+            Stamp::at(1_704_704_400),
+            "seed",
+            &[Edit::write("src/fern.rs", "fn fern() {}\n")],
+        )
+        .unwrap();
+        fs::create_dir_all(path.join("coverage")).unwrap();
+        fs::write(
+            path.join("coverage/lcov.info"),
+            "SF:src/fern.rs\nDA:1,1\nDA:2,0\nend_of_record\n",
+        )
+        .unwrap();
+        fs::write(path.join("Cargo.toml"), "[package]\nname = \"fern\"\n").unwrap();
+        let out = super::repo_terrarium_in(
+            dir.path(),
+            &dir.path().join("data"),
+            &["discover", path.to_str().unwrap()],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            text.starts_with("Found\n  git               default branch main\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  coverage report   coverage/lcov.info, lcov: 1 of 2 lines covered\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  test runner       Cargo (Cargo.toml)\n"),
+            "{text}"
+        );
+        assert!(text.contains("To connect\n"), "{text}");
+        assert!(
+            text.contains("stdout"),
+            "the Knip hint says where Knip writes"
+        );
+        assert!(!text.contains(dir.path().to_str().unwrap()), "{text}");
+        assert!(out.stderr.is_empty());
+
+        let not_a_repo = repo_terrarium(&["discover", dir.path().to_str().unwrap()]);
+        assert_eq!(not_a_repo.status.code(), Some(1));
+        assert!(not_a_repo.stdout.is_empty());
+        let missing = repo_terrarium(&["discover"]);
+        assert_eq!(missing.status.code(), Some(2));
+    }
+}
+
+mod record_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp};
+    use terrarium_adapters::git::GitRepo;
+    use terrarium_store::DataDir;
+
+    use super::repo_terrarium_in;
+
+    const BINARY: &str = env!("CARGO_BIN_EXE_repo-terrarium");
+
+    fn repo(path: &Path) -> PathBuf {
+        let mut repo = FixtureRepo::init(path).unwrap();
+        repo.commit(
+            "main",
+            Stamp::at(1_704_704_400),
+            "seed",
+            &[Edit::write("src/fern.rs", "fn fern() {}\n")],
+        )
+        .unwrap();
+        let git = GitRepo::open(path).unwrap();
+        let seed = git.identity("main").unwrap().seed;
+        DataDir::at(path.parent().unwrap().join("data")).local_tests(&seed)
+    }
+
+    fn status(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn record_tests_runs_the_command_and_records_how_it_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo");
+        let status_file = repo(&path);
+        let data = dir.path().join("data");
+        // The binary itself is the test command: it runs everywhere this test does.
+        let passed = repo_terrarium_in(&path, &data, &["record-tests", "--", BINARY, "--version"]);
+        assert_eq!(passed.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8(passed.stdout).unwrap(),
+            format!("repo-terrarium {}\n", env!("CARGO_PKG_VERSION")),
+            "the command's own output passes through"
+        );
+        assert!(passed.stderr.is_empty());
+        let recorded = status(&status_file);
+        assert_eq!(recorded["format"], "repo-terrarium-local-tests");
+        assert_eq!(recorded["exit_code"], 0);
+
+        // From a folder inside the repository, a failing run, its exit code kept.
+        let nested = path.join("src");
+        fs::create_dir_all(&nested).unwrap();
+        let failed = repo_terrarium_in(&nested, &data, &["record-tests", "--", BINARY, "--bogus"]);
+        assert_eq!(failed.status.code(), Some(2));
+        assert!(
+            String::from_utf8(failed.stderr)
+                .unwrap()
+                .contains("'--bogus'")
+        );
+        assert_eq!(status(&status_file)["exit_code"], 2);
+        assert!(
+            !path.join("local-tests").exists(),
+            "nothing is written into the repository"
+        );
+    }
+
+    #[test]
+    fn record_tests_runs_nothing_it_cannot_record_and_reports_a_missing_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo");
+        let status_file = repo(&path);
+        let data = dir.path().join("data");
+        let missing = repo_terrarium_in(
+            &path,
+            &data,
+            &["record-tests", "--", "repo-terrarium-test-no-such-command"],
+        );
+        assert_eq!(missing.status.code(), Some(127));
+        assert!(
+            String::from_utf8(missing.stderr)
+                .unwrap()
+                .contains("command not found")
+        );
+        assert!(!status_file.exists());
+
+        // Outside any repository nothing runs: the command would have printed its version.
+        let outside = dir.path().join("elsewhere");
+        fs::create_dir_all(&outside).unwrap();
+        let refused = repo_terrarium_in(
+            &outside,
+            &data,
+            &["record-tests", "--", BINARY, "--version"],
+        );
+        assert_eq!(refused.status.code(), Some(125));
+        assert!(refused.stdout.is_empty());
+        assert!(
+            String::from_utf8(refused.stderr)
+                .unwrap()
+                .contains("nothing ran")
+        );
+
+        let usage = repo_terrarium_in(&path, &data, &["record-tests", BINARY]);
+        assert_eq!(usage.status.code(), Some(2));
+        assert!(usage.stdout.is_empty());
+        assert!(!status_file.exists());
     }
 }

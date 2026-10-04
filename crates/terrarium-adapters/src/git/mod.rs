@@ -15,6 +15,9 @@ mod walk;
 use std::fmt;
 use std::path::Path;
 
+use gix::bstr::ByteSlice as _;
+
+use terrarium_truth::domain::ObservationHead;
 use terrarium_truth::{CommitId, RepoSeed};
 
 pub use history::{Change, History, HistoryNotes, Progress, RewriteReason};
@@ -81,17 +84,37 @@ pub struct GitRepo {
     repo: gix::Repository,
 }
 
+/// How every repository is opened: isolated, with replace refs out of reach.
+fn open_options() -> gix::open::Options {
+    gix::open::Options::isolated()
+        // Replace refs are install-local and would make two clones disagree. They are looked up
+        // under a namespace nothing writes to, which holds however gix reads
+        // `core.useReplaceRefs` (0.88 reads its value inverted).
+        .config_overrides(["gitoxide.objects.replaceRefBase=refs/terrarium/no-replacements/"])
+}
+
 impl GitRepo {
     /// Opens the repository at `path` (its worktree or its git directory), read-only and
     /// isolated.
     pub fn open(path: &Path) -> Result<GitRepo, GitError> {
-        let options = gix::open::Options::isolated()
-            // Replace refs are install-local and would make two clones disagree. They are looked
-            // up under a namespace nothing writes to, which holds however gix reads
-            // `core.useReplaceRefs` (0.88 reads its value inverted).
-            .config_overrides(["gitoxide.objects.replaceRefBase=refs/terrarium/no-replacements/"]);
-        let mut repo =
-            gix::open_opts(path, options).map_err(|err| GitError::Open(err.to_string()))?;
+        let repo =
+            gix::open_opts(path, open_options()).map_err(|err| GitError::Open(err.to_string()))?;
+        GitRepo::configured(repo)
+    }
+
+    /// Opens the repository that holds `dir`, searching `dir` and then its parents, as
+    /// [`GitRepo::open`] does. No environment variable steers the search.
+    pub fn discover(dir: &Path) -> Result<GitRepo, GitError> {
+        let repo = gix::discover_opts(
+            dir,
+            gix::discover::upwards::Options::default(),
+            open_options(),
+        )
+        .map_err(|err| GitError::Open(err.to_string()))?;
+        GitRepo::configured(repo)
+    }
+
+    fn configured(mut repo: gix::Repository) -> Result<GitRepo, GitError> {
         if repo.object_hash() != gix::hash::Kind::Sha1 {
             return Err(GitError::UnsupportedObjectFormat);
         }
@@ -113,6 +136,27 @@ impl GitRepo {
     /// The root and seed, by a first-parent walk from the tip of `default_branch`.
     pub fn identity(&self, default_branch: &str) -> Result<RepoIdentity, GitError> {
         walk::identity(&self.repo, default_branch)
+    }
+
+    /// Where HEAD is now: its commit, its branch (`None` when detached), and whether that
+    /// commit is the tip of `default_branch`, whichever branch HEAD is on.
+    pub fn head(&self, default_branch: &str) -> Result<ObservationHead, GitError> {
+        let head = self.repo.head().map_err(read_err)?;
+        if head.is_unborn() {
+            return Err(GitError::NoCommits);
+        }
+        let branch = head.referent_name().and_then(|name| {
+            name.as_bstr()
+                .strip_prefix(b"refs/heads/")
+                .map(|short| short.to_str_lossy().into_owned())
+        });
+        let commit = refs::to_commit_id(head.into_peeled_id().map_err(read_err)?.detach());
+        let at_default_tip = self.state()?.branches.get(default_branch) == Some(&commit);
+        Ok(ObservationHead {
+            commit,
+            branch,
+            at_default_tip,
+        })
     }
 
     /// The local branches, tags and shallow boundary as they are now.

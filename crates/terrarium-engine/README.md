@@ -12,6 +12,9 @@ The headless live pipeline, run on a worker thread.
 - The headless replay (`headless`): read a repository, import an observations export into a
   store in a directory the caller owns, and dump truth's replay. `repo-terrarium replay
   --dump` and `cargo xtask golden` run through it.
+- Observations from reports (`observe`): a report an adapter read, HEAD and a time become the
+  store's record. Only a known reading is recorded; dead code waits for the export count the
+  tree-sitter reader brings.
 
 ## Why it is a crate of its own
 

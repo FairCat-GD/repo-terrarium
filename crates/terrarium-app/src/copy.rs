@@ -2,13 +2,22 @@
 //! instructions, notifications or exclamation marks. The probe is a tester's tool, so its steps
 //! do give instructions, in the same plain tone.
 
+use std::ffi::OsStr;
 use std::fmt::{self, Display, Write as _};
 use std::path::Path;
 
+use terrarium_adapters::discovery::{
+    COBERTURA_PATHS, Discovery, KNIP_REPORT_PATH, LCOV_PATHS, Located, Runner, Search,
+};
+use terrarium_adapters::git::GitError;
+use terrarium_adapters::report::{
+    Format, KNIP_MIN_MAJOR, KnipCounts, Outcome, Reading, Report as AdapterReport, Why,
+};
 use terrarium_engine::headless::HeadlessError;
 use terrarium_truth::ReplayError;
 
 use crate::cli::UsageError;
+use crate::discover::Reads;
 use crate::hover::NativePoint;
 use crate::pinning::{AppBarPlaced, AttachError, LevelMode, OsSnapshot, PxRect};
 use crate::present::PresentError;
@@ -45,6 +54,8 @@ pub fn usage_error(err: &UsageError) -> String {
             format!("--probe needs a kind: {}", PROBE_KINDS.join(" or "))
         }
         UsageError::MissingReplayRepo => "replay needs a repository path".to_owned(),
+        UsageError::MissingDiscoverRepo => "discover needs a repository path".to_owned(),
+        UsageError::MissingCommand => "record-tests runs the command that follows --".to_owned(),
         UsageError::MissingDump => "replay prints its result only with --dump".to_owned(),
         UsageError::MissingValue(flag) => format!("{flag} needs a value"),
         UsageError::BadTime(value) => format!(
@@ -59,7 +70,8 @@ pub fn usage_error(err: &UsageError) -> String {
     format!(
         "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--version | --demo | {} | \
          --probe-readme]\n       {BINARY_NAME} replay <path> --dump [--observations <file>] \
-         [--at <unix-seconds>]",
+         [--at <unix-seconds>]\n       {BINARY_NAME} discover <path>\n       {BINARY_NAME} \
+         record-tests -- <command> [<argument>...]",
         probes.join(" | ")
     )
 }
@@ -99,6 +111,344 @@ pub fn replay_store_unavailable(err: &impl Display) -> String {
 
 pub fn replay_write_failed(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the dump could not be written: {err}")
+}
+
+pub fn discover_failed(repo: &Path, err: &GitError) -> String {
+    format!(
+        "{BINARY_NAME}: {} could not be read as a git repository: {err}",
+        repo.display()
+    )
+}
+
+pub fn discover_write_failed(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the report could not be written: {err}")
+}
+
+pub fn record_tests_no_directory(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the current directory could not be read, so nothing ran: {err}")
+}
+
+pub fn record_tests_no_repository(dir: &Path, err: &GitError) -> String {
+    format!(
+        "{BINARY_NAME}: record-tests records runs for the git repository it runs in, and {} \
+         is not in one that can be read, so nothing ran: {err}",
+        dir.display()
+    )
+}
+
+pub fn record_tests_no_data_dir(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the data directory is unavailable, so nothing ran: {err}")
+}
+
+pub fn record_tests_not_found(program: &OsStr, err: &impl Display) -> String {
+    format!(
+        "{BINARY_NAME}: {}: command not found ({err})",
+        program.to_string_lossy()
+    )
+}
+
+pub fn record_tests_cannot_run(program: &OsStr, err: &impl Display) -> String {
+    format!(
+        "{BINARY_NAME}: {} could not be run: {err}",
+        program.to_string_lossy()
+    )
+}
+
+pub fn record_tests_not_recorded(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the run ended, but its result could not be recorded: {err}")
+}
+
+/// The width of the labels in the discovery report.
+const LABEL_WIDTH: usize = 18;
+
+/// The discovery report: what was found, what each report reads as, what was not found, and one
+/// line per missing adapter on how it connects. Facts only; the lines on connecting belong to
+/// the settings form of the report.
+pub fn discovery_report(found: &Discovery, reads: &Reads) -> String {
+    let mut out = String::from("Found\n");
+    let mut missing: Vec<(&str, Option<String>, Hint)> = Vec::new();
+    if let Ok(branch) = &found.git {
+        row(&mut out, "git", &format!("default branch {branch}"));
+    }
+    match &found.coverage {
+        Search::Found(located) => row(
+            &mut out,
+            "coverage report",
+            &located_text(located, reads.coverage.as_ref()),
+        ),
+        Search::NotFound => missing.push(("coverage report", None, Hint::Coverage)),
+        Search::Refused(path) => {
+            missing.push(("coverage report", Some(refused(path)), Hint::Coverage));
+        }
+    }
+    match &found.test_report {
+        Search::Found(located) => row(
+            &mut out,
+            "test report",
+            &located_text(located, reads.test_report.as_ref()),
+        ),
+        Search::NotFound if found.local_tests => {}
+        Search::NotFound => missing.push(("test report", None, Hint::Tests)),
+        Search::Refused(path) => missing.push(("test report", Some(refused(path)), Hint::Tests)),
+    }
+    if found.local_tests {
+        let read = reads
+            .local_tests
+            .as_ref()
+            .map_or_else(|| "recorded".to_owned(), outcome_text);
+        row(
+            &mut out,
+            "test runs",
+            &format!("recorded by record-tests: {read}"),
+        );
+    }
+    match &found.dead_code {
+        Search::Found(located) => row(
+            &mut out,
+            "dead-code report",
+            &located_text(located, reads.dead_code.as_ref()),
+        ),
+        Search::NotFound => missing.push(("dead-code report", None, Hint::DeadCode)),
+        Search::Refused(path) => {
+            missing.push(("dead-code report", Some(refused(path)), Hint::DeadCode));
+        }
+    }
+    let knip: Vec<String> = found
+        .knip_config
+        .iter()
+        .cloned()
+        .chain(
+            found
+                .knip_installed
+                .iter()
+                .map(|v| format!("Knip {v} installed")),
+        )
+        .collect();
+    if !knip.is_empty() {
+        row(&mut out, "Knip", &knip.join(", "));
+    }
+    if found.ci_workflows.is_empty() {
+        missing.push(("CI workflow", None, Hint::Ci));
+    } else {
+        row(&mut out, "CI workflow", &found.ci_workflows.join(", "));
+    }
+    if !found.runners.is_empty() {
+        let runners: Vec<String> = found
+            .runners
+            .iter()
+            .map(|r| format!("{} ({})", runner_name(r.runner), r.config))
+            .collect();
+        row(&mut out, "test runner", &runners.join(", "));
+    }
+    if missing.is_empty() {
+        return out;
+    }
+    out.push_str("Not found\n");
+    for (label, detail, _) in &missing {
+        row(&mut out, label, detail.as_deref().unwrap_or(""));
+    }
+    out.push_str("To connect\n");
+    let runner = found.runners.first().map(|r| r.runner);
+    for (label, _, hint) in &missing {
+        row(&mut out, label, &hint_text(*hint, runner));
+    }
+    out
+}
+
+fn row(out: &mut String, label: &str, text: &str) {
+    let line = format!("  {label:<LABEL_WIDTH$}{text}");
+    let _ = writeln!(out, "{}", line.trim_end());
+}
+
+fn refused(path: &str) -> String {
+    format!("the configured path {path} is outside the repository")
+}
+
+/// A report found: where, in what format, and what it reads as.
+fn located_text(located: &Located, read: Option<&AdapterReport>) -> String {
+    let format = format_name(located.format);
+    let place = match located.files.as_slice() {
+        [only] if *only == located.pattern => format!("{only}, {format}"),
+        files => format!("{}, {} {format} files", located.pattern, files.len()),
+    };
+    match read {
+        Some(report) => format!("{place}: {}", outcome_text(report)),
+        None => place,
+    }
+}
+
+fn outcome_text(report: &AdapterReport) -> String {
+    match &report.outcome {
+        Outcome::Known(known) => reading_text(&known.reading),
+        Outcome::Unknown(why) => format!("not read, {}", why_text(report.format, why)),
+    }
+}
+
+fn reading_text(reading: &Reading) -> String {
+    match reading {
+        Reading::Coverage {
+            lines_found,
+            lines_hit,
+        } => format!(
+            "{lines_hit} of {} covered",
+            plural(*lines_found, "line", "lines")
+        ),
+        Reading::Tests {
+            tests,
+            failed,
+            skipped,
+        } => {
+            let mut text = format!("{}, ", plural(*tests, "test", "tests"));
+            if *failed == 0 {
+                text.push_str("none failing");
+            } else {
+                let _ = write!(text, "{failed} failing");
+            }
+            if *skipped > 0 {
+                let _ = write!(text, ", {skipped} skipped");
+            }
+            text
+        }
+        Reading::LocalRun { exit_code: 0 } => "the last run passed".to_owned(),
+        Reading::LocalRun { exit_code } => {
+            format!("the last run failed with exit code {exit_code}")
+        }
+        Reading::DeadCode(KnipCounts {
+            unused_exports,
+            unused_files,
+            ..
+        }) => format!(
+            "{} and {}, not part of soil yet",
+            plural(*unused_exports, "unused export", "unused exports"),
+            plural(
+                u64::try_from(unused_files.len()).unwrap_or(u64::MAX),
+                "unused file",
+                "unused files"
+            ),
+        ),
+    }
+}
+
+fn why_text(format: Format, why: &Why) -> String {
+    let name = format_name(format);
+    match why {
+        Why::Missing => "no file is there".to_owned(),
+        Why::OutsideRepository(path) => format!("{path} is outside the repository"),
+        Why::NotAFile(path) => format!("{path} is not a regular file"),
+        Why::TooLarge(path) => format!("{path} is larger than a report is read"),
+        Why::Io { path, kind } => format!("{path} could not be read ({kind})"),
+        Why::Malformed {
+            path,
+            line: Some(line),
+        } => format!("{path} is not a complete {name} report at line {line}"),
+        Why::Malformed { path, line: None } => format!("{path} is not a complete {name} report"),
+        Why::Empty => match format {
+            Format::Lcov | Format::Cobertura => "it holds no instrumented line".to_owned(),
+            Format::JUnit => "no test ran in it".to_owned(),
+            Format::Knip | Format::LocalTests => "it holds nothing".to_owned(),
+        },
+        Why::KnipBefore6 { version } => {
+            let from = version.as_ref().map_or_else(
+                || format!("a Knip before {KNIP_MIN_MAJOR}"),
+                |v| format!("Knip {v}"),
+            );
+            format!("it is from {from}, and reports from Knip {KNIP_MIN_MAJOR} on are read")
+        }
+    }
+}
+
+/// `a, b or c`.
+fn either(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+fn plural(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+fn format_name(format: Format) -> &'static str {
+    match format {
+        Format::Lcov => "lcov",
+        Format::Cobertura => "Cobertura",
+        Format::JUnit => "JUnit",
+        Format::Knip => "Knip",
+        Format::LocalTests => "record-tests",
+    }
+}
+
+fn runner_name(runner: Runner) -> &'static str {
+    match runner {
+        Runner::Jest => "Jest",
+        Runner::Vitest => "Vitest",
+        Runner::Pytest => "pytest",
+        Runner::Mocha => "Mocha",
+        Runner::Maven => "Maven",
+        Runner::Gradle => "Gradle",
+        Runner::Nextest => "cargo-nextest",
+        Runner::Cargo => "Cargo",
+        Runner::Go => "Go",
+    }
+}
+
+/// The adapters a discovery report can say are missing.
+#[derive(Clone, Copy)]
+enum Hint {
+    Coverage,
+    Tests,
+    DeadCode,
+    Ci,
+}
+
+/// How a missing adapter connects. For a test report it names the detected runner's own way,
+/// when it has one.
+fn hint_text(hint: Hint, runner: Option<Runner>) -> String {
+    match hint {
+        Hint::Coverage => format!(
+            "lcov is read from {}; Cobertura XML from {}.",
+            either(LCOV_PATHS),
+            either(COBERTURA_PATHS)
+        ),
+        Hint::Tests => {
+            let record = format!(
+                "{BINARY_NAME} record-tests -- <command> records any test command's result."
+            );
+            match runner.and_then(junit_fact) {
+                Some(fact) => format!("{fact} Or: {record}"),
+                None => record,
+            }
+        }
+        Hint::DeadCode => format!(
+            "Knip prints its JSON report to stdout, and the report is read from \
+             {KNIP_REPORT_PATH}: npx knip --reporter json --no-progress > {KNIP_REPORT_PATH}"
+        ),
+        Hint::Ci => "Weather follows GitHub Actions runs when .github/workflows holds a workflow."
+            .to_owned(),
+    }
+}
+
+/// Where a runner writes `JUnit` XML, for runners that can.
+fn junit_fact(runner: Runner) -> Option<&'static str> {
+    match runner {
+        Runner::Jest => {
+            Some("jest-junit writes JUnit XML to junit.xml as one of Jest's reporters.")
+        }
+        Runner::Vitest => {
+            Some("Vitest's junit reporter writes JUnit XML to .vitest/junit/output.xml.")
+        }
+        Runner::Pytest => Some("pytest --junitxml=junit.xml writes JUnit XML."),
+        Runner::Mocha => Some("mocha-junit-reporter writes JUnit XML to test-results.xml."),
+        Runner::Maven => Some("mvn test writes JUnit XML to target/surefire-reports."),
+        Runner::Gradle => Some("gradle test writes JUnit XML to build/test-results."),
+        Runner::Nextest => Some(
+            "cargo-nextest writes JUnit XML to target/nextest/<profile>/junit.xml when the \
+             profile sets junit.path = \"junit.xml\".",
+        ),
+        Runner::Cargo | Runner::Go => None,
+    }
 }
 
 /// The probes this build runs: the egui memory probe exists only in dev builds.
@@ -1108,6 +1458,251 @@ mod tests {
             assert!(PROBE_README.contains(needle), "{needle}");
         }
         assert!(PROBE_README.lines().all(|line| line.chars().count() <= 80));
+    }
+
+    mod discovery {
+        use terrarium_adapters::discovery::{Discovery, Located, Runner, RunnerFound, Search};
+        use terrarium_adapters::report::{
+            Format, KnipCounts, Known, Outcome, Reading, Report, Why,
+        };
+
+        use super::super::discovery_report;
+        use crate::discover::Reads;
+
+        fn known(format: Format, files: &[&str], reading: Reading) -> Report {
+            Report {
+                format,
+                files: files.iter().map(|f| (*f).to_owned()).collect(),
+                outcome: Outcome::Known(Known {
+                    reading,
+                    contributors: Vec::new(),
+                    content_hash: [0; 32],
+                    mtime: None,
+                }),
+            }
+        }
+
+        fn found(format: Format, pattern: &str, files: &[&str]) -> Search {
+            Search::Found(Located {
+                format,
+                pattern: pattern.to_owned(),
+                files: files.iter().map(|f| (*f).to_owned()).collect(),
+            })
+        }
+
+        fn nothing() -> Discovery {
+            Discovery {
+                git: Ok("main".to_owned()),
+                coverage: Search::NotFound,
+                test_report: Search::NotFound,
+                local_tests: false,
+                dead_code: Search::NotFound,
+                knip_config: None,
+                knip_installed: None,
+                ci_workflows: Vec::new(),
+                runners: Vec::new(),
+            }
+        }
+
+        fn no_reads() -> Reads {
+            Reads {
+                coverage: None,
+                test_report: None,
+                local_tests: None,
+                dead_code: None,
+            }
+        }
+
+        #[test]
+        fn a_report_states_what_was_found_and_how_the_rest_connects() {
+            let surefire = [
+                "target/surefire-reports/TEST-moss.FernTest.xml",
+                "target/surefire-reports/TEST-moss.ReedTest.xml",
+            ];
+            let discovery = Discovery {
+                coverage: found(Format::Lcov, "coverage/lcov.info", &["coverage/lcov.info"]),
+                test_report: found(
+                    Format::JUnit,
+                    "target/surefire-reports/TEST-*.xml",
+                    &surefire,
+                ),
+                local_tests: true,
+                ci_workflows: vec![".github/workflows/ci.yml".to_owned()],
+                runners: vec![RunnerFound {
+                    runner: Runner::Maven,
+                    config: "pom.xml".to_owned(),
+                }],
+                ..nothing()
+            };
+            let reads = Reads {
+                coverage: Some(known(
+                    Format::Lcov,
+                    &["coverage/lcov.info"],
+                    Reading::Coverage {
+                        lines_found: 1530,
+                        lines_hit: 1204,
+                    },
+                )),
+                test_report: Some(known(
+                    Format::JUnit,
+                    &surefire,
+                    Reading::Tests {
+                        tests: 120,
+                        failed: 3,
+                        skipped: 1,
+                    },
+                )),
+                local_tests: Some(known(
+                    Format::LocalTests,
+                    &["local-tests/ab.json"],
+                    Reading::LocalRun { exit_code: 101 },
+                )),
+                dead_code: None,
+            };
+            assert_eq!(
+                discovery_report(&discovery, &reads),
+                "Found\n\
+                 \x20 git               default branch main\n\
+                 \x20 coverage report   coverage/lcov.info, lcov: 1204 of 1530 lines covered\n\
+                 \x20 test report       target/surefire-reports/TEST-*.xml, 2 JUnit files: 120 \
+                 tests, 3 failing, 1 skipped\n\
+                 \x20 test runs         recorded by record-tests: the last run failed with exit \
+                 code 101\n\
+                 \x20 CI workflow       .github/workflows/ci.yml\n\
+                 \x20 test runner       Maven (pom.xml)\n\
+                 Not found\n\
+                 \x20 dead-code report\n\
+                 To connect\n\
+                 \x20 dead-code report  Knip prints its JSON report to stdout, and the report is \
+                 read from knip-report.json: npx knip --reporter json --no-progress > \
+                 knip-report.json\n"
+            );
+        }
+
+        #[test]
+        fn what_is_missing_gets_one_line_each_and_the_runner_s_own_way() {
+            let discovery = Discovery {
+                runners: vec![RunnerFound {
+                    runner: Runner::Jest,
+                    config: "jest.config.ts".to_owned(),
+                }],
+                knip_config: Some("knip.json".to_owned()),
+                ..nothing()
+            };
+            let text = discovery_report(&discovery, &no_reads());
+            let (found, rest) = text.split_once("Not found\n").unwrap();
+            assert!(found.contains("  Knip              knip.json\n"), "{found}");
+            let (missing, connect) = rest.split_once("To connect\n").unwrap();
+            assert_eq!(
+                missing,
+                "  coverage report\n  test report\n  dead-code report\n  CI workflow\n"
+            );
+            assert_eq!(connect.lines().count(), 4, "{connect}");
+            assert!(connect.contains(
+                "  coverage report   lcov is read from coverage/lcov.info, lcov.info or \
+                 coverage.lcov; Cobertura XML from coverage/cobertura-coverage.xml, coverage.xml \
+                 or cobertura.xml.\n"
+            ));
+            assert!(connect.contains(
+                "  test report       jest-junit writes JUnit XML to junit.xml as one of Jest's \
+                 reporters. Or: repo-terrarium record-tests -- <command> records any test \
+                 command's result.\n"
+            ));
+            assert!(connect.contains("Knip prints its JSON report to stdout"));
+            // A run recorded by record-tests is a test report.
+            let recorded = Discovery {
+                local_tests: true,
+                ..nothing()
+            };
+            assert!(!discovery_report(&recorded, &no_reads()).contains("  test report"));
+        }
+
+        #[test]
+        fn a_report_that_cannot_be_used_says_why() {
+            let cases = [
+                (Why::Missing, "no file is there"),
+                (
+                    Why::OutsideRepository("../x".into()),
+                    "../x is outside the repository",
+                ),
+                (
+                    Why::NotAFile("junit.xml".into()),
+                    "junit.xml is not a regular file",
+                ),
+                (
+                    Why::TooLarge("junit.xml".into()),
+                    "junit.xml is larger than a report is read",
+                ),
+                (
+                    Why::Io {
+                        path: "junit.xml".into(),
+                        kind: std::io::ErrorKind::PermissionDenied,
+                    },
+                    "junit.xml could not be read (permission denied)",
+                ),
+                (
+                    Why::Malformed {
+                        path: "junit.xml".into(),
+                        line: Some(7),
+                    },
+                    "junit.xml is not a complete JUnit report at line 7",
+                ),
+                (Why::Empty, "no test ran in it"),
+            ];
+            for (why, expected) in cases {
+                let discovery = Discovery {
+                    test_report: found(Format::JUnit, "junit.xml", &["junit.xml"]),
+                    ..nothing()
+                };
+                let reads = Reads {
+                    test_report: Some(Report {
+                        format: Format::JUnit,
+                        files: vec!["junit.xml".into()],
+                        outcome: Outcome::Unknown(why),
+                    }),
+                    ..no_reads()
+                };
+                let text = discovery_report(&discovery, &reads);
+                assert!(
+                    text.contains(&format!("junit.xml, JUnit: not read, {expected}\n")),
+                    "{text}"
+                );
+            }
+            let knip = Discovery {
+                dead_code: found(Format::Knip, "knip-report.json", &["knip-report.json"]),
+                ..nothing()
+            };
+            let old = Reads {
+                dead_code: Some(Report {
+                    format: Format::Knip,
+                    files: vec!["knip-report.json".into()],
+                    outcome: Outcome::Unknown(Why::KnipBefore6 {
+                        version: Some("5.88.0".into()),
+                    }),
+                }),
+                ..no_reads()
+            };
+            assert!(
+                discovery_report(&knip, &old).contains(
+                    "not read, it is from Knip 5.88.0, and reports from Knip 6 on are read"
+                )
+            );
+            let read = Reads {
+                dead_code: Some(known(
+                    Format::Knip,
+                    &["knip-report.json"],
+                    Reading::DeadCode(KnipCounts {
+                        unused_exports: 1,
+                        unused_files: vec!["src/a.ts".into(), "src/b.ts".into()],
+                        ..KnipCounts::default()
+                    }),
+                )),
+                ..no_reads()
+            };
+            assert!(discovery_report(&knip, &read).contains(
+                "knip-report.json, Knip: 1 unused export and 2 unused files, not part of soil yet"
+            ));
+        }
     }
 
     #[test]

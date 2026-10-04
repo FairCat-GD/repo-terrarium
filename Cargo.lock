@@ -2866,6 +2866,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3376,10 +3385,13 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "gix",
  "proptest",
+ "quick-xml 0.42.0",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "terrarium-truth",
@@ -3387,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-app"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -3411,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "insta",
  "png",
@@ -3424,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "postcard",
  "tempfile",
@@ -3435,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "block2 0.6.2",
  "libc",
@@ -3452,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "directories",
  "proptest",
@@ -3467,7 +3479,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-truth"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -3901,7 +3913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "338e30461b3a2b67d70eb30a6d89f8e0c93a833e07d2ae89085cd070c4a00ac0"
 dependencies = [
  "proc-macro2",
- "quick-xml",
+ "quick-xml 0.41.0",
  "quote",
 ]
 
@@ -4422,7 +4434,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "cargo_metadata",
  "png",

@@ -1122,3 +1122,62 @@ fn the_synthetic_history_reads() {
     assert_eq!(history.commits.len(), 40);
     assert_eq!(history.commits[0].added, 3_000 * 20 + 3 * 2_500);
 }
+
+#[test]
+fn head_says_where_head_is_and_whether_it_is_the_default_tip() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    assert_eq!(open(&repo).head("main"), Err(GitError::NoCommits));
+    let first = repo
+        .commit("main", at(0), "seed", &[Edit::write("a.txt", "a\n")])
+        .unwrap();
+    let head = open(&repo).head("main").unwrap();
+    assert_eq!(head.commit, first);
+    assert_eq!(head.branch.as_deref(), Some("main"));
+    assert!(head.at_default_tip);
+
+    // A branch at the same commit is at the default tip; once it moves on, it is not.
+    repo.branch("feature/moss", "main").unwrap();
+    repo.set_head("feature/moss").unwrap();
+    let head = open(&repo).head("main").unwrap();
+    assert_eq!(head.branch.as_deref(), Some("feature/moss"));
+    assert!(head.at_default_tip);
+    let moved = repo
+        .commit(
+            "feature/moss",
+            at(1),
+            "moss",
+            &[Edit::write("b.txt", "b\n")],
+        )
+        .unwrap();
+    let head = open(&repo).head("main").unwrap();
+    assert_eq!(head.commit, moved);
+    assert!(!head.at_default_tip);
+
+    // Detached at the default tip: no branch, still at the tip.
+    repo.detach_head(&first).unwrap();
+    let head = open(&repo).head("main").unwrap();
+    assert_eq!(head.branch, None);
+    assert_eq!(head.commit, first);
+    assert!(head.at_default_tip);
+    assert!(!open(&repo).head("trunk").unwrap().at_default_tip);
+}
+
+#[test]
+fn discover_finds_the_repository_above_a_directory() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    repo.commit("main", at(0), "seed", &[Edit::write("a.txt", "a\n")])
+        .unwrap();
+    let nested = repo.path().join("src/deep");
+    std::fs::create_dir_all(&nested).unwrap();
+    let found = GitRepo::discover(&nested).unwrap();
+    assert_eq!(
+        found.identity("main").unwrap(),
+        open(&repo).identity("main").unwrap()
+    );
+    assert!(matches!(
+        GitRepo::discover(&dir.path().join("nowhere")),
+        Err(GitError::Open(_))
+    ));
+}

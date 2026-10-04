@@ -1,16 +1,19 @@
 //! The crate-graph check: the dependency graph and crate roots that make the invariants compile
-//! errors, plus the scan of truth's sources behind its float wall (I-1). The policy is data,
-//! checked by a pure function over a small model, so every rule can be falsified by a unit test
-//! with a synthetic graph.
+//! errors, plus the scan of truth's sources behind its float wall (I-1) and the scan that keeps
+//! process spawning in the one exec module (I-5). The policy is data, checked by a pure
+//! function over a small model, so every rule can be falsified by a unit test with a synthetic
+//! graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 
 use crate::purity;
 
 use cargo_metadata::semver::Version;
 use cargo_metadata::{CargoOpt, DependencyKind, Metadata, MetadataCommand, TargetKind};
+use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 
 const TRUTH: &str = "terrarium-truth";
 const ADAPTERS: &str = "terrarium-adapters";
@@ -20,6 +23,9 @@ const COMPOSE: &str = "terrarium-compose";
 const PLATFORM: &str = "terrarium-platform";
 const APP: &str = "terrarium-app";
 const XTASK: &str = "xtask";
+
+/// The one source file a shipped crate may start a process from (I-5).
+const EXEC_MODULE: &str = "crates/terrarium-adapters/src/exec.rs";
 
 /// The workspace crates each member may depend on, for every dependency kind. `None` means any.
 /// A member missing from this table fails the check, so a new crate cannot join the workspace
@@ -139,6 +145,8 @@ pub struct Workspace {
     pub msrv: Version,
     /// Every `.rs` file in truth's package directory.
     pub truth_sources: Vec<SourceFile>,
+    /// Every `.rs` file under the `src/` of each member but xtask: the code that ships.
+    pub product_sources: Vec<SourceFile>,
 }
 
 /// Every rule the workspace breaks, one line each. Empty means the check passes.
@@ -157,6 +165,7 @@ pub fn check(ws: &Workspace) -> Vec<String> {
         }
     }
     check_truth_sources(&ws.truth_sources, &mut violations);
+    check_process_spawning(&ws.product_sources, &mut violations);
     check_http_client(ws, &mut violations);
     check_msrv(ws, &mut violations);
     violations
@@ -329,6 +338,71 @@ fn check_truth_sources(sources: &[SourceFile], out: &mut Vec<String>) {
     }
 }
 
+/// Only the exec module names `std::process::Command`. Tests and xtask may start processes; the
+/// code that ships may not, outside that module.
+fn check_process_spawning(sources: &[SourceFile], out: &mut Vec<String>) {
+    for source in sources
+        .iter()
+        .filter(|s| s.path.replace('\\', "/") != EXEC_MODULE)
+    {
+        match TokenStream::from_str(&source.text) {
+            Ok(tokens) => out.extend(command_lines(tokens).into_iter().map(|line| {
+                format!(
+                    "{}:{line} names process::Command; processes start only in {EXEC_MODULE} \
+                     (I-5)",
+                    source.path
+                )
+            })),
+            Err(err) => out.push(format!("{} does not lex: {err}", source.path)),
+        }
+    }
+}
+
+/// The lines where a path `process::Command`, `process::{…, Command, …}` or `process::*` stands.
+fn command_lines(tokens: TokenStream) -> Vec<usize> {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut lines = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        if let TokenTree::Group(group) = token {
+            lines.extend(command_lines(group.stream()));
+            continue;
+        }
+        let TokenTree::Ident(ident) = token else {
+            continue;
+        };
+        let path_sep = matches!(
+            (tokens.get(i + 1), tokens.get(i + 2)),
+            (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
+                if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':'
+        );
+        if ident != "process" || !path_sep {
+            continue;
+        }
+        let names_command = match tokens.get(i + 3) {
+            Some(TokenTree::Ident(next)) => next == "Command",
+            Some(TokenTree::Punct(star)) => star.as_char() == '*',
+            Some(TokenTree::Group(group)) => {
+                group.delimiter() == Delimiter::Brace && imports_command(group.stream())
+            }
+            _ => false,
+        };
+        if names_command {
+            lines.push(ident.span().start().line);
+        }
+    }
+    lines
+}
+
+/// Whether a `use` group brings in `Command` (or everything).
+fn imports_command(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Ident(ident) => ident == "Command",
+        TokenTree::Punct(punct) => punct.as_char() == '*',
+        TokenTree::Group(group) => imports_command(group.stream()),
+        TokenTree::Literal(_) => false,
+    })
+}
+
 /// Walks the resolved graph from every member except the owner, without entering the owner.
 /// Reaching the client means some other path links it.
 fn check_http_client(ws: &Workspace, out: &mut Vec<String>) {
@@ -421,11 +495,25 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         .to_path_buf();
     let mut truth_sources = Vec::new();
     collect_sources(root, &truth_dir, &mut truth_sources)?;
+    let mut product_sources = Vec::new();
+    for package in metadata.workspace_packages() {
+        if package.name.as_str() == XTASK {
+            continue;
+        }
+        let src = package
+            .manifest_path
+            .parent()
+            .ok_or("a member manifest has no directory")?
+            .as_std_path()
+            .join("src");
+        collect_sources(root, &src, &mut product_sources)?;
+    }
     Ok(Workspace {
         members,
         packages: resolved_packages(&metadata)?,
         msrv,
         truth_sources,
+        product_sources,
     })
 }
 
@@ -678,6 +766,19 @@ mod tests {
                 text: "#![deny(clippy::float_arithmetic)]\npub fn half(x: u32) -> u32 { x / 2 }\n"
                     .into(),
             }],
+            product_sources: vec![
+                SourceFile {
+                    path: EXEC_MODULE.into(),
+                    text: "use std::process::{Command, ExitStatus};\n".into(),
+                },
+                SourceFile {
+                    path: "crates/terrarium-app/src/main.rs".into(),
+                    text: "use std::process::ExitCode;\nuse std::os::unix::process::CommandExt;\n\
+                           // std::process::Command\nconst S: &str = \"process::Command\";\n\
+                           enum Command { Run }\n"
+                        .into(),
+                },
+            ],
         };
         let edges: Vec<(String, Vec<String>)> = ws
             .members
@@ -905,6 +1006,37 @@ mod tests {
             &ws,
             "terrarium-truth crates/terrarium-truth/src/broken.rs does not lex",
         );
+    }
+
+    #[test]
+    fn only_the_exec_module_starts_processes() {
+        for (text, line) in [
+            ("use std::process::Command;\n", 1),
+            ("\nfn f() { std::process::Command::new(\"git\"); }\n", 2),
+            ("use std::process::{ExitCode, Command as Cmd};\n", 1),
+            ("use std::{io, process::{self, Command}};\n", 1),
+            ("use std::process::*;\n", 1),
+            (
+                "mod m {\n    fn f() { let _ = ::std::process::Command::new(\"sh\"); }\n}\n",
+                2,
+            ),
+        ] {
+            let mut ws = workspace();
+            ws.product_sources.push(SourceFile {
+                path: "crates/terrarium-engine/src/watch.rs".into(),
+                text: text.into(),
+            });
+            fails_with(
+                &ws,
+                &format!("crates/terrarium-engine/src/watch.rs:{line} names process::Command"),
+            );
+        }
+        let mut ws = workspace();
+        ws.product_sources.push(SourceFile {
+            path: "crates/terrarium-app/src/broken.rs".into(),
+            text: "fn f() { \"unterminated }".into(),
+        });
+        fails_with(&ws, "crates/terrarium-app/src/broken.rs does not lex");
     }
 
     #[test]

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.2.xsd" version="3.0.2" name="moss.FernTest" time="0.051" tests="3" errors="0" skipped="1" failures="0">
+  <properties>
+    <property name="java.version" value="21"/>
+  </properties>
+  <testcase name="grows" classname="moss.FernTest" time="0.012"/>
+  <testcase name="unfurls" classname="moss.FernTest" time="0.020">
+    <flakyFailure message="expected 3 fronds" type="org.opentest4j.AssertionFailedError">
+      <stackTrace>org.opentest4j.AssertionFailedError: expected 3 fronds</stackTrace>
+    </flakyFailure>
+  </testcase>
+  <testcase name="winters" classname="moss.FernTest" time="0">
+    <skipped message="not in season"/>
+  </testcase>
+</testsuite>

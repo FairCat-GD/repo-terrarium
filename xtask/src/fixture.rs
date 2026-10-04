@@ -272,7 +272,7 @@ fn readings(day: i64) -> Vec<Reading> {
         out.push(Reading {
             kind: ObservationKind::Weather,
             at: start + 18 * HOUR,
-            raw: WeatherRaw { state }.to_raw(),
+            raw: WeatherRaw::of(state).to_raw(),
             normalized: match state {
                 WeatherState::Pass => Some(Q16::ONE),
                 WeatherState::Fail => Some(Q16::ZERO),

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="moss.ReedTest" time="0.033" tests="2" errors="0" skipped="0" failures="1">
+  <testcase name="sways" classname="moss.ReedTest" time="0.010"/>
+  <testcase name="bends" classname="moss.ReedTest" time="0.023">
+    <failure message="expected &lt;12&gt; but was &lt;9&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: expected <12> but was <9>
+	at moss.ReedTest.bends(ReedTest.java:31)]]></failure>
+    <system-out><![CDATA[bending]]></system-out>
+  </testcase>
+</testsuite>

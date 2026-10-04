@@ -1,0 +1,1 @@
+{"files":["src/legacy.ts"],"issues":[{"file":"src/math.ts","owners":[],"dependencies":[],"devDependencies":[],"optionalPeerDependencies":[],"unlisted":[],"binaries":[],"unresolved":[],"exports":[{"name":"factorial","line":12,"col":14,"pos":256}],"nsExports":[],"types":[],"nsTypes":[],"enumMembers":{},"classMembers":{},"duplicates":[]}]}

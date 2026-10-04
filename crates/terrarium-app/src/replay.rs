@@ -46,7 +46,7 @@ fn dump(args: &ReplayArgs) -> Result<String, String> {
     Ok(canonical_dump(&dump))
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

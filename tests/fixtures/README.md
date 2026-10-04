@@ -16,6 +16,14 @@ Shared input files for tests: report files, fixture repositories, sample observa
   `cargo xtask fixture --bless`; a test fails while it is stale. Coverage jumps when the arc
   recovers, so its replay passes through every presentation state.
 
+- `reports/`: report files as tools write them, for the parsers' tests. `lcov/` (Jest's
+  relative paths, llvm-cov's absolute ones, two tracefiles to merge, a file cut inside a
+  record), `cobertura/` (istanbul with its DOCTYPE, coverage.py), `junit/` (Surefire's
+  `TEST-*.xml`, jest-junit, pytest with a setup error and an xfail, Vitest, a run where nothing
+  ran), `knip/` (the Knip 6 format and the refused Knip 5 one) and `local-tests/` (status files
+  `record-tests` writes). A test copies a file into a repository it owns and replaces `@ROOT@`
+  with that repository's path, as a tool writing absolute paths would.
+
 Beside it, `tests/golden/` holds outputs rather than inputs: `arc.dump`, the canonical dump of
 the arc's replay, and `arc.sha256`, its hash. `cargo xtask golden --bless` writes them, and
 `verify`'s `golden` stage fails while they differ from a fresh replay.

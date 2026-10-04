@@ -9,6 +9,9 @@ pub const BINARY: &str = "repo-terrarium";
 pub const CRATE_PREFIX: &str = "terrarium-";
 /// The database's file name inside the data directory.
 pub const DATABASE_FILE: &str = "terrarium.sqlite3";
+/// The folder inside the data directory where `record-tests` writes one status file per
+/// repository, `<seed-hex>.json`.
+pub const LOCAL_TESTS_DIR: &str = "local-tests";
 /// The keychain service a CI token is stored under.
 pub const KEYCHAIN_SERVICE: &str = BUNDLE_ID;
 /// The environment variable that points tests and harnesses at a data directory they own.
@@ -43,6 +46,7 @@ mod tests {
         assert_eq!(BINARY, "repo-terrarium");
         assert_eq!(CRATE_PREFIX, "terrarium-");
         assert_eq!(DATABASE_FILE, "terrarium.sqlite3");
+        assert_eq!(LOCAL_TESTS_DIR, "local-tests");
         assert_eq!(KEYCHAIN_SERVICE, "io.github.faircat-gd.repo-terrarium");
         assert_eq!(DATA_DIR_ENV, "TERRARIUM_DATA_DIR");
         assert_eq!(

@@ -6,9 +6,11 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::identifiers::{BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE};
+use terrarium_truth::RepoSeed;
 
-/// A data directory: the database, and later the logs and local test results.
+use crate::identifiers::{BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE, LOCAL_TESTS_DIR};
+
+/// A data directory: the database, the local test results, and later the logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataDir(PathBuf);
 
@@ -63,6 +65,13 @@ impl DataDir {
     /// The database file.
     pub fn database(&self) -> PathBuf {
         self.0.join(DATABASE_FILE)
+    }
+
+    /// The status file `record-tests` writes for the repository with `seed`.
+    pub fn local_tests(&self, seed: &RepoSeed) -> PathBuf {
+        self.0
+            .join(LOCAL_TESTS_DIR)
+            .join(format!("{}.json", seed.to_hex()))
     }
 }
 
@@ -119,9 +128,13 @@ mod tests {
         let dir = absolute("terrarium-data");
         let chosen = choose(Some(dir.clone().into_os_string()), true, never);
         assert_eq!(chosen, Ok(DataDir(dir.clone())));
+        let data = chosen.unwrap();
+        assert_eq!(data.database(), dir.join("terrarium.sqlite3"));
+        let seed = RepoSeed::from_bytes([0xab; 32]);
         assert_eq!(
-            chosen.map(|d| d.database()),
-            Ok(dir.join("terrarium.sqlite3"))
+            data.local_tests(&seed),
+            dir.join("local-tests")
+                .join(format!("{}.json", "ab".repeat(32)))
         );
     }
 

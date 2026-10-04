@@ -35,10 +35,33 @@ pub struct DeadCodeRaw {
     pub exported_items: u32,
 }
 
-/// `weather`: the run's outcome, which `normalized` repeats (pass 1, fail 0, unknown null).
+/// `weather`: the run's outcome, which `normalized` repeats (pass 1, fail 0, unknown null), and
+/// what the run said beyond it, when it said: a test report's counts, or the exit code of a run
+/// `record-tests` recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherRaw {
     pub state: WeatherState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+}
+
+impl WeatherRaw {
+    /// An outcome with nothing more to say.
+    pub const fn of(state: WeatherState) -> WeatherRaw {
+        WeatherRaw {
+            state,
+            tests: None,
+            failed: None,
+            skipped: None,
+            exit_code: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,10 +169,23 @@ mod tests {
             exported_items: 80,
         };
         assert_eq!(dead.to_raw(), r#"{"unused_items":4,"exported_items":80}"#);
-        let weather = WeatherRaw {
-            state: WeatherState::Unknown,
-        };
+        let weather = WeatherRaw::of(WeatherState::Unknown);
         assert_eq!(weather.to_raw(), r#"{"state":"unknown"}"#);
+        let tests = WeatherRaw {
+            tests: Some(12),
+            failed: Some(1),
+            skipped: Some(2),
+            ..WeatherRaw::of(WeatherState::Fail)
+        };
+        assert_eq!(
+            tests.to_raw(),
+            r#"{"state":"fail","tests":12,"failed":1,"skipped":2}"#
+        );
+        let run = WeatherRaw {
+            exit_code: Some(0),
+            ..WeatherRaw::of(WeatherState::Pass)
+        };
+        assert_eq!(run.to_raw(), r#"{"state":"pass","exit_code":0}"#);
         let rewrite = RefRewriteRaw {
             reference: "refs/heads/main".into(),
             old: commit('a'),

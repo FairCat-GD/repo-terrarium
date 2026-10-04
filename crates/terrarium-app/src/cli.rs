@@ -20,6 +20,17 @@ pub enum Command {
     /// `replay <path> --dump`: replay a repository with no window and print truth's canonical
     /// dump.
     Replay(ReplayArgs),
+    /// `discover <path>`: print what the repository has for each adapter.
+    Discover(PathBuf),
+    /// `record-tests -- <command>`: run a test command and record how it ended.
+    RecordTests(RecordTestsArgs),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct RecordTestsArgs {
+    pub program: OsString,
+    /// Passed to the program exactly as given.
+    pub args: Vec<OsString>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,6 +57,9 @@ pub enum UsageError {
     Unexpected(OsString),
     MissingProbeKind,
     MissingReplayRepo,
+    MissingDiscoverRepo,
+    /// `record-tests` without `--` and a command after it.
+    MissingCommand,
     /// `replay` has one output so far, the dump, and is asked for it by name.
     MissingDump,
     /// A flag given without its value.
@@ -55,14 +69,22 @@ pub enum UsageError {
 }
 
 /// macOS `LaunchServices` can append a process serial number (`-psn_0_12345`) when it launches
-/// an app bundle. It is not the user's argument, so it never makes the app refuse to start.
+/// an app bundle. It is not the user's argument, so it never makes the app refuse to start. After
+/// `--`, every argument is the user's command's, and passes as given.
 const PROCESS_SERIAL_NUMBER: &str = "-psn_";
 
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageError> {
-    let mut args = args.into_iter().filter(|arg| {
-        !arg.to_str()
-            .is_some_and(|arg| arg.starts_with(PROCESS_SERIAL_NUMBER))
-    });
+    let all: Vec<OsString> = args.into_iter().collect();
+    let separator = all.iter().position(|arg| arg == "--").unwrap_or(all.len());
+    let (own, theirs) = all.split_at(separator);
+    let mut args = own
+        .iter()
+        .filter(|arg| {
+            !arg.to_str()
+                .is_some_and(|arg| arg.starts_with(PROCESS_SERIAL_NUMBER))
+        })
+        .chain(theirs)
+        .cloned();
     let Some(first) = args.next() else {
         return Ok(Command::Run);
     };
@@ -74,6 +96,21 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         Command::ProbeReadme
     } else if first == "replay" {
         return parse_replay(&mut args);
+    } else if first == "discover" {
+        let repo = args
+            .next()
+            .filter(|repo| !repo.to_string_lossy().starts_with("--"))
+            .ok_or(UsageError::MissingDiscoverRepo)?;
+        Command::Discover(PathBuf::from(repo))
+    } else if first == "record-tests" {
+        if args.next().is_none_or(|separator| separator != "--") {
+            return Err(UsageError::MissingCommand);
+        }
+        let program = args.next().ok_or(UsageError::MissingCommand)?;
+        return Ok(Command::RecordTests(RecordTestsArgs {
+            program,
+            args: args.collect(),
+        }));
     } else if first == "--probe" {
         match args.next() {
             None => return Err(UsageError::MissingProbeKind),
@@ -256,6 +293,65 @@ mod tests {
             parse_strs(&["replay", "moss", "--dump", "x"]),
             unexpected("x")
         );
+    }
+
+    #[test]
+    fn discover_takes_one_repository() {
+        assert_eq!(
+            parse_strs(&["discover", "moss"]),
+            Ok(Command::Discover(PathBuf::from("moss")))
+        );
+        assert_eq!(
+            parse_strs(&["discover"]),
+            Err(UsageError::MissingDiscoverRepo)
+        );
+        assert_eq!(
+            parse_strs(&["discover", "--dump"]),
+            Err(UsageError::MissingDiscoverRepo)
+        );
+        assert_eq!(
+            parse_strs(&["discover", "moss", "fern"]),
+            unexpected("fern")
+        );
+    }
+
+    #[test]
+    fn record_tests_passes_everything_after_the_separator_as_given() {
+        assert_eq!(
+            parse_strs(&[
+                "record-tests",
+                "--",
+                "cargo",
+                "test",
+                "--",
+                "-psn_kept",
+                "--version"
+            ]),
+            Ok(Command::RecordTests(RecordTestsArgs {
+                program: "cargo".into(),
+                args: ["test", "--", "-psn_kept", "--version"]
+                    .map(OsString::from)
+                    .to_vec(),
+            }))
+        );
+        assert_eq!(
+            parse_strs(&["-psn_0_1", "record-tests", "--", "npm"]),
+            Ok(Command::RecordTests(RecordTestsArgs {
+                program: "npm".into(),
+                args: Vec::new(),
+            }))
+        );
+        for refused in [
+            &["record-tests"][..],
+            &["record-tests", "--"],
+            &["record-tests", "npm", "test"],
+        ] {
+            assert_eq!(
+                parse_strs(refused),
+                Err(UsageError::MissingCommand),
+                "{refused:?}"
+            );
+        }
     }
 
     #[test]

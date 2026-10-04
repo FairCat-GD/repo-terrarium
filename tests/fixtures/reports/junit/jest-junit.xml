@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="4" failures="1" errors="0" time="1.214">
+  <testsuite name="fern" errors="0" failures="1" skipped="1" timestamp="2026-10-04T09:00:00" time="0.8" tests="3">
+    <testcase classname="fern grows toward light" name="fern grows toward light" time="0.004" file="src/fern.test.ts">
+    </testcase>
+    <testcase classname="fern wilts in shade" name="fern wilts in shade" time="0.003" file="src/fern.test.ts">
+      <failure>Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: "wilting"
+Received: "thriving"</failure>
+    </testcase>
+    <testcase classname="fern sheds spores" name="fern sheds spores" time="0" file="src/fern.test.ts">
+      <skipped/>
+    </testcase>
+  </testsuite>
+  <testsuite name="reed" errors="0" failures="0" skipped="0" timestamp="2026-10-04T09:00:01" time="0.4" tests="1">
+    <testcase classname="reed sways" name="reed sways" time="0.002" file="src/reed.test.ts">
+    </testcase>
+  </testsuite>
+</testsuites>

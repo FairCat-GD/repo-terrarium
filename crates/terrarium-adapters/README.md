@@ -10,7 +10,8 @@ truth.
 - Tree-sitter metrics: complexity, TODO density and lines of code.
 - Discovery of what a repository has, and what it lacks.
 - The GitHub Actions client.
-- The single `exec` module, the only place a tool may run, behind the per-adapter opt-in.
+- The single `exec` module, the only place a process starts: the command a person gives
+  `record-tests`, and later a tool behind its per-adapter opt-in.
 
 ## Why it is a crate of its own
 
@@ -33,6 +34,36 @@ facts, and the security boundary has one home.
 - `read_since` brings a history up to date: `Unchanged`, `Appended` with the earliest new tick,
   or `Rewritten` with the reason a full read was needed.
 - `RepoState::state_hash` is the git part of the replay cache key.
+- `head` says where HEAD is for an observation: its commit, its branch or none when detached,
+  and whether that commit is the default tip. `GitRepo::discover` finds the repository around a
+  directory, for `record-tests`.
+
+## Reports (`report`, `local_tests`)
+
+- `Report::read(root, format, files)` reads lcov, Cobertura, `JUnit` XML or a Knip JSON report
+  from files relative to the repository root, merged when there are several. It is either
+  known (a reading, the top 20 contributors, a content hash and the newest mtime) or unknown
+  with the reason: missing, outside the repository, not a regular file, over its size cap,
+  malformed or cut short, empty, or from a Knip before 6.
+- Every parser insists on the end of its document (`end_of_record` for lcov, the root's end
+  tag for XML, the whole JSON value), so a file caught half-written is unknown, never a partial
+  reading.
+- XML goes through quick-xml with no DTD processing: a `<!DOCTYPE>` is skipped, and only the
+  predefined entities and character references resolve.
+- Paths a report names are made repository-relative; a path outside the repository still
+  counts in the totals but never becomes a contributor, so no home directory reaches the store.
+- `local_tests` reads and writes the status file `record-tests` keeps in the data directory,
+  whole or not at all.
+- Knip's report lists only what is unused, so dead code has no normalized value until the
+  tree-sitter reader counts exports.
+
+## Discovery (`discovery`)
+
+`discover(root, overrides, status_file)` says what a repository has: git and its default
+branch, a coverage report (lcov first, then Cobertura), a `JUnit` report, a `record-tests`
+status file, a Knip report and configuration, CI workflows and test runners. It looks only at
+fixed lists of paths (a `*` matches within one segment) and the configured overrides, which must
+stay inside the repository; it never walks the tree, runs anything or writes.
 
 ## Fixtures (`fixture`, behind the `fixture` feature)
 
@@ -48,7 +79,9 @@ The feature writes, so only xtask and dev-dependencies may turn it on.
   `cargo xtask verify` checks that no other crate can reach `ureq`.
 - gix is pinned exactly (`=0.88.0`): a bump can change line counts and so truth. It is opened
   read-only and isolated. The git command line is never run.
-- A parse failure degrades to `Unknown`, never to zero.
+- A parse failure degrades to `Unknown`, never to zero, and an unknown report is never
+  recorded: the last reading holds and turns stale.
+- `std::process::Command` appears only in `exec` (`cargo xtask verify`'s graph stage).
 
 ## Requirements
 

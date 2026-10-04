@@ -1,0 +1,4 @@
+<testsuite name="moss.WinterTest" tests="2" skipped="2" failures="0" errors="0">
+  <testcase name="frost" classname="moss.WinterTest"><skipped/></testcase>
+  <testcase name="snow" classname="moss.WinterTest"><skipped/></testcase>
+</testsuite>
