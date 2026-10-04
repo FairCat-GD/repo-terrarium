@@ -15,7 +15,7 @@ use crate::strip::StripError;
 
 const PRODUCT_NAME: &str = "Repo Terrarium";
 /// The binary's name, a machine identifier that never changes.
-const BINARY_NAME: &str = "repo-terrarium";
+const BINARY_NAME: &str = terrarium_store::identifiers::BINARY;
 /// The single source of the product version: the workspace manifest.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1001,6 +1001,12 @@ mod tests {
         for literal in literals {
             assert!(!literal.contains('!'), "copy must not exclaim: {literal:?}");
         }
+    }
+
+    #[test]
+    fn the_binary_is_built_under_its_pinned_name() {
+        // The manifest's `[[bin]] name` and the pinned identifier must agree.
+        assert_eq!(env!("CARGO_BIN_NAME"), BINARY_NAME);
     }
 
     #[test]

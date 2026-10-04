@@ -10,6 +10,16 @@ publish.workspace = true
 
 [dependencies]
 terrarium-truth.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+sha2.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

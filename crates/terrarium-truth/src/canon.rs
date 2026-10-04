@@ -107,7 +107,7 @@ pub fn to_hex(bytes: &[u8]) -> String {
 }
 
 /// The inverse of [`to_hex`]: only lowercase hex of even length parses.
-pub(crate) fn from_hex(text: &str) -> Option<Vec<u8>> {
+pub fn from_hex(text: &str) -> Option<Vec<u8>> {
     let (pairs, []) = text.as_bytes().as_chunks::<2>() else {
         return None;
     };

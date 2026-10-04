@@ -14,10 +14,12 @@ use crate::{assets, graph};
 const WINDOWS_TARGET: &str = "x86_64-pc-windows-msvc";
 
 enum Step {
-    /// A cargo subcommand. `tool` names a third-party subcommand to check for first.
+    /// A cargo subcommand. `tool` names a third-party subcommand to check for first; `env` is
+    /// set for this command only.
     Cargo {
         args: &'static [&'static str],
         tool: Option<Tool>,
+        env: &'static [(&'static str, &'static str)],
     },
     Graph,
     /// `cargo xtask assets --check`, in process.
@@ -44,6 +46,7 @@ const STAGES: &[Stage] = &[
         step: Step::Cargo {
             args: &["fmt", "--all", "--check"],
             tool: None,
+            env: &[],
         },
     },
     Stage {
@@ -58,6 +61,7 @@ const STAGES: &[Stage] = &[
                 "warnings",
             ],
             tool: None,
+            env: &[],
         },
     },
     // The dev build: the debug window and its egui and wgpu dependencies.
@@ -74,6 +78,7 @@ const STAGES: &[Stage] = &[
                 "warnings",
             ],
             tool: None,
+            env: &[],
         },
     },
     Stage {
@@ -91,6 +96,12 @@ const STAGES: &[Stage] = &[
                 "warnings",
             ],
             tool: None,
+            // Bundled SQLite compiles C in libsqlite3-sys's build script, and the Mac has no
+            // Windows headers. This variable sends that script down its linked path, which
+            // compiles nothing and uses the same bundled bindings; a lint never links, so the
+            // Rust it checks is the same. It is undocumented: re-check it when libsqlite3-sys
+            // moves. The probe build compiles the C for real (`probe_zip.rs`).
+            env: &[("LIBSQLITE3_SYS_USE_PKG_CONFIG", "1")],
         },
     },
     Stage {
@@ -102,6 +113,7 @@ const STAGES: &[Stage] = &[
                 package: "cargo-nextest",
                 version: "0.9.146",
             }),
+            env: &[],
         },
     },
     // The release build's own features: what only a build without `dev` does, such as refusing
@@ -115,6 +127,7 @@ const STAGES: &[Stage] = &[
                 package: "cargo-nextest",
                 version: "0.9.146",
             }),
+            env: &[],
         },
     },
     // nextest does not run doctests.
@@ -123,6 +136,7 @@ const STAGES: &[Stage] = &[
         step: Step::Cargo {
             args: &["test", "--workspace", "--doc", "--all-features"],
             tool: None,
+            env: &[],
         },
     },
     Stage {
@@ -134,6 +148,7 @@ const STAGES: &[Stage] = &[
                 package: "cargo-deny",
                 version: "0.20.2",
             }),
+            env: &[],
         },
     },
     Stage {
@@ -155,7 +170,7 @@ pub fn run(root: &Path) -> ExitCode {
         println!("\n==> {}", stage.name);
         let started = Instant::now();
         let passed = match &stage.step {
-            Step::Cargo { args, tool } => run_cargo(&cargo, root, args, tool.as_ref()),
+            Step::Cargo { args, tool, env } => run_cargo(&cargo, root, args, tool.as_ref(), env),
             Step::Graph => run_graph(root),
             Step::Assets => run_assets(root),
         };
@@ -178,7 +193,13 @@ pub fn run(root: &Path) -> ExitCode {
     }
 }
 
-fn run_cargo(cargo: &OsString, root: &Path, args: &[&str], tool: Option<&Tool>) -> bool {
+fn run_cargo(
+    cargo: &OsString,
+    root: &Path,
+    args: &[&str],
+    tool: Option<&Tool>,
+    env: &[(&str, &str)],
+) -> bool {
     if let Some(tool) = tool
         && !has_pinned_version(cargo, root, tool)
     {
@@ -188,7 +209,12 @@ fn run_cargo(cargo: &OsString, root: &Path, args: &[&str], tool: Option<&Tool>) 
         );
         return false;
     }
-    match Command::new(cargo).args(args).current_dir(root).status() {
+    let status = Command::new(cargo)
+        .args(args)
+        .envs(env.iter().copied())
+        .current_dir(root)
+        .status();
+    match status {
         Ok(status) => status.success(),
         Err(err) => {
             println!("cannot run cargo {}: {err}", args.join(" "));

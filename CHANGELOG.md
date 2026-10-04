@@ -5,6 +5,32 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-04
+
+Nothing changes on screen. This release adds the database that will keep a terrarium's history:
+what its light, soil and weather were, and when.
+
+### Added
+
+- **The observation store,** a SQLite database built into the app, in a folder of its own
+  (`~/Library/Application Support/io.github.faircat-gd.repo-terrarium` on macOS,
+  `%LOCALAPPDATA%\io.github.faircat-gd.repo-terrarium` on Windows). The app does not open it
+  yet; the live terrarium starts using it in 0.15.
+- **History is append-only.** Once recorded, a reading is never changed or deleted. The one
+  exception is deleting a whole terrarium, which takes its history with it.
+- **A terrarium is known by its repository's first commit,** so a repository that moves keeps
+  its history when it is connected again.
+- **Export and import of the history** as JSON Lines, for moving to another machine. An import
+  refuses another repository's history, skips what is already there, and reports any reading
+  that differs from the one kept.
+- **The names data lives under are fixed:** the app's identifier, its executable, its database
+  file and its keychain service. Renaming the product will not move anyone's data.
+
+### Changed
+
+- **The Windows probe build** now compiles the database's C code for Windows on the Mac, from
+  the same Windows headers the build already uses.
+
 ## [0.10.2] - 2026-10-02
 
 The terrarium has its new environment art: a landscape behind the plants, new soil and glass,
