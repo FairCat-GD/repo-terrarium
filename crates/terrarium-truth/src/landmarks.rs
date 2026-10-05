@@ -18,10 +18,10 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::canon::{canonical_struct, from_hex};
+use crate::canon::{canonical_struct, count_of, from_hex};
 use crate::domain::CommitFacts;
 use crate::identity::{CommitId, RepoSeed};
-use crate::rng::{Pcg32, StreamTag};
+use crate::rng::{Pcg32, StreamTag, digest_u64};
 use crate::scene::{FossilForm, FossilView, MonumentAge, MonumentView};
 use crate::time::{TICKS_PER_DAY, Tick};
 use crate::tuning::{
@@ -97,18 +97,15 @@ const fn years(n: u32) -> u32 {
         .saturating_mul(TICKS_PER_DAY)
 }
 
-/// The first 8 bytes of `bytes`' SHA-256, little-endian.
-fn digest_u64(bytes: &[u8]) -> u64 {
-    let digest: [u8; 32] = Sha256::digest(bytes).into();
-    let mut first = [0; 8];
-    first.copy_from_slice(&digest[..8]);
-    u64::from_le_bytes(first)
+/// `bytes`' SHA-256, as a number.
+fn hashed(bytes: &[u8]) -> u64 {
+    digest_u64(&Sha256::digest(bytes).into())
 }
 
 /// The form the seed draws for a fossil left by `commit`. The stream is keyed by a hash of the
 /// commit id's bytes, so every commit draws its own, whatever else applies in its tick.
 pub fn fossil_form(seed: &RepoSeed, commit: &CommitId) -> FossilForm {
-    let key = digest_u64(&from_hex(commit.as_str()).unwrap_or_default());
+    let key = hashed(&from_hex(commit.as_str()).unwrap_or_default());
     let forms = FossilForm::ALL;
     let picked = u32::try_from(forms.len())
         .ok()
@@ -127,7 +124,7 @@ impl Landmarks {
         let Some(root) = root else {
             return;
         };
-        let raised = u32::try_from(self.monuments.len()).unwrap_or(u32::MAX);
+        let raised = count_of(self.monuments.len());
         let due = now.hours_since(root) / years(1);
         if self.monuments.len() < MONUMENTS_MAX && due > raised {
             self.monuments.push(Monument {
@@ -158,7 +155,7 @@ impl Landmarks {
             form: fossil_form(seed, &commit.id),
             tick: commit.tick,
             commit: commit.id.clone(),
-            path: digest_u64(dir.path.as_bytes()),
+            path: hashed(dir.path.as_bytes()),
         });
         self.next_fossil = self.next_fossil.saturating_add(1);
         let excess = self.fossils.len().saturating_sub(FOSSILS_MAX);
@@ -293,7 +290,7 @@ mod tests {
             (fossil.id, fossil.tick, &fossil.commit),
             (1, Tick::new(8), &id(4))
         );
-        assert_eq!(fossil.path, digest_u64(b"src/legacy"));
+        assert_eq!(fossil.path, hashed(b"src/legacy"));
         assert_eq!(landmarks.next_fossil, 2);
     }
 
@@ -305,17 +302,14 @@ mod tests {
             landmarks.bury(&seed, &deleting(1, 5, dirs));
             landmarks.fossils[0].path
         };
-        assert_eq!(
-            named(&[("a", 600), ("b", 900), ("c", 700)]),
-            digest_u64(b"b")
-        );
+        assert_eq!(named(&[("a", 600), ("b", 900), ("c", 700)]), hashed(b"b"));
         // One fossil per commit, whatever it deletes.
         let mut landmarks = Landmarks::default();
         landmarks.bury(&seed, &deleting(1, 5, &[("a", 600), ("b", 900)]));
         assert_eq!(landmarks.fossils.len(), 1);
         // A tie goes to the first path, in either input order.
-        assert_eq!(named(&[("x", 800), ("y", 800)]), digest_u64(b"x"));
-        assert_eq!(named(&[("y", 800), ("x", 800)]), digest_u64(b"x"));
+        assert_eq!(named(&[("x", 800), ("y", 800)]), hashed(b"x"));
+        assert_eq!(named(&[("y", 800), ("x", 800)]), hashed(b"x"));
     }
 
     #[test]

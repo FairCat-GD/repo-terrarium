@@ -97,6 +97,12 @@ pub fn canonical_sha256<T: Canonical>(value: &T) -> [u8; 32] {
     Sha256::digest(canonical_dump(value).as_bytes()).into()
 }
 
+/// A count as dumped state holds it: `Canonical` has no impl for `usize`, so counts are `u32`,
+/// saturated.
+pub fn count_of(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
 /// Lowercase hex.
 pub fn to_hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);

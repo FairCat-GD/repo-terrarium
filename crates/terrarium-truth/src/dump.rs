@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::canon::canonical_struct;
+use crate::canon::{canonical_struct, count_of};
 use crate::climate::{ClimateReport, DailyClimate};
 use crate::domain::Habitat;
 use crate::identity::SimVersion;
@@ -117,10 +117,18 @@ canonical_struct!(Census {
 impl Census {
     pub fn of(state: &SimState) -> Census {
         let scene = project(state);
-        let looks = |look| count(scene.plants.iter().filter(|p| p.state == look));
-        let stages = |stage| count(scene.plants.iter().filter(|p| p.stage == stage));
-        let lives = |stage| count(scene.residents.iter().filter(|r| r.stage == stage));
-        let energies = |energy| count(scene.residents.iter().filter(|r| r.energy == energy));
+        let looks = |look| count_of(scene.plants.iter().filter(|p| p.state == look).count());
+        let stages = |stage| count_of(scene.plants.iter().filter(|p| p.stage == stage).count());
+        let lives = |stage| count_of(scene.residents.iter().filter(|r| r.stage == stage).count());
+        let energies = |energy| {
+            count_of(
+                scene
+                    .residents
+                    .iter()
+                    .filter(|r| r.energy == energy)
+                    .count(),
+            )
+        };
         let fauna = &state.fauna;
         Census {
             tick: state.now(),
@@ -147,14 +155,10 @@ impl Census {
             laid: fauna.laid,
             died: fauna.died,
             left: fauna.left,
-            monuments: count(scene.monuments.iter()),
-            fossils: count(scene.fossils.iter()),
+            monuments: count_of(scene.monuments.len()),
+            fossils: count_of(scene.fossils.len()),
         }
     }
-}
-
-fn count<T>(items: impl Iterator<Item = T>) -> u32 {
-    u32::try_from(items.count()).unwrap_or(u32::MAX)
 }
 
 /// Replays `prepared` from tick 0 through `through`.

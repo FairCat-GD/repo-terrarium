@@ -275,9 +275,9 @@ fn the_arcs_residents_arrive_leave_and_return() {
         }
         close = close.saturating_add(24);
     }
-    let days = |step: Option<Tick>| step.expect("reached").hours() / 24;
-    // Tick 0 is day 0 at 09:00, so a close's day is the next day's number.
-    assert!(days(arrived) < 14, "{arrived:?}");
+    // Tick 0 is day 0 at 09:00 UTC, so tick `t` falls in day `(t + 9) / 24`.
+    let day = |step: Option<Tick>| (step.expect("reached").hours() + 9) / 24;
+    assert!(day(arrived) < 14, "{arrived:?}");
     assert!(
         hatched < Some(silence) && died < Some(silence),
         "{hatched:?} {died:?}"
@@ -301,34 +301,32 @@ fn the_arcs_residents_arrive_leave_and_return() {
     assert_eq!(fossils, [Tick::new(7_451)]);
 }
 
-/// The close at which a resident of the arc first dies of old age.
-fn first_dying_close(prepared: &Prepared<'_>, basis: &Basis, through: Tick) -> Tick {
-    let mut state = SimState::new(basis.clone());
-    let mut close = first_close(basis.grid);
-    while close <= through {
-        state.advance_through(prepared, close).expect("replays");
-        if state
-            .fauna
-            .residents
-            .iter()
-            .any(|r| r.stage == LifeStage::Dying)
-        {
-            return close;
-        }
-        close = close.saturating_add(24);
-    }
-    panic!("no resident dies of old age")
-}
-
 #[test]
 fn a_cached_state_resumes_to_the_full_replay() {
     let arc = ArcDir::new();
     let (history, observations, basis, through) = arc.inputs();
     let everything = Prepared::new(basis.clone(), &history.commits, &observations).expect("valid");
+    // The full replay, close by close, noting the close at which a resident first dies of old
+    // age.
     let mut full = SimState::new(basis.clone());
+    let mut dying = None;
+    let mut close = first_close(basis.grid);
+    while close <= through {
+        full.advance_through(&everything, close).expect("replays");
+        if dying.is_none()
+            && full
+                .fauna
+                .residents
+                .iter()
+                .any(|r| r.stage == LifeStage::Dying)
+        {
+            dying = Some(close.hours());
+        }
+        close = close.saturating_add(24);
+    }
     full.advance_through(&everything, through).expect("replays");
+    let dying = dying.expect("a resident dies of old age");
     let tick_of = |o: &Observation| observation_tick(history.grid, o.recorded_at).expect("on grid");
-    let dying = first_dying_close(&everything, &basis, through).hours();
     // Tick 0 is day 0 of the arc at 09:00 UTC. The splits: mid-thriving, the merge's own
     // tick, the legacy deletion's tick and the one after, the first stone's close, a
     // resident's dying close and its burial the next, a midnight in the silence, and the first

@@ -32,7 +32,7 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
-use crate::canon::canonical_struct;
+use crate::canon::{canonical_struct, count_of};
 use crate::fixed::Q16;
 use crate::habitat::{plant_capacity, resident_capacity};
 use crate::identity::RepoSeed;
@@ -217,10 +217,6 @@ impl Food {
     }
 }
 
-fn count<T>(items: impl Iterator<Item = T>) -> u32 {
-    u32::try_from(items.count()).unwrap_or(u32::MAX)
-}
-
 impl Fauna {
     /// No residents yet, and a pool of the species `seed` picks.
     pub fn new(seed: &RepoSeed) -> Fauna {
@@ -267,7 +263,9 @@ impl Fauna {
     fn bury_the_dead(&mut self) {
         let before = self.residents.len();
         self.residents.retain(Resident::living);
-        self.died = self.died.saturating_add(gone(before, self.residents.len()));
+        self.died = self
+            .died
+            .saturating_add(count_of(before.saturating_sub(self.residents.len())));
     }
 
     /// Residents beyond the capacity leave, the newest first.
@@ -275,7 +273,9 @@ impl Fauna {
         let before = self.residents.len();
         self.residents
             .truncate(usize::try_from(capacity).unwrap_or(usize::MAX));
-        self.left = self.left.saturating_add(gone(before, self.residents.len()));
+        self.left = self
+            .left
+            .saturating_add(count_of(before.saturating_sub(self.residents.len())));
     }
 
     /// Energy moves toward food; a resident low for `RETREAT_DAYS` leaves.
@@ -291,7 +291,9 @@ impl Fauna {
             let since = *resident.low_since.get_or_insert(today.tick);
             today.tick.hours_since(since) < RETREAT_DAYS.saturating_mul(TICKS_PER_DAY)
         });
-        self.left = self.left.saturating_add(gone(before, self.residents.len()));
+        self.left = self
+            .left
+            .saturating_add(count_of(before.saturating_sub(self.residents.len())));
     }
 
     /// Living members of each species.
@@ -304,7 +306,7 @@ impl Fauna {
     }
 
     fn room(&self, capacity: u32) -> bool {
-        count(self.residents.iter()) < capacity
+        count_of(self.residents.len()) < capacity
     }
 
     /// Well-fed adults' broods grow, and those that are ready lay while there is room, the
@@ -412,8 +414,4 @@ impl Fauna {
             })
             .collect()
     }
-}
-
-fn gone(before: usize, after: usize) -> u32 {
-    u32::try_from(before.saturating_sub(after)).unwrap_or(u32::MAX)
 }

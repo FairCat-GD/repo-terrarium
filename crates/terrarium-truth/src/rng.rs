@@ -109,9 +109,7 @@ impl Pcg32 {
             .chain_update(tag.name().as_bytes())
             .finalize()
             .into();
-        let mut first = [0; 8];
-        first.copy_from_slice(&digest[..8]);
-        Pcg32::from_seed(u64::from_le_bytes(first))
+        Pcg32::from_seed(digest_u64(&digest))
     }
 
     const fn step(&mut self) {
@@ -143,6 +141,13 @@ impl Pcg32 {
         }
         low_u32(product >> 32)
     }
+}
+
+/// The first 8 bytes of a SHA-256 digest, little-endian: how truth turns a hash into a number.
+pub fn digest_u64(digest: &[u8; 32]) -> u64 {
+    let mut first = [0; 8];
+    first.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(first)
 }
 
 /// The low 32 bits.

@@ -123,9 +123,8 @@ fn every_pool_meets_the_cast_rules() {
     let pools = admissible_pools();
     assert_eq!(pools.len(), 56);
     assert!(pools.iter().all(|pool| pool.len() == 5 && admissible(pool)));
-    let mut seen = pools.clone();
-    seen.dedup();
-    assert_eq!(seen.len(), 56);
+    let distinct: std::collections::BTreeSet<&Vec<ResidentSpecies>> = pools.iter().collect();
+    assert_eq!(distinct.len(), 56);
     // The rules themselves: a day species, a night species, and at most one flyer.
     assert!(admissible(&[Firefly, Snail]));
     assert!(!admissible(&[Firefly]));

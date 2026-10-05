@@ -30,7 +30,7 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
-use crate::canon::{canonical_enum, canonical_struct};
+use crate::canon::{canonical_enum, canonical_struct, count_of};
 use crate::climate;
 use crate::domain::PresentationState;
 use crate::fixed::Q16;
@@ -486,11 +486,11 @@ impl Vegetation {
     }
 
     fn plant_count(&self) -> u32 {
-        u32::try_from(self.plants.len()).unwrap_or(u32::MAX)
+        count_of(self.plants.len())
     }
 
     fn weed_count(&self) -> u32 {
-        u32::try_from(self.weeds.len()).unwrap_or(u32::MAX)
+        count_of(self.weeds.len())
     }
 
     /// The plants as the composer sees them, in slot order, while the terrarium shows
