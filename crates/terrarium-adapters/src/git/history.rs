@@ -43,6 +43,36 @@ pub struct History {
     index: BTreeMap<gix::ObjectId, Indexed>,
 }
 
+impl History {
+    /// Whether `ancestor` is `descendant` or one of its ancestors in this history: false when
+    /// either is not in it. A branch that moves to a commit its old tip is not an ancestor of
+    /// has moved without fast-forwarding (`ref_rewrite`).
+    pub fn is_ancestor(&self, ancestor: &CommitId, descendant: &CommitId) -> bool {
+        let target = to_object_id(ancestor);
+        let start = to_object_id(descendant);
+        if !self.index.contains_key(&target) || !self.index.contains_key(&start) {
+            return false;
+        }
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![start];
+        while let Some(id) = stack.pop() {
+            if id == target {
+                return true;
+            }
+            if seen.insert(id) {
+                stack.extend(
+                    self.index
+                        .get(&id)
+                        .map_or(&[][..], |indexed| &indexed.walked_parents)
+                        .iter()
+                        .copied(),
+                );
+            }
+        }
+        false
+    }
+}
+
 /// What the incremental read needs to know about each commit already read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Indexed {

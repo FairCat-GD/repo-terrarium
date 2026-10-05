@@ -206,20 +206,10 @@ pub fn discover(
     overrides: &Overrides,
     status_file: Option<&Path>,
 ) -> Discovery {
-    let coverage = match &overrides.coverage {
-        Some(path) => configured(root, path, coverage_format(path)),
-        None => first_of(
-            root,
-            &[
-                (Format::Lcov, LCOV_PATHS),
-                (Format::Cobertura, COBERTURA_PATHS),
-            ],
-        ),
-    };
-    let test_report = match &overrides.weather {
-        Some(path) => configured(root, path, Format::JUnit),
-        None => first_of(root, &[(Format::JUnit, JUNIT_PATHS)]),
-    };
+    let Reports {
+        coverage,
+        test_report,
+    } = locate_reports(root, overrides);
     let dead_code = match &overrides.dead_code {
         Some(path) => configured(root, path, Format::Knip),
         None => first_of(root, &[(Format::Knip, &[KNIP_REPORT_PATH])]),
@@ -251,6 +241,72 @@ pub fn discover(
         ci_workflows,
         runners: runners(root, &package),
     }
+}
+
+/// The reports a refresh reads: coverage and test results, found as [`discover`] finds them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reports {
+    pub coverage: Search,
+    pub test_report: Search,
+}
+
+/// Where the coverage and test reports under `root` are, and nothing else: what the live
+/// refresh looks up each time, without discovery's configuration checks.
+pub fn locate_reports(root: &Path, overrides: &Overrides) -> Reports {
+    let coverage = match &overrides.coverage {
+        Some(path) => configured(root, path, coverage_format(path)),
+        None => first_of(
+            root,
+            &[
+                (Format::Lcov, LCOV_PATHS),
+                (Format::Cobertura, COBERTURA_PATHS),
+            ],
+        ),
+    };
+    let test_report = match &overrides.weather {
+        Some(path) => configured(root, path, Format::JUnit),
+        None => first_of(root, &[(Format::JUnit, JUNIT_PATHS)]),
+    };
+    Reports {
+        coverage,
+        test_report,
+    }
+}
+
+/// Every path a coverage or test report may be found at, a configured one replacing its fixed
+/// list, as `/`-separated patterns relative to the root: what a watcher watches for. A refused
+/// configured path is left out.
+pub fn report_patterns(overrides: &Overrides) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let mut add = |configured: &Option<String>, fixed: &[&[&str]]| match configured {
+        Some(path) => patterns.extend(crate::report::relative_parts(path).map(|p| p.join("/"))),
+        None => patterns.extend(
+            fixed
+                .iter()
+                .flat_map(|list| list.iter())
+                .map(|p| (*p).to_owned()),
+        ),
+    };
+    add(&overrides.coverage, &[LCOV_PATHS, COBERTURA_PATHS]);
+    add(&overrides.weather, &[JUNIT_PATHS]);
+    patterns
+}
+
+/// Whether the `/`-separated path `relative` is one `pattern` matches, `*` matching within one
+/// segment.
+pub fn path_matches(pattern: &str, relative: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').collect();
+    let path: Vec<&str> = relative.split('/').collect();
+    pattern.len() == path.len() && pattern.iter().zip(&path).all(|(p, s)| wildcard(p, s))
+}
+
+/// Whether the `/`-separated path `relative` is a directory a match of `pattern` would lie
+/// under: every one of its segments matches the pattern's segment at the same depth, and the
+/// pattern goes deeper.
+pub fn leads_to(pattern: &str, relative: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').collect();
+    let path: Vec<&str> = relative.split('/').collect();
+    path.len() < pattern.len() && pattern.iter().zip(&path).all(|(p, s)| wildcard(p, s))
 }
 
 /// A configured coverage path is Cobertura when it names XML, and lcov otherwise.
@@ -626,5 +682,57 @@ mod tests {
         fs::create_dir_all(repo.path().join("junit.xml")).unwrap();
         let found = discover_in(repo.path(), &Overrides::default(), None);
         assert_eq!(found.test_report, Search::NotFound);
+    }
+
+    #[test]
+    fn report_paths_are_matched_and_led_to_as_a_watcher_needs() {
+        assert!(path_matches("coverage/lcov.info", "coverage/lcov.info"));
+        assert!(path_matches(
+            "target/surefire-reports/TEST-*.xml",
+            "target/surefire-reports/TEST-moss.xml"
+        ));
+        assert!(path_matches(
+            "build/test-results/*/TEST-*.xml",
+            "build/test-results/test/TEST-a.xml"
+        ));
+        assert!(!path_matches("coverage/lcov.info", "coverage"));
+        assert!(!path_matches("lcov.info", "coverage/lcov.info"));
+        assert!(leads_to("coverage/lcov.info", "coverage"));
+        assert!(leads_to(
+            "build/test-results/*/TEST-*.xml",
+            "build/test-results/test"
+        ));
+        assert!(!leads_to("coverage/lcov.info", "coverage/lcov.info"));
+        assert!(!leads_to("coverage/lcov.info", "src"));
+        assert!(!leads_to("lcov.info", "lcov.info"));
+    }
+
+    #[test]
+    fn report_patterns_follow_the_overrides() {
+        let fixed = report_patterns(&Overrides::default());
+        assert_eq!(
+            fixed.len(),
+            LCOV_PATHS.len() + COBERTURA_PATHS.len() + JUNIT_PATHS.len()
+        );
+        assert!(fixed.iter().any(|p| p == "target/nextest/*/junit.xml"));
+        let configured = report_patterns(&Overrides {
+            coverage: Some("./out/cov.info".into()),
+            weather: Some("../outside.xml".into()),
+            dead_code: None,
+        });
+        assert_eq!(configured, ["out/cov.info"]);
+    }
+
+    #[test]
+    fn locating_reports_agrees_with_discovery() {
+        let (_dir, repo) = repo_with(&[
+            ("coverage.xml", "<coverage/>"),
+            ("target/surefire-reports/TEST-a.xml", "<testsuite/>"),
+        ]);
+        let found = discover_in(repo.path(), &Overrides::default(), None);
+        let reports = locate_reports(repo.path(), &Overrides::default());
+        assert_eq!(reports.coverage, found.coverage);
+        assert_eq!(reports.test_report, found.test_report);
+        assert!(reports.coverage.located().is_some());
     }
 }

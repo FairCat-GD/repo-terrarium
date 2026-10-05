@@ -1,5 +1,5 @@
-//! Observations from reports: what an adapter read, where HEAD was and when, as the store
-//! records it.
+//! Observations: what an adapter read, or a ref rewrite seen live, with where HEAD was and
+//! when, as the store records it.
 //!
 //! Only a known reading becomes an observation. A report that is missing, unreadable, cut short
 //! or says nothing is not recorded, so the last reading holds and turns stale once the default
@@ -7,11 +7,17 @@
 //! formula needs the number of exported items, which a Knip report does not hold and the
 //! tree-sitter reader will count.
 
+use sha2::{Digest, Sha256};
 use terrarium_adapters::report::{Format, Reading, Report};
-use terrarium_store::raw::{CoverageFormat, CoverageRaw, Shape as _, WeatherRaw, WeatherState};
+use terrarium_store::raw::{
+    CoverageFormat, CoverageRaw, RefRewriteRaw, Shape as _, WeatherRaw, WeatherState,
+};
 use terrarium_store::{Contributor, ObservationRecord};
-use terrarium_truth::Q16;
 use terrarium_truth::domain::{ObservationHead, WeatherSource};
+use terrarium_truth::{CommitId, ObservationKind, Q16};
+
+/// The `adapter_version` of the ref rewrites the live refresh records.
+pub const REF_REWRITE_VERSION: u32 = 1;
 
 /// The observation `report` makes when HEAD was at `head` at `recorded_at` (Unix seconds,
 /// UTC), or `None` when it is not recorded.
@@ -92,6 +98,58 @@ pub fn record(
     })
 }
 
+/// The observation of `branch` moving from `old` to `new` without fast-forwarding, seen while
+/// HEAD was at `head`. Its content hash is the SHA-256 of its `raw`.
+pub fn ref_rewrite(
+    branch: &str,
+    old: CommitId,
+    new: CommitId,
+    head: ObservationHead,
+    recorded_at: i64,
+) -> ObservationRecord {
+    let raw = RefRewriteRaw {
+        reference: format!("refs/heads/{branch}"),
+        old,
+        new,
+    }
+    .to_raw();
+    ObservationRecord {
+        kind: ObservationKind::RefRewrite,
+        adapter_version: REF_REWRITE_VERSION,
+        recorded_at,
+        head,
+        source: None,
+        report_mtime: None,
+        content_hash: Sha256::digest(raw.as_bytes()).into(),
+        raw,
+        normalized: None,
+        confidence: Q16::ONE,
+        contributors: Vec::new(),
+    }
+}
+
+/// Which report format wrote a stored observation, read back from its `raw`: coverage names
+/// its format, and of the local weather only a `record-tests` run carries an exit code. `None`
+/// for every other kind and source.
+pub fn producer(record: &ObservationRecord) -> Option<Format> {
+    let raw: serde_json::Value = serde_json::from_str(&record.raw).ok()?;
+    match (record.kind, &record.source) {
+        (ObservationKind::Coverage, None) => match raw.get("format")?.as_str()? {
+            "lcov" => Some(Format::Lcov),
+            "cobertura" => Some(Format::Cobertura),
+            _ => None,
+        },
+        (ObservationKind::Weather, Some(WeatherSource::Local)) => {
+            if raw.get("exit_code").is_some() {
+                Some(Format::LocalTests)
+            } else {
+                Some(Format::JUnit)
+            }
+        }
+        _ => None,
+    }
+}
+
 fn state(reading: &Reading) -> WeatherState {
     match reading.passed() {
         Some(true) => WeatherState::Pass,
@@ -108,8 +166,8 @@ mod tests {
     use terrarium_adapters::local_tests::Status;
     use terrarium_adapters::report::Why;
     use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store};
+    use terrarium_truth::RepoSeed;
     use terrarium_truth::domain::ObservationValue;
-    use terrarium_truth::{CommitId, ObservationKind, RepoSeed};
 
     use super::*;
 
@@ -248,6 +306,66 @@ mod tests {
         assert_eq!(
             stored.iter().map(|s| &s.record).collect::<Vec<_>>(),
             records.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn each_record_names_the_format_that_wrote_it() {
+        let (_dir, reports, records) = every_format();
+        for (report, record) in reports.iter().zip(&records) {
+            assert_eq!(producer(record), Some(report.format));
+        }
+        let rewrite = ref_rewrite(
+            "main",
+            CommitId::from_hex(&"a".repeat(40)).unwrap(),
+            CommitId::from_hex(&"b".repeat(40)).unwrap(),
+            head(),
+            7,
+        );
+        assert_eq!(producer(&rewrite), None);
+    }
+
+    #[test]
+    fn a_ref_rewrite_is_stored_and_replay_reads_its_refs() {
+        let old = CommitId::from_hex(&"a".repeat(40)).unwrap();
+        let new = CommitId::from_hex(&"b".repeat(40)).unwrap();
+        let record = ref_rewrite("trunk", old.clone(), new.clone(), head(), 42);
+        record.check().unwrap();
+        assert_eq!(
+            record.raw,
+            format!(
+                r#"{{"ref":"refs/heads/trunk","old":"{}","new":"{}"}}"#,
+                old.as_str(),
+                new.as_str()
+            )
+        );
+        assert_eq!(
+            record.content_hash,
+            <[u8; 32]>::from(Sha256::digest(record.raw.as_bytes()))
+        );
+        let data = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&DataDir::at(data.path())).unwrap();
+        let terrarium = store
+            .create_terrarium(&NewTerrarium {
+                seed: RepoSeed::from_bytes([7; 32]),
+                repo: RepoLocation {
+                    path: "/moss".into(),
+                    name: "moss".into(),
+                    default_branch: "trunk".into(),
+                },
+                install_salt: [0; 16],
+                connected_at: 0,
+            })
+            .unwrap();
+        store.append_observation(terrarium, &record).unwrap();
+        let stored = store.observations(terrarium, None, None).unwrap();
+        assert_eq!(
+            stored[0].to_observation().unwrap().value,
+            ObservationValue::RefRewrite {
+                reference: "refs/heads/trunk".into(),
+                old,
+                new
+            }
         );
     }
 

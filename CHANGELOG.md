@@ -5,6 +5,34 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-05
+
+The strip comes alive: it shows your own repository, and follows it as you work.
+
+### Added
+
+- **`repo-terrarium --repo <path>`** connects a repository and opens the strip on it. After
+  that, a plain `repo-terrarium` opens the strip on the repository connected last. Connecting a
+  repository you connected before, even from a new folder, keeps everything it has recorded.
+- **The strip shows the real terrarium:** its state follows the repository's history and the
+  readings recorded on its default branch, and it moves as you work. A commit, a coverage report
+  or a test report your tools write is read within about a second of the last write. A report
+  still being written is read once it is complete, and one that has not changed is never
+  recorded twice.
+- **The label** reads the repository's name, then `branch - weather` (`main - clear`), and a
+  note when one applies: `history 40%` while a long history is read for the first time,
+  `repo not found` while the folder is gone, and `sim updated` once after an update that
+  changed how the terrarium grows.
+- **Starting is quick:** the terrarium shows where it was at once, and catches up from there.
+- **Asleep or away:** after the computer sleeps, or its clock jumps, the terrarium catches up
+  once, and never counts an hour twice.
+- **When the repository's folder is moved or deleted,** the scene stays as it was, no time
+  passes, and the terrarium carries on when the folder is back.
+- **A force push or reset that rewrites the default branch** is recorded, for the earthquake a
+  later release draws.
+- **The terrarium never writes into your repository,** and reads it only when something
+  changed or the hour turns.
+
 ## [0.14.0] - 2026-10-04
 
 Nothing changes on screen. This release teaches the terrarium to read the reports your tools

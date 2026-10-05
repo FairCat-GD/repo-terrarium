@@ -159,6 +159,21 @@ impl GitRepo {
         })
     }
 
+    /// The directory holding this worktree's `HEAD`: `.git`, or a linked worktree's own.
+    pub fn git_dir(&self) -> &Path {
+        self.repo.git_dir()
+    }
+
+    /// The directory holding the refs every worktree shares: `refs/` and `packed-refs`.
+    pub fn common_dir(&self) -> &Path {
+        self.repo.common_dir()
+    }
+
+    /// The worktree's root, or `None` for a bare repository.
+    pub fn workdir(&self) -> Option<&Path> {
+        self.repo.workdir()
+    }
+
     /// The local branches, tags and shallow boundary as they are now.
     pub fn state(&self) -> Result<RepoState, GitError> {
         refs::state(&self.repo)

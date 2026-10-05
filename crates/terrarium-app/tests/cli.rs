@@ -1,5 +1,5 @@
-//! The binary's command line, run the way a person runs it. Never without arguments, and never
-//! with a whole `--probe` command: those open the strip.
+//! The binary's command line, run the way a person runs it. Never without arguments, never with
+//! a whole `--probe` command, and never with `--repo` naming a repository: those open the strip.
 #![forbid(unsafe_code)]
 
 use std::path::Path;
@@ -69,6 +69,31 @@ fn the_probe_readme_is_printed_whole_and_opens_no_window() {
     assert!(text.starts_with("Repo Terrarium: the Windows pinning probe\n"));
     assert!(text.contains("run-probe.cmd"));
     assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn repo_naming_no_repository_exits_before_the_strip_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let nowhere = dir.path().join("nowhere");
+    std::fs::create_dir_all(&nowhere).unwrap();
+    let out = repo_terrarium_in(
+        dir.path(),
+        &dir.path().join("data"),
+        &["--repo", nowhere.to_str().unwrap()],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.starts_with("repo-terrarium: ")
+            && stderr.contains("could not be connected as a git repository"),
+        "{stderr}"
+    );
+    assert_eq!(
+        repo_terrarium(&["--repo"]).status.code(),
+        Some(2),
+        "a missing path is a usage error"
+    );
 }
 
 mod replay {

@@ -1,6 +1,7 @@
-//! What the living strip shows, and when it looks again. Until the live terrarium reaches the
-//! strip, that is the thriving terrarium or `--demo`'s cycle, always on the local clock and
-//! dimmed after a while without input. Dev builds add the debug window's choices.
+//! What the living strip shows, and when it looks again: a connected repository's terrarium as
+//! the engine sends it, the thriving sample when none is connected, or `--demo`'s cycle; always
+//! on the local clock and dimmed after a while without input. Dev builds add the debug window's
+//! choices.
 //!
 //! The feeder is pure: the strip reads the OS (`Os::read`) and passes it in with the time, so
 //! it is driven the same way in tests.
@@ -29,7 +30,9 @@ const DEMO_EVERY_MS: u32 = 60_000;
 /// What the strip shows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Feed {
-    /// The thriving terrarium, until a repository is connected.
+    /// A connected repository: the scene and the label the engine's updates make.
+    Live,
+    /// The thriving sample, when no repository is connected.
     Thriving,
     /// `--demo`'s cycle through the named states.
     Demo,
@@ -79,6 +82,10 @@ pub struct Feeder {
     started: Millis,
     overrides: Overrides,
     scene: SceneInput,
+    /// The lines the label cycles through.
+    label: Vec<String>,
+    /// The live feed's latest scene, which the debug window's choices set aside.
+    live: SceneInput,
     /// The clock last given, and when: carried on from there if the OS cannot say.
     clock: LocalClock,
     clock_at: Millis,
@@ -91,11 +98,23 @@ pub struct Feeder {
 
 impl Feeder {
     pub fn new(feed: Feed, now: Millis, os: &Os) -> Feeder {
+        let bare = preset::bare(terrarium_truth::PresentationState::Thriving, Vec::new());
+        Feeder::starting(feed, bare, vec![copy::sample_label().to_owned()], now, os)
+    }
+
+    /// The live feed, from the scene and label it starts with.
+    pub fn live(scene: SceneInput, label: Vec<String>, now: Millis, os: &Os) -> Feeder {
+        Feeder::starting(Feed::Live, scene, label, now, os)
+    }
+
+    fn starting(feed: Feed, scene: SceneInput, label: Vec<String>, now: Millis, os: &Os) -> Feeder {
         let mut feeder = Feeder {
             feed,
             started: now,
             overrides: Overrides::default(),
-            scene: preset::bare(terrarium_truth::PresentationState::Thriving, Vec::new()),
+            live: scene.clone(),
+            scene,
+            label,
             clock: os.clock.unwrap_or(LocalClock::noon(preset::DATE)),
             clock_at: now,
             idle_dim: false,
@@ -116,8 +135,16 @@ impl Feeder {
     pub fn overlay(&self) -> OverlayInput {
         OverlayInput {
             dim: self.overrides.dim.unwrap_or(self.idle_dim),
-            ..OverlayInput::new(vec![copy::sample_label().to_owned()], self.clock)
+            ..OverlayInput::new(self.label.clone(), self.clock)
         }
+    }
+
+    /// Takes the engine's latest `scene` and `label` at `now`; the strip is then updated with
+    /// `scene()` and `overlay()`. While the debug window's choice is shown, it keeps the scene.
+    pub fn show(&mut self, scene: &SceneInput, label: Vec<String>, now: Millis, os: &Os) {
+        self.live = scene.clone();
+        self.label = label;
+        self.tick(now, os, true);
     }
 
     /// When the feed next wants to look.
@@ -191,6 +218,7 @@ impl Feeder {
 
     fn scene_at(&self, now: Millis) -> SceneInput {
         let mut scene = match &self.feed {
+            Feed::Live => self.live.clone(),
             Feed::Thriving => preset::scene("thriving").expect("the thriving preset"),
             Feed::Demo => synthetic::scene(&demo::knobs_at(now.0.saturating_sub(self.started.0))),
             #[cfg(feature = "dev")]
@@ -297,6 +325,24 @@ mod tests {
         // It updates the strip only when the climate moved, or the hour came round.
         assert!(updates < 105, "{updates} updates");
         assert!(updates > 7 * 3, "{updates} updates");
+    }
+
+    #[test]
+    fn the_live_feed_shows_what_the_engine_sends() {
+        let start = preset::bare(terrarium_truth::PresentationState::Mature, Vec::new());
+        let mut feeder = Feeder::live(start.clone(), vec!["moss".into()], Millis(0), &os(0, 0));
+        assert_eq!(feeder.scene(), &start);
+        assert_eq!(feeder.overlay().label, ["moss"]);
+        // Nothing but the clock and the idle time moves it on its own.
+        assert!(!feeder.tick(Millis(60_000), &os(60_000, 0), false));
+        let thriving = preset::scene("thriving").unwrap();
+        let label = vec!["moss".to_owned(), "main - clear".to_owned()];
+        feeder.show(&thriving, label.clone(), Millis(70_000), &os(70_000, 0));
+        assert_eq!(feeder.scene(), &thriving);
+        assert_eq!(feeder.overlay().label, label);
+        assert_eq!(feeder.overlay().clock, LocalClock::new(DATE, 70_000));
+        assert!(!feeder.tick(Millis(80_000), &os(80_000, 0), false));
+        assert_eq!(feeder.scene(), &thriving);
     }
 
     #[test]

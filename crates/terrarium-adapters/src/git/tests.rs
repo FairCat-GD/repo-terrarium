@@ -1181,3 +1181,48 @@ fn discover_finds_the_repository_above_a_directory() {
         Err(GitError::Open(_))
     ));
 }
+
+#[test]
+fn ancestry_follows_every_walked_parent() {
+    let dir = temp();
+    let (mut repo, ids) = base(&dir);
+    repo.branch("side", "main").unwrap();
+    repo.reset("side", &ids[0]).unwrap();
+    let side = commit(&mut repo, "side", 12, &[Edit::write("s.rs", "s\n")]);
+    let merged = repo.merge("main", "side", at(13), "merge side").unwrap();
+    let history = read(&repo);
+    // Through the first parent, through the second, and a commit is its own ancestor.
+    assert!(history.is_ancestor(&ids[0], &merged));
+    assert!(history.is_ancestor(&side, &merged));
+    assert!(history.is_ancestor(&merged, &merged));
+    // Never backwards, never across unrelated lines.
+    assert!(!history.is_ancestor(&merged, &ids[0]));
+    assert!(!history.is_ancestor(&side, &ids[2]));
+    // A commit the history does not hold is nobody's ancestor.
+    repo.reset("main", &ids[1]).unwrap();
+    repo.delete_branch("side").unwrap();
+    let rewound = read(&repo);
+    assert!(!rewound.is_ancestor(&merged, &ids[1]));
+    assert!(!rewound.is_ancestor(&ids[0], &merged));
+}
+
+#[test]
+fn the_git_directories_are_where_refs_and_head_live() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    repo.commit("main", at(0), "seed", &[Edit::write("a.txt", "a\n")])
+        .unwrap();
+    let git = open(&repo);
+    let git_dir = std::fs::canonicalize(git.git_dir()).unwrap();
+    assert_eq!(git_dir, std::fs::canonicalize(repo.git_dir()).unwrap());
+    assert!(git_dir.join("HEAD").is_file());
+    assert_eq!(
+        std::fs::canonicalize(git.common_dir()).unwrap(),
+        git_dir,
+        "a repository without linked worktrees keeps its refs beside HEAD"
+    );
+    assert_eq!(
+        std::fs::canonicalize(git.workdir().unwrap()).unwrap(),
+        std::fs::canonicalize(repo.path()).unwrap()
+    );
+}

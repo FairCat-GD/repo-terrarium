@@ -6,8 +6,9 @@ use std::path::PathBuf;
 /// What the process was asked to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    /// No arguments: run the strip.
-    Run,
+    /// Run the strip: on the repository `--repo <path>` names, connecting it, or with no
+    /// arguments on the one connected last.
+    Run(Option<PathBuf>),
     /// `--demo`: run the strip through the synthetic climate's states, with no repository.
     Demo,
     /// `--version`: print the version and exit.
@@ -86,9 +87,15 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         .chain(theirs)
         .cloned();
     let Some(first) = args.next() else {
-        return Ok(Command::Run);
+        return Ok(Command::Run(None));
     };
-    let command = if first == "--version" {
+    let command = if first == "--repo" {
+        let repo = args
+            .next()
+            .filter(|repo| !repo.to_string_lossy().starts_with("--"))
+            .ok_or(UsageError::MissingValue("--repo"))?;
+        Command::Run(Some(PathBuf::from(repo)))
+    } else if first == "--version" {
         Command::Version
     } else if first == "--demo" {
         Command::Demo
@@ -174,7 +181,24 @@ mod tests {
 
     #[test]
     fn no_arguments_runs_the_app() {
-        assert_eq!(parse_strs(&[]), Ok(Command::Run));
+        assert_eq!(parse_strs(&[]), Ok(Command::Run(None)));
+    }
+
+    #[test]
+    fn repo_connects_the_repository_it_names_and_takes_nothing_after_it() {
+        assert_eq!(
+            parse_strs(&["--repo", "moss"]),
+            Ok(Command::Run(Some(PathBuf::from("moss"))))
+        );
+        assert_eq!(
+            parse_strs(&["--repo"]),
+            Err(UsageError::MissingValue("--repo"))
+        );
+        assert_eq!(
+            parse_strs(&["--repo", "--demo"]),
+            Err(UsageError::MissingValue("--repo"))
+        );
+        assert_eq!(parse_strs(&["--repo", "moss", "x"]), unexpected("x"));
     }
 
     #[test]
@@ -190,7 +214,7 @@ mod tests {
 
     #[test]
     fn a_launcher_process_serial_number_is_ignored() {
-        assert_eq!(parse_strs(&["-psn_0_12345"]), Ok(Command::Run));
+        assert_eq!(parse_strs(&["-psn_0_12345"]), Ok(Command::Run(None)));
         assert_eq!(
             parse_strs(&["-psn_0_12345", "--version"]),
             Ok(Command::Version)

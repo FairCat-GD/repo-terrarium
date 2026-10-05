@@ -14,11 +14,14 @@ use terrarium_adapters::report::{
     Format, KNIP_MIN_MAJOR, KnipCounts, Outcome, Reading, Report as AdapterReport, Why,
 };
 use terrarium_engine::headless::HeadlessError;
+use terrarium_engine::{Branch, ConnectError, Problem};
 use terrarium_truth::ReplayError;
+use terrarium_truth::scene::Weather;
 
 use crate::cli::UsageError;
 use crate::discover::Reads;
 use crate::hover::NativePoint;
+use crate::live::LabelFacts;
 use crate::pinning::{AppBarPlaced, AttachError, LevelMode, OsSnapshot, PxRect};
 use crate::present::PresentError;
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
@@ -68,12 +71,79 @@ pub fn usage_error(err: &UsageError) -> String {
         .map(|kind| format!("--probe {kind}"))
         .collect();
     format!(
-        "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--version | --demo | {} | \
-         --probe-readme]\n       {BINARY_NAME} replay <path> --dump [--observations <file>] \
-         [--at <unix-seconds>]\n       {BINARY_NAME} discover <path>\n       {BINARY_NAME} \
-         record-tests -- <command> [<argument>...]",
+        "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--repo <path> | --version | --demo | \
+         {} | --probe-readme]\n       {BINARY_NAME} replay <path> --dump [--observations \
+         <file>] [--at <unix-seconds>]\n       {BINARY_NAME} discover <path>\n       \
+         {BINARY_NAME} record-tests -- <command> [<argument>...]",
         probes.join(" | ")
     )
+}
+
+/// The strip's label on a connected repository: its name, `branch - weather`, and
+/// one note when one applies, the most pressing first. A detached `HEAD` is named by its commit.
+pub fn live_label(facts: &LabelFacts) -> Vec<String> {
+    let mut lines = vec![facts.repo_name.clone()];
+    if let Some((branch, weather)) = &facts.branch {
+        let branch = match branch {
+            Branch::Named(name) => name.as_str(),
+            Branch::Detached(commit) => &commit.as_str()[..7],
+        };
+        lines.push(format!("{branch} - {}", weather_word(*weather)));
+    }
+    let note = &facts.note;
+    let note = if note.halted {
+        Some("halted".to_owned())
+    } else if note.repo_not_found {
+        Some("repo not found".to_owned())
+    } else if let Some(percent) = note.progress {
+        Some(format!("history {percent}%"))
+    } else {
+        note.sim_updated.then(|| "sim updated".to_owned())
+    };
+    lines.extend(note);
+    lines
+}
+
+fn weather_word(weather: Weather) -> &'static str {
+    match weather {
+        Weather::Clear => "clear",
+        Weather::Overcast => "overcast",
+        Weather::Storm => "storm",
+        Weather::Haze => "haze",
+    }
+}
+
+/// Why the strip could not connect, and so did not open.
+pub fn connect_failed(repo: Option<&Path>, err: &ConnectError) -> String {
+    let problem = match (err, repo) {
+        (ConnectError::Git(err), Some(repo)) => format!(
+            "{} could not be connected as a git repository: {err}",
+            repo.display()
+        ),
+        (ConnectError::Git(err), None) => {
+            format!("the connected repository could not be read: {err}")
+        }
+        (ConnectError::Path(err), _) => format!("the path could not be made absolute: {err}"),
+        (ConnectError::Store(err), _) => format!("the data directory failed: {err}"),
+        (ConnectError::Salt(err), _) => format!("no random bytes for a new terrarium: {err}"),
+        (ConnectError::Thread(err), _) => format!("the engine could not start: {err}"),
+        (ConnectError::Halted, _) => "connecting stopped on an internal error".to_owned(),
+    };
+    format!("{BINARY_NAME}: {problem}")
+}
+
+pub fn data_dir_unavailable(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the data directory is unavailable: {err}")
+}
+
+/// A refresh that failed, which the next may not repeat.
+pub fn engine_problem(problem: &Problem) -> String {
+    let problem = match problem {
+        Problem::Git(err) => format!("reading the repository failed: {err}"),
+        Problem::Store(err) => format!("the data directory failed: {err}"),
+        Problem::Replay(err) => format!("the replay could not run: {err:?}"),
+    };
+    format!("{BINARY_NAME}: {problem}")
 }
 
 /// Why a headless replay printed nothing.
@@ -1166,7 +1236,8 @@ pub mod debug {
     use crate::egui_probe::{Phase, Sample};
 
     pub const SCENE: &str = "Scene";
-    pub const THRIVING: &str = "Thriving, as a plain launch shows it";
+    pub const LIVE: &str = "The connected repository, as the engine sends it";
+    pub const THRIVING: &str = "Thriving, the sample shown with no repository connected";
     pub const DEMO: &str = "The demo cycle, from its start";
     pub const SYNTHETIC: &str = "Synthetic climate";
     pub const CLIMATE: &str = "Climate";

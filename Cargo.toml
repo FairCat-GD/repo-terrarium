@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -125,6 +125,11 @@ png = "0.18.1"
 # The lexer behind xtask's scan of truth's sources; `span-locations` gives line numbers.
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["span-locations"] }
 toml = "1.1.6"
+# The engine's watcher: FSEvents on macOS, ReadDirectoryChangesW on Windows. Not the 9.0 release
+# candidates.
+notify = "8.2.0"
+# A new terrarium's install salt, from the OS's random source (I-2).
+getrandom = "0.4.3"
 
 # Cargo cannot override workspace lints per crate (cargo#13157), so the per-crate differences
 # (forbid vs allow of unsafe code, float_arithmetic in truth) are crate-level attributes.

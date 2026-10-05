@@ -31,6 +31,12 @@ pub const TRIGGERS: [&str; 2] = ["observations_no_update", "observations_no_dele
 /// The `install` table's keys.
 pub const INSTALL_LAST_SIM_VERSION: &str = "last_sim_version";
 pub const INSTALL_FIRST_RUN_DONE: &str = "first_run_done";
+/// The `settings` keys read outside the settings window: the connected terrarium's row id, and
+/// the report paths configured per adapter.
+pub const SETTING_REPO_ACTIVE: &str = "repo.active";
+pub const SETTING_COVERAGE_REPORT_PATH: &str = "adapters.coverage.report_path";
+pub const SETTING_DEAD_CODE_REPORT_PATH: &str = "adapters.dead_code.report_path";
+pub const SETTING_WEATHER_REPORT_PATH: &str = "adapters.weather.report_path";
 /// Present only inside the guarded deletion's transaction; while it is, observations may be
 /// deleted (the `observations_no_delete` trigger reads it).
 pub(crate) const INSTALL_DELETING_TERRARIUM: &str = "deleting_terrarium";
@@ -66,6 +72,16 @@ mod tests {
         assert_eq!(INSTALL_LAST_SIM_VERSION, "last_sim_version");
         assert_eq!(INSTALL_FIRST_RUN_DONE, "first_run_done");
         assert_eq!(INSTALL_DELETING_TERRARIUM, "deleting_terrarium");
+        assert_eq!(SETTING_REPO_ACTIVE, "repo.active");
+        assert_eq!(
+            SETTING_COVERAGE_REPORT_PATH,
+            "adapters.coverage.report_path"
+        );
+        assert_eq!(
+            SETTING_DEAD_CODE_REPORT_PATH,
+            "adapters.dead_code.report_path"
+        );
+        assert_eq!(SETTING_WEATHER_REPORT_PATH, "adapters.weather.report_path");
         assert!(env!("CARGO_PKG_NAME").starts_with(CRATE_PREFIX));
     }
 }

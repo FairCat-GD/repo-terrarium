@@ -8,7 +8,7 @@ use terrarium_compose::catalog::Art;
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite_into;
 use terrarium_compose::frame::{NativeImage, Viewport};
-use terrarium_compose::preset;
+use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::scale::Damage;
 use terrarium_compose::schedule::Pacer;
 use terrarium_compose::tween::Millis;
@@ -34,14 +34,19 @@ pub struct Living {
 }
 
 impl Living {
-    /// `scene` and `overlay`, arriving at `now`.
+    /// `scene` and `overlay`, arriving at `now`, laid out by `salt` (I-2).
     ///
     /// # Panics
     /// If the embedded art is incomplete, which `cargo xtask verify` rules out.
-    pub fn new(scene: &SceneInput, overlay: &OverlayInput, now: Millis) -> Living {
+    pub fn new(
+        scene: &SceneInput,
+        overlay: &OverlayInput,
+        salt: InstallSalt,
+        now: Millis,
+    ) -> Living {
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
-        let mut composer = Composer::new(&table, preset::SALT);
+        let mut composer = Composer::new(&table, salt);
         composer.update(scene, overlay, now);
         let scenery = composer.scenery(art, &table);
         let blank = NativeImage::filled([0, 0, 0, u8::MAX]);
@@ -130,6 +135,7 @@ impl Living {
 #[cfg(test)]
 mod tests {
     use terrarium_compose::clock::LocalClock;
+    use terrarium_compose::preset;
 
     use super::*;
     use crate::copy;
@@ -138,7 +144,12 @@ mod tests {
 
     fn thriving_at(clock: LocalClock) -> Living {
         let overlay = OverlayInput::new(vec![copy::sample_label().to_owned()], clock);
-        Living::new(&preset::scene("thriving").unwrap(), &overlay, Millis(0))
+        Living::new(
+            &preset::scene("thriving").unwrap(),
+            &overlay,
+            preset::SALT,
+            Millis(0),
+        )
     }
 
     #[test]

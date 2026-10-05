@@ -18,6 +18,7 @@ mod feed;
 mod hotkey;
 mod hover;
 mod idle;
+mod live;
 mod menu;
 mod monitor;
 mod output;
@@ -42,9 +43,9 @@ const USAGE_EXIT: u8 = 2;
 
 fn main() -> ExitCode {
     match cli::parse(std::env::args_os().skip(1)) {
-        Ok(Command::Run) => run(&Mode::Live(Feed::Thriving)),
-        Ok(Command::Demo) => run(&Mode::Live(Feed::Demo)),
-        Ok(Command::Probe(kind)) => run(&Mode::Probe(kind)),
+        Ok(Command::Run(repo)) => live::run(repo),
+        Ok(Command::Demo) => run(&Mode::Live(Feed::Demo), None),
+        Ok(Command::Probe(kind)) => run(&Mode::Probe(kind), None),
         Ok(Command::Version) => {
             println!("{}", copy::version_line());
             ExitCode::SUCCESS
@@ -65,8 +66,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(mode: &Mode) -> ExitCode {
-    match strip::run(mode) {
+fn run(mode: &Mode, connection: Option<live::Connection>) -> ExitCode {
+    match strip::run(mode, connection) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{}", copy::window_failed(&err));

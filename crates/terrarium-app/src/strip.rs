@@ -2,8 +2,8 @@
 //! the composed frame at an integer scale.
 //!
 //! The loop sleeps in `ControlFlow::Wait` and wakes only for OS events, for what other threads
-//! forward through the `EventLoopProxy` (hotkeys, menu choices, system notifications and probe
-//! answers), and at three deadlines: a raise ending, the living strip's next change, which it
+//! forward through the `EventLoopProxy` (hotkeys, menu choices, system notifications, probe
+//! answers and the engine's updates), and at three deadlines: a raise ending, the living strip's next change, which it
 //! never asks for sooner than a fifteenth of a second after the last frame (I-10), and the
 //! feed's next look at the clock, the idle time or `--demo`'s cycle. Nothing is drawn, and
 //! nothing asked for, while the strip is covered.
@@ -16,10 +16,12 @@ use muda::MenuId;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NativeImage, Viewport};
-use terrarium_compose::sample;
+use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::scale::{SizeStep, StripScale};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
+use terrarium_compose::{preset, sample};
+use terrarium_engine::{Engine, Update};
 use terrarium_platform::SystemEvent;
 use terrarium_platform::geometry::Edge;
 use winit::application::ApplicationHandler;
@@ -41,6 +43,7 @@ use crate::feed::Overrides;
 use crate::feed::{Feed, Feeder, Os};
 use crate::hotkey::{self, RaiseHotkey};
 use crate::hover::HoverTracker;
+use crate::live::{Changed, Connection, LiveView};
 use crate::menu::{self, StripMenu};
 use crate::monitor;
 use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
@@ -75,18 +78,46 @@ enum Scene {
 }
 
 impl Scene {
-    fn new(mode: &Mode) -> Scene {
+    /// The scene for `mode`; a connected repository's starts from `live`, laid out by its salt.
+    fn new(mode: &Mode, live: Option<(&LiveView, InstallSalt)>) -> Scene {
         let feed = match mode {
             Mode::Live(feed) => feed.clone(),
             #[cfg(feature = "dev")]
             Mode::Probe(ProbeKind::Egui) => Feed::Thriving,
             Mode::Probe(ProbeKind::Pinning) => return Scene::still(Viewport::SCENE),
         };
-        let feeder = Box::new(Feeder::new(feed, Millis(0), &Os::read()));
+        let os = Os::read();
+        let (feeder, salt) = match live {
+            Some((view, salt)) => (
+                Feeder::live(view.scene().clone(), view.label(), Millis(0), &os),
+                salt,
+            ),
+            None => (Feeder::new(feed, Millis(0), &os), preset::SALT),
+        };
+        let feeder = Box::new(feeder);
         Scene::Living {
-            living: Box::new(Living::new(feeder.scene(), &feeder.overlay(), Millis(0))),
+            living: Box::new(Living::new(
+                feeder.scene(),
+                &feeder.overlay(),
+                salt,
+                Millis(0),
+            )),
             feeder,
             origin: Instant::now(),
+        }
+    }
+
+    /// Moves the composer toward what the connected repository now shows.
+    fn show(&mut self, view: &LiveView, now: Instant) {
+        if let Scene::Living {
+            living,
+            feeder,
+            origin,
+        } = self
+        {
+            let at = Self::millis(*origin, now);
+            feeder.show(view.scene(), view.label(), at, &Os::read());
+            living.update(feeder.scene(), &feeder.overlay(), at);
         }
     }
 
@@ -209,6 +240,7 @@ pub enum UserEvent {
     System(SystemEvent),
     ProbeLine(String),
     ProbeEnd,
+    Engine(Update),
 }
 
 /// Why the strip could not run. Its wording is in the copy module.
@@ -227,8 +259,9 @@ impl From<EventLoopError> for StripError {
     }
 }
 
-/// Runs the strip until it is quit. With a probe, it also records and reports.
-pub fn run(mode: &Mode) -> Result<(), StripError> {
+/// Runs the strip until it is quit. With a probe, it also records and reports; with a
+/// connection, it shows the repository and shuts its engine down on the way out.
+pub fn run(mode: &Mode, connection: Option<Connection>) -> Result<(), StripError> {
     let pinning_probe = matches!(mode, Mode::Probe(ProbeKind::Pinning));
     let mut builder = EventLoop::<UserEvent>::with_user_event();
     pinning::configure_event_loop(&mut builder, pinning_probe);
@@ -239,7 +272,10 @@ pub fn run(mode: &Mode) -> Result<(), StripError> {
     menu::forward_events(event_loop.create_proxy());
     hotkey::forward_events(event_loop.create_proxy());
     let probe = pinning_probe.then(|| Probe::start(event_loop.create_proxy()));
-    let mut strip = Strip::new(event_loop.create_proxy(), probe, mode);
+    if let Some(connection) = &connection {
+        connection.relay.forward_to(event_loop.create_proxy());
+    }
+    let mut strip = Strip::new(event_loop.create_proxy(), probe, mode, connection);
     event_loop.run_app(&mut strip)?;
     match strip.failed {
         Some(err) => Err(err),
@@ -264,6 +300,9 @@ struct Strip {
     placement_pending: bool,
     idle_seen: bool,
     failed: Option<StripError>,
+    engine: Option<Engine>,
+    /// What the connected repository shows, from the engine's updates.
+    live: Option<LiveView>,
     #[cfg(feature = "dev")]
     dev: Dev,
 }
@@ -280,9 +319,18 @@ struct View {
 }
 
 impl Strip {
-    fn new(proxy: EventLoopProxy<UserEvent>, probe: Option<Probe>, mode: &Mode) -> Self {
+    fn new(
+        proxy: EventLoopProxy<UserEvent>,
+        probe: Option<Probe>,
+        mode: &Mode,
+        connection: Option<Connection>,
+    ) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
-        let scene = Scene::new(mode);
+        let scene = Scene::new(mode, connection.as_ref().map(|c| (&c.view, c.salt)));
+        let (engine, live) = match connection {
+            Some(connection) => (Some(connection.engine), Some(connection.view)),
+            None => (None, None),
+        };
         Self {
             proxy: Some(proxy),
             probe,
@@ -296,6 +344,8 @@ impl Strip {
             placement_pending: false,
             idle_seen: false,
             failed: None,
+            engine,
+            live,
             #[cfg(feature = "dev")]
             dev: Dev::new(matches!(mode, Mode::Probe(ProbeKind::Egui))),
         }
@@ -676,9 +726,13 @@ impl ApplicationHandler<UserEvent> for Strip {
                     self.placement_pending = true;
                 }
                 // The composer carried the clock on through the sleep, but on macOS the
-                // monotonic clock stops while asleep: the feed takes the local time again.
+                // monotonic clock stops while asleep: the feed takes the local time again, and
+                // the engine catches truth up.
                 if event == SystemEvent::Woke {
                     self.scene.look(Instant::now(), true);
+                    if let Some(engine) = &self.engine {
+                        engine.wake();
+                    }
                 }
             }
             UserEvent::ProbeLine(line) => {
@@ -687,6 +741,13 @@ impl ApplicationHandler<UserEvent> for Strip {
             UserEvent::ProbeEnd => {
                 self.end_probe(EndReason::InputClosed);
                 event_loop.exit();
+            }
+            UserEvent::Engine(update) => {
+                if let Some(live) = &mut self.live
+                    && live.apply(update) != Changed::Nothing
+                {
+                    self.scene.show(live, Instant::now());
+                }
             }
         }
     }
@@ -738,6 +799,9 @@ impl ApplicationHandler<UserEvent> for Strip {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.end_probe(EndReason::WindowClosed);
+        if let Some(engine) = self.engine.take() {
+            engine.shutdown();
+        }
         // winit only posts its window's destruction, which the ended loop never handles, so
         // the reserved edge is given back here.
         if let Some(view) = &self.view {

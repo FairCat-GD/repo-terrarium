@@ -29,6 +29,7 @@ const MINUTES_IN_DAY: u32 = 24 * 60;
 /// What the strip shows, as the panel offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Choice {
+    Live,
     Thriving,
     Demo,
     Preset(usize),
@@ -70,6 +71,7 @@ impl DebugPanel {
     /// A panel showing what the strip shows now.
     pub fn new(feed: &Feed, overrides: Overrides) -> DebugPanel {
         let (choice, knobs) = match feed {
+            Feed::Live => (Choice::Live, synthetic::NAMED[0].1),
             Feed::Thriving => (Choice::Thriving, synthetic::NAMED[0].1),
             Feed::Demo => (Choice::Demo, synthetic::NAMED[0].1),
             Feed::Preset(name) => (
@@ -100,6 +102,7 @@ impl DebugPanel {
 
     fn feed(&self) -> Feed {
         match self.choice {
+            Choice::Live => Feed::Live,
             Choice::Thriving => Feed::Thriving,
             Choice::Demo => Feed::Demo,
             Choice::Preset(index) => Feed::Preset(preset::NAMES[index]),
@@ -139,6 +142,7 @@ impl DebugPanel {
     fn scene(&mut self, ui: &mut Ui) {
         ui.heading(text::SCENE);
         let before = self.choice;
+        ui.radio_value(&mut self.choice, Choice::Live, text::LIVE);
         ui.radio_value(&mut self.choice, Choice::Thriving, text::THRIVING);
         ui.radio_value(&mut self.choice, Choice::Demo, text::DEMO);
         for (index, name) in preset::NAMES.iter().enumerate() {
