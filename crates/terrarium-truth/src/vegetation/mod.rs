@@ -181,7 +181,7 @@ impl Plant {
         if !self.alive() {
             return;
         }
-        self.vigor = self.vigor.ema(target, rate);
+        self.vigor = approach(self.vigor, target, rate);
         self.limit = limit;
         if self.vigor < FAILING_BELOW {
             let since = *self.low_since.get_or_insert(today.tick);
@@ -242,6 +242,22 @@ pub fn vigor_target(light: Option<Q16>, soil: Option<Q16>) -> (Q16, Limit) {
 /// germinates: `tempo / 7`, tempo being the rain ratio held within `[1/4, 2]`.
 pub fn daily_rate(rain: Q16) -> Q16 {
     rain.clamp(TEMPO_MIN, TEMPO_MAX).saturating_mul(GROWTH_RATE)
+}
+
+/// One day's step of `vigor` toward `target`: the share `rate` of the way, and at least one
+/// epsilon. A rounded average alone stalls a few epsilons short, which would hold a plant whose
+/// target is exactly a band's edge below it for good, while a seedling starts at the target.
+fn approach(vigor: Q16, target: Q16, rate: Q16) -> Q16 {
+    let next = vigor.ema(target, rate);
+    if next != vigor {
+        next
+    } else if vigor < target {
+        vigor.saturating_add(Q16::EPSILON)
+    } else if vigor > target {
+        vigor.saturating_sub(Q16::EPSILON)
+    } else {
+        vigor
+    }
 }
 
 /// The terrarium's vegetation.
@@ -308,7 +324,7 @@ impl Vegetation {
     pub fn close(&mut self, seed: &RepoSeed, today: &Conditions) {
         let plants = plant_capacity(today.terrain);
         let weeds = weed_capacity(plants);
-        self.fall(today.tick, plants);
+        self.fall(today.tick, plants, weeds);
         self.decay(today.tick);
         let (target, limit) = vigor_target(today.light, today.soil);
         let rate = daily_rate(today.rain);
@@ -326,7 +342,7 @@ impl Vegetation {
 
     /// Dead plants that have stood their time, and plants beyond the capacity, fall into litter;
     /// weeds beyond what is left go, the newest first.
-    fn fall(&mut self, now: Tick, capacity: u32) {
+    fn fall(&mut self, now: Tick, capacity: u32, weeds: u32) {
         let litter = &mut self.litter;
         self.plants.retain(|plant| {
             let stood = plant
@@ -339,7 +355,7 @@ impl Vegetation {
             !(stood || beyond)
         });
         let left = capacity.saturating_sub(self.plant_count());
-        let kept = usize::try_from(left.min(weed_capacity(capacity))).unwrap_or(0);
+        let kept = usize::try_from(left.min(weeds)).unwrap_or(0);
         self.weeds.truncate(kept);
     }
 

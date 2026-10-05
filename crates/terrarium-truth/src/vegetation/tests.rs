@@ -318,6 +318,36 @@ fn a_failing_plant_dies_after_three_weeks_stands_a_month_and_rots() {
 }
 
 #[test]
+fn vigor_reaches_a_target_at_a_bands_edge() {
+    // The slowest pace and a target exactly at thriving: a plant just below still gets there,
+    // as a seedling germinated at that target starts there.
+    let mut almost = plant(
+        0,
+        THRIVING_FROM.saturating_sub(Q16::from_raw(20)),
+        Limit::Light,
+    );
+    let slowest = daily_rate(Q16::ZERO);
+    for n in 1..=20 {
+        almost.grow(&day(n), THRIVING_FROM, Limit::Light, slowest);
+    }
+    assert_eq!(almost.vigor, THRIVING_FROM);
+    assert_eq!(
+        almost.look(PresentationState::Thriving),
+        PlantState::Thriving
+    );
+    // And from above it settles on the target too, never past it.
+    let mut above = plant(
+        1,
+        THRIVING_FROM.saturating_add(Q16::from_raw(20)),
+        Limit::Light,
+    );
+    for n in 1..=20 {
+        above.grow(&day(n), THRIVING_FROM, Limit::Light, slowest);
+    }
+    assert_eq!(above.vigor, THRIVING_FROM);
+}
+
+#[test]
 fn a_failing_plant_that_recovers_in_time_lives() {
     let seed = seed(5);
     let mut vegetation = Vegetation::new(&seed);

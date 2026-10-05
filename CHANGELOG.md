@@ -23,8 +23,9 @@ The plants are alive: they grow from your repository's history instead of standi
   plants; a missing tool is never held against it.
 - **The pace follows the rain:** a busy repository's plants respond within days, a quiet one's
   more slowly.
-- **Plants that falter for three weeks die,** stand for a month, then fall as leaf litter, which
-  turns to fungus after two weeks and is gone two months later.
+- **Plants die only when health stays poor:** a plant whose health is badly short (well past
+  pale or wilting) for three weeks dies, stands for a month, then falls as leaf litter, which
+  turns to fungus after two weeks and is gone two months later. Pale and wilting plants live on.
 - **Weeds** move into free room while the soil is poor, and withdraw as it recovers.
 - **Dormancy:** while the repository rests, its plants go dormant and nothing new sprouts; the
   first commit back wakes them, and seeds sprout again into the room the losses left.

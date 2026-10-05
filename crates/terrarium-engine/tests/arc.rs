@@ -161,9 +161,9 @@ fn neither_import_order_nor_salt_changes_the_dump() {
     );
 }
 
-/// In vegetation terms the arc reaches thriving, wilting (soil limits), pale (light limits) and
-/// dead, in that order and before it recovers, and once it recovers a new generation fills the
-/// capacity and thrives.
+/// In vegetation terms the arc reaches thriving, wilting (soil limits),
+/// pale (light limits) and dead, in that order and before it recovers, and once it recovers a
+/// new generation fills the capacity and thrives.
 #[test]
 fn the_arcs_plants_thrive_wilt_go_pale_die_and_grow_back() {
     let arc = ArcDir::new();

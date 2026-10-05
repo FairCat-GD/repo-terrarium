@@ -70,10 +70,15 @@ impl HabitatState {
         self.default_tip = Some(commit.id.clone());
     }
 
+    /// The text lines at the default tip, zero while the running sum is negative.
+    pub fn terrain_lines(&self) -> u64 {
+        u64::try_from(self.terrain).unwrap_or(0)
+    }
+
     /// The habitat at `now`.
     pub fn at(&self, now: Tick) -> Habitat {
         Habitat {
-            terrain: u64::try_from(self.terrain).unwrap_or(0),
+            terrain: self.terrain_lines(),
             age: Tick::new(self.root.map_or(0, |root| now.hours_since(root))),
         }
     }

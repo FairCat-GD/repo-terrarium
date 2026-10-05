@@ -444,7 +444,7 @@ impl SimState {
             light: record.light,
             soil: record.soil,
             rain: record.rain,
-            terrain: self.habitat.at(tick).terrain,
+            terrain: self.habitat.terrain_lines(),
             inactive: self
                 .timeline
                 .current()
