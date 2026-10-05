@@ -187,9 +187,16 @@ fn the_arcs_events_follow_its_story() {
     let marks: Vec<u8> = dump.scene.monuments.iter().map(|m| m.marks).collect();
     assert_eq!(marks, [2, 0]);
     assert_eq!(dump.state.landmarks.pending, 0);
-    // No branch switch fired anything: the arc's source moves from local to CI on day 267 and
-    // passes over an unknown run on day 385.
-    assert!(!days(Storm).contains(&267) && !days(Clearing).contains(&385));
+    // No switch of the weather in effect fired anything: the source moves from local to CI on
+    // day 267, passes over an unknown run on day 385 and comes back on day 388.
+    let fired: BTreeSet<u32> = dump
+        .events
+        .iter()
+        .map(|e| (e.started_tick.hours() + 9) / 24)
+        .collect();
+    for day in [267, 385, 388] {
+        assert!(!fired.contains(&day), "an event on day {day}");
+    }
 }
 
 #[test]

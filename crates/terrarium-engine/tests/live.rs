@@ -22,7 +22,7 @@ use terrarium_engine::{Branch, EngineConfig, Live, ManualClock, Replay, Snapshot
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
 use terrarium_store::raw::RefRewriteRaw;
 use terrarium_store::{DataDir, InstallKey, SimCache, Store, StoredObservation};
-use terrarium_truth::scene::{EventKind, GroundMark, Strength};
+use terrarium_truth::scene::{EventKind, GroundMark, Light, Strength};
 use terrarium_truth::{
     Basis, CommitId, ObservationKind, Prepared, SIM_VERSION, SimState, SimVersion,
 };
@@ -459,6 +459,53 @@ fn a_rewrite_that_takes_a_fossil_records_it_and_opens_a_sinkhole_for_it() {
     // The replayed history never deleted anything: the one sinkhole is the rewrite's.
     assert_eq!(sinkholes, [Some(fossil)]);
     assert_eq!(live.state(), Some(&fx.full_replay()));
+}
+
+#[test]
+fn a_playing_event_yields_only_to_a_stronger_one_and_leaves_after_the_next_hour() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    let at = |fx: &Fixture| Stamp::at(terrarium_engine::Clock::wall_secs(&fx.clock) - MINUTE);
+    fx.clock.advance(HOUR);
+    fx.commit_now();
+    fx.report("coverage/lcov.info", LCOV);
+    shown(&mut live, Cause::Watch, true);
+    fx.clock.advance(HOUR);
+    fx.repo
+        .commit(
+            "main",
+            at(&fx),
+            "plant",
+            &[Edit::write("src/old/roots.rs", &"root\n".repeat(600))],
+        )
+        .unwrap();
+    shown(&mut live, Cause::Watch, true);
+    fx.clock.advance(HOUR);
+    fx.repo
+        .commit(
+            "main",
+            at(&fx),
+            "clear",
+            &[Edit::Remove("src/old/roots.rs".into())],
+        )
+        .unwrap();
+    let sinking = shown(&mut live, Cause::Watch, true);
+    assert_eq!(
+        sinking.scene.event.map(|e| e.kind),
+        Some(EventKind::Sinkhole)
+    );
+    // Coverage falls in the same hour: a dusk, which the sinkhole outranks.
+    fx.report("coverage/lcov.info", LCOV_LOWER);
+    let dusk = shown(&mut live, Cause::Watch, true);
+    assert_eq!(dusk.scene.light, Light::Dusk);
+    assert_eq!(dusk.scene.event, sinking.scene.event);
+    // Through the next hour it stays; after that it leaves the scene.
+    fx.clock.advance(HOUR);
+    assert!(refresh(&mut live, Cause::Hour, false).snapshot.is_none());
+    fx.clock.advance(HOUR);
+    let after = shown(&mut live, Cause::Hour, false);
+    assert_eq!(after.scene.event, None);
 }
 
 #[test]

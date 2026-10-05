@@ -10,7 +10,8 @@
 //!   shown before it ([`Events::unseen`]). An instance is its (tick, kind); every cooldown is at
 //!   least a tick, so no two candidates share one.
 //! - **Side.** Drawn from the seed, keyed by the tick and the kind. A clearing leaves by the side
-//!   the last storm came in from.
+//!   its storm came in from; with no storm since the weather in effect last switched, it draws
+//!   its own.
 //! - **Ground marks.** The settled crack and sinkhole stay until the next rain after drought or
 //!   for 30 days, fresh soil for 14; at most 3, the oldest leaving first. A mark's id is hashed
 //!   from what made it, so a replay after a history rewrite never gives one mark another's id.
@@ -151,7 +152,9 @@ pub struct Events {
     pub tally: BTreeMap<EventKind, Tally>,
     /// The ground marks, oldest first.
     pub marks: Vec<Mark>,
-    /// The side the last storm that qualified came in from.
+    /// The side the storm now in the sky came in from: set by a storm, and cleared by the
+    /// clearing that ends it or by a switch of the weather in effect, after which no front of
+    /// this failure entered.
     pub storm_side: Option<Side>,
     /// The unused items of the newest dead-code report taken at the default tip, while its value
     /// is known.
@@ -244,7 +247,7 @@ impl Events {
         self.last.insert(kind, tick);
         let drawn = side(seed, kind, tick);
         let side = match kind {
-            EventKind::Clearing => self.storm_side.unwrap_or(drawn),
+            EventKind::Clearing => self.storm_side.take().unwrap_or(drawn),
             _ => drawn,
         };
         if kind == EventKind::Storm {

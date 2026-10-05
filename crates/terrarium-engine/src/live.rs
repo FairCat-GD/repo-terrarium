@@ -47,6 +47,7 @@ use terrarium_store::{
 };
 use terrarium_truth::climate::ClimateReport;
 use terrarium_truth::domain::ObservationHead;
+use terrarium_truth::events::Candidate;
 use terrarium_truth::scene::EventKind;
 use terrarium_truth::{
     Basis, CommitId, Observation, Prepared, ReplayError, SIM_VERSION, SceneInput, SimState, Tick,
@@ -183,21 +184,18 @@ impl From<StoreError> for Problem {
     }
 }
 
+/// How long a playing event stays in the scenes after the hour it was first shown in: through
+/// the next hour, long enough for any burst of snapshots to reach the composer.
+const PLAY_HOLD_TICKS: u32 = 1;
+
 /// What a history read found.
 struct HistoryRead {
     changed: bool,
     /// Read again in full because earlier facts changed.
     rewritten: bool,
-    /// The default tip's move, when it moved without fast-forwarding.
-    moved: Option<Moved>,
-}
-
-/// The default tip's old and new commit, and how many commits the move took off its
-/// first-parent chain when the history before it was read.
-struct Moved {
-    old: CommitId,
-    new: CommitId,
-    rewritten: Option<u32>,
+    /// The default tip's move, when it moved without fast-forwarding; its fossils are filled
+    /// in from the state last shown.
+    moved: Option<observe::Rewrite>,
 }
 
 /// How a refresh ended.
@@ -286,10 +284,10 @@ pub struct Live {
     /// The event instances the state last projected held: what a later refresh has already
     /// had the chance to play. `None` before anything was projected and with no cached state.
     seen: Option<BTreeSet<(Tick, EventKind)>>,
-    /// The event the scene plays, kept in every scene until a newer one the viewer has not
-    /// seen replaces it, so a burst of snapshots never drops it; the composer plays each
-    /// instance once.
-    playing: Option<(Tick, EventKind)>,
+    /// The event the scene plays, and the tick it was first shown at. It stays in the scenes
+    /// through the hour after that, so a burst of snapshots never drops it, unless an unseen
+    /// event outranks it; the composer plays each instance once.
+    playing: Option<((Tick, EventKind), Tick)>,
     /// The session's time: the wall clock, never lower than before.
     now: i64,
     refreshes: u64,
@@ -454,7 +452,7 @@ impl Live {
         let history_changed = read.changed;
         let mut recorded = false;
         if let Some(moved) = read.moved {
-            let rewrite = self.rewrite(moved);
+            let rewrite = self.with_fossils(moved);
             let record = observe::ref_rewrite(&branch, rewrite, head.clone(), self.now);
             self.append(None, record)?;
             recorded = true;
@@ -535,47 +533,66 @@ impl Live {
         })
     }
 
-    /// The view's scene, playing the best event it holds that the state last projected did
-    /// not (with none projected, the newest tick's), or else the one already playing.
+    /// The view's scene. It plays the best event the state last projected did not hold (with
+    /// none projected, the newest tick's best), unless the one already playing is still within
+    /// its hold and outranks it: one foreground event at a time, as arbitration among events
+    /// that come close together.
     fn scene(&mut self) -> Option<SceneInput> {
         let view = self.view.as_ref()?;
+        let now = view.live.now();
         let events = &view.live.events;
+        let held = self
+            .playing
+            .filter(|&(_, shown)| now.hours_since(shown) <= PLAY_HOLD_TICKS)
+            .and_then(|(key, _)| events.find(key));
         let fresh = match &self.seen {
             Some(seen) => events.unseen(seen),
-            None => events.current(view.live.now()),
+            None => events.current(now),
         };
         if let Some(fresh) = fresh {
-            self.playing = Some(fresh.key());
+            let winner = terrarium_truth::events::arbitrate(held.into_iter().chain([fresh]));
+            if winner.map(Candidate::key) == Some(fresh.key()) {
+                self.playing = Some((fresh.key(), now));
+            }
         }
-        let playing = self.playing.and_then(|key| events.find(key));
+        let playing = self
+            .playing
+            .filter(|&(_, shown)| now.hours_since(shown) <= PLAY_HOLD_TICKS)
+            .and_then(|(key, _)| events.find(key));
+        if playing.is_none() {
+            self.playing = None;
+        }
         self.seen = Some(events.keys());
         Some(project_showing(&view.live, playing))
     }
 
-    /// What `moved` took: the fossils the state last shown (or, failing that, the cached one)
-    /// held whose commit is no longer on the default branch's first-parent chain.
-    fn rewrite(&self, moved: Moved) -> observe::Rewrite {
+    /// `moved` with what it took: the fossils the state last shown (or, failing that, the
+    /// cached one) held whose commit is no longer on the default branch's first-parent chain.
+    fn with_fossils(&self, moved: observe::Rewrite) -> observe::Rewrite {
         let shown = self
             .view
             .as_ref()
             .map(|view| &view.live)
             .or(self.base.as_ref());
         let fossils = match (shown, self.history.as_ref()) {
-            (Some(state), Some(history)) => state
-                .landmarks
-                .fossils
-                .iter()
-                .filter(|fossil| !on_default_chain(history, &fossil.commit))
-                .map(|fossil| fossil.commit.clone())
-                .collect(),
+            (Some(state), Some(history)) => {
+                let chain: BTreeSet<&CommitId> = history
+                    .commits
+                    .iter()
+                    .filter(|c| c.on_default_first_parent)
+                    .map(|c| &c.id)
+                    .collect();
+                state
+                    .landmarks
+                    .fossils
+                    .iter()
+                    .filter(|fossil| !chain.contains(&fossil.commit))
+                    .map(|fossil| fossil.commit.clone())
+                    .collect()
+            }
             _ => Vec::new(),
         };
-        observe::Rewrite {
-            old: moved.old,
-            new: moved.new,
-            rewritten: moved.rewritten,
-            fossils,
-        }
+        observe::Rewrite { fossils, ..moved }
     }
 
     /// Reads the history in full the first time and what is new afterwards.
@@ -614,10 +631,11 @@ impl Live {
                 .and_then(|base| base.habitat.default_tip.clone())
                 .filter(|tip| !on_default_chain(&history, tip))
                 .zip(history.state.branches.get(branch).cloned())
-                .map(|(old, new)| Moved {
+                .map(|(old, new)| observe::Rewrite {
                     old,
                     new,
                     rewritten: None,
+                    fossils: Vec::new(),
                 });
             self.history = Some(history);
             return Ok(HistoryRead {
@@ -637,10 +655,11 @@ impl Live {
                 let new = history.state.branches.get(branch).cloned();
                 old.zip(new)
                     .filter(|(old, new)| old != new && !history.is_ancestor(old, new))
-                    .map(|(old, new)| Moved {
+                    .map(|(old, new)| observe::Rewrite {
                         old,
                         new,
                         rewritten: Some(u32::try_from(left_chain.len()).unwrap_or(u32::MAX)),
+                        fossils: Vec::new(),
                     })
             }
             _ => None,

@@ -253,13 +253,47 @@ fn a_clearing_leaves_by_the_side_its_storm_came_in() {
         let sides: Vec<Side> = events.recent.iter().map(|c| c.event.side).collect();
         assert_eq!(sides[0], sides[1], "storm at {storm_at}");
     }
-    // With no storm before it, a clearing draws its own.
+    // With no storm before it, a clearing draws its own; a clearing ends its storm's side.
     let mut events = Events::default();
     events.qualify(&seed, found(Clearing, 3, Mid));
     assert_eq!(
         events.recent[0].event.side,
         side(&seed, Clearing, Tick::new(3))
     );
+    events.qualify(&seed, found(Storm, 10, Mid));
+    events.qualify(&seed, found(Clearing, 20, Mid));
+    assert_eq!(events.storm_side, None);
+}
+
+#[test]
+fn a_clearing_after_a_switch_does_not_follow_an_older_storm() {
+    // main storms at hour 10; HEAD then moves onto a failing branch at 30 (a switch, no storm
+    // of its own), which passes at `pass`: that clearing draws its own side, though the storm
+    // came in from the other.
+    let commits = daily_commits(&[1; 3]);
+    let seed = seed();
+    let storm = side(&seed, Storm, Tick::new(10));
+    let pass = (31..60)
+        .find(|&t| side(&seed, Clearing, Tick::new(t)) != storm)
+        .expect("a tick whose draw differs");
+    let observations = [
+        weather(ci("main"), 2, 1, "main", Some(true)),
+        weather(ci("feature/fern"), 3, 1, "feature/fern", Some(false)),
+        weather(ci("main"), 4, 1, "main", Some(true)),
+        weather(ci("main"), 10, 1, "main", Some(false)),
+        weather(ci("feature/fern"), 30, 2, "feature/fern", Some(false)),
+        weather(ci("feature/fern"), pass, 2, "feature/fern", Some(true)),
+    ];
+    let state = replay(&commits, &observations, 60);
+    let turns: Vec<(EventKind, u32, Side)> = state
+        .events
+        .recent
+        .iter()
+        .map(|c| (c.event.kind, c.event.started_tick.hours(), c.event.side))
+        .collect();
+    let other = side(&seed, Clearing, Tick::new(pass));
+    assert_ne!(other, storm);
+    assert_eq!(turns, [(Storm, 10, storm), (Clearing, pass, other)]);
 }
 
 // Each detector, on scripted inputs.

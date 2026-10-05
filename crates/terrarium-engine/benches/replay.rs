@@ -53,17 +53,6 @@ fn extend(repo: &mut FixtureRepo) -> fixture::FixtureResult<()> {
     repo.tag_lightweight("v2.0.0", &back)
 }
 
-/// The default tip as of `at`: the newest first-parent commit at or before it.
-fn tip_at(history: &History, at: i64) -> Option<&terrarium_truth::CommitId> {
-    let tick = history.grid.tick_at(at)?;
-    history
-        .commits
-        .iter()
-        .filter(|c| c.on_default_first_parent && c.tick <= tick)
-        .map(|c| &c.id)
-        .next_back()
-}
-
 /// A day's observations over the history's span.
 fn observations(history: &History) -> Vec<Observation> {
     let start = history.grid.origin_secs();
@@ -72,10 +61,19 @@ fn observations(history: &History) -> Vec<Observation> {
         .last()
         .map_or(start, |c| history.grid.start_secs(c.tick));
     let mut out = Vec::new();
+    // The default tip as the days go by: one walk over the tick-ordered commits.
+    let mut commits = history.commits.iter().peekable();
+    let mut tip = None;
     let mut day = 1;
     while start + day * DAY < end {
         let at = start + day * DAY + 17 * 3_600;
-        let Some(head) = tip_at(history, at).cloned() else {
+        let tick = history.grid.tick_at(at);
+        while let Some(next) = commits.next_if(|c| Some(c.tick) <= tick) {
+            if next.on_default_first_parent {
+                tip = Some(next.id.clone());
+            }
+        }
+        let Some(head) = tip.clone() else {
             day += 1;
             continue;
         };

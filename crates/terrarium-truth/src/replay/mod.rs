@@ -658,18 +658,19 @@ impl SimState {
         self.events.mark(GroundMark::FreshSoil, tick, None);
     }
 
-    /// A storm or a clearing: the source in effect turned in this tick.
+    /// A storm or a clearing: the source in effect turned in this tick. A switch of what is in
+    /// effect fires nothing, and forgets the storm's side: no front entered for what follows.
     fn weather_turned(&mut self, tick: Tick) {
-        let Some(ChangeAt {
-            tick: at,
-            change: WeatherChange::Transition { pass, .. },
-        }) = &self.weather.last_change
-        else {
+        let Some(ChangeAt { tick: at, change }) = &self.weather.last_change else {
             return;
         };
         if *at != tick {
             return;
         }
+        let WeatherChange::Transition { pass, .. } = change else {
+            self.events.storm_side = None;
+            return;
+        };
         let kind = if *pass {
             EventKind::Clearing
         } else {
