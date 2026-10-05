@@ -7,17 +7,16 @@
 //! - wind: calm below 0.7 of the usual pace, breezy from 0.7, a gale from 3;
 //! - glass: condensation while dormant and dust after a year dead.
 //!
-//! Vegetation is [`placeholder`]'s. Residents, monuments, fossils, ground cover, ground marks
-//! and events stay empty: the sim that grows them does not exist yet.
-
-pub mod placeholder;
+//! The plants, weeds, litter and fungus are the vegetation's
+//! ([`crate::vegetation::Vegetation::views`]). Residents, monuments, fossils, ground marks and
+//! events stay empty: the sim that grows them does not exist yet.
 
 use crate::climate::weather::InEffect;
 use crate::fixed::Q16;
 use crate::replay::SimState;
 use crate::scene::{Light, Presentation, SceneInput, Weather, Wind};
 use crate::time::Tick;
-use crate::tuning::{BREEZY_FROM, GALE_FROM, LIGHT_SHIFT_STEP, LIGHT_SHIFT_TICKS, NEUTRAL};
+use crate::tuning::{BREEZY_FROM, GALE_FROM, LIGHT_SHIFT_STEP, LIGHT_SHIFT_TICKS};
 
 pub fn project(state: &SimState) -> SceneInput {
     let now = state.now();
@@ -28,15 +27,10 @@ pub fn project(state: &SimState) -> SceneInput {
             state: presentation,
             since_tick,
         },
-        plants: placeholder::plants(
-            presentation,
-            record.map_or(NEUTRAL, |r| r.health),
-            record.and_then(|r| r.light),
-            record.and_then(|r| r.soil),
-        ),
-        weeds: 0,
-        litter: 0,
-        fungus: 0,
+        plants: state.vegetation.views(presentation, now),
+        weeds: count(&state.vegetation.weeds),
+        litter: count(&state.vegetation.litter),
+        fungus: count(&state.vegetation.fungus),
         residents: Vec::new(),
         monuments: Vec::new(),
         fossils: Vec::new(),
@@ -52,6 +46,11 @@ pub fn project(state: &SimState) -> SceneInput {
         dust: state.timeline.dust(now),
         event: None,
     }
+}
+
+/// A count of ground cover, saturated to the scene's `u8`.
+fn count<T>(items: &[T]) -> u8 {
+    u8::try_from(items.len()).unwrap_or(u8::MAX)
 }
 
 fn weather(in_effect: Option<&InEffect>) -> Weather {

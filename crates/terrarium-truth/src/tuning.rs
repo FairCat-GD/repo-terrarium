@@ -72,10 +72,59 @@ pub const LIGHT_SHIFT_TICKS: u32 = 7 * 24;
 /// A weather reading at or above this is a pass.
 pub const PASS_FROM: Q16 = Q16::HALF;
 
-/// The stand-in vegetation's foliage: thriving from 0.60, alive from 0.35 (the vigor bands,
-/// read from health).
+/// Vigor's bands: the foliage is thriving from 0.60; below 0.35 a plant is failing, and after
+/// `DYING_DAYS` there it dies.
 pub const THRIVING_FROM: Q16 = Q16::from_ratio(60, 100);
-pub const ALIVE_FROM: Q16 = Q16::from_ratio(35, 100);
+pub const FAILING_BELOW: Q16 = Q16::from_ratio(35, 100);
+pub const DYING_DAYS: u32 = 21;
+
+/// A plant's vigor target is health scaled by 4/3, so the foliage
+/// is thriving from health 0.45, where the terrarium turns unhealthy, and a repository
+/// with no light or soil tool (health 0.5, I-3) grows thriving plants. Plants fail below health
+/// 0.2625. It is the ratio of the two thresholds as stored, which is 4/3 to within 2⁻¹⁴, so that
+/// health 0.45 reaches vigor 0.60 exactly rather than one step short.
+pub const VIGOR_PER_HEALTH: Q16 = Q16::from_ratio(THRIVING_FROM.raw(), UNHEALTHY_BELOW.raw());
+
+/// Tempo is the rain ratio held within `[1/4, 2]`: a silent repository still changes, slowly,
+/// and a burst cannot rush it. Each day vigor moves `tempo × GROWTH_RATE` of the way to its
+/// target, and that share of the free capacity germinates, rounded up.
+pub const TEMPO_MIN: Q16 = Q16::from_ratio(1, 4);
+pub const TEMPO_MAX: Q16 = Q16::from_int(2);
+pub const GROWTH_RATE: Q16 = Q16::from_ratio(1, 7);
+
+/// Plant capacity: `clamp(6 + 4 × log2(1 + KLOC), 6, 24)`, rounded down.
+pub const PLANTS_MIN: i32 = 6;
+pub const PLANTS_MAX: i32 = 24;
+pub const PLANTS_PER_DOUBLING: Q16 = Q16::from_int(4);
+pub const LINES_PER_KLOC: i64 = 1_000;
+
+/// Weed capacity: `clamp(P / 3, 2, 8)`.
+pub const WEEDS_PER_PLANTS: u32 = 3;
+pub const WEEDS_MIN: u32 = 2;
+pub const WEEDS_MAX: u32 = 8;
+
+/// Weeds germinate, one a day, while the soil is below 0.45, and wither, one a day, while it is
+/// unknown or at least 0.55; in between they hold.
+pub const WEEDS_BELOW: Q16 = Q16::from_ratio(45, 100);
+pub const WEEDS_WITHER_FROM: Q16 = Q16::from_ratio(55, 100);
+
+/// Days grown (at vigor 0.35 or more, while the repository is not inactive) at which a plant
+/// turns young and mature, by layer: trees grow slowest.
+pub const FAR_STAGE_DAYS: [u32; 2] = [14, 60];
+pub const MID_STAGE_DAYS: [u32; 2] = [10, 30];
+pub const NEAR_STAGE_DAYS: [u32; 2] = [7, 21];
+
+/// A dead plant stands this long, then falls into litter and frees its slot.
+pub const DEAD_STANDING_DAYS: u32 = 30;
+/// Litter becomes fungus after 14 days; fungus is gone after 60 more.
+pub const LITTER_DAYS: u32 = 14;
+pub const FUNGUS_DAYS: u32 = 60;
+
+/// The seed bank: each pool species starts with 4 seeds, never has fewer than 2, gains one a
+/// day while a mature plant of it thrives, and holds at most 12.
+pub const SEED_BANK_START: u32 = 4;
+pub const SEED_BANK_FLOOR: u32 = 2;
+pub const SEED_BANK_CAP: u32 = 12;
 
 #[cfg(test)]
 mod tests {
@@ -99,7 +148,20 @@ mod tests {
         assert_eq!(BREEZY_FROM.raw(), 45_875);
         assert_eq!(GALE_FROM.raw(), 196_608);
         assert_eq!(THRIVING_FROM.raw(), 39_322);
-        assert_eq!(ALIVE_FROM.raw(), 22_938);
+        assert_eq!(FAILING_BELOW.raw(), 22_938);
+        assert_eq!(VIGOR_PER_HEALTH.raw(), 87_383);
+        assert_eq!(
+            UNHEALTHY_BELOW.saturating_mul(VIGOR_PER_HEALTH),
+            THRIVING_FROM
+        );
+        let four_thirds = Q16::from_ratio(4, 3);
+        assert!(VIGOR_PER_HEALTH.saturating_sub(four_thirds) <= Q16::from_raw(2));
+        assert_eq!(TEMPO_MIN.raw(), 16_384);
+        assert_eq!(TEMPO_MAX.raw(), 131_072);
+        assert_eq!(GROWTH_RATE.raw(), 9_362);
+        assert_eq!(PLANTS_PER_DOUBLING, Q16::from_int(4));
+        assert_eq!(WEEDS_BELOW.raw(), 29_491);
+        assert_eq!(WEEDS_WITHER_FROM.raw(), 36_045);
         assert_eq!(LIGHT_SHIFT_STEP.raw(), 1_311);
         assert_eq!(NEUTRAL, Q16::from_ratio(1, 2));
     }

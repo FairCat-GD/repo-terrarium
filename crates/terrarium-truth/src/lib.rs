@@ -20,6 +20,7 @@ pub mod scene;
 pub mod time;
 pub mod timeline;
 pub mod tuning;
+pub mod vegetation;
 
 #[cfg(test)]
 mod test_support;

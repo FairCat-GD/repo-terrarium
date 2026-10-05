@@ -5,6 +5,35 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-05
+
+The plants are alive: they grow from your repository's history instead of standing in place.
+
+### Added
+
+- **A species pool of its own:** each repository grows 8 of the 12 plant species, two trees,
+  three mid-height plants and three ground plants, picked from its first commit, so the same
+  repository grows the same species on every computer.
+- **Room to grow:** a bigger codebase holds more plants, from 6 up to 24. Seedlings sprout into
+  free room while the repository is worked on, grow young and then mature over days and weeks,
+  and keep their place for life.
+- **Plants show the repository's health:** they thrive while health is fair or better, and
+  falter when it falls. Pale plants mean too little light (test coverage); wilting plants mean
+  poor soil (code health). A repository with no coverage or code-health tool grows thriving
+  plants; a missing tool is never held against it.
+- **The pace follows the rain:** a busy repository's plants respond within days, a quiet one's
+  more slowly.
+- **Plants that falter for three weeks die,** stand for a month, then fall as leaf litter, which
+  turns to fungus after two weeks and is gone two months later.
+- **Weeds** move into free room while the soil is poor, and withdraw as it recovers.
+- **Dormancy:** while the repository rests, its plants go dormant and nothing new sprouts; the
+  first commit back wakes them, and seeds sprout again into the room the losses left.
+
+### Changed
+
+- **The terrarium is replayed once** after this update, because how it grows has changed; the
+  label notes `sim updated` the first time.
+
 ## [0.15.0] - 2026-10-05
 
 The strip comes alive: it shows your own repository, and follows it as you work.

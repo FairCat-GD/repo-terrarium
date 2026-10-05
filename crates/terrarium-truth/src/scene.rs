@@ -774,7 +774,7 @@ event.some.fossil = None
     fn the_sample_encodings_are_pinned() {
         // Both encodings are part of truth's output. If this fails, the format changed: bump
         // SIM_VERSION and re-pin, together.
-        assert_eq!(SIM_VERSION, SimVersion(2));
+        assert_eq!(SIM_VERSION, SimVersion(3));
         let scene = sample();
         assert_eq!(scene.validate(), Ok(()));
         assert_eq!(canonical_dump(&scene), SAMPLE_DUMP);

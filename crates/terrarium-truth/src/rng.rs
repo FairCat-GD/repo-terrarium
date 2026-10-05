@@ -51,11 +51,14 @@ pub enum StreamTag {
     SpeciesPool,
     /// Which side an event enters from.
     EventSide,
+    /// Which species each day's seedlings are.
+    Germination,
 }
 
 canonical_enum!(StreamTag {
     SpeciesPool,
-    EventSide
+    EventSide,
+    Germination,
 });
 
 /// Separates stream seeds from every other SHA-256 truth computes.

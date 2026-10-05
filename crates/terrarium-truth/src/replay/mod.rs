@@ -1,5 +1,5 @@
 //! Replay: the tick loop that turns git history and recorded observations into the climate, the
-//! habitat and the presentation timeline.
+//! habitat, the presentation timeline and the vegetation.
 //!
 //! Ticks apply in order, and within one tick:
 //! 1. a UTC day that has ended closes, and the smoothed climates step;
@@ -7,7 +7,9 @@
 //!    cannot re-derive it: two commits of one tick may have their ids either way round);
 //! 3. the tick's observations apply, ordered by their merge key (`recorded_at`, kind, source,
 //!    head commit), which is the same on every install, unlike row ids;
-//! 4. the weather and the presentation are evaluated.
+//! 4. the weather and the presentation are evaluated;
+//! 5. if a day closed, the vegetation steps, with the new day's climate, the terrain and whether
+//!    the repository is inactive.
 //!
 //! A light or soil report applies at its own tick, or at its commit's tick if that is later: a
 //! report taken at a commit dated in a later hour waits for it, and an older report applied
@@ -38,7 +40,8 @@ use crate::climate::rhythm::Rhythm;
 use crate::climate::weather::WeatherState;
 use crate::climate::{self, ClimateReport, DailyClimate, SoilCauses, Trends};
 use crate::domain::{
-    Climate, CommitFacts, Habitat, Observation, ObservationKind, ObservationValue, Reading,
+    ActivityClass, Climate, CommitFacts, Habitat, Observation, ObservationKind, ObservationValue,
+    Reading,
 };
 use crate::fixed::{Q16, Q32};
 use crate::habitat::HabitatState;
@@ -49,6 +52,7 @@ use crate::tuning::{
     DAILY_RECORDS, INACTIVE_TICKS, NEUTRAL, PASS_FROM, RECOVERY_WINDOW_TICKS, SECONDS_PER_DAY,
     SETTLING_TICKS,
 };
+use crate::vegetation::{Conditions, Vegetation};
 
 /// What a replay is of. A state resumes only on the basis it was built on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +328,7 @@ pub struct SimState {
     /// The newest daily records, oldest first.
     pub daily: Vec<DailyClimate>,
     pub timeline: PresentationTimeline,
+    pub vegetation: Vegetation,
 }
 
 canonical_struct!(SimState {
@@ -336,6 +341,7 @@ canonical_struct!(SimState {
     habitat,
     daily,
     timeline,
+    vegetation,
 });
 
 impl SimState {
@@ -344,6 +350,7 @@ impl SimState {
     pub fn new(basis: Basis) -> SimState {
         let open_day = utc_day(basis.grid, Tick::ZERO);
         SimState {
+            vegetation: Vegetation::new(&basis.seed),
             basis,
             next_tick: Tick::ZERO,
             consumed: Consumed {
@@ -399,7 +406,8 @@ impl SimState {
         observation: &mut usize,
     ) {
         let day = utc_day(self.basis.grid, tick);
-        if day != self.rhythm.open_day {
+        let closed = day != self.rhythm.open_day;
+        if closed {
             self.close_day(tick, day);
         }
         while let Some(facts) = prepared.commits.get(*commit).filter(|c| c.tick == tick) {
@@ -421,6 +429,28 @@ impl SimState {
             self.weather.evaluate(tick, &self.basis.default_branch);
         }
         self.evaluate(tick);
+        if closed {
+            self.grow(tick);
+        }
+    }
+
+    /// The vegetation's close, on the climate the day's close left.
+    fn grow(&mut self, tick: Tick) {
+        let Some(record) = self.daily.last() else {
+            return;
+        };
+        let today = Conditions {
+            tick,
+            light: record.light,
+            soil: record.soil,
+            rain: record.rain,
+            terrain: self.habitat.at(tick).terrain,
+            inactive: self
+                .timeline
+                .current()
+                .is_some_and(|entry| entry.activity == ActivityClass::Inactive),
+        };
+        self.vegetation.close(&self.basis.seed, &today);
     }
 
     /// Light and soil take only reports recorded at the default tip whose commit is in the

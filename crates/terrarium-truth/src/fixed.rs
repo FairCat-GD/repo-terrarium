@@ -119,6 +119,17 @@ impl Q16 {
         saturate_i32(div_round(i128::from(self.0), Q16_SCALE))
     }
 
+    /// The largest integer not above `self`.
+    pub const fn floor_to_int(self) -> i32 {
+        self.0 >> Q16::FRAC_BITS
+    }
+
+    /// The smallest integer not below `self`.
+    pub fn ceil_to_int(self) -> i32 {
+        let raw = i64::from(self.0);
+        saturate_i32(i128::from(-((-raw) >> Q16::FRAC_BITS)))
+    }
+
     /// One step of an exponential moving average: `self + alpha × (sample − self)`, rounded.
     ///
     /// `alpha` is clamped to `[0, 1]`, so the result always lies between `self` and `sample`.
@@ -403,6 +414,19 @@ mod tests {
         assert_eq!(Q16::from_ratio(3, -131_072), raw(-2));
         assert_eq!(raw(98_304).round_to_int(), 2);
         assert_eq!(raw(-98_304).round_to_int(), -2);
+        // Floor and ceiling ignore ties: they round toward their side.
+        assert_eq!(raw(98_304).floor_to_int(), 1);
+        assert_eq!(raw(98_304).ceil_to_int(), 2);
+        assert_eq!(raw(-98_304).floor_to_int(), -2);
+        assert_eq!(raw(-98_304).ceil_to_int(), -1);
+        assert_eq!(raw(1).floor_to_int(), 0);
+        assert_eq!(raw(1).ceil_to_int(), 1);
+        assert_eq!(Q16::from_int(3).floor_to_int(), 3);
+        assert_eq!(Q16::from_int(3).ceil_to_int(), 3);
+        assert_eq!(Q16::MAX.floor_to_int(), 32_767);
+        assert_eq!(Q16::MAX.ceil_to_int(), 32_768);
+        assert_eq!(Q16::MIN.floor_to_int(), -32_768);
+        assert_eq!(Q16::MIN.ceil_to_int(), -32_768);
         assert_eq!(Q32::from_ratio(1, 1 << 33), Q32::EPSILON);
         assert_eq!(Q32::from_ratio(-3, 1 << 33), Q32::from_raw(-2));
         assert_eq!(Q32::from_raw(3).saturating_mul(Q32::HALF), Q32::from_raw(2));
@@ -505,6 +529,8 @@ mod tests {
                 prop_assert_eq!(Q16::from_ratio(a, b), q16_clamped(reference(wide_a << 16, wide_b)));
             }
             prop_assert_eq!(x.round_to_int(), saturate_i32(reference(wide_a, 1 << 16)));
+            prop_assert_eq!(i128::from(x.floor_to_int()), wide_a.div_euclid(1 << 16));
+            prop_assert_eq!(i128::from(x.ceil_to_int()), -(-wide_a).div_euclid(1 << 16));
         }
 
         #[test]

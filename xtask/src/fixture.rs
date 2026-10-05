@@ -9,9 +9,10 @@
 //!
 //! The observations are written through a temporary store and its own export, so the file is
 //! exactly the store's JSON Lines (format 1). Their values follow the arc's phases: coverage and
-//! dead code healthy while it thrives, falling as it struggles, absent while it is dead, and
-//! climbing back as it recovers; weather from local test runs at first and CI on `main` later,
-//! with failing stretches.
+//! dead code healthy while it thrives; as it struggles, dead code piling up first (soil limits
+//! health, and plants wilt), then coverage falling below it (light limits, plants go pale) and
+//! on until plants die; absent while it is dead; climbing back as it recovers. Weather comes from
+//! local test runs at first and CI on `main` later, with failing stretches.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -166,9 +167,12 @@ fn coverage(day: i64) -> Option<i64> {
         first_day(Phase::Dead),
         first_day(Phase::Recovering),
     );
+    // Coverage holds for seven weeks of the struggle, then falls through the soil's level.
+    let slipping = struggling + 48;
     match Phase::at(fixture::ARC_START_SECS + day * DAY) {
         Phase::Thriving => Some(820 - (day % 3) * 5),
-        Phase::Struggling => Some(ramp(day, struggling, dead, 780, 380)),
+        Phase::Struggling if day < slipping => Some(ramp(day, struggling, slipping, 780, 740)),
+        Phase::Struggling => Some(ramp(day, slipping, dead, 740, 180)),
         Phase::Dead => None,
         // Tests come back first: a jump that the presentation reads as recovering.
         Phase::Recovering => Some(ramp(day, recovering, recovering + 90, 600, 820)),
@@ -180,8 +184,12 @@ fn dead_code(day: i64) -> Option<(u32, u32)> {
     let exported = 120 + u32::try_from(day / 7).unwrap_or(0);
     let unused = match Phase::at(fixture::ARC_START_SECS + day * DAY) {
         Phase::Thriving => 3 + u32::try_from(day % 4).unwrap_or(0),
+        // Unused items pile up over five weeks to three fifths of the exported ones (soil 0.40),
+        // and stay there while it struggles.
         Phase::Struggling => {
-            6 + u32::try_from((day - first_day(Phase::Struggling)) / 5).unwrap_or(0)
+            let struggling = first_day(Phase::Struggling);
+            let thousandths = ramp(day, struggling, struggling + 38, 50, 600);
+            exported * u32::try_from(thousandths).unwrap_or(0) / 1_000
         }
         Phase::Dead => return None,
         // A clearing on day 640: from about 40 unused items down to 12.
