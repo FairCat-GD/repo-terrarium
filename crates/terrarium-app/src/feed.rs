@@ -82,10 +82,9 @@ pub struct Feeder {
     started: Millis,
     overrides: Overrides,
     scene: SceneInput,
-    /// The lines the label cycles through.
-    label: Vec<String>,
-    /// The live feed's latest scene, which the debug window's choices set aside.
-    live: SceneInput,
+    /// The connected repository's latest scene and label lines, kept while the debug window's
+    /// choice is shown instead.
+    live: Option<(SceneInput, Vec<String>)>,
     /// The clock last given, and when: carried on from there if the OS cannot say.
     clock: LocalClock,
     clock_at: Millis,
@@ -99,22 +98,27 @@ pub struct Feeder {
 impl Feeder {
     pub fn new(feed: Feed, now: Millis, os: &Os) -> Feeder {
         let bare = preset::bare(terrarium_truth::PresentationState::Thriving, Vec::new());
-        Feeder::starting(feed, bare, vec![copy::sample_label().to_owned()], now, os)
+        Feeder::starting(feed, bare, None, now, os)
     }
 
     /// The live feed, from the scene and label it starts with.
     pub fn live(scene: SceneInput, label: Vec<String>, now: Millis, os: &Os) -> Feeder {
-        Feeder::starting(Feed::Live, scene, label, now, os)
+        Feeder::starting(Feed::Live, scene.clone(), Some((scene, label)), now, os)
     }
 
-    fn starting(feed: Feed, scene: SceneInput, label: Vec<String>, now: Millis, os: &Os) -> Feeder {
+    fn starting(
+        feed: Feed,
+        scene: SceneInput,
+        live: Option<(SceneInput, Vec<String>)>,
+        now: Millis,
+        os: &Os,
+    ) -> Feeder {
         let mut feeder = Feeder {
             feed,
             started: now,
             overrides: Overrides::default(),
-            live: scene.clone(),
+            live,
             scene,
-            label,
             clock: os.clock.unwrap_or(LocalClock::noon(preset::DATE)),
             clock_at: now,
             idle_dim: false,
@@ -135,15 +139,22 @@ impl Feeder {
     pub fn overlay(&self) -> OverlayInput {
         OverlayInput {
             dim: self.overrides.dim.unwrap_or(self.idle_dim),
-            ..OverlayInput::new(self.label.clone(), self.clock)
+            ..OverlayInput::new(self.label(), self.clock)
+        }
+    }
+
+    /// The label's lines: the connected repository's while it is shown, the sample's otherwise.
+    fn label(&self) -> Vec<String> {
+        match (&self.feed, &self.live) {
+            (Feed::Live, Some((_, label))) => label.clone(),
+            _ => vec![copy::sample_label().to_owned()],
         }
     }
 
     /// Takes the engine's latest `scene` and `label` at `now`; the strip is then updated with
     /// `scene()` and `overlay()`. While the debug window's choice is shown, it keeps the scene.
     pub fn show(&mut self, scene: &SceneInput, label: Vec<String>, now: Millis, os: &Os) {
-        self.live = scene.clone();
-        self.label = label;
+        self.live = Some((scene.clone(), label));
         self.tick(now, os, true);
     }
 
@@ -218,7 +229,10 @@ impl Feeder {
 
     fn scene_at(&self, now: Millis) -> SceneInput {
         let mut scene = match &self.feed {
-            Feed::Live => self.live.clone(),
+            Feed::Live => self.live.as_ref().map_or_else(
+                || preset::bare(terrarium_truth::PresentationState::Mature, Vec::new()),
+                |(scene, _)| scene.clone(),
+            ),
             Feed::Thriving => preset::scene("thriving").expect("the thriving preset"),
             Feed::Demo => synthetic::scene(&demo::knobs_at(now.0.saturating_sub(self.started.0))),
             #[cfg(feature = "dev")]
@@ -343,6 +357,27 @@ mod tests {
         assert_eq!(feeder.overlay().clock, LocalClock::new(DATE, 70_000));
         assert!(!feeder.tick(Millis(80_000), &os(80_000, 0), false));
         assert_eq!(feeder.scene(), &thriving);
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_debug_choice_keeps_its_own_label_and_the_live_one_comes_back() {
+        let start = preset::scene("thriving").unwrap();
+        let live = vec!["moss".to_owned(), "main - clear".to_owned()];
+        let mut feeder = Feeder::live(start.clone(), live.clone(), Millis(0), &os(0, 0));
+        feeder.choose(
+            Feed::Preset("dead"),
+            Overrides::default(),
+            Millis(1),
+            &os(1, 0),
+        );
+        let later = vec!["moss".to_owned(), "main - storm".to_owned()];
+        feeder.show(&start, later.clone(), Millis(2), &os(2, 0));
+        assert_eq!(feeder.scene(), &preset::scene("dead").unwrap());
+        assert_eq!(feeder.overlay().label, [copy::sample_label()]);
+        feeder.choose(Feed::Live, Overrides::default(), Millis(3), &os(3, 0));
+        assert_eq!(feeder.scene(), &start);
+        assert_eq!(feeder.overlay().label, later);
     }
 
     #[test]

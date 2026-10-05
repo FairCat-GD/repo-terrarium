@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -389,12 +389,20 @@ impl Live {
                     ..Done::default()
                 }
             }
-            Err(Fault::Cancelled) => Done::default(),
-            Err(Fault::Problem(problem)) => Done {
-                reach: Some(Reach::Found),
-                problem: Some(problem),
-                ..Done::default()
-            },
+            Err(Fault::Cancelled) => {
+                self.view = None;
+                Done::default()
+            }
+            Err(Fault::Problem(problem)) => {
+                // It may have read new history or recorded something before it failed: the
+                // next refresh replays rather than taking the state shown as current.
+                self.view = None;
+                Done {
+                    reach: Some(Reach::Found),
+                    problem: Some(problem),
+                    ..Done::default()
+                }
+            }
         }
     }
 
@@ -486,14 +494,18 @@ impl Live {
             },
         });
         self.shown = Some(shown);
-        self.watch = Some(WatchSet::new(&Places {
-            git_dir: git.git_dir(),
-            common_dir: git.common_dir(),
-            root: root.as_deref(),
-            patterns: &self.patterns,
-            status_dir: &self.status_dir,
-            status_name: &self.terrarium.seed.to_hex(),
-        }));
+        // Only a refresh that looked at the reports can have seen a report directory appear;
+        // the git directories never move under an open repository.
+        if refresh.reports || self.watch.is_none() {
+            self.watch = Some(WatchSet::new(&Places {
+                git_dir: git.git_dir(),
+                common_dir: git.common_dir(),
+                root: root.as_deref(),
+                patterns: &self.patterns,
+                status_dir: &self.status_dir,
+                status_name: &self.terrarium.seed.to_hex(),
+            }));
+        }
         Ok(Done {
             reach: Some(Reach::Found),
             snapshot,
@@ -629,8 +641,16 @@ impl Live {
             record,
         };
         self.observations.push(stored.to_observation()?);
-        if producer.is_some() {
-            note_newest(&mut self.newest, &stored);
+        // What this install just recorded is what the next read compares with, even when a
+        // stored row (imported, or recorded while the clock was ahead) is dated later.
+        if let Some(format) = producer {
+            self.newest.insert(
+                format,
+                Newest {
+                    at: (stored.record.recorded_at, stored.id.get()),
+                    hash: stored.record.content_hash,
+                },
+            );
         }
         Ok(())
     }
@@ -719,7 +739,7 @@ fn cache_of(
 /// Creates the terrarium for the repository at `path`, or relinks the one with its seed, and
 /// makes it the active one.
 fn connect_repo(store: &mut Store, path: &Path, now: i64) -> Result<Terrarium, ConnectError> {
-    let path = std::path::absolute(path).map_err(ConnectError::Path)?;
+    let path = normalized(&std::path::absolute(path).map_err(ConnectError::Path)?);
     let git = GitRepo::open(&path)?;
     let default_branch = git.default_branch()?;
     let seed = git.identity(&default_branch)?.seed;
@@ -750,6 +770,22 @@ fn connect_repo(store: &mut Store, path: &Path, now: i64) -> Result<Terrarium, C
         .ok_or(StoreError::NoSuchTerrarium(id))?)
 }
 
+/// `path` with its `.` and `..` resolved as text, so `--repo ..` names the folder it means.
+/// Canonicalizing would also resolve symlinks, and on Windows give `\\?\` paths.
+fn normalized(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            part => out.push(part),
+        }
+    }
+    out
+}
+
 /// The cached base state, when it was written under this `SIM_VERSION` for this terrarium's
 /// seed and default branch and still decodes; and the tick it was cached at.
 fn cached_base(
@@ -773,7 +809,8 @@ fn cached_base(
         .map(|state| (state, cache.tick)))
 }
 
-/// Notes `row` as its format's newest stored observation, if it is.
+/// Notes `row` as its format's newest stored observation, if it is: at connect, the largest
+/// (`recorded_at`, row id).
 fn note_newest(newest: &mut BTreeMap<Format, Newest>, row: &StoredObservation) {
     let Some(format) = observe::producer(&row.record) else {
         return;
@@ -819,6 +856,17 @@ fn unsettled(files: impl Iterator<Item = PathBuf>) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_is_normalized_as_text() {
+        let base = std::path::absolute("moss").unwrap();
+        assert_eq!(normalized(&base.join("sub/..")), base);
+        assert_eq!(normalized(&base.join("./a/./b/../c")), base.join("a/c"));
+        assert_eq!(
+            normalized(&base.join("..")).file_name(),
+            base.parent().unwrap().file_name()
+        );
+    }
 
     #[test]
     fn a_file_still_being_written_waits_and_a_still_one_does_not() {

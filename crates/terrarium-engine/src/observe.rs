@@ -132,19 +132,21 @@ pub fn ref_rewrite(
 /// its format, and of the local weather only a `record-tests` run carries an exit code. `None`
 /// for every other kind and source.
 pub fn producer(record: &ObservationRecord) -> Option<Format> {
-    let raw: serde_json::Value = serde_json::from_str(&record.raw).ok()?;
     match (record.kind, &record.source) {
-        (ObservationKind::Coverage, None) => match raw.get("format")?.as_str()? {
-            "lcov" => Some(Format::Lcov),
-            "cobertura" => Some(Format::Cobertura),
-            _ => None,
-        },
+        (ObservationKind::Coverage, None) => {
+            let raw: CoverageRaw = serde_json::from_str(&record.raw).ok()?;
+            Some(match raw.format {
+                CoverageFormat::Lcov => Format::Lcov,
+                CoverageFormat::Cobertura => Format::Cobertura,
+            })
+        }
         (ObservationKind::Weather, Some(WeatherSource::Local)) => {
-            if raw.get("exit_code").is_some() {
-                Some(Format::LocalTests)
+            let raw: WeatherRaw = serde_json::from_str(&record.raw).ok()?;
+            Some(if raw.exit_code.is_some() {
+                Format::LocalTests
             } else {
-                Some(Format::JUnit)
-            }
+                Format::JUnit
+            })
         }
         _ => None,
     }

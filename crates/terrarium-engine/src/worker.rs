@@ -188,6 +188,13 @@ impl Drop for Engine {
     }
 }
 
+/// The running watch, and the set last tried, whether or not it started.
+#[derive(Default)]
+struct Watching {
+    watcher: Option<Watcher>,
+    tried: Option<WatchSet>,
+}
+
 struct Worker {
     rx: Receiver<Message>,
     /// Handed to each watcher.
@@ -202,7 +209,7 @@ impl Worker {
         let mut pipeline = Some(pipeline);
         let started = Instant::now();
         let mut schedule = Schedule::new(self.clock.wall_secs());
-        let mut watching: Option<(WatchSet, Watcher)> = None;
+        let mut watching = Watching::default();
         let mut reach = Reach::Found;
         let mut problem: Option<Problem> = None;
         loop {
@@ -225,7 +232,7 @@ impl Worker {
                 }));
                 let Ok(done) = ran else {
                     pipeline = None;
-                    watching = None;
+                    watching = Watching::default();
                     (self.sink)(Update::Halted);
                     continue;
                 };
@@ -235,7 +242,7 @@ impl Worker {
                 let mono = started.elapsed();
                 schedule.reached(reached, mono);
                 if reached == Reach::NotFound {
-                    watching = None;
+                    watching = Watching::default();
                     if reach != Reach::NotFound {
                         (self.sink)(Update::RepoNotFound);
                     }
@@ -277,28 +284,31 @@ impl Worker {
         }
     }
 
-    /// Watches `wanted` if it is not what is watched already. A new watch reads the reports
-    /// again once the debounce has passed, for anything written while it was being armed.
+    /// Watches `wanted` if it was not tried already. A new watch reads the reports again once
+    /// the debounce has passed, for anything written while it was being armed. A watch that
+    /// cannot start leaves the one before it running, and is not tried again until the set
+    /// changes: the hourly catch-up still reads what it would have shown.
     fn rewatch(
         &self,
         wanted: Option<&WatchSet>,
-        watching: &mut Option<(WatchSet, Watcher)>,
+        watching: &mut Watching,
         schedule: &mut Schedule,
         mono: Duration,
     ) {
         let Some(wanted) = wanted else {
             return;
         };
-        if watching.as_ref().is_some_and(|(set, _)| set == wanted) {
+        if watching.tried.as_ref() == Some(wanted) {
             return;
         }
+        watching.tried = Some(wanted.clone());
         let tx = self.tx.clone();
-        *watching = Watcher::start(wanted, move |touched| {
+        if let Ok(watcher) = Watcher::start(wanted, move |touched| {
             let _ = tx.send(Message::Touched(touched));
-        })
-        .ok()
-        .map(|watcher| (wanted.clone(), watcher));
-        schedule.follow_up(mono, DEBOUNCE);
+        }) {
+            watching.watcher = Some(watcher);
+            schedule.follow_up(mono, DEBOUNCE);
+        }
     }
 }
 
@@ -431,5 +441,61 @@ mod tests {
             panic!("a snapshot first");
         };
         assert_eq!(snapshot.stats.cause, Cause::Connect);
+    }
+
+    /// A pipeline whose watch set names directories that do not exist, so no watch starts.
+    struct Unwatchable {
+        refreshes: Arc<std::sync::atomic::AtomicU32>,
+        set: WatchSet,
+    }
+
+    impl Pipeline for Unwatchable {
+        fn refresh(&mut self, _: Refresh, _: &mut dyn FnMut(u8), _: &AtomicBool) -> Done {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Done {
+                reach: Some(Reach::Found),
+                ..Done::default()
+            }
+        }
+
+        fn watch_set(&self) -> Option<&WatchSet> {
+            Some(&self.set)
+        }
+    }
+
+    #[test]
+    fn a_watch_that_cannot_start_is_not_retried_in_a_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone");
+        let set = WatchSet::new(&crate::watch::Places {
+            git_dir: &missing,
+            common_dir: &missing,
+            root: None,
+            patterns: &[],
+            status_dir: &missing,
+            status_name: "abc",
+        });
+        let refreshes = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = Arc::clone(&refreshes);
+        let (sink, _) = recording();
+        let (engine, _) = Engine::spawn_pipeline(
+            move || {
+                Ok(Some((
+                    Unwatchable {
+                        refreshes: counted,
+                        set,
+                    },
+                    Start::NotConnected,
+                )))
+            },
+            Arc::new(ManualClock::at(0)),
+            sink,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(2_500));
+        // The connect's, and at most one follow-up where a watch over nothing starts anyway.
+        let seen = refreshes.load(Ordering::SeqCst);
+        assert!((1..=2).contains(&seen), "{seen} refreshes");
+        engine.shutdown();
     }
 }

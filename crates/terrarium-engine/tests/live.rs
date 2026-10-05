@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime};
 use terrarium_adapters::fixture::{self, Edit, FixtureRepo, Stamp};
 use terrarium_adapters::git::GitRepo;
 use terrarium_adapters::local_tests::Status;
+use terrarium_adapters::report::{Format, Report};
 use terrarium_engine::live::Done;
+use terrarium_engine::observe::record;
 use terrarium_engine::schedule::{Cause, Reach, Refresh};
 use terrarium_engine::{Branch, EngineConfig, Live, ManualClock, Replay, Snapshot, Start};
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
@@ -595,4 +597,80 @@ fn a_long_history_read_reports_progress_and_stops_when_cancelled() {
     );
     assert_eq!(done.reach, Some(Reach::Found));
     assert_eq!(all.last(), Some(&100));
+}
+
+/// Appends, behind the pipeline's back, the observation `text` makes as a report of `format`
+/// at `path`, read at the repository's HEAD and dated `at`.
+fn stored_behind(fx: &Fixture, format: Format, path: &str, text: &str, at: i64) {
+    let elsewhere = fx.dir.path().join("elsewhere");
+    write_still(&elsewhere.join(path), text);
+    let report = Report::read(&elsewhere, format, &[path.to_owned()]);
+    let head = GitRepo::open(&fx.repo_path())
+        .unwrap()
+        .head("main")
+        .unwrap();
+    let mut store = fx.store();
+    let id = store.setting::<i64>(SETTING_REPO_ACTIVE).unwrap().unwrap();
+    store
+        .append_observation(
+            terrarium_store::TerrariumId::new(id),
+            &record(&report, head, at).unwrap(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_refresh_that_fails_after_reading_new_history_replays_on_the_next() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    let new = fx.commit_now();
+    // A row at the second, HEAD and kind the next report takes: its append fails, after the
+    // new commit was read.
+    let now = terrarium_engine::Clock::wall_secs(&fx.clock);
+    stored_behind(&fx, Format::Lcov, "coverage/lcov.info", LCOV_LOWER, now);
+    fx.report("coverage/lcov.info", LCOV);
+    let failed = refresh(&mut live, Cause::Watch, true);
+    assert!(failed.problem.is_some(), "{failed:?}");
+    fs::remove_file(fx.repo_path().join("coverage/lcov.info")).unwrap();
+    fx.clock.advance(1);
+    refresh(&mut live, Cause::Watch, true);
+    assert_eq!(live.state().unwrap().habitat.default_tip, Some(new));
+}
+
+#[test]
+fn a_report_is_not_recorded_again_after_a_row_dated_later() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    drop(live);
+    // A row dated a day ahead, as one recorded while the clock ran fast would be.
+    let now = terrarium_engine::Clock::wall_secs(&fx.clock);
+    stored_behind(
+        &fx,
+        Format::JUnit,
+        "junit.xml",
+        r#"<testsuite><testcase name="old"/></testsuite>"#,
+        now + DAY,
+    );
+    let mut live = fx.reconnect().unwrap();
+    fx.report("junit.xml", JUNIT);
+    refresh(&mut live, Cause::Connect, true);
+    assert_eq!(fx.rows(ObservationKind::Weather).len(), 2);
+    for _ in 0..3 {
+        fx.clock.advance(5);
+        refresh(&mut live, Cause::Watch, true);
+    }
+    assert_eq!(fx.rows(ObservationKind::Weather).len(), 2);
+}
+
+#[test]
+fn a_path_through_a_parent_names_the_folder_it_means() {
+    let fx = Fixture::new(2);
+    fs::create_dir_all(fx.repo_path().join("sub")).unwrap();
+    let live = Live::connect(&fx.config(Some(fx.repo_path().join("sub/.."))))
+        .unwrap()
+        .unwrap();
+    assert_eq!(live.terrarium().repo.name, "repo");
+    assert!(!live.terrarium().repo.path.contains(".."));
 }
