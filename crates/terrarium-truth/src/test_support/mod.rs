@@ -1,4 +1,6 @@
-//! Shared test settings.
+//! Shared test settings and helpers.
+
+pub mod ecology;
 
 use proptest::test_runner::{Config, RngSeed};
 

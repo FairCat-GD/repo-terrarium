@@ -200,6 +200,31 @@ impl ResidentSpecies {
             ResidentSpecies::Ladybird | ResidentSpecies::Beetle | ResidentSpecies::Firefly
         )
     }
+
+    /// Whether the species is about by day: every resident but the firefly. Truth's species
+    /// pool and the composer's hours both read it.
+    pub const fn about_by_day(self) -> bool {
+        !matches!(self, ResidentSpecies::Firefly)
+    }
+
+    /// Whether the species is about by night: every resident.
+    pub const fn about_by_night(self) -> bool {
+        true
+    }
+
+    /// Whether the species flies in the art: only the firefly has flight routines.
+    pub const fn flies(self) -> bool {
+        matches!(self, ResidentSpecies::Firefly)
+    }
+
+    /// Whether the species also feeds on decay (dead plants, litter and fungus): the
+    /// woodlouse, the springtail and the earthworm.
+    pub const fn decomposer(self) -> bool {
+        matches!(
+            self,
+            ResidentSpecies::Woodlouse | ResidentSpecies::Springtail | ResidentSpecies::Earthworm
+        )
+    }
 }
 
 /// A resident's life stage. `Egg` covers the egg, the woodlouse's brood and the earthworm's
@@ -774,7 +799,7 @@ event.some.fossil = None
     fn the_sample_encodings_are_pinned() {
         // Both encodings are part of truth's output. If this fails, the format changed: bump
         // SIM_VERSION and re-pin, together.
-        assert_eq!(SIM_VERSION, SimVersion(3));
+        assert_eq!(SIM_VERSION, SimVersion(4));
         let scene = sample();
         assert_eq!(scene.validate(), Ok(()));
         assert_eq!(canonical_dump(&scene), SAMPLE_DUMP);

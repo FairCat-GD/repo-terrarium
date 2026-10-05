@@ -8,8 +8,9 @@
 //! - glass: condensation while dormant and dust after a year dead.
 //!
 //! The plants, weeds, litter and fungus are the vegetation's
-//! ([`crate::vegetation::Vegetation::views`]). Residents, monuments, fossils, ground marks and
-//! events stay empty: the sim that grows them does not exist yet.
+//! ([`crate::vegetation::Vegetation::views`]), the residents the fauna's
+//! ([`crate::fauna::Fauna::views`]), and the monuments and fossils the landmarks'. Ground marks
+//! and events stay empty: the events that leave them do not exist yet.
 
 use crate::climate::weather::InEffect;
 use crate::fixed::Q16;
@@ -31,9 +32,9 @@ pub fn project(state: &SimState) -> SceneInput {
         weeds: count(&state.vegetation.weeds),
         litter: count(&state.vegetation.litter),
         fungus: count(&state.vegetation.fungus),
-        residents: Vec::new(),
-        monuments: Vec::new(),
-        fossils: Vec::new(),
+        residents: state.fauna.views(),
+        monuments: state.landmarks.monument_views(now),
+        fossils: state.landmarks.fossil_views(),
         ground_marks: Vec::new(),
         weather: weather(state.weather.in_effect.as_ref()),
         light: light(

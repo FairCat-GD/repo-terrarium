@@ -53,12 +53,21 @@ pub enum StreamTag {
     EventSide,
     /// Which species each day's seedlings are.
     Germination,
+    /// Which five resident species a terrarium's seed picks.
+    ResidentPool,
+    /// Which species each day's arriving residents are.
+    ResidentArrival,
+    /// Which form a deletion's fossil takes, keyed by its commit.
+    Fossil,
 }
 
 canonical_enum!(StreamTag {
     SpeciesPool,
     EventSide,
     Germination,
+    ResidentPool,
+    ResidentArrival,
+    Fossil,
 });
 
 /// Separates stream seeds from every other SHA-256 truth computes.

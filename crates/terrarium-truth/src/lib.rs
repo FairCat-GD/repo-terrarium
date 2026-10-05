@@ -9,10 +9,12 @@ pub mod canon;
 pub mod climate;
 pub mod domain;
 pub mod dump;
+pub mod fauna;
 pub mod fixed;
 pub mod habitat;
 pub mod history;
 pub mod identity;
+pub mod landmarks;
 pub mod project;
 pub mod replay;
 pub mod rng;
@@ -22,6 +24,8 @@ pub mod timeline;
 pub mod tuning;
 pub mod vegetation;
 
+#[cfg(test)]
+mod ecology_tests;
 #[cfg(test)]
 mod test_support;
 

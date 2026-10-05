@@ -5,6 +5,43 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-05
+
+The terrarium is inhabited: residents live out their lives in it, standing stones mark its
+years, and fossils keep its large deletions.
+
+### Added
+
+- **A cast of its own:** each repository hosts 5 of the 8 resident species, picked from its
+  first commit, so the same repository has the same cast on every computer. A bigger codebase
+  holds more residents, from 1 up to 6.
+- **Residents arrive once the plants are up,** one every couple of days at the repository's
+  usual pace, the species not yet present first.
+- **Lifecycles:** residents hatch from eggs (a brood for the woodlouse, a cocoon for the
+  earthworm), grow as juveniles, pupate (the ladybird, the beetle and the firefly), and live
+  as adults for about 3 to 12 months by species. An adult that has lived its days dies, and
+  shows it for a day.
+- **Eggs:** a well-fed adult lays one about every two weeks while there is room, as long as
+  its kind is not already two.
+- **Energy follows the plants:** residents are lively while the plants thrive, and slower as
+  the plants falter. A resident that goes hungry for two weeks leaves, and comes back once the
+  plants recover.
+- **Decomposers live on decay:** the woodlouse, the springtail and the earthworm also feed on
+  dead plants, leaf litter and fungus, so a dead terrarium can keep a few until the decay is
+  gone. They never breed on it.
+- **Dormancy:** while the repository rests, residents sleep and nothing ages or hatches; the
+  first commit back wakes them.
+- **Standing stones:** one rises for each full year since the repository's first commit, up to
+  three, and each weathers from young to lichened at two years and ancient at five.
+- **Fossils:** a commit on the main branch that deletes a whole directory of 500 lines or more
+  leaves a fossil in the soil. A renamed or moved directory leaves none. Up to five are kept,
+  the oldest leaving first.
+
+### Changed
+
+- **The terrarium is replayed once** after this update, because how it grows has changed; the
+  label notes `sim updated` the first time.
+
 ## [0.16.0] - 2026-10-05
 
 The plants are alive: they grow from your repository's history instead of standing in place.

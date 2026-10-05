@@ -238,16 +238,22 @@ pub fn vigor_target(light: Option<Q16>, soil: Option<Q16>) -> (Q16, Limit) {
     (target, limit)
 }
 
+/// Tempo: the rain ratio held within `[1/4, 2]`. A silent repository still changes, slowly, and
+/// a burst cannot rush it; rain is pace, never health.
+pub fn tempo(rain: Q16) -> Q16 {
+    rain.clamp(TEMPO_MIN, TEMPO_MAX)
+}
+
 /// The share of the way to its target vigor moves in a day, and of free capacity that
-/// germinates: `tempo / 7`, tempo being the rain ratio held within `[1/4, 2]`.
+/// germinates: `tempo / 7`. Residents' energy moves at the same pace.
 pub fn daily_rate(rain: Q16) -> Q16 {
-    rain.clamp(TEMPO_MIN, TEMPO_MAX).saturating_mul(GROWTH_RATE)
+    tempo(rain).saturating_mul(GROWTH_RATE)
 }
 
 /// One day's step of `vigor` toward `target`: the share `rate` of the way, and at least one
 /// epsilon. A rounded average alone stalls a few epsilons short, which would hold a plant whose
 /// target is exactly a band's edge below it for good, while a seedling starts at the target.
-fn approach(vigor: Q16, target: Q16, rate: Q16) -> Q16 {
+pub(crate) fn approach(vigor: Q16, target: Q16, rate: Q16) -> Q16 {
     let next = vigor.ema(target, rate);
     if next != vigor {
         next

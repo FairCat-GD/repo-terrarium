@@ -1,6 +1,7 @@
 //! The fixture arc, replayed through the headless pipeline: it reaches every presentation state,
-//! its plants thrive, wilt, go pale, die and grow back, a cached state resumes to the same result
-//! as a full replay, and neither the order of an import nor the install salt changes anything.
+//! its plants thrive, wilt, go pale, die and grow back, its residents arrive, turn over, leave
+//! and return, a cached state resumes to the same result as a full replay, and neither the order
+//! of an import nor the install salt changes anything.
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,9 +13,9 @@ use terrarium_adapters::fixture::{self, ARC_REPLAY_END_SECS, Phase};
 use terrarium_adapters::git::{GitRepo, History};
 use terrarium_engine::headless::{Request, replay_dump};
 use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store, StoredObservation};
-use terrarium_truth::habitat::plant_capacity;
+use terrarium_truth::habitat::{plant_capacity, resident_capacity};
 use terrarium_truth::replay::first_close;
-use terrarium_truth::scene::PlantState;
+use terrarium_truth::scene::{Energy, LifeStage, PlantState};
 use terrarium_truth::{
     Basis, Observation, Prepared, PresentationState, ReplayDump, ReplayError, RepoSeed, SimState,
     Tick, canonical_dump, observation_tick, project,
@@ -211,6 +212,114 @@ fn the_arcs_plants_thrive_wilt_go_pale_die_and_grow_back() {
     assert!(regrown.hours_since(recovering) <= 60 * 24, "{regrown:?}");
 }
 
+/// In resident terms the arc's founders arrive once its plants are up, a generation turns over
+/// before the silence, the cast goes hungry and leaves once the plants die (no decomposer is
+/// left to live on the decay), returns within 60 days of the first commit back, and sleeps
+/// through the dormancy unchanged. Two stones stand, and the legacy deletion lies as a fossil.
+#[test]
+fn the_arcs_residents_arrive_leave_and_return() {
+    let arc = ArcDir::new();
+    let (history, observations, basis, through) = arc.inputs();
+    let prepared = Prepared::new(basis.clone(), &history.commits, &observations).expect("valid");
+    let tick = |phase: Phase| {
+        history
+            .grid
+            .tick_at(phase.start_secs())
+            .expect("on the grid")
+    };
+    let (silence, recovering) = (tick(Phase::Dead), tick(Phase::Recovering));
+    let mut state = SimState::new(basis.clone());
+    let (mut arrived, mut hatched, mut died, mut bare, mut emptied, mut returned) =
+        (None, None, None, None, None, None);
+    let mut dormant: Option<Vec<u32>> = None;
+    let mut close = first_close(basis.grid);
+    while close <= through {
+        state.advance_through(&prepared, close).expect("replays");
+        let scene = project(&state);
+        assert_eq!(scene.validate(), Ok(()));
+        let mark = |step: &mut Option<Tick>, reached: bool| {
+            if step.is_none() && reached {
+                *step = Some(close);
+            }
+        };
+        let residents = &state.fauna.residents;
+        mark(&mut arrived, !residents.is_empty());
+        mark(
+            &mut hatched,
+            residents.iter().any(|r| r.stage == LifeStage::Juvenile),
+        );
+        mark(&mut died, state.fauna.died > 0);
+        let no_plants = !state
+            .vegetation
+            .plants
+            .iter()
+            .any(terrarium_truth::vegetation::Plant::alive);
+        mark(&mut bare, close > silence && no_plants);
+        // A month after the plants die, only a decomposer can still be fed.
+        if no_plants && bare.is_some_and(|bare| close.hours_since(bare) >= 30 * 24) {
+            assert!(
+                residents.iter().all(|r| r.species.decomposer()),
+                "{residents:?}"
+            );
+        }
+        mark(
+            &mut emptied,
+            close > silence && no_plants && residents.is_empty(),
+        );
+        let full = u32::try_from(residents.len()) == Ok(resident_capacity(state.habitat().terrain));
+        let well = scene.residents.iter().all(|r| r.energy == Energy::High);
+        mark(&mut returned, close > recovering && full && well);
+        let ids: Vec<u32> = residents.iter().map(|r| r.id).collect();
+        if scene.presentation.state == PresentationState::Dormant {
+            assert_eq!(dormant.get_or_insert_with(|| ids.clone()), &ids);
+        }
+        close = close.saturating_add(24);
+    }
+    let days = |step: Option<Tick>| step.expect("reached").hours() / 24;
+    // Tick 0 is day 0 at 09:00, so a close's day is the next day's number.
+    assert!(days(arrived) < 14, "{arrived:?}");
+    assert!(
+        hatched < Some(silence) && died < Some(silence),
+        "{hatched:?} {died:?}"
+    );
+    assert!(
+        bare < emptied && emptied < Some(recovering),
+        "{bare:?} {emptied:?}"
+    );
+    let returned = returned.expect("the cast returns");
+    assert!(returned.hours_since(recovering) <= 60 * 24, "{returned:?}");
+    assert!(dormant.is_some_and(|cast| !cast.is_empty()));
+    let stones: Vec<Tick> = state
+        .landmarks
+        .monuments
+        .iter()
+        .map(|m| m.founded)
+        .collect();
+    // The first closes on or after the first commit's first and second anniversaries.
+    assert_eq!(stones, [Tick::new(8_775), Tick::new(17_535)]);
+    let fossils: Vec<Tick> = state.landmarks.fossils.iter().map(|f| f.tick).collect();
+    assert_eq!(fossils, [Tick::new(7_451)]);
+}
+
+/// The close at which a resident of the arc first dies of old age.
+fn first_dying_close(prepared: &Prepared<'_>, basis: &Basis, through: Tick) -> Tick {
+    let mut state = SimState::new(basis.clone());
+    let mut close = first_close(basis.grid);
+    while close <= through {
+        state.advance_through(prepared, close).expect("replays");
+        if state
+            .fauna
+            .residents
+            .iter()
+            .any(|r| r.stage == LifeStage::Dying)
+        {
+            return close;
+        }
+        close = close.saturating_add(24);
+    }
+    panic!("no resident dies of old age")
+}
+
 #[test]
 fn a_cached_state_resumes_to_the_full_replay() {
     let arc = ArcDir::new();
@@ -219,9 +328,22 @@ fn a_cached_state_resumes_to_the_full_replay() {
     let mut full = SimState::new(basis.clone());
     full.advance_through(&everything, through).expect("replays");
     let tick_of = |o: &Observation| observation_tick(history.grid, o.recorded_at).expect("on grid");
+    let dying = first_dying_close(&everything, &basis, through).hours();
     // Tick 0 is day 0 of the arc at 09:00 UTC. The splits: mid-thriving, the merge's own
-    // tick, a midnight in the silence, and the first commit back.
-    for split in [1_000, 3_560, 10_791, 13_705] {
+    // tick, the legacy deletion's tick and the one after, the first stone's close, a
+    // resident's dying close and its burial the next, a midnight in the silence, and the first
+    // commit back.
+    for split in [
+        1_000,
+        3_560,
+        7_451,
+        7_452,
+        8_775,
+        dying,
+        dying + 24,
+        10_791,
+        13_705,
+    ] {
         let split = Tick::new(split);
         let seen_commits: Vec<_> = history
             .commits

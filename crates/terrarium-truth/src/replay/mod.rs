@@ -1,15 +1,18 @@
 //! Replay: the tick loop that turns git history and recorded observations into the climate, the
-//! habitat, the presentation timeline and the vegetation.
+//! habitat, the presentation timeline, the vegetation, the residents, and the monuments and
+//! fossils.
 //!
 //! Ticks apply in order, and within one tick:
 //! 1. a UTC day that has ended closes, and the smoothed climates step;
 //! 2. the tick's commits apply, in the git reader's order, which puts parents first (truth
-//!    cannot re-derive it: two commits of one tick may have their ids either way round);
+//!    cannot re-derive it: two commits of one tick may have their ids either way round), each
+//!    leaving a fossil if it deletes a large directory;
 //! 3. the tick's observations apply, ordered by their merge key (`recorded_at`, kind, source,
 //!    head commit), which is the same on every install, unlike row ids;
 //! 4. the weather and the presentation are evaluated;
 //! 5. if a day closed, the vegetation steps, with the new day's climate, the terrain and whether
-//!    the repository is inactive.
+//!    the repository is inactive; then the residents, who feed on it; then a monument rises if
+//!    a year of age has passed.
 //!
 //! A light or soil report applies at its own tick, or at its commit's tick if that is later: a
 //! report taken at a commit dated in a later hour waits for it, and an older report applied
@@ -43,9 +46,11 @@ use crate::domain::{
     ActivityClass, Climate, CommitFacts, Habitat, Observation, ObservationKind, ObservationValue,
     Reading,
 };
+use crate::fauna::{Fauna, close_living};
 use crate::fixed::{Q16, Q32};
 use crate::habitat::HabitatState;
 use crate::identity::{CommitId, RepoSeed, SIM_VERSION, SimVersion};
+use crate::landmarks::Landmarks;
 use crate::time::{SECONDS_PER_TICK, TICKS_PER_DAY, Tick, TickGrid};
 use crate::timeline::{Moment, PresentationTimeline};
 use crate::tuning::{
@@ -329,6 +334,8 @@ pub struct SimState {
     pub daily: Vec<DailyClimate>,
     pub timeline: PresentationTimeline,
     pub vegetation: Vegetation,
+    pub fauna: Fauna,
+    pub landmarks: Landmarks,
 }
 
 canonical_struct!(SimState {
@@ -342,6 +349,8 @@ canonical_struct!(SimState {
     daily,
     timeline,
     vegetation,
+    fauna,
+    landmarks,
 });
 
 impl SimState {
@@ -351,6 +360,8 @@ impl SimState {
         let open_day = utc_day(basis.grid, Tick::ZERO);
         SimState {
             vegetation: Vegetation::new(&basis.seed),
+            fauna: Fauna::new(&basis.seed),
+            landmarks: Landmarks::default(),
             basis,
             next_tick: Tick::ZERO,
             consumed: Consumed {
@@ -413,6 +424,7 @@ impl SimState {
         while let Some(facts) = prepared.commits.get(*commit).filter(|c| c.tick == tick) {
             self.rhythm.count(facts);
             self.habitat.apply(facts);
+            self.landmarks.bury(&self.basis.seed, facts);
             *commit += 1;
         }
         let mut observed = false;
@@ -434,7 +446,8 @@ impl SimState {
         }
     }
 
-    /// The vegetation's close, on the climate the day's close left.
+    /// The living things' close, on the climate the day's close left, and a monument if a year
+    /// of age has passed.
     fn grow(&mut self, tick: Tick) {
         let Some(record) = self.daily.last() else {
             return;
@@ -450,7 +463,13 @@ impl SimState {
                 .current()
                 .is_some_and(|entry| entry.activity == ActivityClass::Inactive),
         };
-        self.vegetation.close(&self.basis.seed, &today);
+        close_living(
+            &self.basis.seed,
+            &today,
+            &mut self.vegetation,
+            &mut self.fauna,
+        );
+        self.landmarks.raise(tick, self.habitat.root);
     }
 
     /// Light and soil take only reports recorded at the default tip whose commit is in the

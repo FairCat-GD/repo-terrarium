@@ -98,18 +98,13 @@ struct Rest {
     still: bool,
 }
 
-/// When the species keeps its active hours: the firefly signals only by night; every other
-/// resident is about by day and by night.
+/// When the species keeps its active hours, which truth's species pool reads too: the firefly
+/// only by night, every other resident by day and by night.
 const fn awake(species: ResidentSpecies, night: bool) -> bool {
-    match species {
-        ResidentSpecies::Firefly => night,
-        ResidentSpecies::Snail
-        | ResidentSpecies::Ladybird
-        | ResidentSpecies::Springtail
-        | ResidentSpecies::Beetle
-        | ResidentSpecies::Woodlouse
-        | ResidentSpecies::Earthworm
-        | ResidentSpecies::Harvestman => true,
+    if night {
+        species.about_by_night()
+    } else {
+        species.about_by_day()
     }
 }
 

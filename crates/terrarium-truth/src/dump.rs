@@ -15,7 +15,7 @@ use crate::domain::Habitat;
 use crate::identity::SimVersion;
 use crate::project::project;
 use crate::replay::{Prepared, ReplayError, SimState, first_close};
-use crate::scene::{GrowthStage, PlantState, SceneInput};
+use crate::scene::{Energy, GrowthStage, LifeStage, PlantState, SceneInput};
 use crate::time::Tick;
 
 /// A week of ticks between samples.
@@ -28,7 +28,7 @@ pub struct ReplayDump {
     pub through: Tick,
     /// The record left by the first close and by every seventh close after it.
     pub samples: Vec<DailyClimate>,
-    /// The vegetation at the same closes.
+    /// The living things and landmarks at the same closes.
     pub census: Vec<Census>,
     pub report: ClimateReport,
     pub habitat: Habitat,
@@ -47,7 +47,8 @@ canonical_struct!(ReplayDump {
     scene,
 });
 
-/// The vegetation at one close, counted as the composer is shown it.
+/// The vegetation, the residents and the landmarks at one close, counted as the composer is
+/// shown them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Census {
     pub tick: Tick,
@@ -66,6 +67,22 @@ pub struct Census {
     pub fungus: u8,
     /// How many plants have ever germinated.
     pub germinated: u32,
+    /// Residents by stage; one dying shows for a day, so `died` counts them instead.
+    pub eggs: u32,
+    pub juveniles: u32,
+    pub pupae: u32,
+    pub adults: u32,
+    /// Residents by energy.
+    pub low: u32,
+    pub mid: u32,
+    pub high: u32,
+    /// Running totals: residents that arrived, eggs laid, deaths of old age, and leavings.
+    pub arrived: u32,
+    pub laid: u32,
+    pub died: u32,
+    pub left: u32,
+    pub monuments: u32,
+    pub fossils: u32,
 }
 
 canonical_struct!(Census {
@@ -82,6 +99,19 @@ canonical_struct!(Census {
     litter,
     fungus,
     germinated,
+    eggs,
+    juveniles,
+    pupae,
+    adults,
+    low,
+    mid,
+    high,
+    arrived,
+    laid,
+    died,
+    left,
+    monuments,
+    fossils,
 });
 
 impl Census {
@@ -89,6 +119,9 @@ impl Census {
         let scene = project(state);
         let looks = |look| count(scene.plants.iter().filter(|p| p.state == look));
         let stages = |stage| count(scene.plants.iter().filter(|p| p.stage == stage));
+        let lives = |stage| count(scene.residents.iter().filter(|r| r.stage == stage));
+        let energies = |energy| count(scene.residents.iter().filter(|r| r.energy == energy));
+        let fauna = &state.fauna;
         Census {
             tick: state.now(),
             thriving: looks(PlantState::Thriving),
@@ -103,6 +136,19 @@ impl Census {
             litter: scene.litter,
             fungus: scene.fungus,
             germinated: state.vegetation.next_id.saturating_sub(1),
+            eggs: lives(LifeStage::Egg),
+            juveniles: lives(LifeStage::Juvenile),
+            pupae: lives(LifeStage::Pupa),
+            adults: lives(LifeStage::Adult),
+            low: energies(Energy::Low),
+            mid: energies(Energy::Mid),
+            high: energies(Energy::High),
+            arrived: fauna.arrived,
+            laid: fauna.laid,
+            died: fauna.died,
+            left: fauna.left,
+            monuments: count(scene.monuments.iter()),
+            fossils: count(scene.fossils.iter()),
         }
     }
 }

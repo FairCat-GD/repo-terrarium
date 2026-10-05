@@ -5,6 +5,7 @@
 //! what happened to the same repository.
 
 use crate::fixed::{Q16, Q32};
+use crate::scene::ResidentSpecies;
 
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -126,6 +127,71 @@ pub const SEED_BANK_START: u32 = 4;
 pub const SEED_BANK_FLOOR: u32 = 2;
 pub const SEED_BANK_CAP: u32 = 12;
 
+/// Resident capacity: `clamp(1 + log2(1 + KLOC), 1, 6)`, rounded down. The composer draws at
+/// most six.
+pub const RESIDENTS_MIN: i32 = 1;
+pub const RESIDENTS_MAX: i32 = 6;
+
+/// The seed picks five of the eight resident species.
+pub const RESIDENT_POOL: u32 = 5;
+
+/// The days a resident spends in each stage while the repository is not inactive: egg (the
+/// woodlouse's brood, the earthworm's cocoon), juvenile, pupa (none where the species has no
+/// pupa) and adult. Adults live about 3 to 12 months, and egg to adult takes 3 to 8 weeks: the
+/// springtail and the firefly live shortest, the earthworm and the beetle longest.
+pub const fn life_days(species: ResidentSpecies) -> [u32; 4] {
+    match species {
+        ResidentSpecies::Snail => [14, 35, 0, 240],
+        ResidentSpecies::Ladybird => [5, 14, 7, 150],
+        ResidentSpecies::Beetle => [7, 28, 14, 330],
+        ResidentSpecies::Firefly => [14, 32, 10, 90],
+        ResidentSpecies::Woodlouse => [14, 28, 0, 270],
+        ResidentSpecies::Springtail => [7, 14, 0, 90],
+        ResidentSpecies::Earthworm => [21, 35, 0, 360],
+        ResidentSpecies::Harvestman => [14, 35, 0, 180],
+    }
+}
+
+/// Energy reads in vigor's bands: high from 0.60, low below 0.35.
+pub const ENERGY_HIGH_FROM: Q16 = THRIVING_FROM;
+pub const ENERGY_LOW_BELOW: Q16 = FAILING_BELOW;
+
+/// A resident whose energy stays low this long leaves: an egg or pupa fails.
+pub const RETREAT_DAYS: u32 = 14;
+
+/// An adult at high energy lays an egg every 14 days at the usual pace: its brood grows by the
+/// day's tempo, and an egg is due at `BROOD_DAYS`.
+pub const BROOD_DAYS: Q16 = Q16::from_int(14);
+
+/// Arrivals bank the day's tempo while the plants feed well, up to `ARRIVAL_DAYS` for each
+/// resident the terrarium holds; each arrival spends `ARRIVAL_DAYS`, so one comes every two
+/// days at the usual pace.
+pub const ARRIVAL_DAYS: Q16 = Q16::from_int(2);
+
+/// A species lays or arrives only while it has fewer living members than this. The pool's
+/// species at this cap always outnumber the most residents, so it never keeps a cast short.
+pub const KIN_MAX: u32 = 2;
+
+/// Plant food is the living plants' vigor summed over at least `⌈P / FOOD_SHARE⌉` of them: a
+/// full terrarium feeds at its mean vigor, a sparse one less.
+pub const FOOD_SHARE: u32 = 2;
+
+/// What decay (dead plants, litter, fungus) feeds a decomposer: enough to stay, never enough
+/// to breed.
+pub const DETRITUS_FOOD: Q16 = Q16::HALF;
+
+/// One monument for each full 365 days of age, at most 3. Each weathers by its own age:
+/// lichened from 2 years, ancient from 5.
+pub const MONUMENT_DAYS: u32 = 365;
+pub const MONUMENTS_MAX: usize = 3;
+pub const LICHENED_FROM_YEARS: u32 = 2;
+pub const ANCIENT_FROM_YEARS: u32 = 5;
+
+/// A commit that deletes a whole directory of at least 500 lines leaves a fossil (a sinkhole);
+/// at most 5 are kept, the oldest leaving first.
+pub const FOSSIL_MIN_LINES: u64 = 500;
+pub const FOSSILS_MAX: usize = 5;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +230,56 @@ mod tests {
         assert_eq!(WEEDS_WITHER_FROM.raw(), 36_045);
         assert_eq!(LIGHT_SHIFT_STEP.raw(), 1_311);
         assert_eq!(NEUTRAL, Q16::from_ratio(1, 2));
+        assert_eq!(ENERGY_HIGH_FROM.raw(), 39_322);
+        assert_eq!(ENERGY_LOW_BELOW.raw(), 22_938);
+        assert_eq!(BROOD_DAYS, Q16::from_int(14));
+        assert_eq!(ARRIVAL_DAYS, Q16::from_int(2));
+        assert_eq!(DETRITUS_FOOD.raw(), 32_768);
+    }
+
+    #[test]
+    fn residents_live_in_seasons() {
+        let days: Vec<(&str, [u32; 4])> = ResidentSpecies::ALL
+            .iter()
+            .map(|&species| (species.name(), life_days(species)))
+            .collect();
+        assert_eq!(
+            days,
+            [
+                ("Snail", [14, 35, 0, 240]),
+                ("Ladybird", [5, 14, 7, 150]),
+                ("Beetle", [7, 28, 14, 330]),
+                ("Firefly", [14, 32, 10, 90]),
+                ("Woodlouse", [14, 28, 0, 270]),
+                ("Springtail", [7, 14, 0, 90]),
+                ("Earthworm", [21, 35, 0, 360]),
+                ("Harvestman", [14, 35, 0, 180]),
+            ]
+        );
+        for &species in ResidentSpecies::ALL {
+            let [egg, juvenile, pupa, adult] = life_days(species);
+            // A pupa exactly where the art has one; 3 to 8 weeks to adult; 3 to 12 months adult.
+            assert_eq!(pupa > 0, species.has_pupa(), "{}", species.name());
+            assert!(
+                (21..=56).contains(&(egg + juvenile + pupa)),
+                "{}",
+                species.name()
+            );
+            assert!((90..=365).contains(&adult), "{}", species.name());
+        }
+        // The kin cap never keeps a full cast from forming out of a five-species pool.
+        assert!(KIN_MAX * RESIDENT_POOL >= u32::try_from(RESIDENTS_MAX).expect("positive"));
+        assert_eq!(
+            (
+                RETREAT_DAYS,
+                KIN_MAX,
+                FOOD_SHARE,
+                MONUMENT_DAYS,
+                MONUMENTS_MAX
+            ),
+            (14, 2, 2, 365, 3)
+        );
+        assert_eq!((LICHENED_FROM_YEARS, ANCIENT_FROM_YEARS), (2, 5));
+        assert_eq!((FOSSIL_MIN_LINES, FOSSILS_MAX), (500, 5));
     }
 }

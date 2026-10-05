@@ -5,7 +5,7 @@ use proptest::prelude::*;
 use super::*;
 use crate::canon::{canonical_dump, from_canonical_dump};
 use crate::climate::weather::{ChangeAt, WeatherChange};
-use crate::domain::{ObservationHead, WeatherSource};
+use crate::domain::{DeletedDir, ObservationHead, WeatherSource};
 use crate::test_support::{
     HOUR, ORIGIN, basis, commit, coverage, grid, id, observation, proptest_config,
 };
@@ -212,6 +212,67 @@ fn a_resume_refuses_a_rewrite_that_keeps_the_count() {
 }
 
 #[test]
+fn a_rewrite_that_drops_a_deletion_drops_its_fossil() {
+    let deletion = CommitFacts {
+        deleted_dirs: vec![DeletedDir {
+            path: "src/legacy".to_owned(),
+            lines: 660,
+        }],
+        ..commit(2, 30)
+    };
+    let commits = [commit(1, 0), deletion, commit(3, 60)];
+    let state = replay(&commits, &[], 100);
+    let fossils: Vec<(u32, Tick, &CommitId)> = state
+        .landmarks
+        .fossils
+        .iter()
+        .map(|f| (f.id, f.tick, &f.commit))
+        .collect();
+    assert_eq!(fossils, [(1, Tick::new(30), &id(2))]);
+    assert_eq!(crate::project(&state).fossils.len(), 1);
+    // The rewritten history no longer deletes anything: a resume refuses it, and the full
+    // replay it falls back to has no fossil.
+    let rewritten = [commit(1, 0), commit(4, 30), commit(3, 60)];
+    let prepared = Prepared::new(basis(), &rewritten, &[]).expect("valid");
+    let mut resumed = state.clone();
+    assert_eq!(
+        resumed.advance_through(&prepared, Tick::new(120)),
+        Err(ReplayError::NeedsFullReplay)
+    );
+    assert!(replay(&rewritten, &[], 120).landmarks.fossils.is_empty());
+}
+
+#[test]
+fn the_scene_shows_the_residents_the_stones_and_the_fossils() {
+    // A commit a day for a year and three weeks, one of them deleting a large directory.
+    let mut commits = daily_commits(&[1; 386]);
+    commits[40].deleted_dirs = vec![DeletedDir {
+        path: "old".to_owned(),
+        lines: 2_000,
+    }];
+    let through = 386 * 24;
+    let scene = crate::project(&replay(&commits, &[], through));
+    assert_eq!(scene.validate(), Ok(()));
+    assert_eq!(scene.fossils.len(), 1);
+    assert_eq!(
+        scene
+            .monuments
+            .iter()
+            .map(|m| (m.id, m.age, m.marks))
+            .collect::<Vec<_>>(),
+        [(1, crate::scene::MonumentAge::Young, 0)]
+    );
+    // Nearly 4,000 lines hold three residents; a year of good days has filled the cast.
+    assert_eq!(scene.residents.len(), 3);
+    assert!(
+        scene
+            .residents
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id)
+    );
+}
+
+#[test]
 fn a_source_switch_is_not_a_transition() {
     let commits = [commit(1, 0)];
     let observations = [
@@ -385,7 +446,7 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 3\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 4\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())
@@ -422,8 +483,24 @@ fn generated_value(kind: u8) -> ObservationValue {
 }
 
 fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
+    // Deleted directories, some of them large, some the same size, some on side branches.
+    let dirs = prop::collection::vec(
+        (
+            prop::sample::select(vec!["a", "b", "src/c"]),
+            prop::sample::select(vec![0_u64, 499, 500, 800, 1_199]),
+        ),
+        0..3,
+    );
     let commits = prop::collection::vec(
-        (0_u32..60, 1_u32..=2, any::<bool>(), 0_u64..500, 0_u64..200),
+        (
+            0_u32..60,
+            1_u32..=2,
+            any::<bool>(),
+            0_u64..500,
+            0_u64..200,
+            // One commit in four deletes something.
+            (0_u8..4, dirs).prop_map(|(pick, dirs)| if pick == 0 { dirs } else { Vec::new() }),
+        ),
         1..40,
     );
     let observations = prop::collection::vec(
@@ -438,7 +515,7 @@ fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
         let mut tick = 0;
         let commits = (1_u32..)
             .zip(commits)
-            .map(|(n, (gap, parents, default, added, removed))| {
+            .map(|(n, (gap, parents, default, added, removed, dirs))| {
                 if n > 1 {
                     tick += gap;
                 }
@@ -447,6 +524,13 @@ fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
                     on_default_first_parent: n == 1 || default,
                     added,
                     removed,
+                    deleted_dirs: dirs
+                        .into_iter()
+                        .map(|(path, lines)| DeletedDir {
+                            path: path.to_owned(),
+                            lines,
+                        })
+                        .collect(),
                     ..commit(n, tick)
                 }
             })
@@ -559,6 +643,7 @@ proptest! {
                 && late
                 && !matches!(o.value, ObservationValue::Weather { .. })
         });
+        prop_assert_eq!(crate::project(&full).validate(), Ok(()));
         match resumed.advance_through(&everything, Tick::new(THROUGH)) {
             Ok(()) => prop_assert_eq!(&resumed, &full),
             Err(err) => {
