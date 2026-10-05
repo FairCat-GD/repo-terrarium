@@ -17,7 +17,7 @@ use terrarium_truth::domain::{ObservationHead, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind, Q16};
 
 /// The `adapter_version` of the ref rewrites the live refresh records.
-pub const REF_REWRITE_VERSION: u32 = 1;
+pub const REF_REWRITE_VERSION: u32 = 2;
 
 /// The observation `report` makes when HEAD was at `head` at `recorded_at` (Unix seconds,
 /// UTC), or `None` when it is not recorded.
@@ -98,19 +98,33 @@ pub fn record(
     })
 }
 
-/// The observation of `branch` moving from `old` to `new` without fast-forwarding, seen while
-/// HEAD was at `head`. Its content hash is the SHA-256 of its `raw`.
+/// A default branch that moved without fast-forwarding, and what the move took off its
+/// first-parent chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rewrite {
+    pub old: CommitId,
+    pub new: CommitId,
+    /// How many commits left the chain; `None` when the history they were on is no longer
+    /// known.
+    pub rewritten: Option<u32>,
+    /// The commits of the fossils shown before the move that left the chain.
+    pub fossils: Vec<CommitId>,
+}
+
+/// The observation of `branch` making `rewrite`, seen while HEAD was at `head`. Its content
+/// hash is the SHA-256 of its `raw`.
 pub fn ref_rewrite(
     branch: &str,
-    old: CommitId,
-    new: CommitId,
+    rewrite: Rewrite,
     head: ObservationHead,
     recorded_at: i64,
 ) -> ObservationRecord {
     let raw = RefRewriteRaw {
         reference: format!("refs/heads/{branch}"),
-        old,
-        new,
+        old: rewrite.old,
+        new: rewrite.new,
+        rewritten: rewrite.rewritten,
+        fossils: rewrite.fossils,
     }
     .to_raw();
     ObservationRecord {
@@ -319,8 +333,12 @@ mod tests {
         }
         let rewrite = ref_rewrite(
             "main",
-            CommitId::from_hex(&"a".repeat(40)).unwrap(),
-            CommitId::from_hex(&"b".repeat(40)).unwrap(),
+            Rewrite {
+                old: CommitId::from_hex(&"a".repeat(40)).unwrap(),
+                new: CommitId::from_hex(&"b".repeat(40)).unwrap(),
+                rewritten: None,
+                fossils: Vec::new(),
+            },
             head(),
             7,
         );
@@ -331,14 +349,23 @@ mod tests {
     fn a_ref_rewrite_is_stored_and_replay_reads_its_refs() {
         let old = CommitId::from_hex(&"a".repeat(40)).unwrap();
         let new = CommitId::from_hex(&"b".repeat(40)).unwrap();
-        let record = ref_rewrite("trunk", old.clone(), new.clone(), head(), 42);
+        let fossil = CommitId::from_hex(&"c".repeat(40)).unwrap();
+        let rewrite = Rewrite {
+            old: old.clone(),
+            new: new.clone(),
+            rewritten: Some(3),
+            fossils: vec![fossil.clone()],
+        };
+        let record = ref_rewrite("trunk", rewrite, head(), 42);
         record.check().unwrap();
+        assert_eq!(record.adapter_version, 2);
         assert_eq!(
             record.raw,
             format!(
-                r#"{{"ref":"refs/heads/trunk","old":"{}","new":"{}"}}"#,
+                r#"{{"ref":"refs/heads/trunk","old":"{}","new":"{}","rewritten":3,"fossils":["{}"]}}"#,
                 old.as_str(),
-                new.as_str()
+                new.as_str(),
+                fossil.as_str()
             )
         );
         assert_eq!(
@@ -366,7 +393,9 @@ mod tests {
             ObservationValue::RefRewrite {
                 reference: "refs/heads/trunk".into(),
                 old,
-                new
+                new,
+                rewritten: Some(3),
+                fossils: vec![fossil],
             }
         );
     }

@@ -38,7 +38,9 @@ pub struct SceneInput {
     pub condensation: u8,
     /// 0 for none, up to `MAX_GLASS_LEVEL`.
     pub dust: u8,
-    /// The one foreground event, while it plays.
+    /// The one foreground event. It may stay in the scenes after it started; the composer plays
+    /// each instance, its (`kind`, `started_tick`), once. Its sim effects are already in the
+    /// scene that first carries it.
     pub event: Option<ActiveEvent>,
 }
 
@@ -77,7 +79,7 @@ pub struct PlantView {
     pub state: PlantState,
     /// Authorized by the sim; drawn only on a mature, thriving plant.
     pub bloom: bool,
-    /// The lightning target.
+    /// The target of the playing lightning.
     pub scorched: bool,
     /// Truth's order, for slot assignment.
     pub order: u16,
@@ -304,7 +306,8 @@ canonical_enum!(FossilForm {
 pub struct GroundMarkView {
     pub id: u32,
     pub kind: GroundMark,
-    /// The fossil a sinkhole revealed; `None` for every other kind.
+    /// The fossil a sinkhole revealed, or took (a history rewrite's, no longer among the
+    /// fossils); `None` for every other kind.
     pub fossil: Option<u32>,
 }
 
@@ -370,7 +373,7 @@ pub struct ActiveEvent {
     pub strength: Strength,
     /// Chosen by truth from the seed and the tick.
     pub side: Side,
-    /// The fossil a sinkhole reveals; `None` for every other kind.
+    /// The fossil a sinkhole reveals, or takes; `None` for every other kind.
     pub fossil: Option<u32>,
 }
 
@@ -799,7 +802,7 @@ event.some.fossil = None
     fn the_sample_encodings_are_pinned() {
         // Both encodings are part of truth's output. If this fails, the format changed: bump
         // SIM_VERSION and re-pin, together.
-        assert_eq!(SIM_VERSION, SimVersion(4));
+        assert_eq!(SIM_VERSION, SimVersion(5));
         let scene = sample();
         assert_eq!(scene.validate(), Ok(()));
         assert_eq!(canonical_dump(&scene), SAMPLE_DUMP);

@@ -22,6 +22,7 @@ use terrarium_engine::{Branch, EngineConfig, Live, ManualClock, Replay, Snapshot
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
 use terrarium_store::raw::RefRewriteRaw;
 use terrarium_store::{DataDir, InstallKey, SimCache, Store, StoredObservation};
+use terrarium_truth::scene::{EventKind, GroundMark, Strength};
 use terrarium_truth::{
     Basis, CommitId, ObservationKind, Prepared, SIM_VERSION, SimState, SimVersion,
 };
@@ -383,6 +384,159 @@ fn a_rewrite_replays_in_full_and_records_one_ref_rewrite() {
     assert_eq!(raw.old, tip);
     assert_eq!(raw.new, new);
     assert_eq!(rewrites[0].record.head.commit, new);
+    // Off the old chain: main's last six days, the commit on top and the branch's commit.
+    assert_eq!(raw.rewritten, Some(8));
+    assert!(raw.fossils.is_empty());
+    assert_eq!(live.state(), Some(&fx.full_replay()));
+    let quake = rewritten.scene.event.expect("an earthquake");
+    assert_eq!(
+        (quake.kind, quake.strength),
+        (EventKind::Earthquake, Strength::Mid)
+    );
+    assert_eq!(rewritten.scene.ground_marks.len(), 1);
+}
+
+#[test]
+fn a_rewrite_that_takes_a_fossil_records_it_and_opens_a_sinkhole_for_it() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    let at = |fx: &Fixture| Stamp::at(terrarium_engine::Clock::wall_secs(&fx.clock) - MINUTE);
+    fx.clock.advance(HOUR);
+    let planted = fx
+        .repo
+        .commit(
+            "main",
+            at(&fx),
+            "plant",
+            &[Edit::write("src/old/roots.rs", &"root\n".repeat(600))],
+        )
+        .unwrap();
+    shown(&mut live, Cause::Watch, true);
+    fx.clock.advance(2 * HOUR);
+    let cleared = fx
+        .repo
+        .commit(
+            "main",
+            at(&fx),
+            "clear",
+            &[Edit::Remove("src/old/roots.rs".into())],
+        )
+        .unwrap();
+    let sinking = shown(&mut live, Cause::Watch, true);
+    let event = sinking.scene.event.expect("a sinkhole");
+    assert_eq!(event.kind, EventKind::Sinkhole);
+    let fossil = event.fossil.expect("names its fossil");
+    assert_eq!(
+        sinking
+            .scene
+            .fossils
+            .iter()
+            .map(|f| f.id)
+            .collect::<Vec<_>>(),
+        [fossil]
+    );
+    // The deletion is amended away.
+    fx.clock.advance(2 * HOUR);
+    fx.repo.reset("main", &planted).unwrap();
+    fx.commit_now();
+    let shaken = shown(&mut live, Cause::Watch, true);
+    let rows = fx.rows(ObservationKind::RefRewrite);
+    let raw: RefRewriteRaw = serde_json::from_str(&rows[0].record.raw).unwrap();
+    assert_eq!((raw.rewritten, raw.fossils), (Some(1), vec![cleared]));
+    assert!(shaken.scene.fossils.is_empty());
+    assert_eq!(
+        shaken.scene.event.map(|e| e.kind),
+        Some(EventKind::Earthquake)
+    );
+    let sinkholes: Vec<Option<u32>> = shaken
+        .scene
+        .ground_marks
+        .iter()
+        .filter(|m| m.kind == GroundMark::Sinkhole)
+        .map(|m| m.fossil)
+        .collect();
+    // The replayed history never deleted anything: the one sinkhole is the rewrite's.
+    assert_eq!(sinkholes, [Some(fossil)]);
+    assert_eq!(live.state(), Some(&fx.full_replay()));
+}
+
+#[test]
+fn a_rewrite_made_while_closed_is_recorded_at_the_next_start() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.clock.advance(3 * HOUR);
+    refresh(&mut live, Cause::Hour, false);
+    drop(live);
+    // While nothing watches, main is reset back three days and committed on.
+    fx.repo.reset("main", &fx.main[8]).unwrap();
+    fx.clock.advance(HOUR);
+    let new = fx.commit_now();
+    let mut next = fx.reconnect().unwrap();
+    let Start::Connected { scene, .. } = next.start() else {
+        panic!("connected");
+    };
+    assert_eq!(
+        scene.and_then(|s| s.event),
+        None,
+        "the cached scene plays nothing"
+    );
+    let started = shown(&mut next, Cause::Connect, true);
+    let rows = fx.rows(ObservationKind::RefRewrite);
+    assert_eq!(rows.len(), 1);
+    let raw: RefRewriteRaw = serde_json::from_str(&rows[0].record.raw).unwrap();
+    assert_eq!(
+        (raw.old, raw.new, raw.rewritten),
+        (fx.main[11].clone(), new, None)
+    );
+    let quake = started.scene.event.expect("an earthquake");
+    assert_eq!(
+        (quake.kind, quake.strength),
+        (EventKind::Earthquake, Strength::Low)
+    );
+    // The next start records nothing more.
+    drop(next);
+    let mut again = fx.reconnect().unwrap();
+    shown(&mut again, Cause::Connect, true);
+    assert_eq!(fx.rows(ObservationKind::RefRewrite).len(), 1);
+}
+
+#[test]
+fn after_a_gap_the_strongest_unseen_event_plays_and_stays_until_a_newer_one() {
+    let mut fx = Fixture::new(20);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.clock.advance(HOUR);
+    let earlier = fx.commit_now();
+    fx.report("coverage/lcov.info", LCOV);
+    let first = shown(&mut live, Cause::Watch, true);
+    assert_eq!(first.scene.event, None);
+    // Five hours on: coverage fell (a dusk), and the earlier hour's commit was tagged as a
+    // release, which dates the flowering to that commit's hour.
+    fx.clock.advance(5 * HOUR);
+    fx.commit_now();
+    fx.report("coverage/lcov.info", LCOV_LOWER);
+    fx.repo.tag_lightweight("v1.0.0", &earlier).unwrap();
+    let caught_up = shown(&mut live, Cause::Watch, true);
+    let flowering = caught_up.scene.event.expect("the flowering plays");
+    assert_eq!(flowering.kind, EventKind::Flowering);
+    assert!(flowering.started_tick < live.state().unwrap().now());
+    // Nothing new: the scene, still playing it, is not sent again.
+    assert!(refresh(&mut live, Cause::Watch, true).snapshot.is_none());
+    // An hour on, it still plays, so the scene is unchanged; the composer plays an instance
+    // once.
+    fx.clock.advance(HOUR);
+    assert!(refresh(&mut live, Cause::Hour, false).snapshot.is_none());
+    // A newer event replaces it.
+    fx.clock.advance(HOUR);
+    fx.commit_now();
+    fx.report("coverage/lcov.info", LCOV);
+    let sunburst = shown(&mut live, Cause::Watch, true);
+    assert_eq!(
+        sunburst.scene.event.map(|e| e.kind),
+        Some(EventKind::Sunburst)
+    );
     assert_eq!(live.state(), Some(&fx.full_replay()));
 }
 

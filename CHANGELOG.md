@@ -5,6 +5,50 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-05
+
+Things now happen in the terrarium: the repository's moments arrive as events, one at a time.
+
+### Added
+
+- **Eleven events**, each answering something real:
+  - **storm** when the tests start failing, **clearing** when they pass again, leaving by the
+    side the storm came in;
+  - **lightning** on each day the tests stay red, from the third: it scorches one mature
+    plant and dims it a little, never to death, and never while the repository sleeps;
+  - **flowering** for a release tag such as `v1.2.0`: thriving mature plants bloom for a day;
+  - **carved marks:** each new major version (v1, v2, …) is carved on the newest standing
+    stone with room, up to three a stone; a release before the first stone waits for it;
+  - **clearing burn** when a fifth of the unused code (at least five items) is cleared: the
+    weeds burn and fresh soil shows for two weeks;
+  - **dusk** and **sunburst** when coverage falls or rises by two points or more;
+  - **windstorm** on a day with at least three times the repository's usual changed lines,
+    blowing in leaf litter;
+  - **rain after drought:** the first commit after two silent weeks washes the settled marks
+    away and sprouts more seedlings at the next midnight;
+  - **sinkhole** when a commit deletes a whole directory of 500 lines or more: it swallows one
+    plant and leaves its fossil;
+  - **earthquake** when the default branch is force-pushed: the ground cracks, and a fossil
+    whose commit the push removed sinks with it.
+- **One event at a time:** when several happen together, the most important plays; after the
+  computer sleeps, or the app was closed, the most important thing that happened meanwhile
+  plays once, while everything else still takes effect.
+- **Events stay rare:** each kind waits a while (an hour for a clearing, a week for rain after
+  drought) before it can play again.
+- **The settled crack and sinkhole** stay in the ground for up to 30 days.
+- **A force push made while the app was closed** is noticed at the next start.
+
+### Changed
+
+- **The presentation no longer flickers** between busy and quiet when activity hovers at the
+  threshold.
+- **Fossils keep their identity** across a history rewrite: the ones that remain stay where
+  they were.
+- **`cargo xtask bench`** also replays 10,000 commits in full, events included, against the
+  30-second first-connect budget.
+- **`cargo xtask verify` cleans the build directory** when it grows past 30 GiB.
+- The terrarium's history replays once more after this update (simulation version 5).
+
 ## [0.17.0] - 2026-10-05
 
 The terrarium is inhabited: residents live out their lives in it, standing stones mark its

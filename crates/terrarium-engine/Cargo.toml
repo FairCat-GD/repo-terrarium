@@ -22,5 +22,10 @@ serde_json.workspace = true
 terrarium-adapters = { workspace = true, features = ["fixture"] }
 tempfile.workspace = true
 
+# The release-build first-connect budget (N-05), run by `cargo xtask bench`.
+[[bench]]
+name = "replay"
+harness = false
+
 [lints]
 workspace = true

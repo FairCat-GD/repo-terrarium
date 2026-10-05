@@ -76,3 +76,81 @@ pub fn coverage(hours: u32, head: u32, value: crate::Q16) -> crate::Observation 
         Some(value),
     )
 }
+
+/// A weather run of `source` recorded `hours` after the origin with HEAD at `head` on `branch`.
+pub fn weather(
+    source: crate::domain::WeatherSource,
+    hours: u32,
+    head: u32,
+    branch: &str,
+    pass: Option<bool>,
+) -> crate::Observation {
+    let mut observation = observation(
+        crate::domain::ObservationValue::Weather { source },
+        hours,
+        head,
+        pass.map(|pass| {
+            if pass {
+                crate::Q16::ONE
+            } else {
+                crate::Q16::ZERO
+            }
+        }),
+    );
+    observation.head.branch = Some(branch.to_owned());
+    observation.head.at_default_tip = branch == "main";
+    observation
+}
+
+pub fn ci(branch: &str) -> crate::domain::WeatherSource {
+    crate::domain::WeatherSource::Ci {
+        branch: branch.to_owned(),
+    }
+}
+
+/// `per_day[d]` commits on day `d`, from 09:00, each adding ten lines.
+pub fn daily_commits(per_day: &[u32]) -> Vec<crate::CommitFacts> {
+    let mut commits = Vec::new();
+    for (day, &count) in (0_u32..).zip(per_day) {
+        for k in 0..count {
+            let n = u32::try_from(commits.len()).expect("few") + 1;
+            commits.push(commit(n, day * 24 + 9 + k));
+        }
+    }
+    commits
+}
+
+/// A dead-code report of `unused` of 100 exported items, known unless `known` is false.
+pub fn dead_code(hours: u32, head: u32, unused: u32, known: bool) -> crate::Observation {
+    let value = crate::Q16::from_ratio(100 - i32::try_from(unused.min(100)).expect("small"), 100);
+    observation(
+        crate::domain::ObservationValue::DeadCode {
+            unused_items: unused,
+            exported_items: 100,
+        },
+        hours,
+        head,
+        known.then_some(value),
+    )
+}
+
+/// A ref rewrite of `reference` recorded `hours` after the origin.
+pub fn rewrite(
+    hours: u32,
+    reference: &str,
+    rewritten: Option<u32>,
+    fossils: Vec<crate::CommitId>,
+) -> crate::Observation {
+    observation(
+        crate::domain::ObservationValue::RefRewrite {
+            reference: reference.to_owned(),
+            old: id(9_999),
+            new: id(9_998),
+            rewritten,
+            fossils,
+        },
+        hours,
+        1,
+        None,
+    )
+}

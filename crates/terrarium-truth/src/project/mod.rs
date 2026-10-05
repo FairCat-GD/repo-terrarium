@@ -9,33 +9,44 @@
 //!
 //! The plants, weeds, litter and fungus are the vegetation's
 //! ([`crate::vegetation::Vegetation::views`]), the residents the fauna's
-//! ([`crate::fauna::Fauna::views`]), and the monuments and fossils the landmarks'. Ground marks
-//! and events stay empty: the events that leave them do not exist yet.
+//! ([`crate::fauna::Fauna::views`]), the monuments and fossils the landmarks', and the ground
+//! marks the events'. The event is the one playing: by default the best candidate of the newest
+//! tick ([`project`]); the engine names another after a gap ([`project_showing`]). A playing
+//! lightning scorches its plant.
 
 use crate::climate::weather::InEffect;
+use crate::events::Candidate;
 use crate::fixed::Q16;
 use crate::replay::SimState;
-use crate::scene::{Light, Presentation, SceneInput, Weather, Wind};
+use crate::scene::{EventKind, Light, Presentation, SceneInput, Weather, Wind};
 use crate::time::Tick;
 use crate::tuning::{BREEZY_FROM, GALE_FROM, LIGHT_SHIFT_STEP, LIGHT_SHIFT_TICKS};
 
 pub fn project(state: &SimState) -> SceneInput {
+    project_showing(state, state.events.current(state.now()))
+}
+
+/// The scene with `playing` as its foreground event.
+pub fn project_showing(state: &SimState, playing: Option<&Candidate>) -> SceneInput {
     let now = state.now();
     let (presentation, since_tick) = state.timeline.presentation();
+    let scorched = playing
+        .filter(|candidate| candidate.event.kind == EventKind::Lightning)
+        .and_then(|candidate| candidate.target);
     let record = state.daily.last();
     SceneInput {
         presentation: Presentation {
             state: presentation,
             since_tick,
         },
-        plants: state.vegetation.views(presentation, now),
+        plants: state.vegetation.views(presentation, now, scorched),
         weeds: count(&state.vegetation.weeds),
         litter: count(&state.vegetation.litter),
         fungus: count(&state.vegetation.fungus),
         residents: state.fauna.views(),
         monuments: state.landmarks.monument_views(now),
         fossils: state.landmarks.fossil_views(),
-        ground_marks: Vec::new(),
+        ground_marks: state.events.mark_views(),
         weather: weather(state.weather.in_effect.as_ref()),
         light: light(
             state
@@ -45,7 +56,7 @@ pub fn project(state: &SimState) -> SceneInput {
         wind: wind(record.map_or(Q16::ONE, |r| r.wind)),
         condensation: state.timeline.condensation(now),
         dust: state.timeline.dust(now),
-        event: None,
+        event: playing.map(|candidate| candidate.event),
     }
 }
 

@@ -22,7 +22,7 @@ fn run(
 
 fn looks(vegetation: &Vegetation) -> Vec<PlantState> {
     vegetation
-        .views(PresentationState::Thriving, Tick::new(START))
+        .views(PresentationState::Thriving, Tick::new(START), None)
         .iter()
         .map(|view| view.state)
         .collect()
@@ -220,7 +220,7 @@ fn a_bloom_shows_only_on_a_mature_thriving_plant_until_it_ends() {
         ..Vegetation::new(&seed(1))
     };
     let bloom = |vegetation: Vegetation, presentation, now| {
-        vegetation.views(presentation, Tick::new(now))[0].bloom
+        vegetation.views(presentation, Tick::new(now), None)[0].bloom
     };
     let thriving = PresentationState::Thriving;
     assert!(bloom(blooming(GrowthStage::Mature, Q16::ONE), thriving, 99));
@@ -236,7 +236,7 @@ fn a_bloom_shows_only_on_a_mature_thriving_plant_until_it_ends() {
         PresentationState::Dormant,
         99
     ));
-    let view = blooming(GrowthStage::Mature, Q16::ONE).views(thriving, Tick::ZERO)[0];
+    let view = blooming(GrowthStage::Mature, Q16::ONE).views(thriving, Tick::ZERO, None)[0];
     assert_eq!((view.id, view.order, view.scorched), (1, 0, false));
 }
 
@@ -542,4 +542,97 @@ proptest! {
         }
         prop_assert!(thriving(&vegetation, terrain), "{:#?}", vegetation);
     }
+}
+
+#[test]
+fn lightning_dips_one_mature_plant_and_never_below_failing() {
+    let seed = seed(7);
+    let mut vegetation = Vegetation {
+        plants: (0..5)
+            .map(|slot| plant(slot, Q16::ONE, Limit::Soil))
+            .collect(),
+        ..Vegetation::new(&seed)
+    };
+    // The stream keyed by tick 72 draws index 4 of 5 (the Python model).
+    let struck = vegetation.strike(&seed, Tick::new(72), q(15));
+    assert_eq!(struck, Some(5));
+    let vigor: Vec<Q16> = vegetation.plants.iter().map(|p| p.vigor).collect();
+    assert_eq!(vigor, [Q16::ONE, Q16::ONE, Q16::ONE, Q16::ONE, q(85)]);
+    // At 0.40 it falls to 0.35, no lower; below 0.35 it is left alone.
+    let mut weak = Vegetation {
+        plants: vec![plant(0, q(40), Limit::Soil)],
+        ..Vegetation::new(&seed)
+    };
+    weak.strike(&seed, Tick::new(1), q(15));
+    assert_eq!(weak.plants[0].vigor, FAILING_BELOW);
+    weak.plants[0].vigor = q(20);
+    weak.strike(&seed, Tick::new(2), q(15));
+    assert_eq!(weak.plants[0].vigor, q(20));
+    // Only mature living plants are struck.
+    let mut young = Vegetation {
+        plants: vec![Plant {
+            stage: GrowthStage::Young,
+            ..plant(0, Q16::ONE, Limit::Soil)
+        }],
+        ..Vegetation::new(&seed)
+    };
+    assert_eq!(young.strike(&seed, Tick::new(3), q(15)), None);
+}
+
+#[test]
+fn a_sinkhole_swallows_one_living_plant_and_leaves_no_litter() {
+    let seed = seed(7);
+    let mut vegetation = Vegetation {
+        plants: (0..7)
+            .map(|slot| plant(slot, Q16::ONE, Limit::Soil))
+            .collect(),
+        ..Vegetation::new(&seed)
+    };
+    vegetation.plants[0].dead_since = Some(Tick::ZERO);
+    // Six are living; commit 4's stream draws index 5 of 6 (the Python model): the plant in
+    // slot 6. The dead one is never drawn.
+    let key = crate::landmarks::commit_key(&crate::test_support::id(4));
+    assert_eq!(vegetation.swallow(&seed, key), Some(7));
+    assert_eq!(vegetation.plants.len(), 6);
+    assert!(vegetation.litter.is_empty());
+    let mut bare = Vegetation::new(&seed);
+    assert_eq!(bare.swallow(&seed, key), None);
+}
+
+#[test]
+fn a_flowering_blooms_the_vigorous_mature_plants_for_a_day() {
+    let seed = seed(7);
+    let mut vegetation = Vegetation {
+        plants: vec![
+            plant(0, Q16::ONE, Limit::Soil),
+            plant(1, q(50), Limit::Soil),
+            Plant {
+                stage: GrowthStage::Young,
+                ..plant(2, Q16::ONE, Limit::Soil)
+            },
+        ],
+        ..Vegetation::new(&seed)
+    };
+    vegetation.bloom(Tick::new(124));
+    let blooms: Vec<Option<Tick>> = vegetation.plants.iter().map(|p| p.bloom_until).collect();
+    assert_eq!(blooms, [Some(Tick::new(124)), None, None]);
+    // A bloom is never shortened.
+    vegetation.bloom(Tick::new(110));
+    assert_eq!(vegetation.plants[0].bloom_until, Some(Tick::new(124)));
+}
+
+#[test]
+fn rain_after_drought_doubles_one_close_of_germination() {
+    let seed = seed(4);
+    let germinated = |boost: bool| {
+        let mut vegetation = Vegetation {
+            boost,
+            ..Vegetation::new(&seed)
+        };
+        run(&mut vegetation, &seed, 1..=1, |_| {});
+        assert!(!vegetation.boost, "spent at the close");
+        vegetation.plants.len()
+    };
+    // 1 KLOC holds 10: a seventh of them, rounded up, is 2; doubled, 3.
+    assert_eq!((germinated(false), germinated(true)), (2, 3));
 }

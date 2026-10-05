@@ -9,6 +9,7 @@ pub mod canon;
 pub mod climate;
 pub mod domain;
 pub mod dump;
+pub mod events;
 pub mod fauna;
 pub mod fixed;
 pub mod habitat;
@@ -34,7 +35,7 @@ pub use domain::{Climate, CommitFacts, Observation, ObservationKind, Presentatio
 pub use dump::{ReplayDump, dump};
 pub use fixed::{Q16, Q32, log2_int};
 pub use identity::{CommitId, RepoSeed, SIM_VERSION, SimVersion};
-pub use project::project;
+pub use project::{project, project_showing};
 pub use replay::{Basis, Prepared, ReplayError, SimState, observation_tick};
 pub use rng::{Pcg32, SplitMix64, StreamTag};
 pub use scene::SceneInput;

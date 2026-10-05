@@ -59,6 +59,10 @@ pub enum StreamTag {
     ResidentArrival,
     /// Which form a deletion's fossil takes, keyed by its commit.
     Fossil,
+    /// Which mature plant a lightning strike scorches, keyed by the tick.
+    Lightning,
+    /// Which plant a sinkhole swallows, keyed by its commit.
+    Sinkhole,
 }
 
 canonical_enum!(StreamTag {
@@ -68,6 +72,8 @@ canonical_enum!(StreamTag {
     ResidentPool,
     ResidentArrival,
     Fossil,
+    Lightning,
+    Sinkhole,
 });
 
 /// Separates stream seeds from every other SHA-256 truth computes.
@@ -151,7 +157,7 @@ pub fn digest_u64(digest: &[u8; 32]) -> u64 {
 }
 
 /// The low 32 bits.
-const fn low_u32(value: u64) -> u32 {
+pub(crate) const fn low_u32(value: u64) -> u32 {
     let [a, b, c, d, ..] = value.to_le_bytes();
     u32::from_le_bytes([a, b, c, d])
 }

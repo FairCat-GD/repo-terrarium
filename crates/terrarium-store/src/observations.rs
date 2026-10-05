@@ -446,7 +446,9 @@ mod tests {
                 ObservationValue::RefRewrite {
                     reference: "refs/heads/main".into(),
                     old: commit('b'),
-                    new: commit('c')
+                    new: commit('c'),
+                    rewritten: None,
+                    fossils: Vec::new(),
                 },
             ]
         );

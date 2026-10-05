@@ -1,16 +1,24 @@
 //! Replay: the tick loop that turns git history and recorded observations into the climate, the
-//! habitat, the presentation timeline, the vegetation, the residents, and the monuments and
-//! fossils.
+//! habitat, the presentation timeline, the vegetation, the residents, the monuments and
+//! fossils, and the events.
 //!
 //! Ticks apply in order, and within one tick:
-//! 1. a UTC day that has ended closes, and the smoothed climates step;
-//! 2. the tick's commits apply, in the git reader's order, which puts parents first (truth
-//!    cannot re-derive it: two commits of one tick may have their ids either way round), each
-//!    leaving a fossil if it deletes a large directory;
-//! 3. the tick's observations apply, ordered by their merge key (`recorded_at`, kind, source,
-//!    head commit), which is the same on every install, unlike row ids;
-//! 4. the weather and the presentation are evaluated;
-//! 5. if a day closed, the vegetation steps, with the new day's climate, the terrain and whether
+//! 1. events past their recall are forgotten and ground marks past their time leave;
+//! 2. a UTC day that has ended closes, and the smoothed climates step; a day of unusual churn
+//!    is a windstorm;
+//! 3. the tick's commits apply, in the git reader's order, which puts parents first (truth
+//!    cannot re-derive it: two commits of one tick may have their ids either way round). The
+//!    first after 14 silent days is rain after drought; one deleting a large directory leaves a
+//!    fossil, and a sinkhole;
+//! 4. the tags dated in the tick apply, in commit order then by name: a release tag flowers;
+//! 5. the tick's observations apply, ordered by their merge key (`recorded_at`, kind, source,
+//!    head commit), which is the same on every install, unlike row ids: a ref rewrite is an
+//!    earthquake, a coverage report that moved is sunburst or dusk, a dead-code report that fell
+//!    is a clearing burn;
+//! 6. the weather is evaluated (a transition of the source in effect is a storm or a clearing),
+//!    lightning strikes on each whole day of failure from the third, and the presentation is
+//!    evaluated;
+//! 7. if a day closed, the vegetation steps, with the new day's climate, the terrain and whether
 //!    the repository is inactive; then the residents, who feed on it; then a monument rises if
 //!    a year of age has passed.
 //!
@@ -32,7 +40,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,22 +48,26 @@ use sha2::{Digest, Sha256};
 use crate::canon::{Canonical, DumpError, Reader, Writer, canonical_struct, from_hex, to_hex};
 use crate::climate::readings::{Latest, Readings};
 use crate::climate::rhythm::Rhythm;
-use crate::climate::weather::WeatherState;
+use crate::climate::weather::{ChangeAt, InEffect, WeatherChange, WeatherState};
 use crate::climate::{self, ClimateReport, DailyClimate, SoilCauses, Trends};
 use crate::domain::{
     ActivityClass, Climate, CommitFacts, Habitat, Observation, ObservationKind, ObservationValue,
     Reading,
 };
+use crate::events::{Events, Qualified, release, strength};
 use crate::fauna::{Fauna, close_living};
 use crate::fixed::{Q16, Q32};
 use crate::habitat::HabitatState;
 use crate::identity::{CommitId, RepoSeed, SIM_VERSION, SimVersion};
-use crate::landmarks::Landmarks;
+use crate::landmarks::{Buried, Landmarks, commit_key, fossil_id};
+use crate::scene::{EventKind, GroundMark, Strength};
 use crate::time::{SECONDS_PER_TICK, TICKS_PER_DAY, Tick, TickGrid};
 use crate::timeline::{Moment, PresentationTimeline};
 use crate::tuning::{
-    DAILY_RECORDS, INACTIVE_TICKS, NEUTRAL, PASS_FROM, RECOVERY_WINDOW_TICKS, SECONDS_PER_DAY,
-    SETTLING_TICKS,
+    BLOOM_TICKS, CLEARING_BURN_BANDS, CLEARING_BURN_ITEMS, CLEARING_BURN_PERCENT, DAILY_RECORDS,
+    DROUGHT_BANDS, DROUGHT_DAYS, EARTHQUAKE_BANDS, INACTIVE_TICKS, LIGHT_SHIFT_BANDS,
+    LIGHT_SHIFT_STEP, LIGHTNING_BANDS, LIGHTNING_DIP, LIGHTNING_FROM_DAYS, NEUTRAL, PASS_FROM,
+    RECOVERY_WINDOW_TICKS, SECONDS_PER_DAY, SETTLING_TICKS, SINKHOLE_BANDS, WINDSTORM_BANDS,
 };
 use crate::vegetation::{Conditions, Vegetation};
 
@@ -132,6 +144,11 @@ pub struct Prepared<'a> {
     basis: Basis,
     commits: &'a [CommitFacts],
     commit_ticks: BTreeMap<&'a CommitId, Tick>,
+    /// The commits on the default branch's first-parent chain.
+    default_chain: BTreeSet<&'a CommitId>,
+    /// Every tag, at its tick or its commit's if that is later, ordered by tick, then commit
+    /// order, then name.
+    tags: Vec<(Tick, &'a str)>,
     /// Each with the tick it applies at, ordered by that tick, then by merge key.
     observations: Vec<(Tick, &'a Observation)>,
     /// `commit_digests[n]` is the digest of the first `n` commits; likewise for observations.
@@ -254,6 +271,21 @@ impl<'a> Prepared<'a> {
         }
         let commit_ticks: BTreeMap<&CommitId, Tick> =
             commits.iter().map(|c| (&c.id, c.tick)).collect();
+        let default_chain = commits
+            .iter()
+            .filter(|c| c.on_default_first_parent)
+            .map(|c| &c.id)
+            .collect();
+        let mut tags: Vec<(Tick, usize, &str)> = commits
+            .iter()
+            .enumerate()
+            .flat_map(|(n, c)| {
+                c.tags
+                    .iter()
+                    .map(move |tag| (tag.tick.max(c.tick), n, tag.name.as_str()))
+            })
+            .collect();
+        tags.sort();
         let mut observations: Vec<(Tick, &Observation)> = keyed
             .into_iter()
             .map(|(_, own, o)| (applies_at(&commit_ticks, o, own), o))
@@ -274,6 +306,11 @@ impl<'a> Prepared<'a> {
             commit_digests: InputDigest::prefixes(commits.iter()),
             observation_digests,
             commit_ticks,
+            default_chain,
+            tags: tags
+                .into_iter()
+                .map(|(tick, _, name)| (tick, name))
+                .collect(),
             observations,
             basis,
             commits,
@@ -282,6 +319,12 @@ impl<'a> Prepared<'a> {
 
     pub fn basis(&self) -> &Basis {
         &self.basis
+    }
+
+    /// Whether `commit` is on the default branch's first-parent chain and applies at or before
+    /// `tick`: what a later commit cannot change, so a cached state agrees.
+    fn on_default_chain_by(&self, commit: &CommitId, tick: Tick) -> bool {
+        self.default_chain.contains(commit) && self.applied_by(commit, tick)
     }
 
     /// Whether `commit` is in the history and applies at or before `tick`.
@@ -301,6 +344,13 @@ impl<'a> Prepared<'a> {
             observation_digest: digest(&self.observation_digests, observations),
         }
     }
+}
+
+/// Where a replay stands in each of its inputs.
+struct Cursor<'c> {
+    commit: &'c mut usize,
+    tag: &'c mut usize,
+    observation: &'c mut usize,
 }
 
 /// The commits and observations the applied ticks held: how many, and their digests.
@@ -336,6 +386,7 @@ pub struct SimState {
     pub vegetation: Vegetation,
     pub fauna: Fauna,
     pub landmarks: Landmarks,
+    pub events: Events,
 }
 
 canonical_struct!(SimState {
@@ -351,6 +402,7 @@ canonical_struct!(SimState {
     vegetation,
     fauna,
     landmarks,
+    events,
 });
 
 impl SimState {
@@ -362,6 +414,7 @@ impl SimState {
             vegetation: Vegetation::new(&basis.seed),
             fauna: Fauna::new(&basis.seed),
             landmarks: Landmarks::default(),
+            events: Events::default(),
             basis,
             next_tick: Tick::ZERO,
             consumed: Consumed {
@@ -395,6 +448,9 @@ impl SimState {
         let mut observation = prepared
             .observations
             .partition_point(|&(tick, _)| tick < self.next_tick);
+        let mut tag = prepared
+            .tags
+            .partition_point(|&(tick, _)| tick < self.next_tick);
         if self.consumed != prepared.consumed(commit, observation) {
             return Err(ReplayError::NeedsFullReplay);
         }
@@ -402,48 +458,260 @@ impl SimState {
             return Ok(());
         }
         for hours in self.next_tick.hours()..=through.hours() {
-            self.step(prepared, Tick::new(hours), &mut commit, &mut observation);
+            let mut at = Cursor {
+                commit: &mut commit,
+                tag: &mut tag,
+                observation: &mut observation,
+            };
+            self.step(prepared, Tick::new(hours), &mut at);
         }
         self.next_tick = through.saturating_add(1);
         self.consumed = prepared.consumed(commit, observation);
         Ok(())
     }
 
-    fn step(
-        &mut self,
-        prepared: &Prepared<'_>,
-        tick: Tick,
-        commit: &mut usize,
-        observation: &mut usize,
-    ) {
+    fn step(&mut self, prepared: &Prepared<'_>, tick: Tick, at: &mut Cursor<'_>) {
+        self.events.begin(tick);
         let day = utc_day(self.basis.grid, tick);
         let closed = day != self.rhythm.open_day;
         if closed {
             self.close_day(tick, day);
         }
-        while let Some(facts) = prepared.commits.get(*commit).filter(|c| c.tick == tick) {
+        while let Some(facts) = prepared.commits.get(*at.commit).filter(|c| c.tick == tick) {
+            self.drought(facts);
             self.rhythm.count(facts);
             self.habitat.apply(facts);
-            self.landmarks.bury(&self.basis.seed, facts);
-            *commit += 1;
+            if let Some(buried) = self.landmarks.bury(&self.basis.seed, facts) {
+                self.sinkhole(facts, buried);
+            }
+            *at.commit += 1;
+        }
+        while let Some(&(_, name)) = prepared.tags.get(*at.tag).filter(|&&(t, _)| t == tick) {
+            self.flower(tick, name);
+            *at.tag += 1;
         }
         let mut observed = false;
         while let Some(&(_, recorded)) = prepared
             .observations
-            .get(*observation)
-            .filter(|&&(at, _)| at == tick)
+            .get(*at.observation)
+            .filter(|&&(t, _)| t == tick)
         {
             self.observe(prepared, tick, recorded);
             observed = true;
-            *observation += 1;
+            *at.observation += 1;
         }
         if observed {
             self.weather.evaluate(tick, &self.basis.default_branch);
+            self.weather_turned(tick);
         }
+        self.lightning(tick);
         self.evaluate(tick);
         if closed {
             self.grow(tick);
         }
+    }
+
+    /// Records a qualification; whether it is a candidate to play.
+    fn qualify(
+        &mut self,
+        kind: EventKind,
+        tick: Tick,
+        strength: Strength,
+        fossil: Option<u32>,
+        target: Option<u32>,
+    ) -> bool {
+        self.events.qualify(
+            &self.basis.seed,
+            Qualified {
+                kind,
+                tick,
+                strength,
+                fossil,
+                target,
+            },
+        )
+    }
+
+    /// Rain after drought: `facts` is the first commit after 14 days without one. The settled
+    /// crack and sinkhole wash away, and the next close germinates twice the usual share.
+    fn drought(&mut self, facts: &CommitFacts) {
+        let Some(last) = self.habitat.last_commit else {
+            return;
+        };
+        let silent = facts.tick.hours_since(last);
+        if silent < DROUGHT_DAYS.saturating_mul(TICKS_PER_DAY) {
+            return;
+        }
+        let days = silent / TICKS_PER_DAY;
+        self.qualify(
+            EventKind::RainAfterDrought,
+            facts.tick,
+            strength(days, DROUGHT_BANDS),
+            None,
+            None,
+        );
+        self.events.clear_settled();
+        self.vegetation.boost = true;
+    }
+
+    /// A sinkhole for the fossil `facts` left: it swallows one living plant and settles.
+    fn sinkhole(&mut self, facts: &CommitFacts, buried: Buried) {
+        let swallowed = self
+            .vegetation
+            .swallow(&self.basis.seed, commit_key(&facts.id));
+        self.qualify(
+            EventKind::Sinkhole,
+            facts.tick,
+            strength(buried.lines, SINKHOLE_BANDS),
+            Some(buried.id),
+            swallowed,
+        );
+        self.events
+            .mark(GroundMark::Sinkhole, facts.tick, Some(buried.id));
+    }
+
+    /// A tag dated in `tick`: a release tag flowers, and a new major version carves a mark.
+    fn flower(&mut self, tick: Tick, name: &str) {
+        let Some(major) = release(name) else {
+            return;
+        };
+        self.qualify(EventKind::Flowering, tick, Strength::Mid, None, None);
+        self.vegetation.bloom(tick.saturating_add(BLOOM_TICKS));
+        if major >= 1 && self.events.major.is_none_or(|highest| major > highest) {
+            self.landmarks.release();
+        }
+        self.events.major = Some(
+            self.events
+                .major
+                .map_or(major, |highest| highest.max(major)),
+        );
+    }
+
+    /// An earthquake for a non-fast-forward move of the default branch, which settles as a
+    /// crack; and a sinkhole for each fossil shown before it whose commit it took off the
+    /// default chain, unless the history as of this tick has that commit on it again.
+    fn earthquake(
+        &mut self,
+        prepared: &Prepared<'_>,
+        tick: Tick,
+        reference: &str,
+        rewritten: Option<u32>,
+        fossils: &[CommitId],
+    ) {
+        if reference.strip_prefix("refs/heads/") != Some(self.basis.default_branch.as_str()) {
+            return;
+        }
+        let shaken = strength(rewritten.unwrap_or(0), EARTHQUAKE_BANDS);
+        self.qualify(EventKind::Earthquake, tick, shaken, None, None);
+        self.events.mark(GroundMark::Crack, tick, None);
+        for commit in fossils
+            .iter()
+            .filter(|c| !prepared.on_default_chain_by(c, tick))
+        {
+            let fossil = fossil_id(commit);
+            self.qualify(EventKind::Sinkhole, tick, shaken, Some(fossil), None);
+            self.events.mark(GroundMark::Sinkhole, tick, Some(fossil));
+        }
+    }
+
+    /// Sunburst or dusk: the coverage report just taken moved by 0.02 or more from the one it
+    /// replaced.
+    fn light_shift(&mut self, tick: Tick) {
+        let now = self
+            .readings
+            .coverage
+            .as_ref()
+            .and_then(|latest| latest.value);
+        let (Some(now), Some(before)) = (now, self.readings.coverage_before) else {
+            return;
+        };
+        let (kind, moved) = if now >= before.saturating_add(LIGHT_SHIFT_STEP) {
+            (EventKind::Sunburst, now.saturating_sub(before))
+        } else if before >= now.saturating_add(LIGHT_SHIFT_STEP) {
+            (EventKind::Dusk, before.saturating_sub(now))
+        } else {
+            return;
+        };
+        self.qualify(kind, tick, strength(moved, LIGHT_SHIFT_BANDS), None, None);
+    }
+
+    /// A clearing burn: the dead-code report just taken holds at least 20% and 5 fewer unused
+    /// items than the one before it, both known. The weeds burn, leaving fresh soil.
+    fn clearing_burn(&mut self, tick: Tick, unused: u32, known: bool) {
+        let before = std::mem::replace(&mut self.events.unused, known.then_some(unused));
+        let Some(before) = before.filter(|_| known) else {
+            return;
+        };
+        let cleared = before.saturating_sub(unused);
+        let percent = u64::from(cleared).saturating_mul(100) / u64::from(before.max(1));
+        if cleared < CLEARING_BURN_ITEMS || percent < CLEARING_BURN_PERCENT {
+            return;
+        }
+        self.qualify(
+            EventKind::ClearingBurn,
+            tick,
+            strength(percent, CLEARING_BURN_BANDS),
+            None,
+            None,
+        );
+        self.vegetation.burn_weeds();
+        self.events.mark(GroundMark::FreshSoil, tick, None);
+    }
+
+    /// A storm or a clearing: the source in effect turned in this tick.
+    fn weather_turned(&mut self, tick: Tick) {
+        let Some(ChangeAt {
+            tick: at,
+            change: WeatherChange::Transition { pass, .. },
+        }) = &self.weather.last_change
+        else {
+            return;
+        };
+        if *at != tick {
+            return;
+        }
+        let kind = if *pass {
+            EventKind::Clearing
+        } else {
+            EventKind::Storm
+        };
+        self.qualify(kind, tick, Strength::Mid, None, None);
+    }
+
+    /// Lightning: on each whole day the weather in effect has been failing, from the third,
+    /// while the repository is not inactive. It scorches one mature plant.
+    fn lightning(&mut self, tick: Tick) {
+        if self.inactive_at(tick) {
+            return;
+        }
+        let (Some(InEffect { pass: false, .. }), Some(change)) =
+            (&self.weather.in_effect, &self.weather.last_change)
+        else {
+            return;
+        };
+        let run = tick.hours_since(change.tick);
+        if run == 0 || !run.is_multiple_of(TICKS_PER_DAY) {
+            return;
+        }
+        let days = run / TICKS_PER_DAY;
+        if days < LIGHTNING_FROM_DAYS {
+            return;
+        }
+        let target = self
+            .vegetation
+            .strike(&self.basis.seed, tick, LIGHTNING_DIP);
+        self.qualify(
+            EventKind::Lightning,
+            tick,
+            strength(days, LIGHTNING_BANDS),
+            None,
+            target,
+        );
+    }
+
+    /// Thirty days or more without a commit on any branch.
+    fn inactive_at(&self, tick: Tick) -> bool {
+        tick.hours_since(self.habitat.last_commit.unwrap_or(Tick::ZERO)) >= INACTIVE_TICKS
     }
 
     /// The living things' close, on the climate the day's close left, and a monument if a year
@@ -483,12 +751,17 @@ impl SimState {
                 let pass = observation.normalized.map(|value| value >= PASS_FROM);
                 self.weather.record(source, pass, tick);
             }
-            ObservationValue::RefRewrite { .. } => {}
+            ObservationValue::RefRewrite {
+                reference,
+                rewritten,
+                fossils,
+                ..
+            } => self.earthquake(prepared, tick, reference, *rewritten, fossils),
             value => {
                 let head = &observation.head;
                 if head.at_default_tip && prepared.applied_by(&head.commit, tick) {
                     let recorded = observation_tick(self.basis.grid, observation.recorded_at);
-                    self.readings.record(
+                    let taken = self.readings.record(
                         value.kind(),
                         Latest {
                             value: observation.normalized,
@@ -497,13 +770,34 @@ impl SimState {
                             recorded_at: observation.recorded_at,
                         },
                     );
+                    match value {
+                        ObservationValue::Coverage if taken => self.light_shift(tick),
+                        ObservationValue::DeadCode { unused_items, .. } if taken => {
+                            self.clearing_burn(
+                                tick,
+                                *unused_items,
+                                observation.normalized.is_some(),
+                            );
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
     }
 
     fn close_day(&mut self, tick: Tick, day: i64) {
-        self.rhythm.close(day);
+        let gust = self.rhythm.close(day);
+        if let Some(ratio) = gust.filter(|_| tick.hours() >= SETTLING_TICKS) {
+            let blown = strength(ratio, WINDSTORM_BANDS);
+            self.qualify(EventKind::Windstorm, tick, blown, None, None);
+            let pieces = match blown {
+                Strength::Low => 1,
+                Strength::Mid => 2,
+                Strength::High => 3,
+            };
+            self.vegetation.blow_litter(tick, pieces);
+        }
         self.readings.close();
         let (rain, wind) = if tick.hours() < SETTLING_TICKS {
             (Q32::ONE, Q32::ONE)
@@ -539,8 +833,7 @@ impl SimState {
                 .checked_sub(RECOVERY_WINDOW_TICKS)
                 .map(|before| climate::health_at(&self.daily, Tick::new(before))),
             activity: record.map_or(Q16::HALF, |r| r.activity),
-            inactive: tick.hours_since(self.habitat.last_commit.unwrap_or(Tick::ZERO))
-                >= INACTIVE_TICKS,
+            inactive: self.inactive_at(tick),
         };
         self.timeline.evaluate(&moment);
     }

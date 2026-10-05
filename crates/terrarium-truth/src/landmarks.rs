@@ -2,15 +2,21 @@
 //!
 //! - **Monuments.** A standing stone for each full year since the default branch's first
 //!   commit, at most three, raised at the first close on or after the anniversary. Each
-//!   weathers by its own age: young, lichened from two years, ancient from five. Its carved
-//!   marks come with releases. A stone's id is its place in that order, so nothing else can
-//!   renumber one.
+//!   weathers by its own age: young, lichened from two years, ancient from five. A stone's id is
+//!   its place in that order, so nothing else can renumber one.
+//! - **Carved marks.** Each new major release (its flowering) carves a mark at once on the
+//!   newest stone with room, up to three a stone; with no stone standing, or every stone full,
+//!   it waits and is carved when the next stone rises.
 //! - **Fossils.** A commit on the default branch's first-parent chain that deletes a whole
 //!   directory of 500 lines or more (a rename is not a deletion) leaves one fossil, of the form
 //!   the seed draws for that commit. At most five are kept, the oldest leaving first. A side
 //!   branch's commits leave none, as they add no terrain: a deletion counts once, when it
 //!   reaches the default branch. A history rewrite that drops the commit drops its fossil,
-//!   because replay never meets the commit again.
+//!   because replay never meets the commit again. A fossil's id is hashed from its commit, so a
+//!   replay after a rewrite gives every fossil that survives the id it had, and a rewrite's
+//!   sinkhole can name the fossil it took. Two kept fossils sharing an id would take 2⁻³² odds,
+//!   which are accepted rather than probed around, since a probe would let a rewrite renumber a
+//!   survivor.
 
 use std::cmp::Reverse;
 use std::num::NonZeroU32;
@@ -21,8 +27,8 @@ use sha2::{Digest, Sha256};
 use crate::canon::{canonical_struct, count_of, from_hex};
 use crate::domain::CommitFacts;
 use crate::identity::{CommitId, RepoSeed};
-use crate::rng::{Pcg32, StreamTag, digest_u64};
-use crate::scene::{FossilForm, FossilView, MonumentAge, MonumentView};
+use crate::rng::{Pcg32, StreamTag, digest_u64, low_u32};
+use crate::scene::{FossilForm, FossilView, MAX_MARKS, MonumentAge, MonumentView};
 use crate::time::{TICKS_PER_DAY, Tick};
 use crate::tuning::{
     ANCIENT_FROM_YEARS, FOSSIL_MIN_LINES, FOSSILS_MAX, LICHENED_FROM_YEARS, MONUMENT_DAYS,
@@ -45,7 +51,7 @@ canonical_struct!(Monument { id, founded, marks });
 /// A fossil.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fossil {
-    /// Stable for the fossil's life, and never given to another.
+    /// Hashed from its commit ([`fossil_id`]).
     pub id: u32,
     pub form: FossilForm,
     /// The deleting commit's tick.
@@ -66,30 +72,27 @@ canonical_struct!(Fossil {
 });
 
 /// The terrarium's monuments and fossils.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Landmarks {
     /// Oldest first.
     pub monuments: Vec<Monument>,
-    /// The id the next fossil takes.
-    pub next_fossil: u32,
     /// Oldest first.
     pub fossils: Vec<Fossil>,
+    /// Carved marks waiting for a stone with room.
+    pub pending: u32,
 }
 
 canonical_struct!(Landmarks {
     monuments,
-    next_fossil,
     fossils,
+    pending,
 });
 
-impl Default for Landmarks {
-    fn default() -> Landmarks {
-        Landmarks {
-            monuments: Vec::new(),
-            next_fossil: 1,
-            fossils: Vec::new(),
-        }
-    }
+/// A fossil left by a deletion: its id and the lines of the directory that names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buried {
+    pub id: u32,
+    pub lines: u64,
 }
 
 const fn years(n: u32) -> u32 {
@@ -102,10 +105,28 @@ fn hashed(bytes: &[u8]) -> u64 {
     digest_u64(&Sha256::digest(bytes).into())
 }
 
+/// Separates fossil ids from the form's stream key and every other SHA-256 truth computes.
+const FOSSIL_ID_DOMAIN: &[u8] = b"repo-terrarium fossil id v1\0";
+
+/// The id of the fossil `commit` leaves: the low 32 bits of a SHA-256 over the commit id's bytes.
+pub fn fossil_id(commit: &CommitId) -> u32 {
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(FOSSIL_ID_DOMAIN)
+        .chain_update(from_hex(commit.as_str()).unwrap_or_default())
+        .finalize()
+        .into();
+    low_u32(digest_u64(&digest))
+}
+
+/// The commit id's bytes, hashed: the key of the streams drawn for one commit.
+pub fn commit_key(commit: &CommitId) -> u64 {
+    hashed(&from_hex(commit.as_str()).unwrap_or_default())
+}
+
 /// The form the seed draws for a fossil left by `commit`. The stream is keyed by a hash of the
 /// commit id's bytes, so every commit draws its own, whatever else applies in its tick.
 pub fn fossil_form(seed: &RepoSeed, commit: &CommitId) -> FossilForm {
-    let key = hashed(&from_hex(commit.as_str()).unwrap_or_default());
+    let key = commit_key(commit);
     let forms = FossilForm::ALL;
     let picked = u32::try_from(forms.len())
         .ok()
@@ -132,34 +153,58 @@ impl Landmarks {
                 founded: now,
                 marks: 0,
             });
+            self.carve();
+        }
+    }
+
+    /// A new major release: a mark, carved now if a stone has room.
+    pub fn release(&mut self) {
+        self.pending = self.pending.saturating_add(1);
+        self.carve();
+    }
+
+    /// Carves waiting marks on the newest stones with room.
+    fn carve(&mut self) {
+        while self.pending > 0 {
+            let Some(stone) = self
+                .monuments
+                .iter_mut()
+                .rev()
+                .find(|stone| stone.marks < MAX_MARKS)
+            else {
+                return;
+            };
+            stone.marks = stone.marks.saturating_add(1);
+            self.pending -= 1;
         }
     }
 
     /// As `commit` applies: a fossil, if it deletes a whole directory of 500 lines or more on
     /// the default branch's first-parent chain. The largest such directory names it, the first
     /// by path among equals.
-    pub fn bury(&mut self, seed: &RepoSeed, commit: &CommitFacts) {
+    pub fn bury(&mut self, seed: &RepoSeed, commit: &CommitFacts) -> Option<Buried> {
         if !commit.on_default_first_parent {
-            return;
+            return None;
         }
-        let Some(dir) = commit
+        let dir = commit
             .deleted_dirs
             .iter()
             .filter(|dir| dir.lines >= FOSSIL_MIN_LINES)
-            .min_by_key(|dir| (Reverse(dir.lines), dir.path.as_str()))
-        else {
-            return;
-        };
+            .min_by_key(|dir| (Reverse(dir.lines), dir.path.as_str()))?;
+        let id = fossil_id(&commit.id);
         self.fossils.push(Fossil {
-            id: self.next_fossil,
+            id,
             form: fossil_form(seed, &commit.id),
             tick: commit.tick,
             commit: commit.id.clone(),
             path: hashed(dir.path.as_bytes()),
         });
-        self.next_fossil = self.next_fossil.saturating_add(1);
         let excess = self.fossils.len().saturating_sub(FOSSILS_MAX);
         self.fossils.drain(..excess);
+        Some(Buried {
+            id,
+            lines: dir.lines,
+        })
     }
 
     /// The monuments as the composer sees them at `now`, each weathered by its own age.
@@ -288,10 +333,9 @@ mod tests {
         let fossil = &landmarks.fossils[0];
         assert_eq!(
             (fossil.id, fossil.tick, &fossil.commit),
-            (1, Tick::new(8), &id(4))
+            (fossil_id(&id(4)), Tick::new(8), &id(4))
         );
         assert_eq!(fossil.path, hashed(b"src/legacy"));
-        assert_eq!(landmarks.next_fossil, 2);
     }
 
     #[test]
@@ -320,7 +364,8 @@ mod tests {
             landmarks.bury(&seed, &deleting(n, n * 10, &[("old", 1_000)]));
         }
         let ids: Vec<u32> = landmarks.fossils.iter().map(|f| f.id).collect();
-        assert_eq!(ids, [3, 4, 5, 6, 7]);
+        let kept: Vec<u32> = (3..=7).map(|n| fossil_id(&id(n))).collect();
+        assert_eq!(ids, kept);
         assert_eq!(landmarks.fossil_views().len(), 5);
     }
 
@@ -346,4 +391,58 @@ mod tests {
         FossilForm::Bone,
     ];
     const OTHER_SEED_FORM: FossilForm = FossilForm::LeafPrint;
+
+    #[test]
+    fn a_release_is_carved_on_the_newest_stone_with_room_or_waits_for_one() {
+        let mut landmarks = Landmarks::default();
+        let marks = |l: &Landmarks| -> Vec<u8> { l.monuments.iter().map(|m| m.marks).collect() };
+        // Before any stone, releases wait.
+        landmarks.release();
+        landmarks.release();
+        assert_eq!(landmarks.pending, 2);
+        let root = Some(Tick::ZERO);
+        landmarks.raise(Tick::new(YEAR), root);
+        assert_eq!((marks(&landmarks), landmarks.pending), (vec![2], 0));
+        landmarks.raise(Tick::new(2 * YEAR), root);
+        // The newest stone takes the next, though the older has room.
+        landmarks.release();
+        assert_eq!(marks(&landmarks), [2, 1]);
+        landmarks.release();
+        landmarks.release();
+        assert_eq!(marks(&landmarks), [2, 3]);
+        // A full one passes to an older one with room.
+        landmarks.release();
+        assert_eq!(marks(&landmarks), [3, 3]);
+        // Every stone full: it waits for the third.
+        landmarks.release();
+        assert_eq!(landmarks.pending, 1);
+        landmarks.raise(Tick::new(3 * YEAR), root);
+        assert_eq!((marks(&landmarks), landmarks.pending), (vec![3, 3, 1], 0));
+        assert!(
+            landmarks
+                .monument_views(Tick::new(3 * YEAR))
+                .iter()
+                .all(|view| view.marks <= MAX_MARKS)
+        );
+    }
+
+    #[test]
+    fn a_fossil_keeps_its_id_whatever_else_was_buried() {
+        let seed = seed();
+        let mut one = Landmarks::default();
+        one.bury(&seed, &deleting(1, 5, &[("a", 600)]));
+        one.bury(&seed, &deleting(2, 6, &[("b", 900)]));
+        // The history without the first deletion: the second keeps its id.
+        let mut other = Landmarks::default();
+        let buried = other.bury(&seed, &deleting(2, 6, &[("b", 900)]));
+        assert_eq!(
+            buried,
+            Some(Buried {
+                id: fossil_id(&id(2)),
+                lines: 900
+            })
+        );
+        assert_eq!(one.fossils[1].id, other.fossils[0].id);
+        assert_ne!(one.fossils[0].id, one.fossils[1].id);
+    }
 }

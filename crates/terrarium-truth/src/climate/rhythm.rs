@@ -7,13 +7,22 @@
 //! Taking the median of the smoothed level, not of the raw days, keeps a steady rhythm at ratio
 //! 1 whatever its shape: a weekday-only repository does not read as slower every weekend, and
 //! one that commits on fewer than half its days does not have a baseline of zero.
+//!
+//! The closed days' changed lines are also kept, for the windstorm: a day whose lines are at
+//! least three times the median of the active days among the 90 before it. That reads a "daily
+//! wind ratio ≥ 3" in lines rather than in the logarithm the wind is smoothed in, where a ratio
+//! of 3 would take a day of millions of lines, yet a silence that leaves the smoothed baseline
+//! at its floor would read as one for weeks.
 
 use serde::{Deserialize, Serialize};
 
 use crate::canon::canonical_struct;
 use crate::domain::CommitFacts;
 use crate::fixed::{Q16, Q32, log2_int};
-use crate::tuning::{BASELINE_DAYS, BASELINE_FLOOR, SMOOTHING_ALPHA};
+use crate::tuning::{
+    BASELINE_DAYS, BASELINE_FLOOR, SMOOTHING_ALPHA, WINDSTORM_ACTIVE_DAYS, WINDSTORM_DAYS,
+    WINDSTORM_RATIO,
+};
 
 /// One tempo, rain or wind: its smoothed level, and the recent levels its baseline is taken
 /// from. Kept in `Q32`, because a `Q16` average stops a few steps short of a steady input.
@@ -75,6 +84,8 @@ pub struct Rhythm {
     pub lines: u64,
     pub rain: Pace,
     pub wind: Pace,
+    /// The changed lines of each of the last `WINDSTORM_DAYS` closed days, oldest first.
+    pub days: Vec<u64>,
 }
 
 canonical_struct!(Rhythm {
@@ -82,7 +93,8 @@ canonical_struct!(Rhythm {
     commits,
     lines,
     rain,
-    wind
+    wind,
+    days
 });
 
 impl Rhythm {
@@ -93,6 +105,7 @@ impl Rhythm {
             lines: 0,
             rain: Pace::default(),
             wind: Pace::default(),
+            days: Vec::new(),
         }
     }
 
@@ -107,14 +120,44 @@ impl Rhythm {
             .saturating_add(commit.added.saturating_add(commit.removed));
     }
 
-    /// Closes the open day into both tempos and opens `day`.
-    pub fn close(&mut self, day: i64) {
+    /// Closes the open day into both tempos and opens `day`. Returns the closed day's lines
+    /// over the usual active day's, rounded down, when they are at least `WINDSTORM_RATIO`
+    /// times them.
+    pub fn close(&mut self, day: i64) -> Option<u64> {
         self.rain.close(daily_sample(self.commits));
         self.wind.close(daily_sample(self.lines));
+        let gust = gust(self.lines, &self.days);
+        self.days.push(self.lines);
+        let excess = self.days.len().saturating_sub(WINDSTORM_DAYS);
+        self.days.drain(..excess);
         self.commits = 0;
         self.lines = 0;
         self.open_day = day;
+        gust
     }
+}
+
+/// `lines` over the median of the active (nonzero) days among `days`, rounded down, when it is
+/// at least `WINDSTORM_RATIO` and `WINDSTORM_ACTIVE_DAYS` of them were active. An even count's
+/// median is the mean of the middle two, compared without rounding: `2 × lines` against
+/// `ratio × (a + b)`.
+pub fn gust(lines: u64, days: &[u64]) -> Option<u64> {
+    let mut active: Vec<u64> = days.iter().copied().filter(|&d| d > 0).collect();
+    if active.len() < WINDSTORM_ACTIVE_DAYS {
+        return None;
+    }
+    // Stable, as truth's sorts are: equal counts are interchangeable either way.
+    active.sort_by_key(|&lines| lines);
+    let upper = active.len() / 2;
+    let twice_median = if active.len() % 2 == 1 {
+        active.get(upper)?.saturating_mul(2)
+    } else {
+        active
+            .get(upper.checked_sub(1)?)?
+            .saturating_add(*active.get(upper)?)
+    };
+    let ratio = lines.saturating_mul(2).checked_div(twice_median)?;
+    (ratio >= WINDSTORM_RATIO).then_some(ratio)
 }
 
 /// `log2(1 + n)`.
@@ -204,9 +247,45 @@ mod tests {
         commit.parents = 1;
         rhythm.count(&commit);
         assert_eq!((rhythm.commits, rhythm.lines), (1, 14));
-        rhythm.close(1);
+        let _ = rhythm.close(1);
         assert_eq!((rhythm.commits, rhythm.lines, rhythm.open_day), (0, 0, 1));
         assert_eq!(rhythm.rain.level, Some(Q32::ONE));
         assert_eq!(rhythm.wind.level, log2_int(15).map(Q16::to_q32));
+    }
+
+    #[test]
+    fn a_gust_is_three_times_the_median_active_day() {
+        // Seven active days of 10 lines, and idle days, which never count.
+        let days = [10, 0, 10, 10, 0, 10, 10, 10, 10];
+        assert_eq!(gust(29, &days), None);
+        assert_eq!(gust(30, &days), Some(3));
+        assert_eq!(gust(119, &days), Some(11));
+        // Six active days are too few to tell what is usual.
+        assert_eq!(gust(1_000, &days[..7]), None);
+        // An even count's median is the mean of the middle two, unrounded: 10 and 13.
+        let even = [10, 10, 10, 10, 13, 13, 13, 13];
+        assert_eq!(gust(34, &even), None);
+        assert_eq!(gust(35, &even), Some(3));
+        // The day itself is not among the days it is compared with: after six usual days, a
+        // seventh of any size has only six to be compared with.
+        let mut first = Rhythm::new(0);
+        for day in 1..=6 {
+            first.lines = 10;
+            assert_eq!(first.close(day), None);
+        }
+        first.lines = 1_000;
+        assert_eq!(first.close(7), None);
+        let mut rhythm = Rhythm::new(0);
+        for day in 1..=7 {
+            rhythm.lines = 10;
+            assert_eq!(rhythm.close(day), None);
+        }
+        rhythm.lines = 60;
+        assert_eq!(rhythm.close(8), Some(6));
+        assert_eq!(rhythm.days.len(), 8);
+        for day in 9..=200 {
+            let _ = rhythm.close(day);
+        }
+        assert_eq!(rhythm.days.len(), WINDSTORM_DAYS);
     }
 }

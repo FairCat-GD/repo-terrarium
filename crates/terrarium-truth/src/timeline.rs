@@ -2,7 +2,9 @@
 //! health, activity and the time since the last commit.
 //!
 //! Health has hysteresis: healthy from 0.55, unhealthy below 0.45, the previous class in
-//! between, healthy at the start. The rules, in order of precedence:
+//! between, healthy at the start. So has activity: active from 0.35, quiet below 0.30, the
+//! previous class in between (quiet after inactive), active at the start. The rules, in order of
+//! precedence:
 //! 1. inactive (30 days without a commit): Dormant if healthy, Dead if not;
 //! 2. Recovering: some tick of the last 14 days was Struggling, Dormant or Dead, and health is
 //!    at least 0.10 above its value 14 days ago;
@@ -21,8 +23,8 @@ use crate::domain::{ActivityClass, HealthClass, PresentationState};
 use crate::fixed::Q16;
 use crate::time::{TICKS_PER_DAY, Tick};
 use crate::tuning::{
-    ACTIVE_FROM, CONDENSATION_DAYS, DUST_DAYS, HEALTHY_FROM, RECOVERY_GAIN, RECOVERY_WINDOW_TICKS,
-    UNHEALTHY_BELOW,
+    ACTIVE_FROM, CONDENSATION_DAYS, DUST_DAYS, HEALTHY_FROM, QUIET_BELOW, RECOVERY_GAIN,
+    RECOVERY_WINDOW_TICKS, UNHEALTHY_BELOW,
 };
 
 /// A change of the presentation, or of either class behind it.
@@ -116,8 +118,13 @@ impl PresentationTimeline {
             ActivityClass::Inactive
         } else if moment.activity >= ACTIVE_FROM {
             ActivityClass::Active
-        } else {
+        } else if moment.activity < QUIET_BELOW {
             ActivityClass::Quiet
+        } else {
+            match previous.map(|entry| entry.activity) {
+                Some(ActivityClass::Inactive | ActivityClass::Quiet) => ActivityClass::Quiet,
+                Some(ActivityClass::Active) | None => ActivityClass::Active,
+            }
         };
         let healthy = health == HealthClass::Healthy;
         let previous_state = previous.map(|entry| entry.state);
@@ -333,5 +340,35 @@ mod tests {
         assert_eq!(timeline.dust(Tick::new(10 + 365 * day)), 1);
         assert_eq!(timeline.dust(Tick::new(10 + 540 * day)), 2);
         assert_eq!(timeline.dust(Tick::new(10 + 730 * day)), 3);
+    }
+
+    #[test]
+    fn activity_holds_its_class_between_its_thresholds() {
+        use ActivityClass::{Active, Quiet};
+        let mut timeline = PresentationTimeline::default();
+        let healthy = q(80);
+        let classes: Vec<ActivityClass> = [40, 32, 29, 32, 34, 35]
+            .into_iter()
+            .zip(0..)
+            .map(|(activity, tick)| {
+                timeline.evaluate(&moment(tick, healthy, q(activity)));
+                timeline
+                    .current()
+                    .map(|entry| entry.activity)
+                    .expect("evaluated")
+            })
+            .collect();
+        assert_eq!(classes, [Active, Active, Quiet, Quiet, Quiet, Active]);
+        // With no class before, in between is active; after inactive, quiet.
+        let mut fresh = PresentationTimeline::default();
+        fresh.evaluate(&moment(0, healthy, q(32)));
+        assert_eq!(fresh.current().map(|e| e.activity), Some(Active));
+        let mut waking = PresentationTimeline::default();
+        waking.evaluate(&Moment {
+            inactive: true,
+            ..moment(0, healthy, q(32))
+        });
+        waking.evaluate(&moment(1, healthy, q(32)));
+        assert_eq!(waking.current().map(|e| e.activity), Some(Quiet));
     }
 }

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
-use crate::{assets, golden, graph, windows};
+use crate::{assets, golden, graph, sweep, windows};
 
 enum Step {
     /// A cargo subcommand. `tool` names a third-party subcommand to check for first; `env` is
@@ -165,6 +165,7 @@ pub fn run(root: &Path) -> ExitCode {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut failed = Vec::new();
     let mut summary = Vec::new();
+    sweep::before_verify(root, &cargo);
 
     for stage in STAGES {
         println!("\n==> {}", stage.name);

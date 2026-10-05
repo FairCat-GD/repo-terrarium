@@ -5,7 +5,7 @@
 //! what happened to the same repository.
 
 use crate::fixed::{Q16, Q32};
-use crate::scene::ResidentSpecies;
+use crate::scene::{EventKind, ResidentSpecies};
 
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -37,8 +37,11 @@ pub const NEUTRAL: Q16 = Q16::HALF;
 pub const HEALTHY_FROM: Q16 = Q16::from_ratio(55, 100);
 pub const UNHEALTHY_BELOW: Q16 = Q16::from_ratio(45, 100);
 
-/// Activity from which a repository that is not inactive counts as active.
+/// Activity from which a repository that is not inactive counts as active, and below which it
+/// counts as quiet; in between, the previous class holds, as health's does, so activity
+/// hovering at the threshold never flickers the presentation.
 pub const ACTIVE_FROM: Q16 = Q16::from_ratio(35, 100);
+pub const QUIET_BELOW: Q16 = Q16::from_ratio(30, 100);
 
 /// Thirty days without a commit on any branch is inactive.
 pub const INACTIVE_TICKS: u32 = 30 * 24;
@@ -60,8 +63,8 @@ pub const CONDENSATION_DAYS: [u32; 3] = [0, 30, 90];
 /// Days in the dead state at which dust reaches levels 1, 2 and 3.
 pub const DUST_DAYS: [u32; 3] = [365, 540, 730];
 
-/// The wind ratio from which the wind is breezy, and from which it is a gale: the windstorm's
-/// ratio. A typical day, at ratio 1, is breezy.
+/// The wind ratio from which the wind is breezy, and from which it is a gale. A typical day, at
+/// ratio 1, is breezy.
 pub const BREEZY_FROM: Q16 = Q16::from_ratio(7, 10);
 pub const GALE_FROM: Q16 = Q16::from_int(3);
 
@@ -192,6 +195,90 @@ pub const ANCIENT_FROM_YEARS: u32 = 5;
 pub const FOSSIL_MIN_LINES: u64 = 500;
 pub const FOSSILS_MAX: usize = 5;
 
+/// An event's rank: the lower wins arbitration.
+pub const fn event_rank(kind: EventKind) -> u8 {
+    match kind {
+        EventKind::Earthquake => 1,
+        EventKind::Sinkhole => 2,
+        EventKind::Lightning => 3,
+        EventKind::Flowering => 4,
+        EventKind::ClearingBurn => 5,
+        EventKind::Storm => 6,
+        EventKind::RainAfterDrought => 7,
+        EventKind::Windstorm => 8,
+        EventKind::Sunburst | EventKind::Dusk => 9,
+        EventKind::Clearing => 10,
+    }
+}
+
+/// An event's cooldown in ticks, counted from the last time it qualified, whether it played or
+/// not.
+pub const fn event_cooldown(kind: EventKind) -> u32 {
+    match kind {
+        EventKind::Earthquake
+        | EventKind::Sinkhole
+        | EventKind::Lightning
+        | EventKind::Flowering
+        | EventKind::ClearingBurn => 24,
+        EventKind::Storm => 2,
+        EventKind::RainAfterDrought => 7 * 24,
+        EventKind::Windstorm => 12,
+        EventKind::Sunburst | EventKind::Dusk => 6,
+        EventKind::Clearing => 1,
+    }
+}
+
+/// How long truth remembers an event that could play: the longest absence whose strongest
+/// event still plays on return.
+pub const EVENT_RECALL_TICKS: u32 = 7 * 24;
+
+/// Strength bands: the value from which an event is of middling strength, and from which it is
+/// strong, in the measure each event has.
+/// - earthquake: commits taken off the default chain;
+pub const EARTHQUAKE_BANDS: [u32; 2] = [3, 10];
+/// - sinkhole: lines in the deleted directory that names its fossil;
+pub const SINKHOLE_BANDS: [u64; 2] = [2_000, 10_000];
+/// - lightning: whole days the weather in effect has been failing;
+pub const LIGHTNING_BANDS: [u32; 2] = [4, 7];
+/// - clearing burn: the share of unused items cleared, in percent;
+pub const CLEARING_BURN_BANDS: [u64; 2] = [40, 60];
+/// - rain after drought: whole days without a commit;
+pub const DROUGHT_BANDS: [u32; 2] = [30, 90];
+/// - windstorm: the day's changed lines over the usual active day's;
+pub const WINDSTORM_BANDS: [u64; 2] = [6, 12];
+/// - sunburst and dusk: how far coverage moved.
+pub const LIGHT_SHIFT_BANDS: [Q16; 2] = [Q16::from_ratio(5, 100), Q16::from_ratio(10, 100)];
+
+/// Lightning strikes on each whole day the weather in effect has failed, from the third.
+pub const LIGHTNING_FROM_DAYS: u32 = 3;
+/// A strike lowers its plant's vigor by this, never below `FAILING_BELOW`: lightning marks a
+/// plant, it never kills one.
+pub const LIGHTNING_DIP: Q16 = Q16::from_ratio(15, 100);
+
+/// A flowering's bloom lasts a day.
+pub const BLOOM_TICKS: u32 = 24;
+
+/// A clearing burn needs at least this many unused items cleared, and this share of them, in
+/// percent.
+pub const CLEARING_BURN_ITEMS: u32 = 5;
+pub const CLEARING_BURN_PERCENT: u64 = 20;
+
+/// Rain after drought: the first commit after this many days without one.
+pub const DROUGHT_DAYS: u32 = 14;
+
+/// A windstorm is a day whose changed lines are at least this many times the median of the
+/// active days among the last `WINDSTORM_DAYS`, once `WINDSTORM_ACTIVE_DAYS` of them were
+/// active.
+pub const WINDSTORM_RATIO: u64 = 3;
+pub const WINDSTORM_DAYS: usize = 90;
+pub const WINDSTORM_ACTIVE_DAYS: usize = 7;
+
+/// Ground marks: a settled crack or sinkhole stays until the next rain after drought or for 30
+/// days; fresh soil for 14; at most 3 at once, the oldest leaving first.
+pub const SETTLED_MARK_DAYS: u32 = 30;
+pub const FRESH_SOIL_DAYS: u32 = 14;
+pub const MARKS_MAX: usize = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +368,51 @@ mod tests {
         );
         assert_eq!((LICHENED_FROM_YEARS, ANCIENT_FROM_YEARS), (2, 5));
         assert_eq!((FOSSIL_MIN_LINES, FOSSILS_MAX), (500, 5));
+    }
+
+    #[test]
+    fn events_follow_their_table() {
+        let table: Vec<(&str, u8, u32)> = EventKind::ALL
+            .iter()
+            .map(|&kind| (kind.name(), event_rank(kind), event_cooldown(kind)))
+            .collect();
+        assert_eq!(
+            table,
+            [
+                ("Storm", 6, 2),
+                ("Clearing", 10, 1),
+                ("Lightning", 3, 24),
+                ("Dusk", 9, 6),
+                ("Sunburst", 9, 6),
+                ("ClearingBurn", 5, 24),
+                ("Flowering", 4, 24),
+                ("Windstorm", 8, 12),
+                ("RainAfterDrought", 7, 168),
+                ("Earthquake", 1, 24),
+                ("Sinkhole", 2, 24),
+            ]
+        );
+        assert_eq!(EVENT_RECALL_TICKS, 168);
+        assert_eq!(
+            (EARTHQUAKE_BANDS, LIGHTNING_BANDS, DROUGHT_BANDS),
+            ([3, 10], [4, 7], [30, 90])
+        );
+        assert_eq!(
+            (SINKHOLE_BANDS, CLEARING_BURN_BANDS, WINDSTORM_BANDS),
+            ([2_000, 10_000], [40, 60], [6, 12])
+        );
+        assert_eq!(
+            LIGHT_SHIFT_BANDS.map(Q16::raw),
+            [Q16::from_ratio(5, 100).raw(), 6_554]
+        );
+        assert_eq!((LIGHTNING_FROM_DAYS, LIGHTNING_DIP.raw()), (3, 9_830));
+        assert_eq!((BLOOM_TICKS, DROUGHT_DAYS), (24, 14));
+        assert_eq!((CLEARING_BURN_ITEMS, CLEARING_BURN_PERCENT), (5, 20));
+        assert_eq!(
+            (WINDSTORM_RATIO, WINDSTORM_DAYS, WINDSTORM_ACTIVE_DAYS),
+            (3, 90, 7)
+        );
+        assert_eq!((SETTLED_MARK_DAYS, FRESH_SOIL_DAYS, MARKS_MAX), (30, 14, 3));
+        assert_eq!(QUIET_BELOW.raw(), 19_661);
     }
 }

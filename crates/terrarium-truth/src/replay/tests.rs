@@ -5,9 +5,11 @@ use proptest::prelude::*;
 use super::*;
 use crate::canon::{canonical_dump, from_canonical_dump};
 use crate::climate::weather::{ChangeAt, WeatherChange};
-use crate::domain::{DeletedDir, ObservationHead, WeatherSource};
+use crate::domain::{DeletedDir, ObservationHead, TagFact, WeatherSource};
+use crate::landmarks::fossil_id;
 use crate::test_support::{
-    HOUR, ORIGIN, basis, commit, coverage, grid, id, observation, proptest_config,
+    HOUR, ORIGIN, basis, ci, commit, coverage, daily_commits, grid, id, observation,
+    proptest_config, weather,
 };
 
 const THROUGH: u32 = 1_300;
@@ -37,42 +39,6 @@ fn closes(
         records.extend(state.daily.last().cloned());
     }
     records
-}
-
-fn weather(
-    source: WeatherSource,
-    hours: u32,
-    head: u32,
-    branch: &str,
-    pass: Option<bool>,
-) -> Observation {
-    let mut observation = observation(
-        ObservationValue::Weather { source },
-        hours,
-        head,
-        pass.map(|pass| if pass { Q16::ONE } else { Q16::ZERO }),
-    );
-    observation.head.branch = Some(branch.to_owned());
-    observation.head.at_default_tip = branch == "main";
-    observation
-}
-
-fn ci(branch: &str) -> WeatherSource {
-    WeatherSource::Ci {
-        branch: branch.to_owned(),
-    }
-}
-
-/// `per_day[d]` commits on day `d`, from 09:00, each adding ten lines.
-fn daily_commits(per_day: &[u32]) -> Vec<CommitFacts> {
-    let mut commits = Vec::new();
-    for (day, &count) in (0_u32..).zip(per_day) {
-        for k in 0..count {
-            let n = u32::try_from(commits.len()).expect("few") + 1;
-            commits.push(commit(n, day * 24 + 9 + k));
-        }
-    }
-    commits
 }
 
 #[test]
@@ -228,7 +194,7 @@ fn a_rewrite_that_drops_a_deletion_drops_its_fossil() {
         .iter()
         .map(|f| (f.id, f.tick, &f.commit))
         .collect();
-    assert_eq!(fossils, [(1, Tick::new(30), &id(2))]);
+    assert_eq!(fossils, [(fossil_id(&id(2)), Tick::new(30), &id(2))]);
     assert_eq!(crate::project(&state).fossils.len(), 1);
     // The rewritten history no longer deletes anything: a resume refuses it, and the full
     // replay it falls back to has no fossil.
@@ -446,7 +412,7 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 4\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 5\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())
@@ -465,21 +431,47 @@ fn owned_key(observation: &Observation) -> OwnedKey {
     (recorded_at, kind, source, head.to_owned())
 }
 
-fn generated_value(kind: u8) -> ObservationValue {
+fn generated_value(kind: u8, n: u32) -> ObservationValue {
+    let rewrite = |branch: &str| ObservationValue::RefRewrite {
+        reference: format!("refs/heads/{branch}"),
+        old: id(1_000 + n),
+        new: id(2_000 + n),
+        rewritten: (!n.is_multiple_of(3)).then_some(n % 12),
+        fossils: vec![id(n % 45), id(3_000 + n)],
+    };
     match kind {
         0 => ObservationValue::Coverage,
         1 => ObservationValue::DeadCode {
-            unused_items: 1,
-            exported_items: 2,
+            unused_items: n % 40,
+            exported_items: 40,
         },
         2 => ObservationValue::Weather {
             source: WeatherSource::Local,
         },
         3 => ObservationValue::Weather { source: ci("main") },
-        _ => ObservationValue::Weather {
+        4 => ObservationValue::Weather {
             source: ci("feature/fern"),
         },
+        5 => rewrite("main"),
+        _ => rewrite("feature/fern"),
     }
+}
+
+/// A release tag on the commit at `tick`, a version-number tag `late` hours after it with a
+/// pre-release beside it, or none.
+fn generated_tags(pick: u8, tick: u32, late: u32) -> Vec<TagFact> {
+    let names: &[(&str, u32)] = match pick {
+        0 => &[("v1.0.0", 0)],
+        1 => &[("2", late), ("v2.1-rc", late)],
+        _ => &[],
+    };
+    names
+        .iter()
+        .map(|&(name, after)| TagFact {
+            name: name.to_owned(),
+            tick: Tick::new(tick + after),
+        })
+        .collect()
 }
 
 fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
@@ -500,12 +492,15 @@ fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
             0_u64..200,
             // One commit in four deletes something.
             (0_u8..4, dirs).prop_map(|(pick, dirs)| if pick == 0 { dirs } else { Vec::new() }),
+            // One in eight follows a silence of over two weeks; one in six is tagged, some
+            // after their commit.
+            (0_u8..8, 0_u8..6, 0_u32..40),
         ),
         1..40,
     );
     let observations = prop::collection::vec(
         (
-            (0_u32..THROUGH, 0_i64..3_600, 0_u8..5),
+            (0_u32..THROUGH, 0_i64..3_600, 0_u8..7),
             (1_u32..45, 0_u8..3, any::<bool>()),
             prop::option::of(0_i32..=65_536),
         ),
@@ -515,36 +510,41 @@ fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
         let mut tick = 0;
         let commits = (1_u32..)
             .zip(commits)
-            .map(|(n, (gap, parents, default, added, removed, dirs))| {
-                if n > 1 {
-                    tick += gap;
-                }
-                CommitFacts {
-                    parents,
-                    on_default_first_parent: n == 1 || default,
-                    added,
-                    removed,
-                    deleted_dirs: dirs
-                        .into_iter()
-                        .map(|(path, lines)| DeletedDir {
-                            path: path.to_owned(),
-                            lines,
-                        })
-                        .collect(),
-                    ..commit(n, tick)
-                }
-            })
+            .map(
+                |(n, (gap, parents, default, added, removed, dirs, (silence, tag, late)))| {
+                    if n > 1 {
+                        tick += gap + if silence == 0 { 400 } else { 0 };
+                    }
+                    CommitFacts {
+                        tags: generated_tags(tag, tick, late),
+                        parents,
+                        on_default_first_parent: n == 1 || default,
+                        added,
+                        removed,
+                        deleted_dirs: dirs
+                            .into_iter()
+                            .map(|(path, lines)| DeletedDir {
+                                path: path.to_owned(),
+                                lines,
+                            })
+                            .collect(),
+                        ..commit(n, tick)
+                    }
+                },
+            )
             .collect();
         let mut seen = BTreeSet::new();
         let observations = (0_i64..)
             .zip(observations)
             .map(
                 |(row, ((hours, secs, kind), (head, branch, at_tip), raw))| {
-                    let value = generated_value(kind);
+                    let n = raw.map_or(0, i32::unsigned_abs);
+                    let value = generated_value(kind, n);
                     let normalized = match value {
                         ObservationValue::Weather { .. } => {
                             raw.map(|raw| if raw >= 32_768 { Q16::ONE } else { Q16::ZERO })
                         }
+                        ObservationValue::RefRewrite { .. } => None,
                         _ => raw.map(Q16::from_raw),
                     };
                     let branch = match branch {
@@ -641,7 +641,10 @@ proptest! {
             o.head.at_default_tip
                 && tick_of(o).hours() < split
                 && late
-                && !matches!(o.value, ObservationValue::Weather { .. })
+                && !matches!(
+                    o.value,
+                    ObservationValue::Weather { .. } | ObservationValue::RefRewrite { .. }
+                )
         });
         prop_assert_eq!(crate::project(&full).validate(), Ok(()));
         match resumed.advance_through(&everything, Tick::new(THROUGH)) {

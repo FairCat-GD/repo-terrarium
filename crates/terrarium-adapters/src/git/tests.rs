@@ -738,9 +738,53 @@ fn history_that_changed_is_read_again() {
         let previous = read(&repo);
         change(&mut repo, &ids);
         let update = since(&repo, &previous);
-        assert_eq!(update.change, Change::Rewritten(reason), "{name}");
+        assert!(
+            matches!(update.change, Change::Rewritten { reason: r, .. } if r == reason),
+            "{name}"
+        );
         assert_full(&repo, &update);
     }
+}
+
+/// The default chain's commits a change took off it, read in full each time from a fresh
+/// copy of three commits on `main`.
+fn left_chain(change: fn(&mut FixtureRepo, &[CommitId])) -> (Vec<CommitId>, Vec<CommitId>) {
+    let dir = temp();
+    let (mut repo, ids) = base(&dir);
+    let previous = read(&repo);
+    change(&mut repo, &ids);
+    let update = since(&repo, &previous);
+    assert_full(&repo, &update);
+    match update.change {
+        Change::Rewritten { left_chain, .. } => (left_chain, ids),
+        other => panic!("not read again: {other:?}"),
+    }
+}
+
+#[test]
+fn a_rewrite_names_the_commits_that_left_the_default_chain() {
+    // An amend takes the tip off.
+    let (left, ids) = left_chain(|repo, ids| {
+        repo.reset("main", &ids[1]).unwrap();
+        commit(repo, "main", 30, &[Edit::write("a.rs", "amended\n")]);
+    });
+    assert_eq!(left, [ids[2].clone()]);
+    // A reset back two commits takes both, oldest first.
+    let (left, ids) = left_chain(|repo, ids| {
+        repo.reset("main", &ids[0]).unwrap();
+        commit(repo, "main", 30, &[Edit::write("a.rs", "again\n")]);
+    });
+    assert_eq!(left, ids[1..]);
+    // Kept on another branch, they are still in the history, but off the default chain.
+    let (left, ids) = left_chain(|repo, ids| {
+        repo.branch("kept", "main").unwrap();
+        repo.reset("main", &ids[1]).unwrap();
+        commit(repo, "main", 30, &[Edit::write("a.rs", "kept\n")]);
+    });
+    assert_eq!(left, [ids[2].clone()]);
+    // A new tag reads everything again and moves nothing.
+    let (left, _) = left_chain(|repo, ids| repo.tag_lightweight("v1", &ids[2]).unwrap());
+    assert!(left.is_empty());
 }
 
 #[test]
@@ -750,10 +794,13 @@ fn another_default_branch_reads_again() {
     repo.branch("trunk", "main").unwrap();
     let previous = read(&repo);
     let update = since_on(&repo, &previous, "trunk");
-    assert_eq!(
+    assert!(matches!(
         update.change,
-        Change::Rewritten(RewriteReason::DefaultBranchChanged)
-    );
+        Change::Rewritten {
+            reason: RewriteReason::DefaultBranchChanged,
+            ..
+        }
+    ));
     assert_eq!(update.history.default_branch, "trunk");
     assert_full(&repo, &update);
 }

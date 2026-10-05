@@ -281,6 +281,8 @@ pub struct Vegetation {
     pub fungus: Vec<Tick>,
     /// Seeds per pool species. Its keys are the pool.
     pub seed_bank: BTreeMap<PlantSpecies, u32>,
+    /// A rain after drought doubles the next close's germination.
+    pub boost: bool,
 }
 
 canonical_struct!(Vegetation {
@@ -290,6 +292,7 @@ canonical_struct!(Vegetation {
     litter,
     fungus,
     seed_bank,
+    boost,
 });
 
 const fn days(n: u32) -> u32 {
@@ -318,6 +321,7 @@ impl Vegetation {
             litter: Vec::new(),
             fungus: Vec::new(),
             seed_bank,
+            boost: false,
         }
     }
 
@@ -334,6 +338,11 @@ impl Vegetation {
         self.decay(today.tick);
         let (target, limit) = vigor_target(today.light, today.soil);
         let rate = daily_rate(today.rain);
+        let germination = if std::mem::take(&mut self.boost) {
+            rate.saturating_mul(Q16::from_int(2)).clamp01()
+        } else {
+            rate
+        };
         for plant in &mut self.plants {
             plant.grow(today, target, limit, rate);
         }
@@ -342,7 +351,7 @@ impl Vegetation {
         }
         self.tend_weeds(today, plants, weeds);
         if !today.inactive && target >= FAILING_BELOW {
-            self.germinate(seed, today.tick, plants, target, limit, rate);
+            self.germinate(seed, today.tick, plants, target, limit, germination);
         }
     }
 
@@ -493,9 +502,68 @@ impl Vegetation {
         count_of(self.weeds.len())
     }
 
+    /// A flowering: every living mature plant at thriving vigor blooms until `until`.
+    pub fn bloom(&mut self, until: Tick) {
+        for plant in &mut self.plants {
+            if plant.alive() && plant.stage == GrowthStage::Mature && plant.vigor >= THRIVING_FROM {
+                plant.bloom_until = Some(plant.bloom_until.map_or(until, |was| was.max(until)));
+            }
+        }
+    }
+
+    /// A lightning strike: one living mature plant, drawn on a stream keyed by `now`, loses
+    /// `dip` of its vigor, never below `FAILING_BELOW`. Returns its id.
+    pub fn strike(&mut self, seed: &RepoSeed, now: Tick, dip: Q16) -> Option<u32> {
+        let eligible: Vec<usize> = (0..self.plants.len())
+            .filter(|&i| {
+                self.plants
+                    .get(i)
+                    .is_some_and(|p| p.alive() && p.stage == GrowthStage::Mature)
+            })
+            .collect();
+        let bound = u32::try_from(eligible.len())
+            .ok()
+            .and_then(NonZeroU32::new)?;
+        let mut rng = Pcg32::stream(seed, StreamTag::Lightning, u64::from(now.hours()));
+        let index = usize::try_from(rng.below(bound)).ok()?;
+        let plant = self.plants.get_mut(*eligible.get(index)?)?;
+        if plant.vigor > FAILING_BELOW {
+            plant.vigor = plant.vigor.saturating_sub(dip).max(FAILING_BELOW);
+        }
+        Some(plant.id)
+    }
+
+    /// A sinkhole: one living plant, drawn on a stream keyed by `key`, is swallowed, leaving no
+    /// litter. Returns its id.
+    pub fn swallow(&mut self, seed: &RepoSeed, key: u64) -> Option<u32> {
+        let living: Vec<usize> = (0..self.plants.len())
+            .filter(|&i| self.plants.get(i).is_some_and(Plant::alive))
+            .collect();
+        let bound = u32::try_from(living.len()).ok().and_then(NonZeroU32::new)?;
+        let mut rng = Pcg32::stream(seed, StreamTag::Sinkhole, key);
+        let index = *living.get(usize::try_from(rng.below(bound)).ok()?)?;
+        Some(self.plants.remove(index).id)
+    }
+
+    /// A clearing burn takes every weed.
+    pub fn burn_weeds(&mut self) {
+        self.weeds.clear();
+    }
+
+    /// A windstorm brings `pieces` of leaf litter.
+    pub fn blow_litter(&mut self, now: Tick, pieces: usize) {
+        self.litter.extend(std::iter::repeat_n(now, pieces));
+    }
+
     /// The plants as the composer sees them, in slot order, while the terrarium shows
-    /// `presentation` at `now`. A bloom shows only on a mature, thriving plant.
-    pub fn views(&self, presentation: PresentationState, now: Tick) -> Vec<PlantView> {
+    /// `presentation` at `now`, with `scorched` the one the playing lightning strikes. A bloom
+    /// shows only on a mature, thriving plant.
+    pub fn views(
+        &self,
+        presentation: PresentationState,
+        now: Tick,
+        scorched: Option<u32>,
+    ) -> Vec<PlantView> {
         self.plants
             .iter()
             .map(|plant| {
@@ -508,7 +576,7 @@ impl Vegetation {
                     bloom: plant.bloom_until.is_some_and(|until| now < until)
                         && plant.stage == GrowthStage::Mature
                         && state == PlantState::Thriving,
-                    scorched: false,
+                    scorched: scorched == Some(plant.id),
                     order: plant.slot,
                 }
             })

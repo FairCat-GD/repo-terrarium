@@ -15,7 +15,7 @@ use terrarium_engine::headless::{Request, replay_dump};
 use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store, StoredObservation};
 use terrarium_truth::habitat::{plant_capacity, resident_capacity};
 use terrarium_truth::replay::first_close;
-use terrarium_truth::scene::{Energy, LifeStage, PlantState};
+use terrarium_truth::scene::{Energy, EventKind, LifeStage, PlantState, Strength};
 use terrarium_truth::{
     Basis, Observation, Prepared, PresentationState, ReplayDump, ReplayError, RepoSeed, SimState,
     Tick, canonical_dump, observation_tick, project,
@@ -129,6 +129,67 @@ fn the_arc_reaches_every_presentation_state() {
     assert_eq!(dump.scene.presentation.state, PresentationState::Dormant);
     assert_eq!(dump.scene.condensation, 3);
     assert_eq!(dump.scene.validate(), Ok(()));
+}
+
+#[test]
+fn the_arcs_events_follow_its_story() {
+    use EventKind::{
+        Clearing, ClearingBurn, Dusk, Flowering, Lightning, RainAfterDrought, Sinkhole, Storm,
+        Sunburst, Windstorm,
+    };
+    let arc = ArcDir::new();
+    let dump = arc.dump("data", &committed_observations(), 0);
+    let at = |kind: EventKind| -> Vec<u32> {
+        dump.events
+            .iter()
+            .filter(|e| e.kind == kind)
+            .map(|e| e.started_tick.hours())
+            .collect()
+    };
+    // Tick 0 is day 0 at 09:00 UTC: a tick's day is (tick + 9) / 24.
+    let days = |kind: EventKind| -> Vec<u32> { at(kind).iter().map(|t| (t + 9) / 24).collect() };
+    // Releases: v0.1.0, v0.2.0 (lightweight, dated by its commit on day 123), v1.0.0, v2.0.0.
+    assert_eq!(days(Flowering), [52, 123, 260, 705]);
+    // CI turns red on day 301 and stays red to day 315: a storm, then lightning on each day
+    // from the third, then the clearing. One more red run on day 357 storms and clears.
+    assert_eq!(days(Storm), [301, 357]);
+    assert_eq!(at(Lightning).len(), 11);
+    assert_eq!(days(Lightning).first(), Some(&304));
+    assert!(at(Lightning).windows(2).all(|pair| pair[1] - pair[0] == 24));
+    assert_eq!(days(Clearing), [315, 360]);
+    // The legacy deletion opens a sinkhole naming its fossil, and its churn is a windstorm.
+    assert_eq!(at(Sinkhole), [7_451]);
+    let sinkhole = dump
+        .events
+        .iter()
+        .find(|e| e.kind == Sinkhole)
+        .expect("one");
+    assert_eq!(
+        sinkhole.fossil,
+        dump.state.landmarks.fossils.first().map(|f| f.id)
+    );
+    assert!(at(Windstorm).contains(&7_455));
+    // Coverage slips every week of the decline; the return is rain after a long drought, a
+    // clearing of the dead code that piled up, and coverage leaping back.
+    assert_eq!(days(Dusk).len(), 15);
+    assert_eq!(at(RainAfterDrought), [13_706]);
+    assert_eq!(
+        dump.events
+            .iter()
+            .find(|e| e.kind == RainAfterDrought)
+            .map(|e| e.strength),
+        Some(Strength::High)
+    );
+    assert_eq!(days(ClearingBurn), [571, 641]);
+    assert_eq!(days(Sunburst), [576]);
+    // v1.0.0 waits for the first stone and is carved when it rises; v2.0.0 is carved on it at
+    // once, the second stone rising a month later.
+    let marks: Vec<u8> = dump.scene.monuments.iter().map(|m| m.marks).collect();
+    assert_eq!(marks, [2, 0]);
+    assert_eq!(dump.state.landmarks.pending, 0);
+    // No branch switch fired anything: the arc's source moves from local to CI on day 267 and
+    // passes over an unknown run on day 385.
+    assert!(!days(Storm).contains(&267) && !days(Clearing).contains(&385));
 }
 
 #[test]
@@ -327,20 +388,27 @@ fn a_cached_state_resumes_to_the_full_replay() {
     full.advance_through(&everything, through).expect("replays");
     let dying = dying.expect("a resident dies of old age");
     let tick_of = |o: &Observation| observation_tick(history.grid, o.recorded_at).expect("on grid");
-    // Tick 0 is day 0 of the arc at 09:00 UTC. The splits: mid-thriving, the merge's own
-    // tick, the legacy deletion's tick and the one after, the first stone's close, a
-    // resident's dying close and its burial the next, a midnight in the silence, and the first
-    // commit back.
+    // Tick 0 is day 0 of the arc at 09:00 UTC. The splits: mid-thriving, the first
+    // flowering, the merge's own tick, the first lightning and the one after, the legacy
+    // deletion's tick and the one after, the windstorm's close, the first stone's close, a
+    // resident's dying close and its burial the next, a midnight in the silence, the first
+    // commit back, and the first clearing burn.
     for split in [
         1_000,
+        1_257,
         3_560,
+        7_305,
+        7_329,
         7_451,
         7_452,
+        7_455,
         8_775,
         dying,
         dying + 24,
         10_791,
         13_705,
+        13_706,
+        13_712,
     ] {
         let split = Tick::new(split);
         let seen_commits: Vec<_> = history

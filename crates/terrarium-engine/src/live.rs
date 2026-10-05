@@ -26,7 +26,7 @@
 //! **Time** is the wall clock's, never lower than it was earlier in the session: a clock set
 //! back neither rewinds the scene nor dates an observation before one already applied.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -47,9 +47,10 @@ use terrarium_store::{
 };
 use terrarium_truth::climate::ClimateReport;
 use terrarium_truth::domain::ObservationHead;
+use terrarium_truth::scene::EventKind;
 use terrarium_truth::{
     Basis, CommitId, Observation, Prepared, ReplayError, SIM_VERSION, SceneInput, SimState, Tick,
-    observation_tick, project,
+    observation_tick, project_showing,
 };
 
 use crate::clock::{Clock, SystemClock};
@@ -187,8 +188,16 @@ struct HistoryRead {
     changed: bool,
     /// Read again in full because earlier facts changed.
     rewritten: bool,
-    /// The default tip's old and new commit, when it moved without fast-forwarding.
-    moved: Option<(CommitId, CommitId)>,
+    /// The default tip's move, when it moved without fast-forwarding.
+    moved: Option<Moved>,
+}
+
+/// The default tip's old and new commit, and how many commits the move took off its
+/// first-parent chain when the history before it was read.
+struct Moved {
+    old: CommitId,
+    new: CommitId,
+    rewritten: Option<u32>,
 }
 
 /// How a refresh ended.
@@ -274,6 +283,13 @@ pub struct Live {
     cached_tick: Option<Tick>,
     view: Option<View>,
     shown: Option<Shown>,
+    /// The event instances the state last projected held: what a later refresh has already
+    /// had the chance to play. `None` before anything was projected and with no cached state.
+    seen: Option<BTreeSet<(Tick, EventKind)>>,
+    /// The event the scene plays, kept in every scene until a newer one the viewer has not
+    /// seen replaces it, so a burst of snapshots never drops it; the composer plays each
+    /// instance once.
+    playing: Option<(Tick, EventKind)>,
     /// The session's time: the wall clock, never lower than before.
     now: i64,
     refreshes: u64,
@@ -322,6 +338,7 @@ impl Live {
             Some((base, tick)) => (Some(base), Some(tick)),
             None => (None, None),
         };
+        let seen = base.as_ref().map(|base| base.events.keys());
         Ok(Some(Live {
             status_file: config.data.local_tests(&terrarium.seed),
             patterns: discovery::report_patterns(&overrides),
@@ -340,6 +357,8 @@ impl Live {
             cached_tick,
             view: None,
             shown: None,
+            seen,
+            playing: None,
             now,
             refreshes: 0,
             watch: None,
@@ -351,7 +370,7 @@ impl Live {
         Start::Connected {
             repo_name: self.terrarium.repo.name.clone(),
             install_salt: self.terrarium.install_salt,
-            scene: self.base.as_ref().map(project),
+            scene: self.base.as_ref().map(|base| project_showing(base, None)),
         }
     }
 
@@ -434,8 +453,9 @@ impl Live {
         }
         let history_changed = read.changed;
         let mut recorded = false;
-        if let Some((old, new)) = read.moved {
-            let record = observe::ref_rewrite(&branch, old, new, head.clone(), self.now);
+        if let Some(moved) = read.moved {
+            let rewrite = self.rewrite(moved);
+            let record = observe::ref_rewrite(&branch, rewrite, head.clone(), self.now);
             self.append(None, record)?;
             recorded = true;
         }
@@ -468,9 +488,10 @@ impl Live {
         } else {
             self.replay(through)?
         };
+        let scene = self.scene().ok_or(Fault::Cancelled)?;
         let view = self.view.as_ref().ok_or(Fault::Cancelled)?;
         let shown = Shown {
-            scene: project(&view.live),
+            scene,
             report: view.live.report(),
             branch: match head.branch {
                 Some(name) => Branch::Named(name),
@@ -514,6 +535,49 @@ impl Live {
         })
     }
 
+    /// The view's scene, playing the best event it holds that the state last projected did
+    /// not (with none projected, the newest tick's), or else the one already playing.
+    fn scene(&mut self) -> Option<SceneInput> {
+        let view = self.view.as_ref()?;
+        let events = &view.live.events;
+        let fresh = match &self.seen {
+            Some(seen) => events.unseen(seen),
+            None => events.current(view.live.now()),
+        };
+        if let Some(fresh) = fresh {
+            self.playing = Some(fresh.key());
+        }
+        let playing = self.playing.and_then(|key| events.find(key));
+        self.seen = Some(events.keys());
+        Some(project_showing(&view.live, playing))
+    }
+
+    /// What `moved` took: the fossils the state last shown (or, failing that, the cached one)
+    /// held whose commit is no longer on the default branch's first-parent chain.
+    fn rewrite(&self, moved: Moved) -> observe::Rewrite {
+        let shown = self
+            .view
+            .as_ref()
+            .map(|view| &view.live)
+            .or(self.base.as_ref());
+        let fossils = match (shown, self.history.as_ref()) {
+            (Some(state), Some(history)) => state
+                .landmarks
+                .fossils
+                .iter()
+                .filter(|fossil| !on_default_chain(history, &fossil.commit))
+                .map(|fossil| fossil.commit.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        observe::Rewrite {
+            old: moved.old,
+            new: moved.new,
+            rewritten: moved.rewritten,
+            fossils,
+        }
+    }
+
     /// Reads the history in full the first time and what is new afterwards.
     fn read_history(
         &mut self,
@@ -542,28 +606,48 @@ impl Live {
             let history = git
                 .read_history(branch, &mut on_progress)
                 .map_err(git_fault)?;
+            // A move made while nothing watched: the cached state's default tip has left the
+            // first-parent chain. How many commits left with it is no longer known.
+            let moved = self
+                .base
+                .as_ref()
+                .and_then(|base| base.habitat.default_tip.clone())
+                .filter(|tip| !on_default_chain(&history, tip))
+                .zip(history.state.branches.get(branch).cloned())
+                .map(|(old, new)| Moved {
+                    old,
+                    new,
+                    rewritten: None,
+                });
             self.history = Some(history);
             return Ok(HistoryRead {
                 changed: true,
                 rewritten: false,
-                moved: None,
+                moved,
             });
         };
         let old = history.state.branches.get(branch).cloned();
         let change = git
             .read_since(history, branch, &mut on_progress)
             .map_err(git_fault)?;
-        let moved = match change {
-            Change::Rewritten(reason) if reason != RewriteReason::DefaultBranchChanged => {
+        let moved = match &change {
+            Change::Rewritten { reason, left_chain }
+                if *reason != RewriteReason::DefaultBranchChanged =>
+            {
                 let new = history.state.branches.get(branch).cloned();
                 old.zip(new)
                     .filter(|(old, new)| old != new && !history.is_ancestor(old, new))
+                    .map(|(old, new)| Moved {
+                        old,
+                        new,
+                        rewritten: Some(u32::try_from(left_chain.len()).unwrap_or(u32::MAX)),
+                    })
             }
             _ => None,
         };
         Ok(HistoryRead {
             changed: change != Change::Unchanged,
-            rewritten: matches!(change, Change::Rewritten(_)),
+            rewritten: matches!(change, Change::Rewritten { .. }),
             moved,
         })
     }
@@ -709,6 +793,14 @@ impl Live {
         self.view = Some(View { live, through });
         Ok((replay, problem))
     }
+}
+
+/// Whether `commit` is on `history`'s default first-parent chain.
+fn on_default_chain(history: &History, commit: &CommitId) -> bool {
+    history
+        .commits
+        .iter()
+        .any(|c| c.on_default_first_parent && &c.id == commit)
 }
 
 /// The cache row for `base`. Its high-water mark is the newest observation recorded before the

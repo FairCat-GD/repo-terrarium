@@ -78,12 +78,19 @@ pub enum WeatherState {
 }
 
 /// `ref_rewrite`: a default-branch ref moved from `old` to `new` without fast-forwarding.
+/// `rewritten` counts the commits it took off the default branch's first-parent chain, and
+/// `fossils` names the commits of the fossils shown before it that it took off; rows written
+/// before either was recorded lack them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefRewriteRaw {
     #[serde(rename = "ref")]
     pub reference: String,
     pub old: CommitId,
     pub new: CommitId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewritten: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fossils: Vec<CommitId>,
 }
 
 /// A raw shape: what an adapter writes into `raw`.
@@ -139,11 +146,15 @@ pub(crate) fn value(
                 reference,
                 old,
                 new,
+                rewritten,
+                fossils,
             } = serde_json::from_value(object()?).map_err(shape)?;
             ObservationValue::RefRewrite {
                 reference,
                 old,
                 new,
+                rewritten,
+                fossils,
             }
         }
     })
@@ -206,6 +217,8 @@ mod tests {
             reference: "refs/heads/main".into(),
             old: commit('a'),
             new: commit('b'),
+            rewritten: None,
+            fossils: Vec::new(),
         };
         assert_eq!(
             rewrite.to_raw(),
@@ -213,6 +226,20 @@ mod tests {
                 r#"{{"ref":"refs/heads/main","old":"{}","new":"{}"}}"#,
                 "a".repeat(40),
                 "b".repeat(40)
+            )
+        );
+        let dropping = RefRewriteRaw {
+            rewritten: Some(2),
+            fossils: vec![commit('c')],
+            ..rewrite
+        };
+        assert_eq!(
+            dropping.to_raw(),
+            format!(
+                r#"{{"ref":"refs/heads/main","old":"{}","new":"{}","rewritten":2,"fossils":["{}"]}}"#,
+                "a".repeat(40),
+                "b".repeat(40),
+                "c".repeat(40)
             )
         );
     }
@@ -231,10 +258,28 @@ mod tests {
                 exported_items: 80
             })
         );
+        // A row written before the counts were recorded reads with none.
+        let old_row = format!(
+            r#"{{"ref":"refs/heads/main","old":"{}","new":"{}"}}"#,
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        assert_eq!(
+            value(ObservationKind::RefRewrite, None, &old_row),
+            Ok(ObservationValue::RefRewrite {
+                reference: "refs/heads/main".into(),
+                old: commit('a'),
+                new: commit('b'),
+                rewritten: None,
+                fossils: Vec::new(),
+            })
+        );
         let raw = RefRewriteRaw {
             reference: "refs/heads/main".into(),
             old: commit('a'),
             new: commit('b'),
+            rewritten: Some(4),
+            fossils: vec![commit('d'), commit('e')],
         }
         .to_raw();
         assert_eq!(
@@ -242,7 +287,9 @@ mod tests {
             Ok(ObservationValue::RefRewrite {
                 reference: "refs/heads/main".into(),
                 old: commit('a'),
-                new: commit('b')
+                new: commit('b'),
+                rewritten: Some(4),
+                fossils: vec![commit('d'), commit('e')],
             })
         );
         let local = WeatherSource::Local;
@@ -277,6 +324,19 @@ mod tests {
             assert_eq!(
                 value(kind, None, raw),
                 Err(Invalid::RawShape(kind)),
+                "{raw}"
+            );
+        }
+        let ids = format!(r#""old":"{}","new":"{}""#, "a".repeat(40), "b".repeat(40));
+        for extra in [
+            r#""fossils":["zz"]"#,
+            r#""rewritten":-1"#,
+            r#""fossils":"c""#,
+        ] {
+            let raw = format!(r#"{{"ref":"refs/heads/main",{ids},{extra}}}"#);
+            assert_eq!(
+                value(ObservationKind::RefRewrite, None, &raw),
+                Err(Invalid::RawShape(ObservationKind::RefRewrite)),
                 "{raw}"
             );
         }

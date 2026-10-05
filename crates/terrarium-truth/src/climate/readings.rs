@@ -92,26 +92,27 @@ canonical_struct!(Readings {
 });
 
 impl Readings {
-    /// Holds `latest` as the newest report of `kind`, unless a newer one is held. Kinds that
-    /// feed neither light nor soil are ignored.
-    pub fn record(&mut self, kind: ObservationKind, latest: Latest) {
+    /// Holds `latest` as the newest report of `kind`, unless a newer one is held, and says
+    /// whether it took it. Kinds that feed neither light nor soil are ignored.
+    pub fn record(&mut self, kind: ObservationKind, latest: Latest) -> bool {
         let slot = match kind {
             ObservationKind::Coverage => &mut self.coverage,
             ObservationKind::DeadCode => &mut self.dead_code,
             ObservationKind::Complexity => &mut self.complexity,
             ObservationKind::TodoDensity => &mut self.todo_density,
-            ObservationKind::Weather | ObservationKind::RefRewrite => return,
+            ObservationKind::Weather | ObservationKind::RefRewrite => return false,
         };
         if slot
             .as_ref()
             .is_some_and(|held| held.recorded_at > latest.recorded_at)
         {
-            return;
+            return false;
         }
         let before = slot.replace(latest).and_then(|held| held.value);
         if kind == ObservationKind::Coverage {
             self.coverage_before = before;
         }
+        true
     }
 
     /// Steps both smoothed values with the reports held at the close of a day.

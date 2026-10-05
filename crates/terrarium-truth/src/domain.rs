@@ -278,11 +278,16 @@ pub enum ObservationValue {
     TodoDensity,
     /// `normalized`: 1 for pass, 0 for fail, absent for unknown.
     Weather { source: WeatherSource },
-    /// A non-fast-forward move of the default branch. `normalized` is absent.
+    /// A non-fast-forward move of the default branch. `normalized` is absent. `rewritten` is
+    /// how many commits it took off the default branch's first-parent chain, and `fossils` the
+    /// commits of the fossils shown before it that it took off: both `None` and empty when the
+    /// record predates them or could not tell.
     RefRewrite {
         reference: String,
         old: CommitId,
         new: CommitId,
+        rewritten: Option<u32>,
+        fossils: Vec<CommitId>,
     },
 }
 
@@ -318,10 +323,14 @@ impl Canonical for ObservationValue {
                 reference,
                 old,
                 new,
+                rewritten,
+                fossils,
             } => {
                 w.field("reference", reference);
                 w.field("old", old);
                 w.field("new", new);
+                w.field("rewritten", rewritten);
+                w.field("fossils", fossils);
             }
         }
     }
@@ -344,6 +353,8 @@ impl Canonical for ObservationValue {
                 reference: r.field("reference")?,
                 old: r.field("old")?,
                 new: r.field("new")?,
+                rewritten: r.field("rewritten")?,
+                fossils: r.field("fossils")?,
             },
         })
     }
@@ -545,6 +556,15 @@ mod tests {
                 reference: "refs/heads/main".to_owned(),
                 old: commit('b'),
                 new: commit('c'),
+                rewritten: None,
+                fossils: Vec::new(),
+            },
+            ObservationValue::RefRewrite {
+                reference: "refs/heads/main".to_owned(),
+                old: commit('b'),
+                new: commit('c'),
+                rewritten: Some(3),
+                fossils: vec![commit('f'), commit('0')],
             },
         ];
         for (value, id) in values.into_iter().zip(1..) {

@@ -11,6 +11,7 @@ mod pieces;
 mod probe_zip;
 mod purity;
 mod render;
+mod sweep;
 #[cfg(test)]
 mod test_support;
 mod verify;

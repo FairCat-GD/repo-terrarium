@@ -26,6 +26,12 @@ const BENCHES: &[(&str, &str, &[&str], &str)] = &[
         &["fixture"],
         "reading a synthetic 10,000-commit history, under 10 s",
     ),
+    (
+        "terrarium-engine",
+        "replay",
+        &[],
+        "reading and replaying a synthetic 10,000-commit history, events included, under 30 s",
+    ),
 ];
 
 pub fn run(root: &Path) -> ExitCode {

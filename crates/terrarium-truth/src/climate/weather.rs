@@ -6,8 +6,8 @@
 //! falls back to the last local result. The current branch is HEAD's branch as the newest
 //! observation of any kind recorded it.
 //!
-//! Only a source's own outcome flipping, while that source is in effect, is a transition, which
-//! events may answer. Any other change of what is in effect, a branch switch above all, is a
+//! Only a source's own outcome flipping, while that source was and stays in effect, is a
+//! transition, which events may answer. Any other change of what is in effect, a branch switch above all, is a
 //! switch: the sky tweens and nothing fires.
 
 use serde::{Deserialize, Serialize};
@@ -172,8 +172,16 @@ impl WeatherState {
         if chosen == self.in_effect {
             return;
         }
+        let same_source = |now: &InEffect| {
+            self.in_effect
+                .as_ref()
+                .is_some_and(|before| before.source == now.source)
+        };
         let change = match &chosen {
-            Some(now) if self.source(&now.source).and_then(|s| s.flipped) == Some(tick) => {
+            Some(now)
+                if same_source(now)
+                    && self.source(&now.source).and_then(|s| s.flipped) == Some(tick) =>
+            {
                 WeatherChange::Transition {
                     source: now.source.clone(),
                     pass: now.pass,
@@ -351,5 +359,34 @@ mod tests {
             }
         );
         assert_eq!(weather.last_change, None);
+    }
+
+    #[test]
+    fn a_flip_in_the_tick_its_source_comes_into_effect_is_a_switch() {
+        let mut weather = WeatherState::default();
+        weather.note_head(Some("feature/fern"), 0);
+        weather.record(&ci("feature/fern"), Some(true), at(1));
+        weather.record(&ci("main"), Some(true), at(1));
+        weather.evaluate(at(1), "main");
+        // In one tick HEAD moves to main and main's run flips: main comes into effect.
+        weather.note_head(Some("main"), 10);
+        weather.record(&ci("main"), Some(false), at(2));
+        weather.evaluate(at(2), "main");
+        assert_eq!(
+            weather.last_change.clone().map(|c| c.change),
+            Some(WeatherChange::Switch {
+                to: Some(ci("main"))
+            })
+        );
+        // Main's next flip, while it stays in effect, is a transition.
+        weather.record(&ci("main"), Some(true), at(3));
+        weather.evaluate(at(3), "main");
+        assert_eq!(
+            weather.last_change.clone().map(|c| c.change),
+            Some(WeatherChange::Transition {
+                source: ci("main"),
+                pass: true
+            })
+        );
     }
 }

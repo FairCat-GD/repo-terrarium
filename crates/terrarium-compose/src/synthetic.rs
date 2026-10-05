@@ -291,7 +291,12 @@ pub fn scene(knobs: &Knobs) -> SceneInput {
 /// reveals a fossil, and names it.
 pub fn set_event(scene: &mut SceneInput, kind: EventKind) {
     let fossil = (kind == EventKind::Sinkhole).then(|| {
-        let id = scene.fossils.iter().map(|f| f.id + 1).max().unwrap_or(20);
+        let id = scene
+            .fossils
+            .iter()
+            .map(|f| f.id.saturating_add(1))
+            .max()
+            .unwrap_or(20);
         scene.fossils.push(FossilView {
             id,
             form: FossilForm::Bone,

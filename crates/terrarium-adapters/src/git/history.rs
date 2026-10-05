@@ -92,8 +92,13 @@ pub enum Change {
         ids: Vec<CommitId>,
         earliest_tick: Tick,
     },
-    /// The history was read again in full, because earlier facts changed.
-    Rewritten(RewriteReason),
+    /// The history was read again in full, because earlier facts changed. `left_chain` holds
+    /// the commits that were on the default branch's first-parent chain and no longer are, in
+    /// the order the old history held them: what a rewrite of the default branch took off it.
+    Rewritten {
+        reason: RewriteReason,
+        left_chain: Vec<CommitId>,
+    },
 }
 
 /// Why a history was read again in full.
@@ -373,8 +378,20 @@ pub(crate) fn read_since(
             Err(reason) => reason,
         },
     };
-    *history = read(repo, default_branch, progress)?;
-    Ok(Change::Rewritten(reason))
+    let old = std::mem::replace(history, read(repo, default_branch, progress)?);
+    let chain: BTreeSet<&CommitId> = history
+        .commits
+        .iter()
+        .filter(|c| c.on_default_first_parent)
+        .map(|c| &c.id)
+        .collect();
+    let left_chain = old
+        .commits
+        .into_iter()
+        .filter(|c| c.on_default_first_parent && !chain.contains(&c.id))
+        .map(|c| c.id)
+        .collect();
+    Ok(Change::Rewritten { reason, left_chain })
 }
 
 /// Reads only the commits `history` lacks into it, or says why every earlier fact no longer
