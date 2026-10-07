@@ -5,18 +5,6 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
-## [0.18.1] - 2026-10-07
-
-An architecture review and cleanup audit of the whole codebase. Nothing on screen changed.
-
-### Changed
-
-- **A review of the whole codebase** found that a bare repository's `record-tests` runs are
-  never read, and that an engine stop could leave the strip frozen with no note. The next
-  version fixes both.
-- **Coming next:** after a long silence, the terrarium will return at the repository's usual
-  pace instead of a weeks-long gale.
-
 ## [0.18.0] - 2026-10-05
 
 Things now happen in the terrarium: the repository's moments arrive as events, one at a time.
