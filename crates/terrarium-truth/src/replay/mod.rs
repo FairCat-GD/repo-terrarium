@@ -51,17 +51,18 @@ use crate::climate::rhythm::Rhythm;
 use crate::climate::weather::{ChangeAt, InEffect, WeatherChange, WeatherState};
 use crate::climate::{self, ClimateReport, DailyClimate, SoilCauses, Trends};
 use crate::domain::{
-    ActivityClass, Climate, CommitFacts, Habitat, Observation, ObservationKind, ObservationValue,
-    Reading,
+    ActivityClass, Climate, CommitFacts, Habitat, MergeKey, Observation, ObservationKind,
+    ObservationValue, Reading,
 };
 use crate::events::{Events, Qualified, release, strength};
 use crate::fauna::{Fauna, close_living};
 use crate::fixed::{Q16, Q32};
 use crate::habitat::HabitatState;
 use crate::identity::{CommitId, RepoSeed, SIM_VERSION, SimVersion};
+use crate::keep_newest;
 use crate::landmarks::{Buried, Landmarks, commit_key, fossil_id};
 use crate::scene::{EventKind, GroundMark, Strength};
-use crate::time::{SECONDS_PER_TICK, TICKS_PER_DAY, Tick, TickGrid};
+use crate::time::{SECONDS_PER_TICK, TICKS_PER_DAY, Tick, TickGrid, days};
 use crate::timeline::{Moment, PresentationTimeline};
 use crate::tuning::{
     BLOOM_TICKS, CLEARING_BURN_BANDS, CLEARING_BURN_ITEMS, CLEARING_BURN_PERCENT, DAILY_RECORDS,
@@ -209,29 +210,11 @@ fn applies_at(
     observation: &Observation,
     own: Tick,
 ) -> Tick {
-    let reading = !matches!(
-        observation.value,
-        ObservationValue::Weather { .. } | ObservationValue::RefRewrite { .. }
-    );
+    let reading = observation.value.kind().is_reading();
     match commit_ticks.get(&observation.head.commit) {
         Some(&at) if reading && observation.head.at_default_tip => at.max(own),
         _ => own,
     }
-}
-
-type MergeKey<'a> = (i64, &'static str, String, &'a str);
-
-fn merge_key(observation: &Observation) -> MergeKey<'_> {
-    let source = match &observation.value {
-        ObservationValue::Weather { source } => source.to_column(),
-        _ => String::new(),
-    };
-    (
-        observation.recorded_at,
-        observation.value.kind().as_column(),
-        source,
-        observation.head.commit.as_str(),
-    )
 }
 
 impl<'a> Prepared<'a> {
@@ -252,7 +235,7 @@ impl<'a> Prepared<'a> {
             .iter()
             .filter_map(|o| {
                 Some((
-                    merge_key(o),
+                    o.merge_key(),
                     observation_tick(basis.grid, o.recorded_at)?,
                     o,
                 ))
@@ -539,7 +522,7 @@ impl SimState {
             return;
         };
         let silent = facts.tick.hours_since(last);
-        if silent < DROUGHT_DAYS.saturating_mul(TICKS_PER_DAY) {
+        if silent < days(DROUGHT_DAYS) {
             return;
         }
         let days = silent / TICKS_PER_DAY;
@@ -580,11 +563,7 @@ impl SimState {
         if major >= 1 && self.events.major.is_none_or(|highest| major > highest) {
             self.landmarks.release();
         }
-        self.events.major = Some(
-            self.events
-                .major
-                .map_or(major, |highest| highest.max(major)),
-        );
+        self.events.major = self.events.major.max(Some(major));
     }
 
     /// An earthquake for a non-fast-forward move of the default branch, which settles as a
@@ -617,11 +596,7 @@ impl SimState {
     /// Sunburst or dusk: the coverage report just taken moved by 0.02 or more from the one it
     /// replaced.
     fn light_shift(&mut self, tick: Tick) {
-        let now = self
-            .readings
-            .coverage
-            .as_ref()
-            .and_then(|latest| latest.value);
+        let now = self.readings.raw_light();
         let (Some(now), Some(before)) = (now, self.readings.coverage_before) else {
             return;
         };
@@ -820,8 +795,7 @@ impl SimState {
             health: climate::health(light, soil),
             activity: climate::activity(rain, wind),
         });
-        let excess = self.daily.len().saturating_sub(DAILY_RECORDS);
-        self.daily.drain(..excess);
+        keep_newest(&mut self.daily, DAILY_RECORDS);
     }
 
     fn evaluate(&mut self, tick: Tick) {

@@ -24,21 +24,26 @@ dependencies and its own lint walls, purity is a compile-time property rather th
 
 - No IO, wall clock, floats, hash-order iteration, install salt or local time. The inputs are
   git history, recorded observations, the seed, the default branch and `SIM_VERSION`.
-- It depends on no other workspace crate, and its external dependencies are limited to `serde`,
-  `postcard`, `indexmap` and `sha2`. `cargo xtask verify` checks both.
+- It depends on no other workspace crate. Its external dependencies are `serde`, `postcard` and
+  `sha2`, of the four the crate graph allows (`indexmap` is the fourth). `cargo xtask verify`
+  checks both.
 - `#![forbid(unsafe_code)]`, and `deny` of `clippy::float_arithmetic`, `clippy::as_conversions`
   (so no numeric conversion is silent), `clippy::disallowed_types` and
-  `clippy::disallowed_methods`, so the lists below are errors in every build, not only in
+  `clippy::disallowed_methods`, so the lists below are errors in every clippy run, not only in
   `verify`.
 - This directory's `clippy.toml` disallows:
   - the hash-ordered collections and std's hashers;
   - the float types;
   - the clock types and their readers;
   - the unstable sorts, whose order of equal elements may change between Rust releases.
-- `cargo xtask verify` scans every source file here for float literals, float type names (raw
-  identifiers included), a local `allow` of a wall lint or of `warnings`, `include!` and
-  `#[path]`. Truth is one library target, so its
-  tests live in `src/` under the same walls.
+- `cargo xtask verify` scans every source file here for:
+  - float literals and float type names, raw identifiers included;
+  - a local `allow` of a wall lint or of `warnings`;
+  - `include!` and `#[path]`;
+  - any path through `std::fs`, `env`, `net`, `process`, `thread` or `io`, however it is named,
+    an alias of `std` itself, and the printing macros.
+
+  Truth is one library target, so its tests live in `src/` under the same walls.
 - Fixed point saturates and rounds half away from zero. Randomness is `PCG32` through
   `SplitMix64`, one stream per purpose; a stream's seed hashes the purpose's name, so a new
   purpose never shifts another's draws.

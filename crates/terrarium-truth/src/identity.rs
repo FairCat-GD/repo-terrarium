@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 /// The version of truth's output (I-13). Any change to what truth computes bumps it, including
 /// a change to the postcard or canonical-dump encodings. It is independent of the product
 /// version.
-pub const SIM_VERSION: SimVersion = SimVersion(5);
+pub const SIM_VERSION: SimVersion = SimVersion(6);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SimVersion(pub u32);
@@ -33,13 +33,8 @@ impl RepoSeed {
     /// The seed of a repository whose first-parent walk from the default tip ends at `root`:
     /// the SHA-256 of the root commit id's bytes, not of its hex text. Stored terrariums are
     /// keyed by it, so it never changes.
-    ///
-    /// # Panics
-    ///
-    /// Never: a [`CommitId`] is lowercase hex of even length by construction.
     pub fn from_root_commit(root: &CommitId) -> RepoSeed {
-        let bytes = crate::canon::from_hex(root.as_str()).expect("a commit id is lowercase hex");
-        RepoSeed(Sha256::digest(&bytes).into())
+        RepoSeed(Sha256::digest(root.to_bytes()).into())
     }
 
     /// The inverse of [`RepoSeed::to_hex`]; only lowercase hex of the right length parses.
@@ -66,6 +61,15 @@ impl CommitId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The id's bytes.
+    ///
+    /// # Panics
+    ///
+    /// Never: a [`CommitId`] is lowercase hex of even length by construction.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        crate::canon::from_hex(&self.0).expect("a commit id is lowercase hex")
+    }
 }
 
 impl TryFrom<String> for CommitId {
@@ -81,8 +85,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sim_is_at_version_5() {
-        assert_eq!(SIM_VERSION, SimVersion(5));
+    fn the_sim_is_at_version_6() {
+        assert_eq!(SIM_VERSION, SimVersion(6));
     }
 
     #[test]

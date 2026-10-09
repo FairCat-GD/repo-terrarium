@@ -20,11 +20,11 @@ use std::time::Duration;
 /// still before it is read.
 pub const DEBOUNCE: Duration = Duration::from_millis(500);
 /// The longest a refresh waits for a stream of events to stop.
-pub const SETTLE_AT_MOST: Duration = Duration::from_secs(5);
+const SETTLE_AT_MOST: Duration = Duration::from_secs(5);
 /// The longest the worker sleeps before it looks at the wall clock again.
-pub const LOOK_EVERY: Duration = Duration::from_secs(60);
+const LOOK_EVERY: Duration = Duration::from_secs(60);
 /// How often a repository that was not found is looked for.
-pub const RETRY_EVERY: Duration = Duration::from_secs(60);
+const RETRY_EVERY: Duration = Duration::from_secs(60);
 
 const SECONDS_PER_HOUR: i64 = 3_600;
 
@@ -95,7 +95,7 @@ pub struct Schedule {
 }
 
 /// The UTC hour holding `wall`.
-pub fn hour_of(wall: i64) -> i64 {
+fn hour_of(wall: i64) -> i64 {
     wall.div_euclid(SECONDS_PER_HOUR)
 }
 

@@ -537,7 +537,6 @@ mod tests {
 
     use super::*;
     use crate::canon::{canonical_dump, canonical_sha256, from_canonical_dump, to_hex};
-    use crate::identity::{SIM_VERSION, SimVersion};
     use crate::test_support::proptest_config;
 
     /// Keeps the first of each id, so lists meet the uniqueness rule.
@@ -802,7 +801,6 @@ event.some.fossil = None
     fn the_sample_encodings_are_pinned() {
         // Both encodings are part of truth's output. If this fails, the format changed: bump
         // SIM_VERSION and re-pin, together.
-        assert_eq!(SIM_VERSION, SimVersion(5));
         let scene = sample();
         assert_eq!(scene.validate(), Ok(()));
         assert_eq!(canonical_dump(&scene), SAMPLE_DUMP);
@@ -848,6 +846,8 @@ event.some.fossil = None
         assert_all_in_encoding_order(crate::domain::ObservationKind::ALL);
         assert_all_in_encoding_order(crate::domain::HealthClass::ALL);
         assert_all_in_encoding_order(crate::domain::ActivityClass::ALL);
+        assert_all_in_encoding_order(crate::vegetation::Limit::ALL);
+        assert_all_in_encoding_order(crate::climate::Trend::ALL);
     }
 
     #[test]

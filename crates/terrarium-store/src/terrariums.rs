@@ -114,8 +114,8 @@ impl Store {
     }
 
     /// Connects a known terrarium again from `repo`. A different default branch drops the
-    /// cached replay as well, since the cache's key does not cover it and it forces a full
-    /// replay.
+    /// cached replay as well: it forces a full replay, and the cached state, whose basis names
+    /// the old branch, would never resume.
     pub fn activate(&mut self, id: TerrariumId, repo: &RepoLocation) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         let branch: Option<String> = tx
@@ -179,21 +179,10 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use terrarium_truth::{ObservationKind, SIM_VERSION, Tick};
+    use terrarium_truth::ObservationKind;
 
     use super::*;
-    use crate::test_support::{Fixture, location, new_terrarium, record, seed};
-    use crate::{ObservationId, SimCache};
-
-    fn cache() -> SimCache {
-        SimCache {
-            sim_version: SIM_VERSION,
-            tips_hash: [7; 32],
-            obs_high_water: Some(ObservationId::new(1)),
-            tick: Tick::new(40),
-            state: vec![1, 2, 3],
-        }
-    }
+    use crate::test_support::{Fixture, location, new_terrarium, record, seed, sim_cache as cache};
 
     fn count(fx: &Fixture, sql: &str) -> i64 {
         fx.store.conn.query_row(sql, [], |row| row.get(0)).unwrap()
@@ -247,30 +236,30 @@ mod tests {
         fx.store
             .append_observation(id, &record(ObservationKind::Coverage, 100))
             .unwrap();
-        fx.store.write_sim_cache(id, &cache()).unwrap();
+        fx.store.write_sim_cache(id, &cache(Some(1), 40)).unwrap();
         fx.store.disconnect(id).unwrap();
         assert!(!fx.store.terrarium(id).unwrap().unwrap().active);
         assert_eq!(fx.store.sim_cache(id).unwrap(), None);
-        assert_eq!(fx.store.observations(id, None, None).unwrap().len(), 1);
+        assert_eq!(fx.store.observations(id, None).unwrap().len(), 1);
     }
 
     #[test]
     fn activating_relinks_and_a_new_default_branch_drops_the_cache() {
         let mut fx = Fixture::new();
         let id = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
-        fx.store.write_sim_cache(id, &cache()).unwrap();
+        fx.store.write_sim_cache(id, &cache(Some(1), 40)).unwrap();
         fx.store.disconnect(id).unwrap();
 
         let mut moved = location(1);
         moved.path = "/moved/meadow".to_owned();
-        fx.store.write_sim_cache(id, &cache()).unwrap();
+        fx.store.write_sim_cache(id, &cache(Some(1), 40)).unwrap();
         fx.store.activate(id, &moved).unwrap();
         let relinked = fx.store.terrarium(id).unwrap().unwrap();
         assert!(relinked.active);
         assert_eq!(relinked.repo, moved);
         assert_eq!(
             fx.store.sim_cache(id).unwrap(),
-            Some(cache()),
+            Some(cache(Some(1), 40)),
             "same branch"
         );
 
@@ -316,15 +305,15 @@ mod tests {
                     .append_observation(id, &record(ObservationKind::Coverage, at))
                     .unwrap();
             }
-            fx.store.write_sim_cache(id, &cache()).unwrap();
+            fx.store.write_sim_cache(id, &cache(Some(1), 40)).unwrap();
         }
 
         fx.store.delete_terrarium(gone).unwrap();
         assert_eq!(fx.store.terrarium(gone).unwrap(), None);
-        assert_eq!(fx.store.observations(gone, None, None).unwrap(), vec![]);
+        assert_eq!(fx.store.observations(gone, None).unwrap(), vec![]);
         assert_eq!(fx.store.sim_cache(gone).unwrap(), None);
-        assert_eq!(fx.store.observations(kept, None, None).unwrap().len(), 2);
-        assert_eq!(fx.store.sim_cache(kept).unwrap(), Some(cache()));
+        assert_eq!(fx.store.observations(kept, None).unwrap().len(), 2);
+        assert_eq!(fx.store.sim_cache(kept).unwrap(), Some(cache(Some(1), 40)));
         assert!(guard_is_closed(&fx));
 
         let raw_delete = fx.store.conn.execute("DELETE FROM observations", []);

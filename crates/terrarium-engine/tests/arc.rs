@@ -83,7 +83,7 @@ impl ArcDir {
             .import_observations(terrarium, committed_observations().as_bytes())
             .expect("imports");
         let observations = store
-            .observations(terrarium, None, None)
+            .observations(terrarium, None)
             .expect("reads")
             .iter()
             .map(|stored: &StoredObservation| stored.to_observation().expect("converts"))

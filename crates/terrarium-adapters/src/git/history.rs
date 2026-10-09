@@ -44,6 +44,15 @@ pub struct History {
 }
 
 impl History {
+    /// The commits on the default branch's first-parent chain.
+    pub fn default_chain(&self) -> BTreeSet<&CommitId> {
+        self.commits
+            .iter()
+            .filter(|c| c.on_default_first_parent)
+            .map(|c| &c.id)
+            .collect()
+    }
+
     /// Whether `ancestor` is `descendant` or one of its ancestors in this history: false when
     /// either is not in it. A branch that moves to a commit its old tip is not an ancestor of
     /// has moved without fast-forwarding (`ref_rewrite`).
@@ -379,12 +388,7 @@ pub(crate) fn read_since(
         },
     };
     let old = std::mem::replace(history, read(repo, default_branch, progress)?);
-    let chain: BTreeSet<&CommitId> = history
-        .commits
-        .iter()
-        .filter(|c| c.on_default_first_parent)
-        .map(|c| &c.id)
-        .collect();
+    let chain = history.default_chain();
     let left_chain = old
         .commits
         .into_iter()
@@ -479,19 +483,13 @@ fn drops_commits(
 
 /// Whether a commit read before joined or left the default branch's first-parent chain.
 fn chain_moved(history: &History, chain: &BTreeSet<gix::ObjectId>) -> bool {
-    let was: BTreeSet<CommitId> = history
-        .commits
-        .iter()
-        .filter(|c| c.on_default_first_parent)
-        .map(|c| c.id.clone())
-        .collect();
-    let is: BTreeSet<CommitId> = chain
+    let is: Vec<CommitId> = chain
         .iter()
         .filter(|id| history.index.contains_key(*id))
         .copied()
         .map(to_commit_id)
         .collect();
-    was != is
+    history.default_chain() != is.iter().collect()
 }
 
 /// Merges `new_facts` (in order) into `history`, and says what changed.

@@ -35,9 +35,9 @@ pub(crate) use paths::relative_parts;
 /// At most this many contributors per report.
 pub const MAX_CONTRIBUTORS: usize = 20;
 /// At most this many files are read for one report (a surefire run writes one per class).
-pub const MAX_FILES: usize = 10_000;
+pub(crate) const MAX_FILES: usize = 10_000;
 /// At most this many bytes, over every file of one report.
-pub const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 /// A contributor path longer than this is left out: no source file has one.
 const MAX_CONTRIBUTOR_PATH: usize = 1024;
 
@@ -351,6 +351,29 @@ fn parse(root: &Path, format: Format, files: &[Loaded]) -> Outcome {
 
 /// What a parser returns: the reading and every contributor, before the cap.
 pub(crate) type Parsed = Result<(Reading, Vec<Contributor>), Why>;
+
+/// A coverage report's lines found and hit, summed over its files (each file's `found` and
+/// `hit`, with `hit` held to `found`), and each file the repository holds as a contributor
+/// weighed by its lines not run.
+pub(crate) fn coverage_totals<'a>(
+    files: impl IntoIterator<Item = (u64, u64, Option<&'a String>)>,
+) -> (u64, u64, Vec<Contributor>) {
+    let mut found = 0_u64;
+    let mut hit = 0_u64;
+    let mut contributors = Vec::new();
+    for (f, h, path) in files {
+        let h = h.min(f);
+        found = found.saturating_add(f);
+        hit = hit.saturating_add(h);
+        if let Some(path) = path {
+            contributors.push(Contributor {
+                path: path.clone(),
+                value: i64::try_from(f - h).unwrap_or(i64::MAX),
+            });
+        }
+    }
+    (found, hit, contributors)
+}
 
 /// The heaviest [`MAX_CONTRIBUTORS`], by weight and then path; nothing weightless, and no path
 /// too long to be a source file.

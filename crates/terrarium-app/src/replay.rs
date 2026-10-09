@@ -6,14 +6,13 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use terrarium_engine::headless::{Request, replay_dump};
 use terrarium_store::DataDir;
 use terrarium_truth::canonical_dump;
 
 use crate::cli::ReplayArgs;
-use crate::{copy, output};
+use crate::{copy, now_secs, output};
 
 pub fn run(args: &ReplayArgs) -> ExitCode {
     match dump(args) {
@@ -44,12 +43,4 @@ fn dump(args: &ReplayArgs) -> Result<String, String> {
     })
     .map_err(|err| copy::replay_failed(&args.repo, &err))?;
     Ok(canonical_dump(&dump))
-}
-
-pub(crate) fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
 }

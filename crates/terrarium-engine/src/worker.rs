@@ -359,7 +359,6 @@ mod tests {
                     branch: Branch::Named("main".into()),
                     sim_note: false,
                     stats: RefreshStats {
-                        number: u64::from(self.refreshes),
                         cause: refresh.cause,
                         replay: Replay::Full,
                         working: true,

@@ -28,7 +28,6 @@
 mod tests;
 
 use std::collections::BTreeMap;
-use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +37,7 @@ use crate::habitat::{plant_capacity, resident_capacity};
 use crate::identity::RepoSeed;
 use crate::rng::{Pcg32, StreamTag};
 use crate::scene::{Energy, LifeStage, ResidentSpecies, ResidentView};
-use crate::time::{TICKS_PER_DAY, Tick};
+use crate::time::{Tick, days};
 use crate::tuning::{
     ARRIVAL_DAYS, BROOD_DAYS, DETRITUS_FOOD, ENERGY_HIGH_FROM, ENERGY_LOW_BELOW, FOOD_SHARE,
     KIN_MAX, RESIDENT_POOL, RETREAT_DAYS, life_days,
@@ -166,9 +165,7 @@ pub fn plant_food(vegetation: &Vegetation, capacity: u32) -> Q16 {
             (n.saturating_add(1), sum.saturating_add(plant.vigor))
         });
     let over = living.max(capacity.div_ceil(FOOD_SHARE)).max(1);
-    vigor
-        .saturating_div(Q16::from_int(i32::try_from(over).unwrap_or(i32::MAX)))
-        .clamp01()
+    vigor.saturating_div(Q16::from_count(over)).clamp01()
 }
 
 /// Whether anything decays for decomposers to feed on: a dead plant, litter or fungus.
@@ -221,11 +218,7 @@ impl Fauna {
     /// No residents yet, and a pool of the species `seed` picks.
     pub fn new(seed: &RepoSeed) -> Fauna {
         let pools = admissible_pools();
-        let picked = u32::try_from(pools.len())
-            .ok()
-            .and_then(NonZeroU32::new)
-            .map(|bound| Pcg32::stream(seed, StreamTag::ResidentPool, 0).below(bound))
-            .and_then(|index| usize::try_from(index).ok());
+        let picked = Pcg32::stream(seed, StreamTag::ResidentPool, 0).index(pools.len());
         Fauna {
             next_id: 1,
             pool: picked
@@ -289,7 +282,7 @@ impl Fauna {
                 return true;
             }
             let since = *resident.low_since.get_or_insert(today.tick);
-            today.tick.hours_since(since) < RETREAT_DAYS.saturating_mul(TICKS_PER_DAY)
+            today.tick.hours_since(since) < days(RETREAT_DAYS)
         });
         self.left = self
             .left
@@ -347,8 +340,7 @@ impl Fauna {
         if today.inactive {
             return;
         }
-        let bank =
-            Q16::from_int(i32::try_from(capacity).unwrap_or(i32::MAX)).saturating_mul(ARRIVAL_DAYS);
+        let bank = Q16::from_count(capacity).saturating_mul(ARRIVAL_DAYS);
         self.arrivals = self.arrivals.saturating_add(tempo(today.rain)).min(bank);
         let mut rng = Pcg32::stream(
             seed,
@@ -373,10 +365,8 @@ impl Fauna {
                 .copied()
                 .filter(|&s| members(s) == fewest)
                 .collect();
-            let Some(species) = u32::try_from(least.len())
-                .ok()
-                .and_then(NonZeroU32::new)
-                .and_then(|bound| usize::try_from(rng.below(bound)).ok())
+            let Some(species) = rng
+                .index(least.len())
                 .and_then(|index| least.get(index).copied())
             else {
                 break;

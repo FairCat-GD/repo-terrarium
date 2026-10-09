@@ -125,10 +125,6 @@ impl NativeImage {
     pub fn pixels(&self) -> &[Rgba] {
         &self.pixels
     }
-
-    pub fn pixels_mut(&mut self) -> &mut [Rgba] {
-        &mut self.pixels
-    }
 }
 
 impl NativeImage {

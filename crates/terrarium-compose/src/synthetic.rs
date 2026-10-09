@@ -1,13 +1,14 @@
 //! A terrarium from a few climate knobs: the stand-in for truth's projection that `--demo`, the
-//! debug window, `cargo xtask gallery` and the synthetic snapshots draw, until the live
-//! pipeline reaches the strip.
+//! debug window's synthetic look, `cargo xtask gallery` and the synthetic snapshots draw. The
+//! live strip draws truth's own.
 //!
-//! It reads truth's climate and ecology rules statically: one moment, no history. Health is the
-//! lower of light and soil, activity mixes rain and wind as truth will, and the presentation
-//! state follows truth's rules with the hysteresis band counted as healthy, the initial class.
-//! Everything else (the plants' vigor, ground cover, residents, glass, monuments) is a plain
-//! integer function of the knobs, so the same knobs always give the same scene. Every row keeps
-//! its id whatever the knobs, so a moving knob tweens the terrarium rather than replacing it.
+//! It reads truth's climate and ecology rules statically: one moment, no history. Health is the lower of light and
+//! soil, activity mixes rain and wind as truth will, and the presentation state follows truth's
+//! rules with the hysteresis band counted as healthy, the initial class. Everything else (the
+//! plants' vigor, ground cover, residents, glass, monuments) is a plain integer function of the
+//! knobs, so the same knobs always give the same scene. Every row keeps its id whatever the
+//! knobs, so a moving knob tweens the terrarium rather than replacing it. Events are not a knob:
+//! [`set_event`] puts one on any scene, and a sinkhole reveals and names its fossil.
 
 use terrarium_truth::scene::{
     ActiveEvent, Energy, EventKind, FossilForm, FossilView, GrowthStage, LifeStage, Light,
@@ -80,8 +81,6 @@ pub struct Knobs {
     pub recovering: bool,
     /// The repo's age in whole years.
     pub age_years: u8,
-    /// The foreground event. Nothing draws events yet.
-    pub event: Option<EventKind>,
 }
 
 impl Knobs {
@@ -97,7 +96,6 @@ impl Knobs {
             idle_days: 0,
             recovering: false,
             age_years: 3,
-            event: None,
         }
     }
 
@@ -261,7 +259,7 @@ pub fn scene(knobs: &Knobs) -> SceneInput {
     } else {
         0
     };
-    let mut scene = SceneInput {
+    SceneInput {
         presentation: Presentation {
             state,
             since_tick: Tick::ZERO,
@@ -280,11 +278,7 @@ pub fn scene(knobs: &Knobs) -> SceneInput {
         condensation,
         dust,
         event: None,
-    };
-    if let Some(kind) = knobs.event {
-        set_event(&mut scene, kind);
     }
-    scene
 }
 
 /// Makes `kind` the scene's foreground event, of middling strength, from the left. A sinkhole
@@ -740,11 +734,9 @@ mod tests {
             assert_eq!(scene(&cell.knobs).validate(), Ok(()), "{cell:?}");
         }
         for kind in EventKind::ALL {
-            let knobs = Knobs {
-                event: Some(*kind),
-                ..NAMED[0].1
-            };
-            assert_eq!(scene(&knobs).validate(), Ok(()), "{kind:?}");
+            let mut with = scene(&NAMED[0].1);
+            set_event(&mut with, *kind);
+            assert_eq!(with.validate(), Ok(()), "{kind:?}");
         }
     }
 

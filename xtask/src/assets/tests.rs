@@ -8,7 +8,6 @@
 use serde_json::Value;
 
 use super::*;
-use crate::test_support::TempDir;
 
 const ACTIVE: &str = "biome-temperate/active-manifests.json";
 const SKY: &str = "biome-temperate/sky/exports/batch-02/sky-batch-02.json";
@@ -490,22 +489,22 @@ fn check_5_fails_on_an_effect_frame_hosted_outside_its_routine() {
 
 #[test]
 fn write_mode_rewrites_what_changed_and_removes_what_is_no_longer_generated() {
-    let dir = TempDir::new("assets-write");
-    std::fs::create_dir_all(dir.0.join("old")).unwrap();
-    std::fs::write(dir.0.join("old/atlas.bin"), [1]).unwrap();
-    std::fs::write(dir.0.join(".DS_Store"), [0]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("old")).unwrap();
+    std::fs::write(dir.path().join("old/atlas.bin"), [1]).unwrap();
+    std::fs::write(dir.path().join(".DS_Store"), [0]).unwrap();
     let output = BTreeMap::from([
         ("temperate/atlas.bin".to_owned(), vec![0, 1, 2]),
         ("temperate/catalog.bin".to_owned(), vec![9]),
     ]);
 
-    let committed = read_generated(&dir.0).unwrap();
+    let committed = read_generated(dir.path()).unwrap();
     assert_eq!(
         committed.keys().collect::<Vec<_>>(),
         ["old/atlas.bin"],
         "Finder files are ignored"
     );
-    let done = write(&dir.0, &output, &committed).unwrap();
+    let done = write(dir.path(), &output, &committed).unwrap();
     assert_eq!(
         done,
         [
@@ -514,10 +513,10 @@ fn write_mode_rewrites_what_changed_and_removes_what_is_no_longer_generated() {
             "removed old/atlas.bin"
         ]
     );
-    assert_eq!(read_generated(&dir.0).unwrap(), output);
+    assert_eq!(read_generated(dir.path()).unwrap(), output);
 
-    let unchanged = read_generated(&dir.0).unwrap();
-    assert!(write(&dir.0, &output, &unchanged).unwrap().is_empty());
+    let unchanged = read_generated(dir.path()).unwrap();
+    assert!(write(dir.path(), &output, &unchanged).unwrap().is_empty());
     assert!(compare(&output, &unchanged).is_empty());
 }
 

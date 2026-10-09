@@ -38,7 +38,11 @@ pub fn to_native(x: f64, y: f64, scale: &StripScale) -> NativePoint {
 }
 
 /// The pixel a coordinate falls in, or `None` left of or above the window.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "checked to lie in u32's range, and floored"
+)]
 fn whole_pixel(coordinate: f64) -> Option<u32> {
     (coordinate >= 0.0 && coordinate < f64::from(u32::MAX)).then(|| coordinate.floor() as u32)
 }

@@ -1,12 +1,15 @@
 //! The replay cache: one row per terrarium, an optimisation and never authoritative. The store
-//! keeps it; the engine decides whether its key still matches.
+//! keeps it; the engine resumes from it only when its `sim_version`, its state's basis and its
+//! tick still match, and truth accepts what the state consumed. `tips_hash` and
+//! `obs_high_water` are written but never read: truth's own check decides, and migration 1
+//! keeps the columns.
 
 use rusqlite::{OptionalExtension, params};
 use terrarium_truth::{SimVersion, Tick};
 
 use crate::{ObservationId, Store, StoreError, TerrariumId};
 
-/// A replay's saved state and the key it is valid for.
+/// A replay's saved state, with what it was saved under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimCache {
     pub sim_version: SimVersion,
@@ -87,17 +90,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Fixture, new_terrarium};
-
-    fn cache(high_water: Option<i64>, tick: u32) -> SimCache {
-        SimCache {
-            sim_version: SimVersion(3),
-            tips_hash: [9; 32],
-            obs_high_water: high_water.map(ObservationId::new),
-            tick: Tick::new(tick),
-            state: vec![0, 1, 2, 255],
-        }
-    }
+    use crate::test_support::{Fixture, new_terrarium, sim_cache as cache};
 
     #[test]
     fn the_cache_round_trips_and_a_write_replaces_it() {

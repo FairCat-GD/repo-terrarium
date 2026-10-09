@@ -47,6 +47,12 @@ pub fn mix(day: u8, night: u8, by: u8) -> u8 {
     blend(day, night, by, Blend::Normal)
 }
 
+/// `value × by / 255`, rounded to nearest: an opacity scaled by another. It is a normal blend
+/// of `value` over 0.
+pub fn scale(value: u8, by: u8) -> u8 {
+    blend(0, value, by, Blend::Normal)
+}
+
 /// A colour darkened toward black by `dim`, as the frame's `dim` darkens every pixel.
 pub fn dim(colour: Rgba, by: u8) -> Rgba {
     let [r, g, b, _] = colour;

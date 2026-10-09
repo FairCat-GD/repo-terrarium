@@ -19,12 +19,12 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::ExitCode;
 
-use sha2::{Digest, Sha256};
 use terrarium_adapters::fixture;
 use terrarium_engine::headless::{Request, replay_dump};
 use terrarium_store::DataDir;
-use terrarium_truth::canon::to_hex;
 use terrarium_truth::canonical_dump;
+
+use crate::sha256_hex;
 
 /// The golden dump and its hash, relative to the workspace root.
 pub const DUMP: &str = "tests/golden/arc.dump";
@@ -76,7 +76,7 @@ pub fn check(root: &Path) -> bool {
         println!(
             "golden: {DUMP} holds the arc's replay ({} lines, sha256 {})",
             fresh.lines().count(),
-            digest(&fresh)
+            sha256_hex(fresh.as_bytes())
         );
     }
     problems.is_empty()
@@ -106,13 +106,9 @@ fn read(root: &Path, path: &str) -> Option<String> {
     std::fs::read_to_string(root.join(path)).ok()
 }
 
-fn digest(text: &str) -> String {
-    to_hex(&Sha256::digest(text.as_bytes()))
-}
-
 /// The hash file's text: one `shasum -a 256` line.
 fn sha_line(dump: &str) -> String {
-    format!("{}  arc.dump\n", digest(dump))
+    format!("{}  arc.dump\n", sha256_hex(dump.as_bytes()))
 }
 
 /// The `SIM_VERSION` a dump's first line names.

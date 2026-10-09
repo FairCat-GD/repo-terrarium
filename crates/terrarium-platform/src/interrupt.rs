@@ -48,8 +48,3 @@ mod imp {
         let _ = unsafe { SetConsoleCtrlHandler(Some(noticed), true) };
     }
 }
-
-#[cfg(not(any(target_os = "macos", windows)))]
-mod imp {
-    pub fn defer_to_child() {}
-}

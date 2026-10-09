@@ -52,6 +52,11 @@ impl Q16 {
         Q16(n.saturating_mul(1 << 16))
     }
 
+    /// A count, saturated to the range of `Q16`.
+    pub fn from_count(n: u32) -> Q16 {
+        Q16::from_int(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+
     /// `num / den`, rounded and saturated; a zero `den` saturates by the sign of `num`. It is
     /// `const`, so tuning reads as the ratio it is: `const HEALTHY: Q16 = Q16::from_ratio(55,
     /// 100);`.
@@ -235,11 +240,6 @@ impl Q32 {
         } else {
             self
         }
-    }
-
-    /// The nearest integer, ties away from zero.
-    pub fn round_to_int(self) -> i64 {
-        saturate_i64(div_round(i128::from(self.0), Q32_SCALE))
     }
 
     /// One step of an exponential moving average, as [`Q16::ema`].

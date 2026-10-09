@@ -229,10 +229,10 @@ impl Feeder {
 
     fn scene_at(&self, now: Millis) -> SceneInput {
         let mut scene = match &self.feed {
-            Feed::Live => self.live.as_ref().map_or_else(
-                || preset::bare(terrarium_truth::PresentationState::Mature, Vec::new()),
-                |(scene, _)| scene.clone(),
-            ),
+            Feed::Live => self
+                .live
+                .as_ref()
+                .map_or_else(crate::live::unknown_scene, |(scene, _)| scene.clone()),
             Feed::Thriving => preset::scene("thriving").expect("the thriving preset"),
             Feed::Demo => synthetic::scene(&demo::knobs_at(now.0.saturating_sub(self.started.0))),
             #[cfg(feature = "dev")]
@@ -249,11 +249,9 @@ impl Feeder {
     /// The local clock at `now`: the override's time of day, else the OS's, else the last
     /// clock carried on.
     fn clock_now(&self, now: Millis, os: &Os) -> LocalClock {
-        let carried = {
-            let elapsed = now.0.saturating_sub(self.clock_at.0) % u64::from(DAY_MS);
-            let ms = (u64::from(self.clock.ms_of_day) + elapsed) % u64::from(DAY_MS);
-            LocalClock::new(self.clock.date, u32::try_from(ms).unwrap_or(0))
-        };
+        let carried = self
+            .clock
+            .advanced_by(now.0.saturating_sub(self.clock_at.0));
         let clock = os.clock.unwrap_or(carried);
         match self.overrides.time_of_day {
             Some(ms_of_day) => LocalClock::new(clock.date, ms_of_day % DAY_MS),

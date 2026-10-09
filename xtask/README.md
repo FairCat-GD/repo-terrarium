@@ -15,15 +15,19 @@ summary. The stages:
 3. **clippy (dev)**: the same with `--all-features`: the debug window and its egui and wgpu.
 4. **clippy (windows)**: `--all-features` for `x86_64-pc-windows-msvc`. There is no CI, so
    this is what compiles and lints the Windows code.
-5. **nextest**: `cargo nextest run --workspace --all-features`.
-6. **nextest (release)**: `cargo nextest run --package terrarium-app`, the app's tests again
+5. **clippy (shipped)**: `cargo clippy --package terrarium-app --package terrarium-adapters --
+   -D warnings`, the code that ships as it is built. Every workspace stage compiles adapters
+   with `fixture`, which xtask and the dev-dependencies turn on; with no tests and no xtask,
+   nothing does here.
+6. **nextest**: `cargo nextest run --workspace --all-features`.
+7. **nextest (release)**: `cargo nextest run --package terrarium-app`, the app's tests again
    without `dev`, for what only a release build does. The app is the only crate with features.
-7. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
-8. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
-9. **graph**: the crate-graph check below, including the scan of truth's sources.
-10. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
+8. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
+9. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
+10. **graph**: the crate-graph check below, including the scan of truth's sources.
+11. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
     this stage.
-11. **golden**: `cargo xtask golden --check`, below, in process like `assets`.
+12. **golden**: `cargo xtask golden --check`, below, in process like `assets`.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
 tool is missing, or at another version, fails and names the install command.
@@ -35,8 +39,11 @@ targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the 
 
 - Each crate depends only on the workspace crates the policy allows, for every dependency kind.
   A new crate fails until it is added to the policy.
-- `terrarium-truth` links no external crate except `serde`, `postcard`, `indexmap` and `sha2`.
+- `terrarium-truth` links no external crate but the four the policy allows: `serde`, `postcard`,
+  `indexmap` and `sha2`. It uses all but `indexmap` today.
 - `ureq` is reachable only through `terrarium-adapters`.
+- Among the `src/` files of the crates that ship, only `terrarium-adapters`' `exec` module names
+  `std::process::Command` (I-5). Integration tests, benches and xtask may start processes.
 - Every target root outside `terrarium-platform` carries `#![forbid(unsafe_code)]`. Platform
   denies `clippy::undocumented_unsafe_blocks`, and truth denies `clippy::float_arithmetic`,
   `clippy::as_conversions`, `clippy::disallowed_types` and `clippy::disallowed_methods`.
@@ -65,14 +72,21 @@ arithmetic. `src/purity.rs` lexes every `.rs` file in `crates/terrarium-truth` w
 - an `allow`, `expect` or `warn` of a wall lint (`float_arithmetic`, `as_conversions`,
   `disallowed_types`, `disallowed_methods`), of a group holding one (`all`, `style`,
   `restriction`), or of `warnings`;
-- `include!` and `#[path]`, which would bring code in from outside the scan.
+- `include!` and `#[path]`, which would bring code in from outside the scan;
+- any path through `std::fs`, `std::env`, `std::net`, `std::process`, `std::thread` or
+  `std::io`, the items of a `use std::{…}` group among them, so an alias (`use std::env as e`)
+  is refused at its `use`;
+- an alias of `std` itself (`extern crate std as s`, `use std::{self as s}`), which would hide
+  the paths under it;
+- the printing macros (`print!`, `println!`, `eprint!`, `eprintln!`, `dbg!`), which write to
+  the terminal without naming `std::io`.
 
 It reads tokens, so comments, strings and char literals never trigger it.
 
 ## `gallery`
 
-`cargo xtask gallery` writes the A-kit into `target/gallery/`, replacing what an earlier run
-left:
+`cargo xtask gallery` writes the A-kit into `target/gallery/` (under
+`CARGO_TARGET_DIR` when it is set, as cargo's own output is), replacing what an earlier run left:
 
 - `states/NN-day.png` and `NN-night.png`: the synthetic climate's 30 states across health and
   activity, at 3×. `NN` is a fixed shuffle of the grid, so someone rating the pictures cannot
@@ -137,8 +151,8 @@ Packing and check 7 run only once 1 to 6 pass, so a broken package never writes 
 
 Sprites with identical pixels share one place, and every ID keeps its own entry. The distinct
 images are ordered by the smallest ID that uses them. They are laid left to right into
-shelves 1024 wide, or 2048 wide when 1024 would need more than 2048 rows. Each byte is the raw
-PNG index.
+shelves 1024 wide, or 2048 wide when 1024 would need more than 2048 rows. Each byte is the
+logical slot + 1 the catalog gives it, which for shared art is the raw PNG index.
 
 ## `bench`
 
@@ -159,6 +173,9 @@ profile, so the timings are those of a shipped build.
   budget. It is generated in a temporary directory and read once untimed, because a read
   straight after writing 100,000 loose objects races the file system flushing them; the
   second read is timed.
+- `terrarium-engine` `replay` (N-05): reading the same kind of 10,000-commit history and
+  replaying it in full, sim and events included, takes under 30 s, the first connect's budget.
+  Observations of every kind are generated beside it, so every detector runs.
 
 ## `fixture`
 
@@ -228,7 +245,8 @@ The Windows probe build for testers. There is no CI, so it is cross-built on the
   the libraries are missing, it prints the one-time command.
 - **The import check.** It fails an exe that imports `comctl32.dll` by name rather than by
   ordinal, since such an exe may not start where comctl32 exports only ordinals.
-- **Output:** `target/probe/repo-terrarium-<version>-probe-windows-x64.zip`, holding:
+- **Output:** `target/probe/repo-terrarium-<version>-probe-windows-x64.zip` (under
+  `CARGO_TARGET_DIR` when it is set), holding:
   - `repo-terrarium.exe`;
   - `README.txt`, the tester's instructions. They are app copy, so the task takes them from
     `repo-terrarium --probe-readme`;

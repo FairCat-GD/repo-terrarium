@@ -33,6 +33,15 @@ impl LocalClock {
     pub const fn midnight(date: LocalDate) -> LocalClock {
         LocalClock::new(date, 0)
     }
+
+    /// The time of day `elapsed_ms` later, wrapping at midnight. The date stays as it is: a
+    /// clock carried on between updates only keeps the time of day going.
+    #[must_use]
+    pub fn advanced_by(self, elapsed_ms: u64) -> LocalClock {
+        let day = u64::from(DAY_MS);
+        let ms = (u64::from(self.ms_of_day) + elapsed_ms % day) % day;
+        LocalClock::new(self.date, u32::try_from(ms).unwrap_or(0))
+    }
 }
 
 /// When the day and the night begin, in milliseconds after local midnight: 07:00 and 19:00

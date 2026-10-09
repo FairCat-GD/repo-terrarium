@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::report::{Format, Loaded, Parsed, Reading, Report, Why, read_bounded, text};
 
 /// The `format` the file declares.
-pub const FORMAT: &str = "repo-terrarium-local-tests";
-pub const FORMAT_VERSION: u32 = 1;
+const FORMAT: &str = "repo-terrarium-local-tests";
+const FORMAT_VERSION: u32 = 1;
 
 /// One recorded run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

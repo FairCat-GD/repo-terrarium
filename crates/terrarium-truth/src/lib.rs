@@ -40,3 +40,9 @@ pub use replay::{Basis, Prepared, ReplayError, SimState, observation_tick};
 pub use rng::{Pcg32, SplitMix64, StreamTag};
 pub use scene::SceneInput;
 pub use time::{Tick, TickGrid};
+
+/// Drops the oldest of `items`, which are oldest first, until at most `cap` are left.
+pub(crate) fn keep_newest<T>(items: &mut Vec<T>, cap: usize) {
+    let excess = items.len().saturating_sub(cap);
+    items.drain(..excess);
+}

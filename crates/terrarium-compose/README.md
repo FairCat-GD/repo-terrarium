@@ -49,8 +49,9 @@ Depiction: from `SceneInput` to pixels.
 `assets/generated/<biome>/` holds two files that `cargo xtask assets` writes from `art-assets/`
 . Both are committed, and `include_bytes!` embeds them:
 
-- `atlas.bin`: the runtime atlas, one byte per pixel, row-major. Each byte is the sprite's raw
-  PNG index: 0 is transparent, and 1..=32 is logical palette slot + 1.
+- `atlas.bin`: the runtime atlas, one byte per pixel, row-major. Each byte is a logical slot + 1,
+  and 0 is transparent. Slots 0..=31 are the biome palette's, so shared art keeps its raw PNG
+  index; art with its own colours gets further slots, one per day and night pair, up to 255.
 - `catalog.bin`: the catalog in postcard, after a magic value and a format version. It holds:
   - every sprite's rect, anchor, layer, blend and opacity, its structured keys, pivots,
     motion and event data;

@@ -38,7 +38,7 @@ use crate::habitat::{plant_capacity, weed_capacity};
 use crate::identity::RepoSeed;
 use crate::rng::{Pcg32, StreamTag};
 use crate::scene::{GrowthStage, PlantSpecies, PlantState, PlantView};
-use crate::time::{TICKS_PER_DAY, Tick};
+use crate::time::{Tick, days};
 use crate::tuning::{
     DEAD_STANDING_DAYS, DYING_DAYS, FAILING_BELOW, FAR_STAGE_DAYS, FUNGUS_DAYS, GROWTH_RATE,
     LITTER_DAYS, MID_STAGE_DAYS, NEAR_STAGE_DAYS, NEUTRAL, SEED_BANK_CAP, SEED_BANK_FLOOR,
@@ -185,7 +185,7 @@ impl Plant {
         self.limit = limit;
         if self.vigor < FAILING_BELOW {
             let since = *self.low_since.get_or_insert(today.tick);
-            if today.tick.hours_since(since) >= DYING_DAYS * TICKS_PER_DAY {
+            if today.tick.hours_since(since) >= days(DYING_DAYS) {
                 self.dead_since = Some(today.tick);
             }
             return;
@@ -295,10 +295,6 @@ canonical_struct!(Vegetation {
     boost,
 });
 
-const fn days(n: u32) -> u32 {
-    n.saturating_mul(TICKS_PER_DAY)
-}
-
 impl Vegetation {
     /// No plants yet, and a seed bank of the species `seed` picks.
     pub fn new(seed: &RepoSeed) -> Vegetation {
@@ -307,10 +303,9 @@ impl Vegetation {
         for layer in [Layer::Far, Layer::Mid, Layer::Near] {
             let mut left = layer.species().to_vec();
             for _ in 0..layer.picked() {
-                let Some(bound) = u32::try_from(left.len()).ok().and_then(NonZeroU32::new) else {
+                let Some(picked) = rng.index(left.len()) else {
                     break;
                 };
-                let picked = usize::try_from(rng.below(bound)).unwrap_or(0);
                 seed_bank.insert(left.remove(picked), SEED_BANK_START);
             }
         }
@@ -438,9 +433,7 @@ impl Vegetation {
         let free = capacity
             .saturating_sub(self.plant_count())
             .saturating_sub(self.weed_count());
-        let wanted = Q16::from_int(i32::try_from(free).unwrap_or(i32::MAX))
-            .saturating_mul(rate)
-            .ceil_to_int();
+        let wanted = Q16::from_count(free).saturating_mul(rate).ceil_to_int();
         let wanted = usize::try_from(wanted).unwrap_or(0);
         let taken: Vec<u16> = self.plants.iter().map(|plant| plant.slot).collect();
         let slots: Vec<u16> = (0..u16::try_from(capacity).unwrap_or(u16::MAX))
@@ -521,11 +514,8 @@ impl Vegetation {
                     .is_some_and(|p| p.alive() && p.stage == GrowthStage::Mature)
             })
             .collect();
-        let bound = u32::try_from(eligible.len())
-            .ok()
-            .and_then(NonZeroU32::new)?;
-        let mut rng = Pcg32::stream(seed, StreamTag::Lightning, u64::from(now.hours()));
-        let index = usize::try_from(rng.below(bound)).ok()?;
+        let index = Pcg32::stream(seed, StreamTag::Lightning, u64::from(now.hours()))
+            .index(eligible.len())?;
         let plant = self.plants.get_mut(*eligible.get(index)?)?;
         if plant.vigor > FAILING_BELOW {
             plant.vigor = plant.vigor.saturating_sub(dip).max(FAILING_BELOW);
@@ -539,9 +529,8 @@ impl Vegetation {
         let living: Vec<usize> = (0..self.plants.len())
             .filter(|&i| self.plants.get(i).is_some_and(Plant::alive))
             .collect();
-        let bound = u32::try_from(living.len()).ok().and_then(NonZeroU32::new)?;
-        let mut rng = Pcg32::stream(seed, StreamTag::Sinkhole, key);
-        let index = *living.get(usize::try_from(rng.below(bound)).ok()?)?;
+        let drawn = Pcg32::stream(seed, StreamTag::Sinkhole, key).index(living.len())?;
+        let index = *living.get(drawn)?;
         Some(self.plants.remove(index).id)
     }
 

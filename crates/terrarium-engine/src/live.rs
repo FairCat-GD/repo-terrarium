@@ -38,15 +38,15 @@ use terrarium_adapters::git::{Change, GitError, GitRepo, History, Progress, Rewr
 use terrarium_adapters::local_tests;
 use terrarium_adapters::report::{Format, Report};
 use terrarium_store::identifiers::{
-    LOCAL_TESTS_DIR, SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_REPORT_PATH,
-    SETTING_REPO_ACTIVE, SETTING_WEATHER_REPORT_PATH,
+    SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE,
+    SETTING_WEATHER_REPORT_PATH,
 };
 use terrarium_store::{
     DataDir, InstallKey, NewTerrarium, ObservationId, ObservationRecord, RepoLocation, SimCache,
     Store, StoreError, StoredObservation, Terrarium, TerrariumId,
 };
 use terrarium_truth::climate::ClimateReport;
-use terrarium_truth::domain::ObservationHead;
+use terrarium_truth::domain::{ObservationHead, merge_key};
 use terrarium_truth::events::Candidate;
 use terrarium_truth::scene::EventKind;
 use terrarium_truth::{
@@ -62,7 +62,7 @@ use crate::watch::{Places, WatchSet};
 
 /// How long a history read runs before its progress is shown: a short one never flickers a
 /// note onto the label.
-pub const PROGRESS_AFTER: Duration = Duration::from_secs(1);
+const PROGRESS_AFTER: Duration = Duration::from_secs(1);
 
 /// What the engine connects, where its data lives, and the clock it reads.
 #[derive(Clone)]
@@ -148,8 +148,6 @@ pub enum Replay {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RefreshStats {
-    /// Counts every refresh that reached the repository in this session, from 1.
-    pub number: u64,
     pub cause: Cause,
     pub replay: Replay,
     /// The history changed or an observation was recorded.
@@ -176,6 +174,9 @@ pub enum Problem {
     Git(GitError),
     Store(String),
     Replay(ReplayError),
+    /// The refresh found itself without something an earlier step always leaves: a bug, named
+    /// by what was missing. The next refresh reads and replays afresh.
+    Missing(&'static str),
 }
 
 impl From<StoreError> for Problem {
@@ -214,9 +215,15 @@ pub struct Done {
 /// Why a refresh stopped early.
 enum Fault {
     NotFound,
+    /// Only `cancel`, set by the worker's stop, ends a refresh this way.
     Cancelled,
     Problem(Problem),
 }
+
+/// A history read leaves the history, and a replay leaves the view; meeting either missing is a
+/// bug the worker reports, never a cancel, which would end it silently.
+const MISSING_HISTORY: Fault = Fault::Problem(Problem::Missing("history"));
+const MISSING_VIEW: Fault = Fault::Problem(Problem::Missing("view"));
 
 impl From<StoreError> for Fault {
     fn from(err: StoreError) -> Fault {
@@ -290,7 +297,6 @@ pub struct Live {
     playing: Option<((Tick, EventKind), Tick)>,
     /// The session's time: the wall clock, never lower than before.
     now: i64,
-    refreshes: u64,
     watch: Option<WatchSet>,
 }
 
@@ -323,9 +329,9 @@ impl Live {
             dead_code: store.setting(SETTING_DEAD_CODE_REPORT_PATH)?,
             weather: store.setting(SETTING_WEATHER_REPORT_PATH)?,
         };
-        let status_dir = config.data.path().join(LOCAL_TESTS_DIR);
+        let status_dir = config.data.local_tests_dir();
         std::fs::create_dir_all(&status_dir).map_err(StoreError::Io)?;
-        let stored = store.observations(terrarium.id, None, None)?;
+        let stored = store.observations(terrarium.id, None)?;
         let mut newest = BTreeMap::new();
         let mut observations = Vec::with_capacity(stored.len());
         for row in &stored {
@@ -358,7 +364,6 @@ impl Live {
             seen,
             playing: None,
             now,
-            refreshes: 0,
             watch: None,
         }))
     }
@@ -395,7 +400,13 @@ impl Live {
         cancel: &AtomicBool,
     ) -> Done {
         self.now = self.now.max(self.clock.wall_secs());
-        match self.run(refresh, progress, cancel) {
+        let ran = self.run(refresh, progress, cancel);
+        self.done(ran)
+    }
+
+    /// How a refresh that ran, or stopped early, ends. Only a cancel ends without a reach.
+    fn done(&mut self, ran: Result<Done, Fault>) -> Done {
+        match ran {
             Ok(done) => done,
             Err(Fault::NotFound) => {
                 self.verified = false;
@@ -462,10 +473,8 @@ impl Live {
         }
         let root = git.workdir().map(Path::to_path_buf);
         let mut follow_up = None;
-        if refresh.reports
-            && let Some(root) = &root
-        {
-            let (records, wait) = self.read_reports(root, &head);
+        if refresh.reports {
+            let (records, wait) = self.read_reports(root.as_deref(), &head);
             follow_up = wait;
             for (format, record) in records {
                 self.append(Some(format), record)?;
@@ -473,7 +482,7 @@ impl Live {
             }
         }
         let adapters_done = Instant::now();
-        let history = self.history.as_ref().ok_or(Fault::Cancelled)?;
+        let history = self.history.as_ref().ok_or(MISSING_HISTORY)?;
         let through = history.grid.tick_at(self.now);
         let unchanged = !history_changed
             && !recorded
@@ -486,8 +495,8 @@ impl Live {
         } else {
             self.replay(through)?
         };
-        let scene = self.scene().ok_or(Fault::Cancelled)?;
-        let view = self.view.as_ref().ok_or(Fault::Cancelled)?;
+        let scene = self.scene().ok_or(MISSING_VIEW)?;
+        let view = self.view.as_ref().ok_or(MISSING_VIEW)?;
         let shown = Shown {
             scene,
             report: view.live.report(),
@@ -498,14 +507,12 @@ impl Live {
             sim_note: self.sim_note,
         };
         let working = history_changed || recorded;
-        self.refreshes += 1;
         let snapshot = (working || self.shown.as_ref() != Some(&shown)).then(|| Snapshot {
             scene: shown.scene.clone(),
             report: shown.report.clone(),
             branch: shown.branch.clone(),
             sim_note: shown.sim_note,
             stats: RefreshStats {
-                number: self.refreshes,
                 cause: refresh.cause,
                 replay,
                 working,
@@ -576,12 +583,7 @@ impl Live {
             .or(self.base.as_ref());
         let fossils = match (shown, self.history.as_ref()) {
             (Some(state), Some(history)) => {
-                let chain: BTreeSet<&CommitId> = history
-                    .commits
-                    .iter()
-                    .filter(|c| c.on_default_first_parent)
-                    .map(|c| &c.id)
-                    .collect();
+                let chain = history.default_chain();
                 state
                     .landmarks
                     .fossils
@@ -629,7 +631,7 @@ impl Live {
                 .base
                 .as_ref()
                 .and_then(|base| base.habitat.default_tip.clone())
-                .filter(|tip| !on_default_chain(&history, tip))
+                .filter(|tip| !history.default_chain().contains(tip))
                 .zip(history.state.branches.get(branch).cloned())
                 .map(|(old, new)| observe::Rewrite {
                     old,
@@ -676,20 +678,24 @@ impl Live {
     /// again at the rest.
     fn read_reports(
         &self,
-        root: &Path,
+        root: Option<&Path>,
         head: &ObservationHead,
     ) -> (Vec<(Format, ObservationRecord)>, Option<Duration>) {
-        let found = discovery::locate_reports(root, &self.overrides);
         let mut wait: Option<Duration> = None;
         let mut defer = |left: Duration| wait = Some(wait.map_or(left, |w| w.min(left)));
         let mut reports: Vec<Report> = Vec::new();
-        for located in [found.coverage.located(), found.test_report.located()]
-            .into_iter()
-            .flatten()
-        {
-            match unsettled(located.files.iter().map(|file| root.join(file))) {
-                Some(left) => defer(left),
-                None => reports.push(Report::read(root, located.format, &located.files)),
+        // Reports live in the worktree; the status file lives in the data directory, so a bare
+        // repository has one too.
+        if let Some(root) = root {
+            let found = discovery::locate_reports(root, &self.overrides);
+            for located in [found.coverage.located(), found.test_report.located()]
+                .into_iter()
+                .flatten()
+            {
+                match unsettled(located.files.iter().map(|file| root.join(file))) {
+                    Some(left) => defer(left),
+                    None => reports.push(Report::read(root, located.format, &located.files)),
+                }
             }
         }
         if self.status_file.is_file() {
@@ -725,16 +731,7 @@ impl Live {
         producer: Option<Format>,
         mut record: ObservationRecord,
     ) -> Result<(), Fault> {
-        let source = record
-            .source
-            .as_ref()
-            .map(terrarium_truth::domain::WeatherSource::to_column)
-            .unwrap_or_default();
-        while self
-            .observations
-            .iter()
-            .any(|o| same_key(o, &record, &source))
-        {
+        while self.observations.iter().any(|o| same_key(o, &record)) {
             record.recorded_at += 1;
         }
         let id = self.store.append_observation(self.terrarium.id, &record)?;
@@ -761,7 +758,7 @@ impl Live {
     /// Replays through `through`: the base resumed or replayed in full through the hour before,
     /// then a copy advanced through `through`. Caches the base when it moved.
     fn replay(&mut self, through: Option<Tick>) -> Result<(Replay, Option<Problem>), Fault> {
-        let history = self.history.as_ref().ok_or(Fault::Cancelled)?;
+        let history = self.history.as_ref().ok_or(MISSING_HISTORY)?;
         let basis = Basis::new(self.terrarium.seed, history.grid, &history.default_branch);
         let prepared = Prepared::new(basis.clone(), &history.commits, &self.observations)
             .map_err(|err| Fault::Problem(Problem::Replay(err)))?;
@@ -814,14 +811,6 @@ impl Live {
     }
 }
 
-/// Whether `commit` is on `history`'s default first-parent chain.
-fn on_default_chain(history: &History, commit: &CommitId) -> bool {
-    history
-        .commits
-        .iter()
-        .any(|c| c.on_default_first_parent && &c.id == commit)
-}
-
 /// The cache row for `base`. Its high-water mark is the newest observation recorded before the
 /// base's next tick; truth's own check of what the state consumed is what decides whether it
 /// resumes.
@@ -851,9 +840,8 @@ fn cache_of(
 /// makes it the active one.
 fn connect_repo(store: &mut Store, path: &Path, now: i64) -> Result<Terrarium, ConnectError> {
     let path = normalized(&std::path::absolute(path).map_err(ConnectError::Path)?);
-    let git = GitRepo::open(&path)?;
-    let default_branch = git.default_branch()?;
-    let seed = git.identity(&default_branch)?.seed;
+    let (default_branch, identity) = GitRepo::open(&path)?.default_identity()?;
+    let seed = identity.seed;
     let location = RepoLocation {
         path: path.display().to_string(),
         name: path
@@ -938,16 +926,15 @@ fn note_newest(newest: &mut BTreeMap<Format, Newest>, row: &StoredObservation) {
     }
 }
 
-/// Whether `observation` has `record`'s merge key (`recorded_at`, kind, source, head).
-fn same_key(observation: &Observation, record: &ObservationRecord, source: &str) -> bool {
-    let theirs = match &observation.value {
-        terrarium_truth::domain::ObservationValue::Weather { source } => source.to_column(),
-        _ => String::new(),
-    };
-    observation.recorded_at == record.recorded_at
-        && observation.value.kind() == record.kind
-        && theirs == source
-        && observation.head.commit == record.head.commit
+/// Whether `observation` has `record`'s merge key.
+fn same_key(observation: &Observation, record: &ObservationRecord) -> bool {
+    observation.merge_key()
+        == merge_key(
+            record.recorded_at,
+            record.kind,
+            record.source.as_ref(),
+            &record.head.commit,
+        )
 }
 
 /// How much longer the newest of `files` must stay untouched before it is read, or `None` when
@@ -966,7 +953,69 @@ fn unsettled(files: impl Iterator<Item = PathBuf>) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::thread;
+
+    use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp};
+
     use super::*;
+    use crate::worker::{Engine, Pipeline, Update};
+
+    /// A connected pipeline that replays before any history is read: the state no refresh
+    /// reaches, met head on.
+    struct Unread(Live);
+
+    impl Pipeline for Unread {
+        fn refresh(&mut self, _: Refresh, _: &mut dyn FnMut(u8), _: &AtomicBool) -> Done {
+            let ran = self.0.replay(None).map(|_| Done::default());
+            self.0.done(ran)
+        }
+
+        fn watch_set(&self) -> Option<&WatchSet> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_refresh_missing_its_history_is_reported_and_never_ends_the_engine_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        FixtureRepo::init(&repo)
+            .unwrap()
+            .commit(
+                "main",
+                Stamp::at(1_704_704_400),
+                "tend",
+                &[Edit::write("src/fern.rs", "fn fern() {}\n")],
+            )
+            .unwrap();
+        let config = EngineConfig::new(DataDir::at(dir.path().join("data")), Some(repo));
+        let clock = Arc::clone(&config.clock);
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&heard);
+        let (_engine, start) = Engine::spawn_pipeline(
+            move || {
+                Ok(Live::connect(&config)?.map(|live| {
+                    let start = live.start();
+                    (Unread(live), start)
+                }))
+            },
+            clock,
+            Box::new(move |update| into.lock().unwrap().push(update)),
+        )
+        .unwrap();
+        assert!(matches!(start, Start::Connected { .. }));
+        let until = Instant::now() + Duration::from_secs(10);
+        while !heard
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|update| matches!(update, Update::Problem(Problem::Missing("history"))))
+        {
+            assert!(Instant::now() < until, "{:?}", heard.lock().unwrap());
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn a_path_is_normalized_as_text() {

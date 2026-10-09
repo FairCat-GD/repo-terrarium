@@ -17,7 +17,7 @@ use terrarium_compose::{preset, sample};
 
 /// The label every picture shows: the binary's name, as the app's copy module gives it to the
 /// strip.
-const SAMPLE_LABEL: &str = "repo-terrarium";
+pub const LABEL: &str = terrarium_store::identifiers::BINARY;
 /// The larger picture, the exact scale INTEGRATION.md names (1920×222).
 const LARGE_SCALE: u32 = 3;
 
@@ -48,14 +48,14 @@ fn report(result: Result<[PathBuf; 2], String>) -> ExitCode {
 pub fn render_demo(out: &Path) -> Result<[PathBuf; 2], String> {
     let art = Art::embedded();
     let table = table(art)?;
-    write(art, &sample::frame(art, &table, SAMPLE_LABEL, 0, 0), out)
+    write(art, &sample::frame(art, &table, LABEL, 0, 0), out)
 }
 
 /// Writes the named preset, as [`render_demo`] writes the sample.
 pub fn render_preset(name: &str, out: &Path) -> Result<[PathBuf; 2], String> {
     let art = Art::embedded();
     let table = table(art)?;
-    let frame = preset::frame(art, &table, name, SAMPLE_LABEL, 0).ok_or_else(|| {
+    let frame = preset::frame(art, &table, name, LABEL, 0).ok_or_else(|| {
         format!(
             "no preset is called `{name}`; the presets are {}",
             preset::NAMES.join(", ")
@@ -111,8 +111,6 @@ fn beside(out: &Path, scale: u32) -> PathBuf {
 mod tests {
     use super::*;
 
-    use crate::test_support::TempDir;
-
     fn decode(path: &Path) -> (u32, u32, Vec<[u8; 4]>) {
         export::read_png(&std::fs::read(path).unwrap()).expect("an RGB PNG")
     }
@@ -128,12 +126,12 @@ mod tests {
 
     #[test]
     fn a_preset_is_written_with_the_composer_s_pixels() {
-        let dir = TempDir::new("render-preset");
-        let [small, large] = render_preset("dormant", &dir.0.join("dormant.png")).unwrap();
-        assert_eq!(large, dir.0.join("dormant@3x.png"));
+        let dir = tempfile::tempdir().unwrap();
+        let [small, large] = render_preset("dormant", &dir.path().join("dormant.png")).unwrap();
+        assert_eq!(large, dir.path().join("dormant@3x.png"));
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).unwrap();
-        let frame = preset::frame(art, &table, "dormant", SAMPLE_LABEL, 0).unwrap();
+        let frame = preset::frame(art, &table, "dormant", LABEL, 0).unwrap();
         let (w, h, pixels) = decode(&small);
         assert_eq!((w, h), (640, 74));
         assert_eq!(pixels, composite(art, &frame).pixels());
@@ -142,8 +140,8 @@ mod tests {
 
     #[test]
     fn an_unknown_preset_is_refused_with_the_names() {
-        let dir = TempDir::new("render-unknown");
-        let out = dir.0.join("lush.png");
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("lush.png");
         let err = render_preset("lush", &out).unwrap_err();
         assert!(
             err.contains("`lush`") && err.contains("struggling-poor-soil"),
@@ -154,13 +152,13 @@ mod tests {
 
     #[test]
     fn the_demo_is_written_at_1x_and_3x_with_the_composited_pixels() {
-        let dir = TempDir::new("render-demo");
-        let [small, large] = render_demo(&dir.0.join("demo.png")).unwrap();
-        assert_eq!(large, dir.0.join("demo@3x.png"));
+        let dir = tempfile::tempdir().unwrap();
+        let [small, large] = render_demo(&dir.path().join("demo.png")).unwrap();
+        assert_eq!(large, dir.path().join("demo@3x.png"));
 
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).unwrap();
-        let image = composite(art, &sample::frame(art, &table, SAMPLE_LABEL, 0, 0));
+        let image = composite(art, &sample::frame(art, &table, LABEL, 0, 0));
         let (w, h, pixels) = decode(&small);
         assert_eq!((w, h), (640, 74));
         assert_eq!(pixels, image.pixels());

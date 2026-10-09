@@ -105,7 +105,10 @@ pub struct StaleReport {
 /// What the OS says about the strip when a probe step closes (Windows).
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[allow(clippy::struct_excessive_bools)] // independent flags, as Windows reports them
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags, as Windows reports them"
+)]
 pub struct OsSnapshot {
     pub work_area: Option<PxRect>,
     pub tool_window: bool,
@@ -126,10 +129,13 @@ pub struct MessageCount {
     pub hook: u64,
 }
 
-// Both implementations keep one signature, so each has parameters and `Option`s only the other
-// needs.
 #[cfg(target_os = "macos")]
-#[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unused_self,
+    clippy::unnecessary_wraps,
+    reason = "both implementations keep one signature, so each has parameters and `Option`s \
+              only the other needs"
+)]
 mod imp {
     use terrarium_compose::scale::{SizeStep, StripScale};
     use terrarium_platform::SystemEvent;
@@ -142,6 +148,7 @@ mod imp {
     use winit::window::{Window, WindowAttributes, WindowLevel};
 
     use super::{LevelMode, OsSnapshot, Placed};
+    use crate::copy;
     use crate::monitor::{MonitorId, MonitorInfo};
 
     pub use macos::{Observers, PlatformError as AttachError};
@@ -190,16 +197,17 @@ mod imp {
                             screen
                                 .uuid
                                 .clone()
-                                .unwrap_or_else(|| format!("display-{}", screen.display_id)),
+                                .unwrap_or_else(|| copy::display_id(screen.display_id)),
                         ),
                         name: screen.name.clone(),
                         physical_width: screen.physical_width(),
                         physical_height: screen.physical_height(),
                         scale: screen.scale,
                         primary: screen.primary,
-                        detail: format!(
-                            "display {}, frame {:?}, visible {:?} (points)",
-                            screen.display_id, screen.frame, screen.visible_frame
+                        detail: copy::display_detail(
+                            screen.display_id,
+                            &screen.frame,
+                            &screen.visible_frame,
                         ),
                     },
                     screen,
@@ -224,7 +232,7 @@ mod imp {
                 y: frame.y,
                 width: frame.width,
                 height: frame.height,
-                unit: "pt",
+                unit: copy::PLACED_UNIT,
                 appbar: None,
             };
             Some((scale, placed))
@@ -286,7 +294,7 @@ mod imp {
     }
 
     pub fn os_version() -> String {
-        format!("macOS {}", macos::os_version())
+        copy::os_version(&macos::os_version())
     }
 
     pub fn separate_spaces() -> Option<bool> {
@@ -295,7 +303,12 @@ mod imp {
 }
 
 #[cfg(windows)]
-#[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unused_self,
+    clippy::unnecessary_wraps,
+    reason = "both implementations keep one signature, so each has parameters and `Option`s \
+              only the other needs"
+)]
 mod imp {
     use terrarium_compose::scale::{SizeStep, StripScale};
     use terrarium_platform::SystemEvent;
@@ -366,15 +379,11 @@ mod imp {
                 .filter_map(|(index, handle)| {
                     let (rects, name) = windows::monitor_described(handle.hmonitor())?;
                     let size = |length: i32| u32::try_from(length).unwrap_or(0);
-                    let detail = format!(
-                        "monitor {}, work area {} (px)",
-                        copy::rect_text(&px(rects.monitor)),
-                        copy::rect_text(&px(rects.work))
-                    );
+                    let detail = copy::monitor_detail(&px(rects.monitor), &px(rects.work));
                     Some(Monitor {
                         info: MonitorInfo {
                             id: MonitorId(if name.is_empty() {
-                                format!("monitor-{index}")
+                                copy::monitor_id(index)
                             } else {
                                 name.clone()
                             }),
@@ -414,7 +423,7 @@ mod imp {
                 y: f64::from(set.top),
                 width: f64::from(set.width()),
                 height: f64::from(set.height()),
-                unit: "px",
+                unit: copy::PLACED_UNIT,
                 appbar: Some(appbar_placed(&placement, &scale)),
             };
             Some((scale, placed))
@@ -544,10 +553,7 @@ mod imp {
     }
 
     pub fn os_version() -> String {
-        windows::os_version().map_or_else(
-            || "Windows".to_owned(),
-            |v| format!("Windows {}.{}.{}", v.major, v.minor, v.build),
-        )
+        copy::os_version(windows::os_version().map(|v| (v.major, v.minor, v.build)))
     }
 
     pub fn separate_spaces() -> Option<bool> {

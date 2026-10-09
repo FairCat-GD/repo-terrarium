@@ -259,6 +259,11 @@ impl ObservationKind {
             .copied()
             .find(|kind| kind.as_column() == text)
     }
+
+    /// A light or soil reading, as against weather and a history rewrite.
+    pub const fn is_reading(self) -> bool {
+        !matches!(self, ObservationKind::Weather | ObservationKind::RefRewrite)
+    }
 }
 
 /// The kind-specific part of an observation: what truth reads beyond the normalized value. Each
@@ -300,6 +305,14 @@ impl ObservationValue {
             ObservationValue::TodoDensity => ObservationKind::TodoDensity,
             ObservationValue::Weather { .. } => ObservationKind::Weather,
             ObservationValue::RefRewrite { .. } => ObservationKind::RefRewrite,
+        }
+    }
+
+    /// The weather's source; no other kind has one.
+    pub const fn source(&self) -> Option<&WeatherSource> {
+        match self {
+            ObservationValue::Weather { source } => Some(source),
+            _ => None,
         }
     }
 }
@@ -384,6 +397,41 @@ canonical_struct!(Observation {
     confidence,
     value,
 });
+
+impl Observation {
+    pub fn merge_key(&self) -> MergeKey<'_> {
+        merge_key(
+            self.recorded_at,
+            self.value.kind(),
+            self.value.source(),
+            &self.head.commit,
+        )
+    }
+}
+
+/// What orders same-tick observations, and what no two of a terrarium's share: `recorded_at`,
+/// the `kind` column's text, the `source` column's text and the head commit. The kind compares
+/// as its text, as the store's unique key holds it.
+pub type MergeKey<'a> = (i64, &'static str, String, &'a str);
+
+pub fn merge_key<'a>(
+    recorded_at: i64,
+    kind: ObservationKind,
+    source: Option<&WeatherSource>,
+    head_commit: &'a CommitId,
+) -> MergeKey<'a> {
+    (
+        recorded_at,
+        kind.as_column(),
+        source_column(source),
+        head_commit.as_str(),
+    )
+}
+
+/// The `source` column's text: the weather's source, and empty for every other kind.
+pub fn source_column(source: Option<&WeatherSource>) -> String {
+    source.map_or_else(String::new, WeatherSource::to_column)
+}
 
 /// Where HEAD was when an observation was recorded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 pub const SECONDS_PER_TICK: i64 = 3600;
 pub const TICKS_PER_DAY: u32 = 24;
 
+/// `n` days in ticks.
+pub const fn days(n: u32) -> u32 {
+    n.saturating_mul(TICKS_PER_DAY)
+}
+
 /// Hours since tick 0 of a terrarium's grid. `u32` covers about 490,000 years.
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

@@ -32,13 +32,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 use terrarium_truth::scene::{
     EventKind, FossilForm, GroundMark, GrowthStage, LifeStage, Light, MAX_GLASS_LEVEL, MAX_MARKS,
     MonumentAge, PlantSpecies, PlantState, ResidentSpecies, Weather, Wind,
 };
 
-use crate::catalog::{AnimationId, Catalog, Layer, Point, Sprite, SpriteId};
+use crate::catalog::{AnimationId, Art, Catalog, Layer, Point, Sprite, SpriteId};
 use crate::sky::CloudSize;
 use crate::text::Label;
 
@@ -805,6 +806,18 @@ impl ArtTable {
             })
             .chain(self.blooms.get(&species).copied())
             .collect()
+    }
+
+    /// The embedded art's table, resolved once.
+    ///
+    /// # Panics
+    /// If the embedded art leaves a variant without a sprite, which `cargo xtask verify` rules
+    /// out.
+    pub fn embedded() -> &'static ArtTable {
+        static TABLE: OnceLock<ArtTable> = OnceLock::new();
+        TABLE.get_or_init(|| {
+            ArtTable::new(&Art::embedded().catalog).expect("the embedded art depicts every variant")
+        })
     }
 
     /// Resolves every variant, or returns every gap. `cargo xtask assets` refuses a package

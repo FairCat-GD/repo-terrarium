@@ -66,8 +66,7 @@ impl From<ReplayError> for HeadlessError {
 /// Replays the repository at `request.repo` from its first commit through `request.at_secs`.
 pub fn replay_dump(request: Request<'_>) -> Result<ReplayDump, HeadlessError> {
     let git = GitRepo::open(request.repo)?;
-    let default_branch = git.default_branch()?;
-    let identity = git.identity(&default_branch)?;
+    let (default_branch, identity) = git.default_identity()?;
     let history = git.read_history(&default_branch, &mut |_| ControlFlow::Continue(()))?;
     let through = history
         .grid
@@ -92,7 +91,7 @@ pub fn replay_dump(request: Request<'_>) -> Result<ReplayDump, HeadlessError> {
         store.import_observations(terrarium, input)?;
     }
     let observations = store
-        .observations(terrarium, None, None)?
+        .observations(terrarium, None)?
         .iter()
         .map(StoredObservation::to_observation)
         .collect::<Result<Vec<_>, _>>()?;

@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::sweep;
 use crate::windows::{self, TARGET};
 
 /// The `xwin` version the flags and the splat layout below are written for.
@@ -59,7 +60,7 @@ pub fn run(root: &Path) -> ExitCode {
     };
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let build_dir = root.join("target").join("probe-build");
+    let build_dir = sweep::target_dir(root).join("probe-build");
     let built = Command::new(&cargo)
         .args(BUILD)
         .args(["--target", TARGET])
@@ -269,7 +270,7 @@ fn package(root: &Path, build_dir: &Path, readme: &str) -> Result<PathBuf, Strin
     if !exe.is_file() {
         return Err(format!("no exe at {}", exe.display()));
     }
-    let out_dir = root.join("target").join("probe");
+    let out_dir = sweep::target_dir(root).join("probe");
     let staging = out_dir.join("staging");
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).map_err(|err| format!("{}: {err}", staging.display()))?;

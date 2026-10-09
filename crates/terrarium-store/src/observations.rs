@@ -3,9 +3,8 @@
 //! module only ever inserts.
 
 use rusqlite::{Connection, OptionalExtension, Row, Statement, params};
-use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
-use terrarium_truth::domain::{Observation, ObservationHead, WeatherSource};
+use terrarium_truth::domain::{Observation, ObservationHead, WeatherSource, source_column};
 use terrarium_truth::{CommitId, ObservationKind, Q16};
 
 use crate::error::is_unique_violation;
@@ -89,20 +88,16 @@ impl ObservationRecord {
         if self.raw.len() > MAX_RAW_BYTES {
             return Err(Invalid::RawTooLarge(self.raw.len()));
         }
-        if serde_json::from_str::<IgnoredAny>(&self.raw).is_err() {
-            return Err(Invalid::RawNotJson);
-        }
+        let json = serde_json::from_str(&self.raw).map_err(|_| Invalid::RawNotJson)?;
         if self.kind == ObservationKind::RefRewrite && self.normalized.is_some() {
             return Err(Invalid::NormalizedOnRefRewrite);
         }
-        raw::value(self.kind, self.source.as_ref(), &self.raw).map(|_| ())
+        raw::from_json(self.kind, self.source.as_ref(), json).map(|_| ())
     }
 
     /// The `source` column's text: `''` for every kind but weather.
     pub(crate) fn source_column(&self) -> String {
-        self.source
-            .as_ref()
-            .map_or_else(String::new, WeatherSource::to_column)
+        source_column(self.source.as_ref())
     }
 }
 
@@ -330,25 +325,20 @@ impl Store {
         Inserter::new(&self.conn)?.insert(terrarium, checked)
     }
 
-    /// A terrarium's observations in id order: of one kind or all, and only those after `after`
-    /// when it is given (replay reads from its high-water id).
+    /// A terrarium's observations in id order, of one kind or all. The engine loads them once,
+    /// at connect.
     pub fn observations(
         &self,
         terrarium: TerrariumId,
         kind: Option<ObservationKind>,
-        after: Option<ObservationId>,
     ) -> Result<Vec<StoredObservation>, StoreError> {
         let sql = format!(
             "SELECT {COLUMNS} FROM observations WHERE terrarium_id = ?1 \
-             AND (?2 IS NULL OR kind = ?2) AND id > ?3 ORDER BY id"
+             AND (?2 IS NULL OR kind = ?2) ORDER BY id"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(
-            params![
-                terrarium.get(),
-                kind.map(ObservationKind::as_column),
-                after.map_or(0, ObservationId::get),
-            ],
+            params![terrarium.get(), kind.map(ObservationKind::as_column)],
             read_row,
         )?;
         rows.map(|row| row?.decode()).collect()
@@ -391,7 +381,7 @@ mod tests {
             ids.push(fx.store.append_observation(id, r).unwrap());
         }
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
-        let stored = fx.store.observations(id, None, None).unwrap();
+        let stored = fx.store.observations(id, None).unwrap();
         let expected: Vec<StoredObservation> = ids
             .iter()
             .zip(records)
@@ -415,7 +405,7 @@ mod tests {
         }
         let values: Vec<ObservationValue> = fx
             .store
-            .observations(id, None, None)
+            .observations(id, None)
             .unwrap()
             .iter()
             .map(|stored| {
@@ -455,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn queries_filter_by_terrarium_kind_and_high_water() {
+    fn queries_filter_by_terrarium_and_kind() {
         let mut fx = Fixture::new();
         let one = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
         let two = fx.store.create_terrarium(&new_terrarium(2)).unwrap();
@@ -471,20 +461,17 @@ mod tests {
         fx.store
             .append_observation(two, &record(ObservationKind::Coverage, 100))
             .unwrap();
-        let ids = |kind, after| -> Vec<ObservationId> {
+        let ids = |kind| -> Vec<ObservationId> {
             fx.store
-                .observations(one, kind, after)
+                .observations(one, kind)
                 .unwrap()
                 .iter()
                 .map(|o| o.id)
                 .collect()
         };
-        assert_eq!(ids(None, None), [a, b, c]);
-        assert_eq!(ids(Some(ObservationKind::Coverage), None), [a, c]);
-        assert_eq!(ids(Some(ObservationKind::Weather), None), [b]);
-        assert_eq!(ids(None, Some(a)), [b, c]);
-        assert_eq!(ids(Some(ObservationKind::Coverage), Some(b)), [c]);
-        assert_eq!(ids(None, Some(c)), []);
+        assert_eq!(ids(None), [a, b, c]);
+        assert_eq!(ids(Some(ObservationKind::Coverage)), [a, c]);
+        assert_eq!(ids(Some(ObservationKind::Weather)), [b]);
     }
 
     #[test]
@@ -511,7 +498,7 @@ mod tests {
         let mut local = w;
         local.source = Some(WeatherSource::Local);
         fx.store.append_observation(id, &local).unwrap();
-        assert_eq!(fx.store.observations(id, None, None).unwrap().len(), 5);
+        assert_eq!(fx.store.observations(id, None).unwrap().len(), 5);
     }
 
     #[test]
@@ -611,7 +598,7 @@ mod tests {
                 matches!(fx.store.append_observation(id, &bad), Err(StoreError::Invalid(w)) if w == why)
             );
         }
-        assert_eq!(fx.store.observations(id, None, None).unwrap(), vec![]);
+        assert_eq!(fx.store.observations(id, None).unwrap(), vec![]);
         let mut edge = base;
         edge.normalized = Some(Q16::ONE);
         edge.confidence = Q16::ZERO;
@@ -631,19 +618,14 @@ mod tests {
     }
 
     fn assert_refused(fx: &Fixture, id: ObservationId, sql: &str) {
-        let before = fx
-            .store
-            .observations(TerrariumId::new(1), None, None)
-            .unwrap();
+        let before = fx.store.observations(TerrariumId::new(1), None).unwrap();
         let err = fx.store.conn.execute(sql, [id.get()]).unwrap_err();
         assert!(
             err.to_string().contains("observations are append-only"),
             "{sql}: {err}"
         );
         assert_eq!(
-            fx.store
-                .observations(TerrariumId::new(1), None, None)
-                .unwrap(),
+            fx.store.observations(TerrariumId::new(1), None).unwrap(),
             before,
             "{sql}"
         );

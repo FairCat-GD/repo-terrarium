@@ -354,7 +354,7 @@ fn configured(root: &Path, path: &str, format: Format) -> Search {
 
 /// The regular files under `root` that `pattern` matches, sorted, at most one more than
 /// [`MAX_FILES`] (which a report then refuses to read).
-pub fn expand(root: &Path, pattern: &str) -> Vec<String> {
+fn expand(root: &Path, pattern: &str) -> Vec<String> {
     let parts: Vec<&str> = pattern.split('/').collect();
     let mut found = Vec::new();
     expand_into(root, &parts, "", &mut found);

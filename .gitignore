@@ -19,3 +19,6 @@ repo-terrarium-probe-*
 # Snapshots insta proposes but nobody has accepted
 *.snap.new*
 *.pending-snap
+
+# The egui memory probe's report, written into whatever directory it runs from
+egui-memory-*.txt

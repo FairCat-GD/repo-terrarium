@@ -7,7 +7,7 @@
 
 mod diff;
 mod history;
-mod refs;
+pub(crate) mod refs;
 #[cfg(test)]
 mod tests;
 mod walk;
@@ -136,6 +136,14 @@ impl GitRepo {
     /// The root and seed, by a first-parent walk from the tip of `default_branch`.
     pub fn identity(&self, default_branch: &str) -> Result<RepoIdentity, GitError> {
         walk::identity(&self.repo, default_branch)
+    }
+
+    /// The default branch, and the identity it gives: what connect, a headless replay and
+    /// `record-tests` each derive, so all three name the same terrarium and status file.
+    pub fn default_identity(&self) -> Result<(String, RepoIdentity), GitError> {
+        let branch = self.default_branch()?;
+        let identity = self.identity(&branch)?;
+        Ok((branch, identity))
     }
 
     /// Where HEAD is now: its commit, its branch (`None` when detached), and whether that

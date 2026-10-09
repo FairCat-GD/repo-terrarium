@@ -147,6 +147,13 @@ impl Pcg32 {
         }
         low_u32(product >> 32)
     }
+
+    /// A uniform index into a slice of `len`: exactly one [`Pcg32::below`]`(len)`. An empty
+    /// slice, or one too long to draw from, draws nothing.
+    pub fn index(&mut self, len: usize) -> Option<usize> {
+        let bound = u32::try_from(len).ok().and_then(NonZeroU32::new)?;
+        usize::try_from(self.below(bound)).ok()
+    }
 }
 
 /// The first 8 bytes of a SHA-256 digest, little-endian: how truth turns a hash into a number.
@@ -154,6 +161,11 @@ pub fn digest_u64(digest: &[u8; 32]) -> u64 {
     let mut first = [0; 8];
     first.copy_from_slice(&digest[..8]);
     u64::from_le_bytes(first)
+}
+
+/// The low 32 bits of [`digest_u64`]: how truth turns a hash into an id.
+pub fn digest_u32(digest: &[u8; 32]) -> u32 {
+    low_u32(digest_u64(digest))
 }
 
 /// The low 32 bits.
@@ -219,6 +231,27 @@ mod tests {
             .map(|bound| rng.below(NonZeroU32::new(bound).expect("nonzero")))
             .collect();
         assert_eq!(draws, [5, 164, 2, 2_074_520_455, 0, 2, 5, 4]);
+    }
+
+    #[test]
+    fn an_index_is_one_draw_below_the_length() {
+        let seed = RepoSeed::from_bytes([3; 32]);
+        for len in [1, 2, 5, 21, 1000] {
+            let mut by_index = Pcg32::stream(&seed, StreamTag::Fossil, 9);
+            let mut by_below = Pcg32::stream(&seed, StreamTag::Fossil, 9);
+            for _ in 0..8 {
+                let bound = NonZeroU32::new(u32::try_from(len).expect("small")).expect("nonzero");
+                let drawn = usize::try_from(by_below.below(bound)).expect("fits");
+                assert_eq!(by_index.index(len), Some(drawn));
+            }
+        }
+        // An empty slice draws nothing: the stream is where it was.
+        let mut rng = Pcg32::stream(&seed, StreamTag::Fossil, 9);
+        assert_eq!(rng.index(0), None);
+        assert_eq!(
+            first_draws(rng),
+            first_draws(Pcg32::stream(&seed, StreamTag::Fossil, 9))
+        );
     }
 
     fn first_draws(mut rng: Pcg32) -> Vec<u32> {

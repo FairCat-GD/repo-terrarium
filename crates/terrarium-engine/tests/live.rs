@@ -47,8 +47,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(days: i64) -> Fixture {
+        Fixture::made_by(days, FixtureRepo::init)
+    }
+
+    /// The same, as a bare repository: no worktree.
+    fn bare(days: i64) -> Fixture {
+        Fixture::made_by(days, FixtureRepo::init_bare)
+    }
+
+    fn made_by(days: i64, init: fn(&Path) -> fixture::FixtureResult<FixtureRepo>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let mut repo = FixtureRepo::init(&dir.path().join("repo")).unwrap();
+        let mut repo = init(&dir.path().join("repo")).unwrap();
         let main = (0..days)
             .map(|day| commit(&mut repo, "main", day * DAY))
             .collect();
@@ -109,7 +118,7 @@ impl Fixture {
             .unwrap()
             .expect("an active terrarium");
         store
-            .observations(terrarium_store::TerrariumId::new(id), Some(kind), None)
+            .observations(terrarium_store::TerrariumId::new(id), Some(kind))
             .unwrap()
     }
 
@@ -124,7 +133,7 @@ impl Fixture {
         let store = self.store();
         let terrarium = store.terrarium_by_seed(&seed).unwrap().unwrap();
         let observations: Vec<_> = store
-            .observations(terrarium.id, None, None)
+            .observations(terrarium.id, None)
             .unwrap()
             .iter()
             .map(|row| row.to_observation().unwrap())
@@ -348,6 +357,28 @@ fn both_local_weather_writers_record_without_colliding_and_neither_repeats_the_o
     let mut plain = fx.reconnect().unwrap();
     refresh(&mut plain, Cause::Connect, true);
     assert_eq!(fx.rows(ObservationKind::Weather).len(), 3);
+}
+
+#[test]
+fn a_bare_repository_records_its_local_test_runs() {
+    let fx = Fixture::bare(12);
+    assert_eq!(GitRepo::open(&fx.repo_path()).unwrap().workdir(), None);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    // `record-tests` keeps the status file in the data directory, so a repository with no
+    // worktree has one too.
+    let status = fx.data().local_tests(&live.terrarium().seed);
+    Status::new(1, 1, 2).write(&status).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&status)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(1))
+        .unwrap();
+    refresh(&mut live, Cause::Watch, true);
+    let rows = fx.rows(ObservationKind::Weather);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].record.raw.contains(r#""exit_code":1"#));
 }
 
 #[test]

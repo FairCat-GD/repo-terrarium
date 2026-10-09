@@ -43,17 +43,17 @@ pub struct Touched {
 }
 
 impl Touched {
-    pub const BOTH: Touched = Touched {
+    const BOTH: Touched = Touched {
         git: true,
         reports: true,
     };
 
-    pub fn any(self) -> bool {
+    fn any(self) -> bool {
         self.git || self.reports
     }
 
     #[must_use]
-    pub fn or(self, other: Touched) -> Touched {
+    fn or(self, other: Touched) -> Touched {
         Touched {
             git: self.git || other.git,
             reports: self.reports || other.reports,

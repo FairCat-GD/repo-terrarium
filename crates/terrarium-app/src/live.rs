@@ -104,15 +104,20 @@ pub enum Changed {
     Scene,
 }
 
+/// The scene before truth has said anything: empty, under haze, which says nothing about health
+/// (I-7) until the first refresh does.
+pub fn unknown_scene() -> SceneInput {
+    SceneInput {
+        weather: Weather::Haze,
+        ..preset::bare(PresentationState::Mature, Vec::new())
+    }
+}
+
 impl LiveView {
-    /// The view at connect: the cached state's scene, or an empty one under haze, which says
-    /// nothing about health (I-7) until the first refresh does.
+    /// The view at connect: the cached state's scene, or [`unknown_scene`].
     pub fn new(repo_name: String, scene: Option<SceneInput>) -> LiveView {
         LiveView {
-            scene: scene.unwrap_or_else(|| SceneInput {
-                weather: Weather::Haze,
-                ..preset::bare(PresentationState::Mature, Vec::new())
-            }),
+            scene: scene.unwrap_or_else(unknown_scene),
             facts: LabelFacts {
                 repo_name,
                 branch: None,
@@ -177,7 +182,7 @@ pub fn run(repo: Option<PathBuf>) -> ExitCode {
             eprintln!("{}", copy::connect_failed(named.as_deref(), &err));
             ExitCode::FAILURE
         }
-        Ok((_engine, Start::NotConnected)) => crate::run(&Mode::Live(Feed::Thriving), None),
+        Ok((_, Start::NotConnected)) => crate::run(&Mode::Live(Feed::Thriving), None),
         Ok((
             engine,
             Start::Connected {
@@ -224,7 +229,6 @@ mod tests {
             branch: Branch::Named("main".into()),
             sim_note,
             stats: RefreshStats {
-                number: 1,
                 cause: Cause::Connect,
                 replay: Replay::Full,
                 working: true,

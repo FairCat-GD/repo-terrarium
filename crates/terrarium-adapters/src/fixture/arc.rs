@@ -75,7 +75,6 @@ pub struct ArcCommit {
     pub id: CommitId,
     /// Committer time, UTC seconds.
     pub secs: i64,
-    pub phase: Phase,
     /// The branch it was made on.
     pub branch: &'static str,
 }
@@ -199,7 +198,6 @@ impl Script {
         self.commits.push(ArcCommit {
             id: id.clone(),
             secs,
-            phase: Phase::at(secs),
             branch,
         });
     }

@@ -100,6 +100,26 @@ const STAGES: &[Stage] = &[
             env: windows::LINT_ENV,
         },
     },
+    // The code that ships, as it is built: no tests and no xtask, so nothing turns on
+    // adapters' `fixture` feature, which the workspace stages always compile in. The app has a
+    // binary and no library, so the adapters it links are linted as it links them.
+    Stage {
+        name: "clippy (shipped)",
+        step: Step::Cargo {
+            args: &[
+                "clippy",
+                "--package",
+                "terrarium-app",
+                "--package",
+                "terrarium-adapters",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            tool: None,
+            env: &[],
+        },
+    },
     Stage {
         name: "nextest",
         step: Step::Cargo {

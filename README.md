@@ -6,15 +6,23 @@ and CI or local tests are the weather. It is built in Rust for macOS and Windows
 
 ## Status
 
-Pre-release, in a private repository. Version 0.6.0 shows the strip:
-- a borderless band along the bottom of a monitor;
-- on macOS, pinned below ordinary windows;
-- on Windows, a topmost bar on a reserved edge, the way the taskbar is. It is untested on real
-  hardware yet;
-- a sample scene drawn from the delivered art: a few plants on the soil band, the glass edges
-  and a label;
-- a raise hotkey (Ctrl+Alt+T);
-- a right-click **Quit**.
+Pre-release, in a private repository, at version 0.18.2. The strip:
+- is a borderless band along the bottom of a monitor;
+- on macOS, is pinned below ordinary windows;
+- on Windows, is a topmost bar on a reserved edge, the way the taskbar is. It is untested on
+  real hardware yet;
+- runs on one local repository: `--repo <path>` connects it, and a plain run opens the one
+  connected last. With none connected, it shows a sample terrarium;
+- reads the repository's history, its coverage, test and dead-code reports, and the test runs
+  `record-tests` records;
+- simulates from them, the same way on every computer:
+  - the plants;
+  - the residents;
+  - the standing stones and the fossils;
+  - the events that happen to them.
+
+  The scene draws all of these except the events, which come next;
+- has a raise hotkey (Ctrl+Alt+T) and a right-click **Quit**.
 
 ## Prerequisites
 
@@ -27,21 +35,29 @@ Pre-release, in a private repository. Version 0.6.0 shows the strip:
 ## Build and run
 
 ```sh
-cargo run -p terrarium-app                        # runs the strip; right-click it to quit
-cargo run -p terrarium-app -- --version           # prints the version
-cargo run -p terrarium-app -- --probe pinning     # the pinning checklist, with a report
-cargo xtask verify                                # the gate: must be green before every commit
-cargo xtask probe-zip                             # the Windows probe zip for testers
-cargo xtask render --demo out.png                 # the sample scene as out.png and out@3x.png
+cargo run -p terrarium-app -- --repo <path>          # connects a repository and runs the strip
+cargo run -p terrarium-app                           # runs on the repository connected last
+cargo run -p terrarium-app -- --demo                 # the strip through its named looks
+cargo run -p terrarium-app -- discover <path>        # what each report adapter finds there
+cargo run -p terrarium-app -- record-tests -- <cmd>  # runs tests; their result is the weather
+cargo run -p terrarium-app -- replay <path> --dump   # a headless replay, as text
+cargo run -p terrarium-app -- --version              # prints the version
+cargo run -p terrarium-app -- --probe pinning        # the pinning checklist, with a report
+cargo xtask verify                                   # the gate: green before every commit
+cargo xtask probe-zip                                # the Windows probe zip for testers
+cargo xtask render --demo out.png                    # the sample scene, out.png and out@3x.png
 ```
+
+Right-click the strip to quit.
 
 There is no CI. `cargo xtask verify` runs locally before every commit. It includes a clippy pass
 for the Windows target, so Windows code is compiled and linted on a Mac.
 
 ## Layout
 
-- `crates/`: the eight crates, each with a `README.md` saying what it owns and why.
-- `xtask/`: development tasks (`cargo xtask verify`, `assets`, `bench`, `probe-zip`, `render`).
+- `crates/`: the seven crates, each with a `README.md` saying what it owns and why.
+- `xtask/`: development tasks (`cargo xtask verify`, `assets`, `bench`, `fixture`, `gallery`,
+  `golden`, `probe-zip`, `render`).
 - `art-assets/`: the art, byte for byte as delivered.
 - `tests/fixtures/`: fictional test data.
 

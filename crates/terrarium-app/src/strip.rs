@@ -201,9 +201,14 @@ impl Scene {
     /// The sample, composed once for `viewport`.
     fn still(viewport: Viewport) -> Scene {
         let art = Art::embedded();
-        // `cargo xtask verify` checks the embedded art is complete, so this table builds.
-        let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
-        let frame = sample::frame_in(art, &table, copy::sample_label(), 0, 0, viewport);
+        let frame = sample::frame_in(
+            art,
+            ArtTable::embedded(),
+            copy::sample_label(),
+            0,
+            0,
+            viewport,
+        );
         Scene::Still {
             frame: composite(art, &frame),
         }
@@ -416,7 +421,7 @@ impl Strip {
         view.window.request_redraw();
         let active = pinning::app_is_active();
         self.record(ProbeEvent::AppActive {
-            at: "window shown",
+            at: copy::AT_WINDOW_SHOWN,
             active,
         });
         self.record_snapshot(&view);
@@ -774,7 +779,7 @@ impl ApplicationHandler<UserEvent> for Strip {
             self.idle_seen = true;
             let active = pinning::app_is_active();
             self.record(ProbeEvent::AppActive {
-                at: "first idle",
+                at: copy::AT_FIRST_IDLE,
                 active,
             });
         }

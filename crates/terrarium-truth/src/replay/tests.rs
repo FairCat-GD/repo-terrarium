@@ -412,7 +412,7 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 5\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 6\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())
@@ -427,7 +427,7 @@ fn the_state_round_trips_through_both_encodings() {
 type OwnedKey = (i64, &'static str, String, String);
 
 fn owned_key(observation: &Observation) -> OwnedKey {
-    let (recorded_at, kind, source, head) = merge_key(observation);
+    let (recorded_at, kind, source, head) = observation.merge_key();
     (recorded_at, kind, source, head.to_owned())
 }
 

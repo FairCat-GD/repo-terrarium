@@ -17,7 +17,7 @@ use terrarium_truth::domain::{ObservationHead, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind, Q16};
 
 /// The `adapter_version` of the ref rewrites the live refresh records.
-pub const REF_REWRITE_VERSION: u32 = 2;
+const REF_REWRITE_VERSION: u32 = 2;
 
 /// The observation `report` makes when HEAD was at `head` at `recorded_at` (Unix seconds,
 /// UTC), or `None` when it is not recorded.
@@ -301,7 +301,7 @@ mod tests {
             r.check().unwrap();
             store.append_observation(terrarium, r).unwrap();
         }
-        let stored = store.observations(terrarium, None, None).unwrap();
+        let stored = store.observations(terrarium, None).unwrap();
         let values: Vec<ObservationValue> = stored
             .iter()
             .map(|s| s.to_observation().unwrap().value)
@@ -387,7 +387,7 @@ mod tests {
             })
             .unwrap();
         store.append_observation(terrarium, &record).unwrap();
-        let stored = store.observations(terrarium, None, None).unwrap();
+        let stored = store.observations(terrarium, None).unwrap();
         assert_eq!(
             stored[0].to_observation().unwrap().value,
             ObservationValue::RefRewrite {

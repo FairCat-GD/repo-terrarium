@@ -129,8 +129,10 @@ impl EguiHost {
         let viewport = kind.viewport();
         pollster::block_on(self.painter.set_window(viewport, Some(Arc::clone(&window))))
             .map_err(HostError::Gpu)?;
-        // egui measures in points, as f32; a display's scale is a small ratio such as 2.0.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "egui measures in points, as f32; a display's scale is a small ratio such as 2.0"
+        )]
         let pixels_per_point = window.scale_factor() as f32;
         let state = egui_winit::State::new(
             self.ctx.clone(),

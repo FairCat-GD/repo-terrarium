@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use super::paths::Context;
-use super::{Contributor, Loaded, Parsed, Reading, Why, count, hits, text};
+use super::{Loaded, Parsed, Reading, Why, count, coverage_totals, hits, text};
 
 /// One source file across every record that names it.
 #[derive(Default)]
@@ -55,21 +55,10 @@ pub(crate) fn parse(context: &Context, files: &[Loaded]) -> Parsed {
     for file in files {
         read_file(context, file, &mut sources)?;
     }
-    let mut found = 0_u64;
-    let mut hit = 0_u64;
-    let mut contributors = Vec::new();
-    for source in sources.values() {
-        let (f, h) = source.totals();
-        let h = h.min(f);
-        found = found.saturating_add(f);
-        hit = hit.saturating_add(h);
-        if let Some(path) = &source.path {
-            contributors.push(Contributor {
-                path: path.clone(),
-                value: i64::try_from(f - h).unwrap_or(i64::MAX),
-            });
-        }
-    }
+    let (found, hit, contributors) = coverage_totals(sources.values().map(|source| {
+        let (found, hit) = source.totals();
+        (found, hit, source.path.as_ref())
+    }));
     if found == 0 {
         return Err(Why::Empty);
     }

@@ -109,8 +109,9 @@ impl Line {
 /// duplicate, or a conflict.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportReport {
-    /// The sim version the file was exported under. Observations do not depend on it, so any
-    /// version imports.
+    /// The sim version the file was exported under. Any version imports: observations are
+    /// inputs, read alike by every version. Only a `ref_rewrite`'s fossils came from a replay,
+    /// the one the exporting install showed.
     pub sim_version: SimVersion,
     pub inserted: u64,
     /// Lines equal to a stored observation in every column.
@@ -489,7 +490,7 @@ mod tests {
 
     fn count(fx: &Fixture) -> usize {
         fx.store
-            .observations(TerrariumId::new(1), None, None)
+            .observations(TerrariumId::new(1), None)
             .unwrap()
             .len()
     }
@@ -578,7 +579,7 @@ mod tests {
         let (other, other_id) = holding(&changed);
 
         let (mut fx, id) = holding(&sample());
-        let before = fx.store.observations(id, None, None).unwrap();
+        let before = fx.store.observations(id, None).unwrap();
         let report = fx
             .store
             .import_observations(id, &export(&other, other_id)[..])
@@ -595,7 +596,7 @@ mod tests {
                 columns: vec!["at_default_tip", "raw", "confidence"],
             }]
         );
-        let after = fx.store.observations(id, None, None).unwrap();
+        let after = fx.store.observations(id, None).unwrap();
         assert_eq!(
             after[..before.len()],
             before[..],
@@ -618,7 +619,7 @@ mod tests {
             ),
             "{err}"
         );
-        assert_eq!(fx.store.observations(other, None, None).unwrap(), vec![]);
+        assert_eq!(fx.store.observations(other, None).unwrap(), vec![]);
     }
 
     #[test]
@@ -881,7 +882,7 @@ mod tests {
             prop_assert_eq!(report.inserted, u64::try_from(records.len()).unwrap());
             let stored: Vec<ObservationRecord> = target
                 .store
-                .observations(there, None, None)
+                .observations(there, None)
                 .unwrap()
                 .into_iter()
                 .map(|o| o.record)

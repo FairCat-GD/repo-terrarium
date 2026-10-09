@@ -33,6 +33,7 @@ mod replay;
 mod strip;
 
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli::Command;
 use feed::Feed;
@@ -47,13 +48,10 @@ fn main() -> ExitCode {
         Ok(Command::Demo) => run(&Mode::Live(Feed::Demo), None),
         Ok(Command::Probe(kind)) => run(&Mode::Probe(kind), None),
         Ok(Command::Version) => {
-            println!("{}", copy::version_line());
-            ExitCode::SUCCESS
+            output::print(&format!("{}\n", copy::version_line()), copy::print_failed)
         }
-        Ok(Command::ProbeReadme) => {
-            print!("{}", copy::PROBE_README);
-            ExitCode::SUCCESS
-        }
+        // Byte for byte: `cargo xtask probe-zip` writes this into the zip as `README.txt`.
+        Ok(Command::ProbeReadme) => output::print(copy::PROBE_README, copy::print_failed),
         Ok(Command::Replay(args)) => replay::run(&args),
         Ok(Command::Discover(repo)) => discover::run(&repo),
         // The command's own exit code, whole: `ExitCode` holds only 0 to 255, and Windows codes
@@ -64,6 +62,15 @@ fn main() -> ExitCode {
             ExitCode::from(USAGE_EXIT)
         }
     }
+}
+
+/// Unix seconds now: 0 before 1970, which only a clock set far back gives.
+pub(crate) fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 fn run(mode: &Mode, connection: Option<live::Connection>) -> ExitCode {

@@ -36,7 +36,7 @@ use crate::render::large_png;
 const SCALE: u32 = 3;
 /// The native columns between the two ends of the glass, and their colour.
 const GAP: u32 = 4;
-const BACKDROP: Rgba = [24, 24, 24, u8::MAX];
+pub const BACKDROP: Rgba = [24, 24, 24, u8::MAX];
 /// The rows of backdrop shown above the soil, and the columns and rows shown around the plate.
 const SKY_ABOVE_SOIL: i32 = 4;
 const MARGIN: i32 = 2;
@@ -391,7 +391,11 @@ mod tests {
     fn rendered() -> (Files, &'static Art<'static>, ArtTable) {
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).unwrap();
-        (render(art, &table, "repo-terrarium").unwrap(), art, table)
+        (
+            render(art, &table, crate::render::LABEL).unwrap(),
+            art,
+            table,
+        )
     }
 
     #[test]
@@ -446,7 +450,7 @@ mod tests {
                 weather,
                 ..thriving
             };
-            let frame = synthetic::frame(art, &table, &knobs, "repo-terrarium", 0, false);
+            let frame = synthetic::frame(art, &table, &knobs, crate::render::LABEL, 0, false);
             for draw in frame.draws.iter().filter(|d| pieces.background(d)) {
                 // The label's glyphs are tinted masks, the font's and not the plate's.
                 if draw.tint.is_none() {
@@ -463,7 +467,7 @@ mod tests {
 
     #[test]
     fn the_wide_picture_holds_the_scene_s_backdrop_in_its_middle() {
-        let (files, art, _) = rendered();
+        let (files, _, _) = rendered();
         let picture = |name: &str| {
             let png = &files.iter().find(|(n, _)| n == name).unwrap().1;
             export::read_png(png).unwrap()
@@ -489,7 +493,6 @@ mod tests {
                 );
             }
         }
-        let _ = art;
     }
 
     #[test]

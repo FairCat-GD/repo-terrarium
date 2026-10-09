@@ -67,10 +67,14 @@ impl DataDir {
         self.0.join(DATABASE_FILE)
     }
 
+    /// The directory of the status files `record-tests` writes.
+    pub fn local_tests_dir(&self) -> PathBuf {
+        self.0.join(LOCAL_TESTS_DIR)
+    }
+
     /// The status file `record-tests` writes for the repository with `seed`.
     pub fn local_tests(&self, seed: &RepoSeed) -> PathBuf {
-        self.0
-            .join(LOCAL_TESTS_DIR)
+        self.local_tests_dir()
             .join(format!("{}.json", seed.to_hex()))
     }
 }

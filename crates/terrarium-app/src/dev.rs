@@ -2,7 +2,7 @@
 //! panel's state, the frame meter, the loop's wake count, and the egui memory probe.
 
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -157,10 +157,7 @@ impl Dev {
         let Some(probe) = &self.probe else {
             return;
         };
-        let started = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
-        let path = PathBuf::from(format!("egui-memory-{started}.txt"));
+        let path = PathBuf::from(copy::debug::egui_memory_file(crate::now_secs()));
         match std::fs::write(&path, copy::debug::egui_probe_report(probe.samples())) {
             Ok(()) => println!("{}", copy::debug::egui_probe_written(&path)),
             Err(err) => eprintln!("{}", copy::debug::egui_probe_write_failed(&path, &err)),

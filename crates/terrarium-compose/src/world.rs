@@ -203,10 +203,6 @@ impl WorldLayout {
         }
     }
 
-    pub fn salt(&self) -> InstallSalt {
-        self.salt
-    }
-
     /// The side of the sun and the moon, and of a star.
     pub fn sides(&self) -> (i32, i32) {
         (self.body_side, self.star_side)

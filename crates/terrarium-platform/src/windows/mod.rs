@@ -433,10 +433,12 @@ pub struct StaleCheck {
     pub work_after: Option<PixelRect>,
 }
 
-/// The extended style bits the strip depends on, and whether it is shown. Independent flags,
-/// as Windows reports them.
+/// The extended style bits the strip depends on, and whether it is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags, as Windows reports them"
+)]
 pub struct StyleFlags {
     pub tool_window: bool,
     pub no_activate: bool,

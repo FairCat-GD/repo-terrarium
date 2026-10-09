@@ -19,17 +19,17 @@
 //!   survivor.
 
 use std::cmp::Reverse;
-use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::canon::{canonical_struct, count_of, from_hex};
+use crate::canon::{canonical_struct, count_of};
 use crate::domain::CommitFacts;
 use crate::identity::{CommitId, RepoSeed};
-use crate::rng::{Pcg32, StreamTag, digest_u64, low_u32};
+use crate::keep_newest;
+use crate::rng::{Pcg32, StreamTag, digest_u32, digest_u64};
 use crate::scene::{FossilForm, FossilView, MAX_MARKS, MonumentAge, MonumentView};
-use crate::time::{TICKS_PER_DAY, Tick};
+use crate::time::{Tick, days};
 use crate::tuning::{
     ANCIENT_FROM_YEARS, FOSSIL_MIN_LINES, FOSSILS_MAX, LICHENED_FROM_YEARS, MONUMENT_DAYS,
     MONUMENTS_MAX,
@@ -96,8 +96,7 @@ pub struct Buried {
 }
 
 const fn years(n: u32) -> u32 {
-    n.saturating_mul(MONUMENT_DAYS)
-        .saturating_mul(TICKS_PER_DAY)
+    days(n.saturating_mul(MONUMENT_DAYS))
 }
 
 /// `bytes`' SHA-256, as a number.
@@ -112,15 +111,15 @@ const FOSSIL_ID_DOMAIN: &[u8] = b"repo-terrarium fossil id v1\0";
 pub fn fossil_id(commit: &CommitId) -> u32 {
     let digest: [u8; 32] = Sha256::new()
         .chain_update(FOSSIL_ID_DOMAIN)
-        .chain_update(from_hex(commit.as_str()).unwrap_or_default())
+        .chain_update(commit.to_bytes())
         .finalize()
         .into();
-    low_u32(digest_u64(&digest))
+    digest_u32(&digest)
 }
 
 /// The commit id's bytes, hashed: the key of the streams drawn for one commit.
 pub fn commit_key(commit: &CommitId) -> u64 {
-    hashed(&from_hex(commit.as_str()).unwrap_or_default())
+    hashed(&commit.to_bytes())
 }
 
 /// The form the seed draws for a fossil left by `commit`. The stream is keyed by a hash of the
@@ -128,12 +127,8 @@ pub fn commit_key(commit: &CommitId) -> u64 {
 pub fn fossil_form(seed: &RepoSeed, commit: &CommitId) -> FossilForm {
     let key = commit_key(commit);
     let forms = FossilForm::ALL;
-    let picked = u32::try_from(forms.len())
-        .ok()
-        .and_then(NonZeroU32::new)
-        .map(|bound| Pcg32::stream(seed, StreamTag::Fossil, key).below(bound))
-        .and_then(|index| usize::try_from(index).ok());
-    picked
+    Pcg32::stream(seed, StreamTag::Fossil, key)
+        .index(forms.len())
         .and_then(|index| forms.get(index).copied())
         .unwrap_or(FossilForm::Shell)
 }
@@ -199,8 +194,7 @@ impl Landmarks {
             commit: commit.id.clone(),
             path: hashed(dir.path.as_bytes()),
         });
-        let excess = self.fossils.len().saturating_sub(FOSSILS_MAX);
-        self.fossils.drain(..excess);
+        keep_newest(&mut self.fossils, FOSSILS_MAX);
         Some(Buried {
             id,
             lines: dir.lines,

@@ -127,10 +127,6 @@ impl StripWindow {
         frame
     }
 
-    pub fn frame(&self) -> Rect {
-        rect(self.window.frame())
-    }
-
     /// Pops up `menu` at the pointer. It returns when the menu closes.
     pub fn show_context_menu(&self, menu: &muda::Menu) {
         use muda::ContextMenu;
@@ -187,7 +183,11 @@ impl Screen {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to u32's range and rounded first"
+)]
 fn physical(pixels: f64) -> u32 {
     pixels.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }

@@ -12,13 +12,14 @@ mod probe_zip;
 mod purity;
 mod render;
 mod sweep;
-#[cfg(test)]
-mod test_support;
 mod verify;
 mod windows;
 
 use std::path::Path;
 use std::process::ExitCode;
+
+use sha2::{Digest, Sha256};
+use terrarium_truth::canon::to_hex;
 
 fn main() -> ExitCode {
     // xtask lives one level below the workspace root; resolving it here lets `cargo xtask`
@@ -70,4 +71,9 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The SHA-256 of `bytes` in lowercase hex, as `shasum -a 256` prints it.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    to_hex(&Sha256::digest(bytes))
 }

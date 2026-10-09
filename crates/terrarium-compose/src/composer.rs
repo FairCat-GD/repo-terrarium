@@ -33,9 +33,9 @@ use terrarium_truth::scene::{
 };
 
 use crate::anim;
-use crate::blend::mix;
+use crate::blend::{mix, scale};
 use crate::catalog::{Art, Flags, SpriteId};
-use crate::clock::{DAY_MS, DayNight, LocalClock};
+use crate::clock::{DayNight, LocalClock};
 use crate::drift::{self, SOIL_MS_PER_PX, SOIL_PERIOD};
 use crate::frame::{
     Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Shear, Viewport,
@@ -43,7 +43,7 @@ use crate::frame::{
 use crate::motion::{Clock, DIM_EVERY, Eras, Snapshot, motion_turn, turn, turn_start};
 use crate::order::{KeyedDraw, Place, Subject, merged};
 use crate::place::{Bands, FillForm, Placement, WeedForm, assign_spots, place};
-use crate::plant::{self, shows_bloom};
+use crate::plant::{self, shows_bloom, shows_glow, sways};
 use crate::resident::{self, Enter, Resident, Segment, TRANSITION_MS, TurnPlan, Way};
 use crate::rules::dressing;
 use crate::salt::{InstallSalt, Purpose};
@@ -315,22 +315,6 @@ fn plant_pieces(view: &PlantView) -> Pieces {
     pieces
 }
 
-/// Whether a plant sways in wind: only living plants past seedlings. A dormant plant is still
-/// (constraint 4), a dead one has nothing to sway, and a seedling's single image has no pivot.
-pub fn sways(growth: GrowthStage, health: PlantState) -> bool {
-    growth != GrowthStage::Seedling
-        && matches!(
-            health,
-            PlantState::Thriving | PlantState::Pale | PlantState::Wilting
-        )
-}
-
-/// Whether a plant glows at night: only young and mature thriving plants. A glow is a sign of
-/// health, so nothing else ever shows one (I-7).
-pub fn shows_glow(growth: GrowthStage, health: PlantState) -> bool {
-    growth != GrowthStage::Seedling && health == PlantState::Thriving
-}
-
 fn fill_pieces(form: FillForm) -> Pieces {
     let mut pieces = [None; PARTS];
     match form {
@@ -587,16 +571,8 @@ impl Composer {
         }
     }
 
-    pub fn salt(&self) -> InstallSalt {
-        self.salt
-    }
-
     pub fn layout(&self) -> &Layout {
         &self.layout
-    }
-
-    pub fn world(&self) -> &WorldLayout {
-        &self.world
     }
 
     pub fn placement(&self) -> &Placement {
@@ -962,8 +938,7 @@ impl Composer {
     /// The local time of day at `now`, carried forward from the last update's clock.
     fn ms_of_day(&self, now: Millis) -> Option<u32> {
         let (clock, at) = self.clock?;
-        let carried = u64::from(clock.ms_of_day) + now.0.saturating_sub(at.0);
-        u32::try_from(carried % u64::from(DAY_MS)).ok()
+        Some(clock.advanced_by(now.0.saturating_sub(at.0)).ms_of_day)
     }
 
     /// The palette mix the clock alone gives at `now`: day until a clock arrives.
@@ -973,14 +948,10 @@ impl Composer {
 
     /// The palette mix at `now`, 0 by day and 255 by night.
     pub fn palette_mix(&self, now: Millis) -> u8 {
-        let mix = self.clock_mix(now);
+        let by_clock = self.clock_mix(now);
         match self.mix_fix {
-            Some(fix) => {
-                let weight = u32::from(fix.weight.value(now));
-                let blended = u32::from(fix.from) * (255 - weight) + u32::from(mix) * weight;
-                u8::try_from((blended + 127) / 255).unwrap_or(mix)
-            }
-            None => mix,
+            Some(fix) => mix(fix.from, by_clock, fix.weight.value(now)),
+            None => by_clock,
         }
     }
 
@@ -1364,7 +1335,7 @@ impl Composer {
                     record.home
                 };
                 let lit = Lit {
-                    value: times_opacity(opacity, visible),
+                    value: scale(opacity, visible),
                     palette_mix,
                 };
                 push_creature(
@@ -1398,7 +1369,7 @@ impl Composer {
             // Faded, but never to nothing while it is named a step: each step it takes shows.
             let fade = drift::sweep_fade(x, world.sweep_width, width);
             let draw = Draw {
-                opacity: times_opacity(draw.opacity, fade).max(1),
+                opacity: scale(draw.opacity, fade).max(1),
                 ..draw
             };
             // Keyed past the frame's far corner: it paints over all the rest of the glass.
@@ -1541,13 +1512,13 @@ impl Composer {
                 continue;
             }
             for (line, line_value) in look.showing(now) {
-                let opacity = times_opacity(value, line_value);
+                let opacity = scale(value, line_value);
                 let Some(text) = look.lines.get(line) else {
                     continue;
                 };
                 let part = u8::try_from(line).unwrap_or(u8::MAX);
                 for (item, glyph) in (0_u16..).zip(label.fitted_draws(text, LABEL_X, LABEL_Y)) {
-                    let opacity = times_opacity(glyph.opacity, opacity);
+                    let opacity = scale(glyph.opacity, opacity);
                     if opacity == 0 {
                         continue;
                     }
@@ -1898,20 +1869,15 @@ impl Lit {
         let own = sprite.night_opacity.map_or(draw.opacity, |night| {
             mix(draw.opacity, night, self.palette_mix)
         });
-        let mut opacity = times_opacity(own, self.value);
+        let mut opacity = scale(own, self.value);
         if flags.contains(Flags::NIGHT_ONLY) {
-            opacity = times_opacity(opacity, self.palette_mix);
+            opacity = scale(opacity, self.palette_mix);
         }
         if flags.contains(Flags::DAY_ONLY) {
-            opacity = times_opacity(opacity, u8::MAX - self.palette_mix);
+            opacity = scale(opacity, u8::MAX - self.palette_mix);
         }
         (opacity > 0).then_some(Draw { opacity, ..draw })
     }
-}
-
-/// A sprite's own opacity times a look's, rounded to nearest.
-fn times_opacity(own: u8, look: u8) -> u8 {
-    u8::try_from((u16::from(own) * u16::from(look) + 127) / 255).unwrap_or(u8::MAX)
 }
 
 #[cfg(test)]
@@ -2258,7 +2224,7 @@ mod tests {
         assert!(
             glows
                 .iter()
-                .all(|&o| o == times_opacity(art.catalog.sprite(glow).opacity, 128))
+                .all(|&o| o == scale(art.catalog.sprite(glow).opacity, 128))
         );
     }
 

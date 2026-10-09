@@ -156,7 +156,7 @@ impl Watched {
         let store = Store::open(&self.data()).unwrap();
         let id = store.setting::<i64>(SETTING_REPO_ACTIVE).unwrap().unwrap();
         store
-            .observations(TerrariumId::new(id), Some(kind), None)
+            .observations(TerrariumId::new(id), Some(kind))
             .unwrap()
     }
 

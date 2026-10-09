@@ -7,7 +7,7 @@ pub mod script;
 
 use std::io;
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use winit::event_loop::EventLoopProxy;
 
@@ -54,9 +54,7 @@ impl Probe {
     /// directory the tester ran it from, where they will look for it.
     pub fn start(proxy: EventLoopProxy<UserEvent>) -> Self {
         read_answers(proxy);
-        let started_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
+        let started_unix = u64::try_from(crate::now_secs()).unwrap_or(0);
         let probe = Self::new(
             std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
             std::env::temp_dir(),
@@ -190,10 +188,7 @@ impl Probe {
     }
 
     fn file_name(&self, extension: &str) -> String {
-        format!(
-            "repo-terrarium-probe-pinning-{}-{}.{extension}",
-            self.report.started_unix, self.run_id
-        )
+        copy::probe_file(self.report.started_unix, self.run_id, extension)
     }
 
     fn json_path(&self) -> PathBuf {
@@ -246,35 +241,14 @@ mod tests {
     use crate::pinning::Placed;
     use report::ScaleReport;
 
-    /// A directory the test owns under the system temp dir, removed when dropped.
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "terrarium-probe-test-{}-{name}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).expect("the temp dir is writable");
-            Self(path)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     fn probe(dir: &Path) -> Probe {
         Probe::new(dir.to_owned(), dir.to_owned(), 100, 7)
     }
 
     #[test]
     fn answers_advance_the_steps_and_count_frames_per_step() {
-        let dir = TempDir::new("advance");
-        let mut probe = probe(&dir.0);
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = probe(dir.path());
         let second_level = probe.steps[1].level;
         assert_eq!(probe.answer("first note", 5), Advance::Next(second_level));
         assert_eq!(probe.answer("  ", 12), Advance::Next(probe.steps[2].level));
@@ -287,8 +261,8 @@ mod tests {
 
     #[test]
     fn the_last_answer_completes_the_report_once() {
-        let dir = TempDir::new("complete");
-        let mut probe = probe(&dir.0);
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = probe(dir.path());
         let total = probe.steps.len();
         for _ in 1..total {
             assert!(matches!(probe.answer("", 0), Advance::Next(_)));
@@ -305,8 +279,8 @@ mod tests {
 
     #[test]
     fn ending_early_closes_the_open_step_and_stops_recording() {
-        let dir = TempDir::new("early");
-        let mut probe = probe(&dir.0);
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = probe(dir.path());
         probe.answer("", 2);
         assert!(probe.is_open());
         probe.end(EndReason::LaunchFailed, 10);
@@ -320,19 +294,19 @@ mod tests {
 
     #[test]
     fn an_unwritable_directory_falls_back_once() {
-        let dir = TempDir::new("fallback");
-        let missing = dir.0.join("missing").join("nested");
-        let mut probe = Probe::new(missing, dir.0.clone(), 100, 7);
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing").join("nested");
+        let mut probe = Probe::new(missing, dir.path().to_owned(), 100, 7);
         probe.end(EndReason::Quit, 0);
-        assert_eq!(probe.dir, dir.0);
+        assert_eq!(probe.dir, dir.path());
         assert!(probe.json_path().is_file());
         assert!(probe.text_path().is_file());
     }
 
     #[test]
     fn the_report_strip_follows_the_latest_placement() {
-        let dir = TempDir::new("strip");
-        let mut probe = probe(&dir.0);
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = probe(dir.path());
         let placed = |scale: u32| ProbeEvent::Placed {
             monitor: MonitorId("M".to_owned()),
             strip: ScaleReport {
@@ -358,9 +332,9 @@ mod tests {
 
     #[test]
     fn runs_started_in_the_same_second_write_separate_files() {
-        let dir = TempDir::new("names");
-        let first = Probe::new(dir.0.clone(), dir.0.clone(), 100, 7);
-        let second = Probe::new(dir.0.clone(), dir.0.clone(), 100, 8);
+        let dir = tempfile::tempdir().unwrap();
+        let first = Probe::new(dir.path().to_owned(), dir.path().to_owned(), 100, 7);
+        let second = Probe::new(dir.path().to_owned(), dir.path().to_owned(), 100, 8);
         assert_ne!(first.json_path(), second.json_path());
         assert_ne!(first.text_path(), second.text_path());
     }

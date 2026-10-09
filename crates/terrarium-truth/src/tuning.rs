@@ -263,7 +263,10 @@ pub const BLOOM_TICKS: u32 = 24;
 pub const CLEARING_BURN_ITEMS: u32 = 5;
 pub const CLEARING_BURN_PERCENT: u64 = 20;
 
-/// Rain after drought: the first commit after this many days without one.
+/// A silence this many days long is a drought. Rain after drought plays for the first commit
+/// after one, counted in hours since any commit. The rain and wind baselines count it in each
+/// tempo's own closed days without a sample: they leave out the days past it, and the first day
+/// back restarts the average.
 pub const DROUGHT_DAYS: u32 = 14;
 
 /// A windstorm is a day whose changed lines are at least this many times the median of the

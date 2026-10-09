@@ -1,4 +1,5 @@
-//! `cargo xtask gallery`: the A-kit's pictures, written to `target/gallery/`.
+//! `cargo xtask gallery`: the A-kit's pictures, written to `target/gallery/` (under
+//! `CARGO_TARGET_DIR` when it is set, as cargo's own output is).
 //!
 //! - `states/NN-day.png` and `NN-night.png`: the 30 states of the synthetic climate's health ×
 //!   activity grid, at 3×. `NN` is a fixed shuffle of the grid, so a viewer rating them cannot
@@ -15,29 +16,26 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use sha2::{Digest, Sha256};
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, NativeImage, Rgba};
+use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, NativeImage};
 use terrarium_compose::synthetic::{self, Cell};
 use terrarium_compose::variants::ArtTable;
-use terrarium_truth::canon::to_hex;
 
-use crate::pieces;
-use crate::render::large_png;
+use crate::pieces::{self, BACKDROP};
+use crate::render::{LABEL, large_png};
+use crate::sweep;
 
-const LABEL: &str = "repo-terrarium";
 /// The contact sheet's gutter between cells, and between a cell's day and night.
 const GUTTER: u32 = 4;
 const GAP: u32 = 2;
-const SHEET_BACKGROUND: Rgba = [24, 24, 24, u8::MAX];
 
 /// The gallery's files, by path under its directory, in the order written.
 pub type Files = Vec<(String, Vec<u8>)>;
 
 pub fn run(root: &Path) -> ExitCode {
-    let dir = root.join("target").join("gallery");
+    let dir = sweep::target_dir(root).join("gallery");
     match render().and_then(|files| write(&dir, &files).map(|()| files.len())) {
         Ok(count) => {
             println!("gallery: wrote {count} files to {}", dir.display());
@@ -109,7 +107,7 @@ pub fn render() -> Result<Files, String> {
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut sums = String::new();
     for (name, bytes) in &files {
-        let _ = writeln!(sums, "{}  {name}", to_hex(&Sha256::digest(bytes)));
+        let _ = writeln!(sums, "{}  {name}", crate::sha256_hex(bytes));
     }
     files.push(("SHA256SUMS".to_owned(), sums.into_bytes()));
     Ok(files)
@@ -130,7 +128,7 @@ fn contact_sheet(cells: &[(usize, usize, NativeImage, NativeImage)]) -> Vec<u8> 
     let cell_height = 2 * NATIVE_HEIGHT + GAP;
     let width = columns * NATIVE_WIDTH + (columns + 1) * GUTTER;
     let height = rows * cell_height + (rows + 1) * GUTTER;
-    let mut pixels = vec![SHEET_BACKGROUND; usize::try_from(width * height).unwrap_or(0)];
+    let mut pixels = vec![BACKDROP; usize::try_from(width * height).unwrap_or(0)];
     for (row, column, day, night) in cells {
         let x0 = GUTTER + u32::try_from(*column).unwrap_or(0) * (NATIVE_WIDTH + GUTTER);
         let y0 = GUTTER + u32::try_from(*row).unwrap_or(0) * (cell_height + GUTTER);
@@ -149,8 +147,6 @@ fn contact_sheet(cells: &[(usize, usize, NativeImage, NativeImage)]) -> Vec<u8> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::test_support::TempDir;
 
     #[test]
     fn the_shuffle_numbers_every_cell_once() {
@@ -190,13 +186,13 @@ mod tests {
 
     #[test]
     fn a_rerun_replaces_what_an_earlier_one_left() {
-        let dir = TempDir::new("gallery");
-        std::fs::write(dir.0.join("stale.png"), b"old").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("stale.png"), b"old").unwrap();
         let files = vec![("states/01-day.png".to_owned(), b"new".to_vec())];
-        write(&dir.0, &files).unwrap();
-        assert!(!dir.0.join("stale.png").exists());
+        write(dir.path(), &files).unwrap();
+        assert!(!dir.path().join("stale.png").exists());
         assert_eq!(
-            std::fs::read(dir.0.join("states/01-day.png")).unwrap(),
+            std::fs::read(dir.path().join("states/01-day.png")).unwrap(),
             b"new"
         );
     }

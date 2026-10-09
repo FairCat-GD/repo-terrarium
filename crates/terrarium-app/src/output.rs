@@ -1,4 +1,4 @@
-//! A command's result on stdout (`replay --dump`, `discover`).
+//! A command's result on stdout (`--version`, `--probe-readme`, `replay --dump`, `discover`).
 
 use std::io::{ErrorKind, Write as _};
 use std::process::ExitCode;

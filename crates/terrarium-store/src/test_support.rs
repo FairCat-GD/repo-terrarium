@@ -4,9 +4,12 @@
 use proptest::test_runner::{Config, RngSeed};
 use tempfile::TempDir;
 use terrarium_truth::domain::{ObservationHead, WeatherSource};
-use terrarium_truth::{CommitId, ObservationKind, Q16, RepoSeed};
+use terrarium_truth::{CommitId, ObservationKind, Q16, RepoSeed, SIM_VERSION, Tick};
 
-use crate::{Contributor, DataDir, NewTerrarium, ObservationRecord, RepoLocation, Store};
+use crate::{
+    Contributor, DataDir, NewTerrarium, ObservationId, ObservationRecord, RepoLocation, SimCache,
+    Store,
+};
 
 /// A store in a fresh temp dir. The store is declared first so it closes before the directory
 /// is removed.
@@ -46,6 +49,17 @@ pub fn seed(n: u8) -> RepoSeed {
 
 pub fn commit(digit: char) -> CommitId {
     CommitId::from_hex(&digit.to_string().repeat(40)).expect("a valid id")
+}
+
+/// A cache row whose state is a few arbitrary bytes: the store never decodes it.
+pub fn sim_cache(high_water: Option<i64>, tick: u32) -> SimCache {
+    SimCache {
+        sim_version: SIM_VERSION,
+        tips_hash: [9; 32],
+        obs_high_water: high_water.map(ObservationId::new),
+        tick: Tick::new(tick),
+        state: vec![0, 1, 2, 255],
+    }
 }
 
 pub fn location(n: u8) -> RepoLocation {

@@ -110,16 +110,32 @@ impl Shape for DeadCodeRaw {}
 impl Shape for WeatherRaw {}
 impl Shape for RefRewriteRaw {}
 
-/// The kind-specific value truth reads from `raw` (and, for weather, the source column).
+/// The kind-specific value truth reads from `raw` (and, for weather, the source column). Only
+/// the kinds whose value is in `raw` parse it.
 pub(crate) fn value(
     kind: ObservationKind,
     source: Option<&WeatherSource>,
     raw: &str,
 ) -> Result<ObservationValue, Invalid> {
+    let json = match kind {
+        ObservationKind::DeadCode | ObservationKind::RefRewrite => {
+            serde_json::from_str(raw).map_err(|_| Invalid::RawShape(kind))?
+        }
+        _ => serde_json::Value::Null,
+    };
+    from_json(kind, source, json)
+}
+
+/// [`value`], from `raw` already parsed.
+pub(crate) fn from_json(
+    kind: ObservationKind,
+    source: Option<&WeatherSource>,
+    json: serde_json::Value,
+) -> Result<ObservationValue, Invalid> {
     // serde would read a struct from a JSON array too; a shape is always an object.
     let object = || -> Result<serde_json::Value, Invalid> {
-        match serde_json::from_str(raw) {
-            Ok(serde_json::Value::Object(map)) => Ok(serde_json::Value::Object(map)),
+        match json {
+            serde_json::Value::Object(map) => Ok(serde_json::Value::Object(map)),
             _ => Err(Invalid::RawShape(kind)),
         }
     };
@@ -163,10 +179,7 @@ pub(crate) fn value(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn commit(digit: char) -> CommitId {
-        CommitId::from_hex(&digit.to_string().repeat(40)).expect("an id")
-    }
+    use crate::test_support::commit;
 
     #[test]
     fn the_shapes_are_pinned() {

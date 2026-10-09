@@ -12,10 +12,9 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;
-use sha2::{Digest, Sha256};
-use terrarium_truth::canon::to_hex;
 
 use super::{Check, Failure};
+use crate::sha256_hex;
 
 pub const CONTENTS: &str = "PACKAGE-CONTENTS.json";
 
@@ -111,10 +110,6 @@ fn read_dir(
         }
     }
     Ok(())
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    to_hex(&Sha256::digest(bytes))
 }
 
 /// `PACKAGE-CONTENTS.json`: the package's own index.

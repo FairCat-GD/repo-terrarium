@@ -27,9 +27,10 @@ use sha2::{Digest, Sha256};
 
 use crate::canon::canonical_struct;
 use crate::identity::RepoSeed;
-use crate::rng::{Pcg32, StreamTag, digest_u64, low_u32};
+use crate::keep_newest;
+use crate::rng::{Pcg32, StreamTag, digest_u32};
 use crate::scene::{ActiveEvent, EventKind, GroundMark, GroundMarkView, Side, Strength};
-use crate::time::{TICKS_PER_DAY, Tick};
+use crate::time::{Tick, days};
 use crate::tuning::{
     EVENT_RECALL_TICKS, FRESH_SOIL_DAYS, MARKS_MAX, SETTLED_MARK_DAYS, event_cooldown, event_rank,
 };
@@ -202,11 +203,7 @@ pub fn mark_id(kind: GroundMark, since: Tick, fossil: Option<u32>) -> u32 {
         .chain_update(fossil.unwrap_or(0).to_le_bytes())
         .finalize()
         .into();
-    low_u32(digest_u64(&digest))
-}
-
-const fn days(n: u32) -> u32 {
-    n.saturating_mul(TICKS_PER_DAY)
+    digest_u32(&digest)
 }
 
 impl Events {
@@ -281,8 +278,7 @@ impl Events {
             since,
             fossil,
         });
-        let excess = self.marks.len().saturating_sub(MARKS_MAX);
-        self.marks.drain(..excess);
+        keep_newest(&mut self.marks, MARKS_MAX);
     }
 
     /// Rain after drought clears the settled crack and sinkhole.

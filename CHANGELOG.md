@@ -5,6 +5,34 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-09
+
+A repository coming back from a long silence now reads at its own pace, and a cleanup of the
+whole codebase.
+
+### Changed
+
+- **A return after a long silence reads at the repository's own pace.**
+  - The rain and wind no longer measure it against the silence itself: the days past two
+    silent weeks leave the repository's usual pace out of it, and the first commit day back
+    starts the reckoning afresh.
+  - The weeks after a long break no longer read as a gale or rush every plant back at once.
+  - A steady or sparse rhythm, such as a commit or two a week, reads exactly as before.
+- **`cargo xtask verify` lints the shipped code on its own:** the app and the adapters as a
+  release builds them, without the test fixtures. It has 12 stages.
+- **`cargo xtask gallery` and `probe-zip` write under `CARGO_TARGET_DIR`** when it is set, as
+  cargo does.
+- The terrarium's history replays once more after this update (simulation version 6).
+
+### Fixed
+
+- **A bare repository records its `record-tests` runs:** the status file lives in the data
+  directory, so a repository without a working tree has one too.
+- **A refresh that finds itself without its history or its scene is reported and tried again.**
+  Before, the engine stopped there silently, and the strip froze with no note.
+- **`--version` and `--probe-readme` no longer fail** when the reader closes early, as `head`
+  does.
+
 ## [0.18.0] - 2026-10-05
 
 Things now happen in the terrarium: the repository's moments arrive as events, one at a time.

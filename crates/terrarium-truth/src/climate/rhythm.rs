@@ -8,6 +8,15 @@
 //! 1 whatever its shape: a weekday-only repository does not read as slower every weekend, and
 //! one that commits on fewer than half its days does not have a baseline of zero.
 //!
+//! A long silence is left out: a closed day without a sample enters the baseline only while
+//! fewer than [`DROUGHT_DAYS`] such days came right before it, and the first day with a sample
+//! after that many restarts the average from it, as the first day ever does. Otherwise a return
+//! after months would be measured against a baseline sunk to its floor and read as a gale for
+//! weeks. Each tempo counts its own days without a sample: rain a day with no commit that is
+//! not a merge, wind a day with no changed line. The count is the tempo's own, not rain after
+//! drought's, which reads hours since any commit; the two may differ by a day around midnight
+//! or a merge-only day.
+//!
 //! The closed days' changed lines are also kept, for the windstorm: a day whose lines are at
 //! least three times the median of the active days among the 90 before it. That reads a "daily
 //! wind ratio ≥ 3" in lines rather than in the logarithm the wind is smoothed in, where a ratio
@@ -19,35 +28,54 @@ use serde::{Deserialize, Serialize};
 use crate::canon::canonical_struct;
 use crate::domain::CommitFacts;
 use crate::fixed::{Q16, Q32, log2_int};
+use crate::keep_newest;
 use crate::tuning::{
-    BASELINE_DAYS, BASELINE_FLOOR, SMOOTHING_ALPHA, WINDSTORM_ACTIVE_DAYS, WINDSTORM_DAYS,
-    WINDSTORM_RATIO,
+    BASELINE_DAYS, BASELINE_FLOOR, DROUGHT_DAYS, SMOOTHING_ALPHA, WINDSTORM_ACTIVE_DAYS,
+    WINDSTORM_DAYS, WINDSTORM_RATIO,
 };
 
-/// One tempo, rain or wind: its smoothed level, and the recent levels its baseline is taken
-/// from. Kept in `Q32`, because a `Q16` average stops a few steps short of a steady input.
+/// One tempo, rain or wind: its smoothed level, the recent levels its baseline is taken from,
+/// and the silence it is in. Kept in `Q32`, because a `Q16` average stops a few steps short of
+/// a steady input.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pace {
     /// The smoothed daily sample; `None` until the first day closes.
     pub level: Option<Q32>,
-    /// The level after each of the last closes, oldest first, at most [`BASELINE_DAYS`].
+    /// The level after each of the last closes the baseline counts, oldest first, at most
+    /// [`BASELINE_DAYS`].
     pub recent: Vec<Q32>,
+    /// The closed days in a row without a sample, up to the last close.
+    pub silent: u32,
 }
 
-canonical_struct!(Pace { level, recent });
+canonical_struct!(Pace {
+    level,
+    recent,
+    silent
+});
 
 impl Pace {
     /// Takes one closed day's sample. The first sample starts the average, so it never climbs
-    /// from zero.
+    /// from zero, and so does the first after a drought. A day without a sample still moves the
+    /// average, but the baseline leaves it out once the silence is a drought.
     pub fn close(&mut self, sample: Q16) {
+        let drought = self.silent >= DROUGHT_DAYS;
+        let quiet = sample == Q16::ZERO;
         let sample = sample.to_q32();
-        let level = self
-            .level
-            .map_or(sample, |level| level.ema(sample, SMOOTHING_ALPHA));
+        let level = match self.level {
+            Some(level) if quiet || !drought => level.ema(sample, SMOOTHING_ALPHA),
+            _ => sample,
+        };
         self.level = Some(level);
-        self.recent.push(level);
-        let excess = self.recent.len().saturating_sub(BASELINE_DAYS);
-        self.recent.drain(..excess);
+        if !quiet || !drought {
+            self.recent.push(level);
+            keep_newest(&mut self.recent, BASELINE_DAYS);
+        }
+        self.silent = if quiet {
+            self.silent.saturating_add(1)
+        } else {
+            0
+        };
     }
 
     /// The level over the baseline: 1 is the repository's usual pace.
@@ -128,8 +156,7 @@ impl Rhythm {
         self.wind.close(daily_sample(self.lines));
         let gust = gust(self.lines, &self.days);
         self.days.push(self.lines);
-        let excess = self.days.len().saturating_sub(WINDSTORM_DAYS);
-        self.days.drain(..excess);
+        keep_newest(&mut self.days, WINDSTORM_DAYS);
         self.commits = 0;
         self.lines = 0;
         self.open_day = day;
@@ -146,7 +173,8 @@ pub fn gust(lines: u64, days: &[u64]) -> Option<u64> {
     if active.len() < WINDSTORM_ACTIVE_DAYS {
         return None;
     }
-    // Stable, as truth's sorts are: equal counts are interchangeable either way.
+    // By key, because a plain `sort` of integers trips `stable_sort_primitive`, whose fix,
+    // `sort_unstable`, truth disallows. Equal counts are interchangeable either way.
     active.sort_by_key(|&lines| lines);
     let upper = active.len() / 2;
     let twice_median = if active.len() % 2 == 1 {
@@ -168,6 +196,7 @@ pub fn daily_sample(n: u64) -> Q16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tuning::{ACTIVE_FROM, TEMPO_MAX};
 
     fn q(raw: i64) -> Q32 {
         Q32::from_raw(raw)
@@ -205,12 +234,96 @@ mod tests {
             pace.close(Q16::ZERO);
         }
         assert_eq!(pace.level, Some(Q32::ZERO));
-        assert_eq!(pace.recent.len(), BASELINE_DAYS);
+        // The silent days past the first `DROUGHT_DAYS` leave the baseline.
+        assert_eq!(pace.recent.len(), usize::try_from(DROUGHT_DAYS).unwrap());
+        assert_eq!(pace.silent, 100);
         assert_eq!(pace.ratio(), Q32::ZERO);
         pace.close(daily_sample(1));
-        // One commit after a silence: 2/15 of log2(2) over the floor.
-        let expected = Q32::from_ratio(2, 15).saturating_div(BASELINE_FLOOR);
-        assert_eq!(pace.ratio(), expected);
+        // One commit after a drought restarts the average at log2(2), over a baseline of
+        // silent levels, which sits at the floor.
+        assert_eq!((pace.level, pace.silent), (Some(Q32::ONE), 0));
+        assert_eq!(pace.ratio(), Q32::ONE.saturating_div(BASELINE_FLOOR));
+    }
+
+    /// The tempo as it was before droughts were left out: every closed day enters the
+    /// baseline, and the average never restarts.
+    #[derive(Default)]
+    struct EveryDay {
+        level: Option<Q32>,
+        recent: Vec<Q32>,
+    }
+
+    impl EveryDay {
+        fn close(&mut self, sample: Q16) {
+            let sample = sample.to_q32();
+            let level = self
+                .level
+                .map_or(sample, |level| level.ema(sample, SMOOTHING_ALPHA));
+            self.level = Some(level);
+            self.recent.push(level);
+            keep_newest(&mut self.recent, BASELINE_DAYS);
+        }
+
+        fn ratio(&self) -> Q32 {
+            let baseline = median(&self.recent).map_or(BASELINE_FLOOR, |m| m.max(BASELINE_FLOOR));
+            self.level
+                .map_or(Q32::ONE, |level| level.saturating_div(baseline))
+        }
+    }
+
+    #[test]
+    fn rhythms_without_a_drought_read_as_before() {
+        // Five commits once a week, one a week, and three every third day.
+        for (every, commits) in [(7, 5), (7, 1), (3, 3)] {
+            let mut pace = Pace::default();
+            let mut every_day = EveryDay::default();
+            for day in 0..400 {
+                let sample = daily_sample(if day % every == 0 { commits } else { 0 });
+                pace.close(sample);
+                every_day.close(sample);
+                assert_eq!(pace.ratio(), every_day.ratio(), "every {every}, day {day}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_return_after_a_long_silence_reads_at_its_own_pace() {
+        let commit = CommitFacts {
+            id: crate::CommitId::from_hex(&"b".repeat(40)).expect("an id"),
+            tick: crate::Tick::ZERO,
+            parents: 1,
+            on_default_first_parent: true,
+            added: 30,
+            removed: 10,
+            deleted_dirs: Vec::new(),
+            renames: Vec::new(),
+            tags: Vec::new(),
+        };
+        let mut rhythm = Rhythm::new(0);
+        let day = |rhythm: &mut Rhythm, open: i64, commits: bool| {
+            if commits {
+                rhythm.count(&commit);
+                rhythm.count(&commit);
+            }
+            let _ = rhythm.close(open + 1);
+            crate::climate::activity(rhythm.rain.ratio(), rhythm.wind.ratio())
+        };
+        // Two commits each weekday for 200 days, then 120 silent days.
+        for open in 0..320 {
+            let _ = day(&mut rhythm, open, open < 200 && open % 7 < 5);
+        }
+        // The same rhythm again: from the close of the first commit day back, the repository
+        // reads as active, and never at the tempo's cap.
+        let mut back = false;
+        for open in 320..380 {
+            let commits = open % 7 < 5;
+            let activity = day(&mut rhythm, open, commits);
+            back |= commits;
+            assert!(rhythm.rain.ratio() < TEMPO_MAX.to_q32(), "day {open}");
+            if back {
+                assert!(activity >= ACTIVE_FROM, "day {open}: {activity:?}");
+            }
+        }
     }
 
     #[test]

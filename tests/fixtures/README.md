@@ -28,4 +28,5 @@ Beside it, `tests/golden/` holds outputs rather than inputs: `arc.dump`, the can
 the arc's replay, and `arc.sha256`, its hash. `cargo xtask golden --bless` writes them, and
 `verify`'s `golden` stage fails while they differ from a fresh replay.
 
-A crate reaches this folder as `concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures")`.
+A crate reaches this folder as `Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")`,
+and xtask joins it to the workspace root.

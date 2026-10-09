@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use super::paths::Context;
 use super::xml::{Step, attribute, walk};
-use super::{Contributor, Loaded, Parsed, Reading, Why, count, hits};
+use super::{Loaded, Parsed, Reading, Why, count, coverage_totals, hits};
 
 #[derive(Default)]
 struct Source {
@@ -49,22 +49,12 @@ pub(crate) fn parse(context: &Context, files: &[Loaded]) -> Parsed {
             }
         }
     }
-    let mut found = 0_u64;
-    let mut hit = 0_u64;
-    let mut contributors = Vec::new();
-    for source in merged.values() {
-        let f = u64::try_from(source.lines.len()).unwrap_or(u64::MAX);
-        let h =
+    let (mut found, mut hit, contributors) = coverage_totals(merged.values().map(|source| {
+        let lines = u64::try_from(source.lines.len()).unwrap_or(u64::MAX);
+        let ran =
             u64::try_from(source.lines.values().filter(|&&ran| ran).count()).unwrap_or(u64::MAX);
-        found = found.saturating_add(f);
-        hit = hit.saturating_add(h);
-        if let Some(path) = &source.path {
-            contributors.push(Contributor {
-                path: path.clone(),
-                value: i64::try_from(f - h).unwrap_or(i64::MAX),
-            });
-        }
-    }
+        (lines, ran, source.path.as_ref())
+    }));
     if found == 0 {
         (found, hit) = (root_found, root_hit);
     }

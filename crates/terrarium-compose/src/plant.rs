@@ -1,6 +1,7 @@
 //! A plant's parts: a seedling is one combined image; a young or mature plant is its stem, then
 //! the state's foliage at the same ground point, then the bloom on top. The bloom shows only on
-//! a mature, thriving plant whose `bloom` truth set.
+//! a mature, thriving plant whose `bloom` truth set; the night glow only on a young or mature
+//! thriving one; and only a living plant past a seedling sways.
 
 use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState};
 
@@ -70,6 +71,22 @@ impl Parts {
 /// Whether a plant shows its bloom: only when mature, thriving and authorized by truth.
 pub fn shows_bloom(growth: GrowthStage, health: PlantState, bloom: bool) -> bool {
     bloom && growth == GrowthStage::Mature && health == PlantState::Thriving
+}
+
+/// Whether a plant glows at night: only young and mature thriving plants. A glow is a sign of
+/// health, so nothing else ever shows one (I-7).
+pub fn shows_glow(growth: GrowthStage, health: PlantState) -> bool {
+    growth != GrowthStage::Seedling && health == PlantState::Thriving
+}
+
+/// Whether a plant sways in wind: only living plants past seedlings. A dormant plant is still
+/// (constraint 4), a dead one has nothing to sway, and a seedling's single image has no pivot.
+pub fn sways(growth: GrowthStage, health: PlantState) -> bool {
+    growth != GrowthStage::Seedling
+        && matches!(
+            health,
+            PlantState::Thriving | PlantState::Pale | PlantState::Wilting
+        )
 }
 
 #[cfg(test)]

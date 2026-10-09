@@ -1,8 +1,8 @@
 # Truth must be a pure function of its inputs (I-1). Clippy reads only the nearest
 # clippy.toml, so a root-level file added later would not apply here unless merged into this one.
 disallowed-types = [
-    { path = "std::collections::HashMap", reason = "iteration order varies per run; use BTreeMap or IndexMap" },
-    { path = "std::collections::HashSet", reason = "iteration order varies per run; use BTreeSet or IndexSet" },
+    { path = "std::collections::HashMap", reason = "iteration order varies per run; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "iteration order varies per run; use BTreeSet" },
     { path = "std::hash::DefaultHasher", reason = "its algorithm may change between Rust releases" },
     { path = "std::hash::RandomState", reason = "it is seeded per process" },
     { path = "f32", reason = "floats are not reproducible across platforms; use the fixed-point types" },

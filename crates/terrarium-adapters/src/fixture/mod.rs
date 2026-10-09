@@ -17,6 +17,8 @@ use gix::objs::tree::EntryKind;
 use gix::refs::transaction::{Change as RefChange, LogChange, PreviousValue, RefEdit, RefLog};
 use terrarium_truth::CommitId;
 
+use crate::git::refs::{to_commit_id, to_object_id};
+
 pub use arc::{
     ARC_BRANCHES, ARC_DELETED_DIR, ARC_END_SECS, ARC_RENAMED_FROM, ARC_RENAMED_TO,
     ARC_REPLAY_END_SECS, ARC_START_SECS, ARC_TAGS, Arc, ArcCommit, Phase, arc,
@@ -203,18 +205,19 @@ pub struct FixtureRepo {
     branches: BTreeMap<String, Branch>,
 }
 
-fn object_id(id: &CommitId) -> gix::ObjectId {
-    gix::ObjectId::from_hex(id.as_str().as_bytes()).expect("a commit id is lowercase hex")
-}
-
-fn commit_id(id: gix::ObjectId) -> CommitId {
-    CommitId::from_hex(&id.to_hex().to_string()).expect("gix prints lowercase hex")
-}
-
 impl FixtureRepo {
     /// An empty repository with a worktree at `path`, whose `HEAD` names `main`. The worktree
     /// stays empty: readers need only the object database.
     pub fn init(path: &Path) -> FixtureResult<FixtureRepo> {
+        FixtureRepo::create(path, gix::create::Kind::WithWorktree)
+    }
+
+    /// An empty bare repository at `path`, whose `HEAD` names `main`.
+    pub fn init_bare(path: &Path) -> FixtureResult<FixtureRepo> {
+        FixtureRepo::create(path, gix::create::Kind::Bare)
+    }
+
+    fn create(path: &Path, kind: gix::create::Kind) -> FixtureResult<FixtureRepo> {
         let capabilities = gix::fs::Capabilities {
             precompose_unicode: false,
             ignore_case: false,
@@ -223,7 +226,7 @@ impl FixtureRepo {
         };
         let mut repo = gix::ThreadSafeRepository::init_opts(
             path,
-            gix::create::Kind::WithWorktree,
+            kind,
             gix::create::Options {
                 fs_capabilities: Some(capabilities),
                 ..gix::create::Options::default()
@@ -241,7 +244,7 @@ impl FixtureRepo {
         Ok(fixture)
     }
 
-    /// The repository's worktree directory.
+    /// Where it was made: the worktree, or a bare repository's own directory.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -257,7 +260,7 @@ impl FixtureRepo {
     /// When the branch has no commit.
     pub fn tip(&self, branch: &str) -> CommitId {
         let tip = self.branches.get(branch).and_then(|b| b.tip);
-        commit_id(tip.unwrap_or_else(|| panic!("branch {branch} has no commit")))
+        to_commit_id(tip.unwrap_or_else(|| panic!("branch {branch} has no commit")))
     }
 
     fn write_ref(&self, name: &str, target: gix::refs::Target) -> FixtureResult<()> {
@@ -306,11 +309,11 @@ impl FixtureRepo {
         let mut state = self.branches.remove(branch).unwrap_or_default();
         let result = self.apply_and_commit(&mut state, stamp, message, edits, extra);
         if let Ok(id) = &result {
-            state.tip = Some(object_id(id));
+            state.tip = Some(to_object_id(id));
         }
         self.branches.insert(branch.to_owned(), state);
         let id = result?;
-        self.write_ref_to(&format!("refs/heads/{branch}"), object_id(&id))?;
+        self.write_ref_to(&format!("refs/heads/{branch}"), to_object_id(&id))?;
         Ok(id)
     }
 
@@ -342,13 +345,13 @@ impl FixtureRepo {
                 Edit::Gitlink(path, commit) => {
                     state
                         .files
-                        .upsert(path.as_bytes(), EntryKind::Commit, object_id(commit));
+                        .upsert(path.as_bytes(), EntryKind::Commit, to_object_id(commit));
                 }
             }
         }
         let tree = state.files.write(&self.repo)?;
         let mut parents: Vec<gix::ObjectId> = state.tip.into_iter().collect();
-        parents.extend(extra.iter().map(object_id));
+        parents.extend(extra.iter().map(to_object_id));
         let signature = stamp.signature();
         let commit = gix::objs::Commit {
             tree,
@@ -359,7 +362,7 @@ impl FixtureRepo {
             message: format!("{message}\n").into(),
             extra_headers: Vec::new(),
         };
-        Ok(commit_id(self.repo.write_object(&commit)?.detach()))
+        Ok(to_commit_id(self.repo.write_object(&commit)?.detach()))
     }
 
     /// Writes a commit on `branch`, with its files unchanged, whose author and committer lines
@@ -395,7 +398,7 @@ impl FixtureRepo {
         self.branches.insert(branch.to_owned(), state);
         let id = result?;
         self.write_ref_to(&format!("refs/heads/{branch}"), id)?;
-        Ok(commit_id(id))
+        Ok(to_commit_id(id))
     }
 
     /// Merges `from` into `into` with a merge commit: every file of `from` that `into` lacks or
@@ -424,7 +427,7 @@ impl FixtureRepo {
                 state.files.upsert(&path, entry.0, entry.1);
             }
         }
-        self.commit_with_parents(into, stamp, message, &[], &[commit_id(their_tip)])
+        self.commit_with_parents(into, stamp, message, &[], &[to_commit_id(their_tip)])
     }
 
     /// Starts `name` at the tip of `from`.
@@ -441,7 +444,7 @@ impl FixtureRepo {
 
     /// Moves `branch` to `to`, as `git reset --hard` would, even backwards.
     pub fn reset(&mut self, branch: &str, to: &CommitId) -> FixtureResult<()> {
-        let id = object_id(to);
+        let id = to_object_id(to);
         let tree = self.repo.find_commit(id)?.tree_id()?.detach();
         let files = Dir::load(&self.repo, tree)?;
         self.branches.insert(
@@ -475,7 +478,7 @@ impl FixtureRepo {
         stamp: Stamp,
         message: &str,
     ) -> FixtureResult<CommitId> {
-        let target = object_id(target);
+        let target = to_object_id(target);
         let kind = self.repo.find_header(target)?.kind();
         let tag = gix::objs::Tag {
             target,
@@ -487,12 +490,12 @@ impl FixtureRepo {
         };
         let id = self.repo.write_object(&tag)?.detach();
         self.write_ref_to(&format!("refs/tags/{name}"), id)?;
-        Ok(commit_id(id))
+        Ok(to_commit_id(id))
     }
 
     /// A lightweight tag: a reference straight to `target`.
     pub fn tag_lightweight(&mut self, name: &str, target: &CommitId) -> FixtureResult<()> {
-        self.write_ref_to(&format!("refs/tags/{name}"), object_id(target))
+        self.write_ref_to(&format!("refs/tags/{name}"), to_object_id(target))
     }
 
     /// Points `HEAD` at `branch`, which need not exist yet.
@@ -505,14 +508,14 @@ impl FixtureRepo {
 
     /// Detaches `HEAD` at `commit`.
     pub fn detach_head(&self, commit: &CommitId) -> FixtureResult<()> {
-        self.write_ref_to("HEAD", object_id(commit))
+        self.write_ref_to("HEAD", to_object_id(commit))
     }
 
     /// Writes `refs/remotes/origin/<branch>` at the branch's tip, and `refs/remotes/origin/HEAD`
     /// pointing at it, as a clone would.
     pub fn set_origin_head(&self, branch: &str) -> FixtureResult<()> {
         let remote = format!("refs/remotes/origin/{branch}");
-        self.write_ref_to(&remote, object_id(&self.tip(branch)))?;
+        self.write_ref_to(&remote, to_object_id(&self.tip(branch)))?;
         self.write_ref(
             "refs/remotes/origin/HEAD",
             gix::refs::Target::Symbolic(remote.as_str().try_into()?),
@@ -523,15 +526,15 @@ impl FixtureRepo {
     pub fn replace(&self, original: &CommitId, replacement: &CommitId) -> FixtureResult<()> {
         self.write_ref_to(
             &format!("refs/replace/{}", original.as_str()),
-            object_id(replacement),
+            to_object_id(replacement),
         )
     }
 
     /// The tree of `commit`.
     pub fn tree_of(&self, commit: &CommitId) -> FixtureResult<CommitId> {
-        Ok(commit_id(
+        Ok(to_commit_id(
             self.repo
-                .find_commit(object_id(commit))?
+                .find_commit(to_object_id(commit))?
                 .tree_id()?
                 .detach(),
         ))
@@ -545,7 +548,7 @@ impl FixtureRepo {
         for id in boundary {
             stack.extend(
                 self.repo
-                    .find_commit(object_id(id))?
+                    .find_commit(to_object_id(id))?
                     .parent_ids()
                     .map(gix::Id::detach),
             );
@@ -563,7 +566,7 @@ impl FixtureRepo {
         text.push('\n');
         std::fs::write(self.git_dir().join("shallow"), text)?;
         for id in behind {
-            self.remove_object(&commit_id(id))?;
+            self.remove_object(&to_commit_id(id))?;
         }
         Ok(())
     }

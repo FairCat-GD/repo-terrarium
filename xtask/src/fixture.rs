@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(report.duplicates, 0);
         let lines = committed.lines().count() - 1;
         assert_eq!(usize::try_from(report.inserted).unwrap(), lines);
-        let stored = store.observations(terrarium, None, None).unwrap();
+        let stored = store.observations(terrarium, None).unwrap();
         let kinds = |kind| stored.iter().filter(|o| o.record.kind == kind).count();
         assert!(kinds(ObservationKind::Coverage) > 40);
         assert!(kinds(ObservationKind::DeadCode) > 40);

@@ -18,7 +18,7 @@ use terrarium_store::DataDir;
 
 use crate::cli::RecordTestsArgs;
 use crate::copy;
-use crate::replay::now_secs;
+use crate::now_secs;
 
 /// This command's own failure: the tests never ran.
 const NOT_RUN: i32 = 125;
@@ -63,11 +63,10 @@ fn locate() -> Result<std::path::PathBuf, String> {
     let here = std::env::current_dir().map_err(|err| copy::record_tests_no_directory(&err))?;
     let git =
         GitRepo::discover(&here).map_err(|err| copy::record_tests_no_repository(&here, &err))?;
-    let seed = git
-        .default_branch()
-        .and_then(|branch| git.identity(&branch))
-        .map_err(|err| copy::record_tests_no_repository(&here, &err))?
-        .seed;
+    let (_, identity) = git
+        .default_identity()
+        .map_err(|err| copy::record_tests_no_repository(&here, &err))?;
+    let seed = identity.seed;
     let data = DataDir::resolve().map_err(|err| copy::record_tests_no_data_dir(&err))?;
     Ok(data.local_tests(&seed))
 }

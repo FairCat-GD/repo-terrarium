@@ -34,7 +34,10 @@ facts, and the security boundary has one home.
   reports progress and can be cancelled.
 - `read_since` brings a history up to date: `Unchanged`, `Appended` with the earliest new tick,
   or `Rewritten` with the reason a full read was needed.
-- `RepoState::state_hash` is the git part of the replay cache key.
+- `RepoState::state_hash` is written to the replay cache's `tips_hash` column, which nothing
+  reads: truth's own check of what a cached state consumed decides whether it resumes.
+- `default_identity` gives the default branch and the identity together, as connect, a
+  headless replay and `record-tests` each need them.
 - `head` says where HEAD is for an observation: its commit, its branch or none when detached,
   and whether that commit is the default tip. `GitRepo::discover` finds the repository around a
   directory, for `record-tests`.
@@ -85,7 +88,9 @@ The feature writes, so only xtask and dev-dependencies may turn it on.
   read-only and isolated. The git command line is never run.
 - A parse failure degrades to `Unknown`, never to zero, and an unknown report is never
   recorded: the last reading holds and turns stale.
-- `std::process::Command` appears only in `exec` (`cargo xtask verify`'s graph stage).
+- `std::process::Command` appears only in `exec` among the `src/` files of the code that ships
+  (`cargo xtask verify`'s graph stage); integration tests, benches and xtask may start
+  processes.
 
 ## Requirements
 

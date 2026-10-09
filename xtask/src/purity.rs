@@ -1,4 +1,4 @@
-//! The source scan behind truth's float wall (I-1).
+//! The source scan behind truth's float and IO walls (I-1).
 //!
 //! Clippy cannot see every float. `float_arithmetic` skips `const` and `static` bodies, and a
 //! float that is only compared or passed to a method (`2.0_f64.sqrt() > 1.0`) names no type
@@ -6,6 +6,12 @@
 //! float type's name, so this scan rejects both. It also rejects the ways a file could step
 //! around the scan or the crate-level lint walls: a local `allow` of a wall lint, `include!`,
 //! and `#[path]`.
+//!
+//! Truth does no IO either. The scan refuses every path through the standard library's modules
+//! that reach outside the process, whatever the path is named: a `use` group's items count, and
+//! an alias of `std` itself is refused, since the paths under it would pass unseen. A module
+//! alias (`use std::env as e`) is refused at its `use`. The printing macros write to the
+//! terminal without naming `std::io`, so they are refused by name.
 //!
 //! It works on tokens, not text, so comments, strings and char literals never trigger it.
 
@@ -27,6 +33,11 @@ const WALL_LINTS: &[&str] = &[
 ];
 
 const FLOAT_TYPES: &[&str] = &["f16", "f32", "f64", "f128"];
+
+/// The standard library's modules that do IO, read the environment or start threads.
+const IO_MODULES: &[&str] = &["fs", "env", "net", "process", "thread", "io"];
+
+const PRINT_MACROS: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
 
 /// One place a file breaks the wall, at a 1-based line.
 #[derive(Debug, PartialEq, Eq)]
@@ -79,13 +90,25 @@ fn scan_stream(tokens: TokenStream, findings: &mut Vec<Finding>) {
                         what: format!("`{name}` of the wall lint `{lint}`"),
                     });
                 }
-                if name == "include"
-                    && matches!(after, Some(TokenTree::Punct(p)) if p.as_char() == '!')
-                {
+                let bang = matches!(after, Some(TokenTree::Punct(p)) if p.as_char() == '!');
+                if name == "include" && bang {
                     findings.push(Finding {
                         line,
                         what: "`include!`, which hides code from the scan".to_owned(),
                     });
+                }
+                if PRINT_MACROS.contains(&name) && bang {
+                    findings.push(Finding {
+                        line,
+                        what: format!("`{name}!`, which writes to the terminal"),
+                    });
+                }
+                if name == "std" {
+                    findings.extend(
+                        through_std(&tokens[index + 1..])
+                            .into_iter()
+                            .map(|what| Finding { line, what }),
+                    );
                 }
             }
             TokenTree::Punct(punct) if punct.as_char() == '#' => {
@@ -136,6 +159,60 @@ fn is_tuple_index(
     let after_lone_dot = matches!(previous, Some(TokenTree::Punct(p)) if p.as_char() == '.' && p.spacing() == Spacing::Alone)
         && !matches!(before_that, Some(TokenTree::Punct(p)) if p.as_char() == '.');
     shaped && after_lone_dot
+}
+
+/// What a path through `std` reaches, from the tokens after `std`: an IO module after `::`,
+/// each IO module among a `{…}` group's items, or an alias of `std` itself.
+fn through_std(rest: &[TokenTree]) -> Vec<String> {
+    let path = |module: &str| format!("a path through `std::{module}`, which does IO");
+    match rest {
+        [TokenTree::Ident(word), ..] if word == "as" => vec![alias_of_std()],
+        [TokenTree::Punct(a), TokenTree::Punct(b), next, ..]
+            if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':' =>
+        {
+            match next {
+                TokenTree::Ident(module) => io_module(module).map(path).into_iter().collect(),
+                TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+                    group_items(group.stream())
+                        .iter()
+                        .filter_map(|item| match item.as_slice() {
+                            [TokenTree::Ident(word), TokenTree::Ident(alias), ..]
+                                if word == "self" && alias == "as" =>
+                            {
+                                Some(alias_of_std())
+                            }
+                            [TokenTree::Ident(module), ..] => io_module(module).map(path),
+                            _ => None,
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn alias_of_std() -> String {
+    "an alias of `std`, which hides the paths under it from the scan".to_owned()
+}
+
+fn io_module(ident: &proc_macro2::Ident) -> Option<&'static str> {
+    let text = ident.to_string();
+    let name = text.strip_prefix("r#").unwrap_or(&text);
+    IO_MODULES.iter().copied().find(|module| *module == name)
+}
+
+/// A `use` group's items, split at its top-level commas.
+fn group_items(tokens: TokenStream) -> Vec<Vec<TokenTree>> {
+    let mut items = vec![Vec::new()];
+    for token in tokens {
+        match &token {
+            TokenTree::Punct(p) if p.as_char() == ',' => items.push(Vec::new()),
+            _ => items.last_mut().expect("never empty").push(token),
+        }
+    }
+    items
 }
 
 fn names_a_wall_lint(tokens: TokenStream) -> Option<String> {
@@ -237,6 +314,43 @@ mod tests {
             found("#[allow(dead_code)]\nfn f() { include_str!(\"x\"); }"),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn io_is_found_however_it_is_named() {
+        assert_eq!(
+            found("fn f() {\n    let _ = std::fs::read_dir(\".\");\n}"),
+            ["2: a path through `std::fs`, which does IO"]
+        );
+        assert_eq!(
+            found("use std::env as e;\nfn f() { let _ = e::current_dir(); }"),
+            ["1: a path through `std::env`, which does IO"]
+        );
+        assert_eq!(
+            found("use std::{collections::BTreeMap, io::{self, Write}, r#thread};"),
+            [
+                "1: a path through `std::io`, which does IO",
+                "1: a path through `std::thread`, which does IO"
+            ]
+        );
+        assert_eq!(
+            found("extern crate std as s;\nuse ::std::net::TcpStream;\nuse std::{self as t};"),
+            [
+                "1: an alias of `std`, which hides the paths under it from the scan",
+                "2: a path through `std::net`, which does IO",
+                "3: an alias of `std`, which hides the paths under it from the scan"
+            ]
+        );
+        assert_eq!(
+            found("fn f() { println!(\"x\"); dbg!(1); }"),
+            [
+                "1: `println!`, which writes to the terminal",
+                "1: `dbg!`, which writes to the terminal"
+            ]
+        );
+        let clean = "use std::collections::BTreeMap;\nuse std::fmt::Write as _;\n\
+                     fn f(fs: u8, io: u8, print: u8) -> u8 { fs + io + print }";
+        assert_eq!(found(clean), Vec::<String>::new());
     }
 
     #[test]

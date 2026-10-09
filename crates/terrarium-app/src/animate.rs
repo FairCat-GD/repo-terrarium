@@ -9,7 +9,6 @@ use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite_into;
 use terrarium_compose::frame::{NativeImage, Viewport};
 use terrarium_compose::salt::InstallSalt;
-use terrarium_compose::scale::Damage;
 use terrarium_compose::schedule::Pacer;
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
@@ -18,7 +17,7 @@ use terrarium_truth::scene::SceneInput;
 
 pub struct Living {
     art: &'static Art<'static>,
-    table: ArtTable,
+    table: &'static ArtTable,
     composer: Composer,
     scenery: Scenery,
     pacer: Pacer,
@@ -45,10 +44,10 @@ impl Living {
         now: Millis,
     ) -> Living {
         let art = Art::embedded();
-        let table = ArtTable::new(&art.catalog).expect("the embedded art depicts every variant");
-        let mut composer = Composer::new(&table, salt);
+        let table = ArtTable::embedded();
+        let mut composer = Composer::new(table, salt);
         composer.update(scene, overlay, now);
-        let scenery = composer.scenery(art, &table);
+        let scenery = composer.scenery(art, table);
         let blank = NativeImage::filled([0, 0, 0, u8::MAX]);
         let mut living = Living {
             art,
@@ -72,7 +71,7 @@ impl Living {
         self.composer.update(scene, overlay, now);
         self.due = self
             .pacer
-            .wake(self.composer.next_change(self.art, &self.table, now));
+            .wake(self.composer.next_change(self.art, self.table, now));
     }
 
     /// When the strip should next compose: at the composer's next change, but never sooner
@@ -98,7 +97,7 @@ impl Living {
             return false;
         }
         self.composer.set_viewport(viewport);
-        self.scenery = self.composer.scenery(self.art, &self.table);
+        self.scenery = self.composer.scenery(self.art, self.table);
         self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
         self.compose(now);
         self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
@@ -116,15 +115,15 @@ impl Living {
         let mix = self.composer.palette_mix(now);
         let frame = self
             .composer
-            .frame(self.art, &self.table, &self.scenery, mix, now);
+            .frame(self.art, self.table, &self.scenery, mix, now);
         composite_into(self.art, &frame, &mut self.spare);
         self.at = now;
         self.compositions += 1;
         self.pacer.composed(now);
         self.due = self
             .pacer
-            .wake(self.composer.next_change(self.art, &self.table, now));
-        let changed = Damage::between(&self.image, &self.spare).is_some();
+            .wake(self.composer.next_change(self.art, self.table, now));
+        let changed = self.image != self.spare;
         if changed {
             std::mem::swap(&mut self.image, &mut self.spare);
         }
@@ -186,7 +185,7 @@ mod tests {
             let due = living.due().expect("the strip lives");
             let change = living
                 .composer
-                .next_change(living.art, &living.table, living.at)
+                .next_change(living.art, living.table, living.at)
                 .expect("the strip lives");
             if change.0 > living.at.0 + 1 {
                 let mid = Millis(living.at.0 + (change.0 - living.at.0) / 2);
