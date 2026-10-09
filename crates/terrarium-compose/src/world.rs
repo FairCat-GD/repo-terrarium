@@ -1,12 +1,12 @@
-//! The world around the plants: where each of its pieces stands on one install, the fixed
-//! scenery, and the padding beyond the image.
+//! The world around the plants: where each of its pieces stands on one install, and the fixed
+//! scenery.
 //!
 //! Every position here comes from the install salt and nothing else, so it never changes
 //! while the app runs. Each kind of piece has a fixed number of places, spread one per stratum
 //! across the strip, and piece `i` always stands in place `i`: a count that changes never moves
 //! another piece. Which piece stands where is decided elsewhere, without the salt (I-2).
 
-use crate::catalog::{Art, Catalog, SpriteId};
+use crate::catalog::{Art, Catalog, Flags, SpriteId};
 use crate::drift::{self, SOIL_PERIOD};
 use crate::frame::{Area, Draw, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, SOIL_Y, Viewport};
 use crate::order::{KeyedDraw, Subject};
@@ -456,7 +456,7 @@ pub(crate) fn fixed(art: &Art, id: SpriteId, viewport: Viewport) -> Draw {
 }
 
 /// How many of a sprite's columns are wholly transparent on its left, and on its right.
-fn blank_columns(art: &Art, id: SpriteId) -> (i32, i32) {
+pub(crate) fn blank_columns(art: &Art, id: SpriteId) -> (i32, i32) {
     let w = usize::from(art.catalog.sprite(id).rect.w);
     let blank = |column: usize| art.rows(id).all(|row| row[column] == 0);
     let left = (0..w).take_while(|&c| blank(c)).count();
@@ -465,6 +465,21 @@ fn blank_columns(art: &Art, id: SpriteId) -> (i32, i32) {
         i32::try_from(left).unwrap_or(0),
         i32::try_from(right).unwrap_or(0),
     )
+}
+
+/// A sprite across a viewport `width` wide from its left edge: repeated edge to edge where the
+/// art tiles it (`tileX`), and once otherwise.
+pub(crate) fn tiled(catalog: &Catalog, id: SpriteId, width: i32) -> Vec<Draw> {
+    let sprite = catalog.sprite(id);
+    let step = i32::from(sprite.rect.w).max(1);
+    let copies = if sprite.flags.contains(Flags::TILE_X) {
+        (width + step - 1) / step
+    } else {
+        1
+    };
+    (0..copies)
+        .map(|i| Draw::new(catalog, id, i * step, 0))
+        .collect()
 }
 
 /// A sprite the delivered art is known to hold, by its ID.

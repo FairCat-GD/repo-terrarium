@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 
 use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{
-    FossilForm, GrowthStage, LifeStage, Light, MonumentAge, PlantSpecies, PlantState, PlantView,
-    ResidentSpecies, ResidentView, SceneInput, Weather,
+    EventKind, FossilForm, GrowthStage, LifeStage, Light, MonumentAge, PlantSpecies, PlantState,
+    PlantView, ResidentSpecies, ResidentView, SceneInput, Weather,
 };
 
 use crate::anim;
@@ -56,8 +56,10 @@ use crate::tween::durations::{
     RESTYLE_MS, SKY_MS, VANISH_MS,
 };
 use crate::tween::{Millis, Tween};
-use crate::variants::{ArtTable, GlassFilm, PlantArt};
+use crate::variants::{ArtTable, GlassFilm, PlantArt, SkyEventArt};
 use crate::world::{self, Kind, LABEL_X, LABEL_Y, Scenery, WorldLayout};
+
+mod event;
 
 const SHOWN: u8 = u8::MAX;
 const HALF_RESTYLE: u32 = RESTYLE_MS / 2;
@@ -160,6 +162,8 @@ pub enum Piece {
         species: ResidentSpecies,
         stage: LifeStage,
     },
+    /// An event's choreography while it plays; it is never a look.
+    Event(EventKind),
 }
 
 /// How a part changes from one look to the next.
@@ -243,7 +247,7 @@ impl Piece {
             Piece::Star => pick(Kind::Star, &world.stars),
             Piece::Light(light) => table.light(light),
             Piece::Film(film, level) => table.glass(film, level),
-            Piece::Resident { .. } => None,
+            Piece::Resident { .. } | Piece::Event(_) => None,
         }
     }
 }
@@ -258,7 +262,8 @@ fn item(subject: Subject) -> u64 {
         | Subject::Star(i)
         | Subject::Dressing(i)
         | Subject::Litter(i)
-        | Subject::Fungus(i) => u64::from(i),
+        | Subject::Fungus(i)
+        | Subject::Leaf(i) => u64::from(i),
         Subject::Monument { id, .. }
         | Subject::Fossil { id, .. }
         | Subject::Resident { id, .. } => u64::from(id),
@@ -267,6 +272,9 @@ fn item(subject: Subject) -> u64 {
         | Subject::Weather
         | Subject::Sun
         | Subject::Moon
+        | Subject::Front
+        | Subject::Bolt
+        | Subject::Rain
         | Subject::Light
         | Subject::Label
         | Subject::Soil
@@ -345,6 +353,8 @@ fn one(piece: Piece) -> Pieces {
 struct Look {
     piece: Piece,
     opacity: Tween,
+    /// The sky as it stood when a wipe began, which the wipe covers.
+    behind: bool,
 }
 
 /// A subject's looks, per part, oldest first. Only the newest look of a part ever rises.
@@ -363,20 +373,20 @@ impl Entry {
         self.parts.iter().flatten()
     }
 
-    /// Moves each part toward its piece, rising over `rise`; a part with none falls over
-    /// `change` once the others have risen.
-    fn show(&mut self, pieces: Pieces, now: Millis, rise: u32, change: u32) {
+    /// Moves each part toward its piece from `start`, rising over `rise`; a part with none
+    /// falls over `change` once the others have risen.
+    fn show(&mut self, pieces: Pieces, start: Millis, rise: u32, change: u32) {
         for (looks, piece) in self.parts.iter_mut().zip(pieces) {
             match piece {
-                Some(piece) => raise(looks, piece, now, rise, change),
-                None => lower(looks, now, now.plus(rise), change),
+                Some(piece) => raise(looks, piece, start, rise, change),
+                None => lower(looks, start, start.plus(rise), change),
             }
         }
     }
 
-    fn hide(&mut self, now: Millis, ms: u32) {
+    fn hide(&mut self, start: Millis, ms: u32) {
         for looks in &mut self.parts {
-            lower(looks, now, now, ms);
+            lower(looks, start, start, ms);
         }
     }
 
@@ -388,39 +398,42 @@ impl Entry {
     }
 }
 
-/// Brings `piece` to the top of a part over `rise`. The older looks then go by the piece's
-/// rule: under [`Restyle::Cover`] they hold until it has risen and fall over `change` after,
-/// so nothing beneath ever shows through; under [`Restyle::Crossfade`] they fall while it
-/// rises.
-fn raise(looks: &mut Vec<Look>, piece: Piece, now: Millis, rise: u32, change: u32) {
+/// Brings `piece` to the top of a part over `rise` from `start`. The older looks then go by
+/// the piece's rule: under [`Restyle::Cover`] they hold until it has risen and fall over
+/// `change` after, so nothing beneath ever shows through; under [`Restyle::Crossfade`] they
+/// fall while it rises. A look already gone by `start` is left to go: a change that waits for
+/// a wipe to pass never brings back the sky the wipe covered.
+fn raise(looks: &mut Vec<Look>, piece: Piece, start: Millis, rise: u32, change: u32) {
+    let gone = |look: &Look| look.opacity.target() == 0 && look.opacity.end() <= start;
     match looks.last_mut() {
-        Some(top) if top.piece == piece => {
+        Some(top) if top.piece == piece && !gone(top) => {
             if top.opacity.target() == SHOWN {
                 return;
             }
-            top.opacity = Tween::new(top.opacity.value(now), SHOWN, now, rise);
+            top.opacity = Tween::new(top.opacity.value(start), SHOWN, start, rise);
         }
         _ => looks.push(Look {
             piece,
-            opacity: Tween::new(0, SHOWN, now, rise),
+            opacity: Tween::new(0, SHOWN, start, rise),
+            behind: false,
         }),
     }
     let older = looks.len() - 1;
-    for look in &mut looks[..older] {
-        let from = look.opacity.value(now);
+    for look in looks[..older].iter_mut().filter(|look| !gone(look)) {
+        let from = look.opacity.value(start);
         look.opacity = match piece.restyle() {
-            Restyle::Cover => Tween::new(from, 0, now.plus(rise), change),
-            Restyle::Crossfade => Tween::new(from, 0, now, rise),
+            Restyle::Cover => Tween::new(from, 0, start.plus(rise), change),
+            Restyle::Crossfade => Tween::new(from, 0, start, rise),
         };
     }
 }
 
-/// Lets a part's shown look fall from where it stands, from `start` over `ms`. Looks already
-/// falling keep their course.
-fn lower(looks: &mut [Look], now: Millis, start: Millis, ms: u32) {
+/// Lets a part's shown look fall from where it stands at `at`, from `start` over `ms`. Looks
+/// already falling keep their course.
+fn lower(looks: &mut [Look], at: Millis, start: Millis, ms: u32) {
     for look in looks {
         if look.opacity.target() == SHOWN {
-            look.opacity = Tween::new(look.opacity.value(now), 0, start, ms);
+            look.opacity = Tween::new(look.opacity.value(at), 0, start, ms);
         }
     }
 }
@@ -524,6 +537,12 @@ pub struct Composer {
     residents: BTreeMap<(u32, u8), Shown>,
     /// When the changes of rest an update brought at the next turn are over.
     residents_settle: Millis,
+    /// What the sky's events play.
+    sky: SkyEventArt,
+    /// The last event instance begun or passed over: each plays once.
+    played: Option<event::Instance>,
+    /// The event's choreography, playing or played.
+    show: Option<event::Show>,
 }
 
 /// A resident as drawn: how visible it is, what it was when last in the scene, and, through
@@ -568,6 +587,9 @@ impl Composer {
             resident_spots: BTreeMap::new(),
             residents: BTreeMap::new(),
             residents_settle: Millis(0),
+            sky: table.sky_events().clone(),
+            played: None,
+            show: None,
         }
     }
 
@@ -614,12 +636,21 @@ impl Composer {
             world::FOSSILS,
         );
         let wanted = self.wanted(input, overlay);
+        // A change of the sky waits for a wipe crossing to pass; one the event begins is the
+        // change itself.
+        let sky_from = self.sky_from(now);
+        let wipe = self.cue(input, now);
+        if let Some(wipe) = wipe {
+            self.wipe_sky(&wanted, now, wipe.end());
+        }
+        let start = |subject: Subject| if sky(subject) { sky_from } else { now };
+        let moved = |subject: Subject| wipe.is_none() || !sky(subject);
         for (subject, entry) in &mut self.entries {
-            if !wanted.contains_key(subject) {
-                entry.hide(now, timing(*subject, self.light_ms).leave);
+            if !wanted.contains_key(subject) && moved(*subject) {
+                entry.hide(start(*subject), timing(*subject, self.light_ms).leave);
             }
         }
-        for (subject, pieces) in wanted {
+        for (subject, pieces) in wanted.into_iter().filter(|(s, _)| moved(*s)) {
             let timing = timing(subject, self.light_ms);
             let entry = self.entries.entry(subject).or_default();
             let rise = if entry.shown() {
@@ -627,7 +658,7 @@ impl Composer {
             } else {
                 timing.arrive
             };
-            entry.show(pieces, now, rise, timing.change);
+            entry.show(pieces, start(subject), rise, timing.change);
         }
         self.update_label(&overlay.label, now);
         self.update_clock(overlay, now);
@@ -795,7 +826,7 @@ impl Composer {
         Snapshot {
             state: input.presentation.state,
             weather: input.weather,
-            wind: input.wind,
+            wind: event::wind(input),
             dim: overlay.dim,
             clock: Clock {
                 local: overlay.clock,
@@ -1097,22 +1128,48 @@ impl Composer {
     pub fn next_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
         let mut next = Earliest::default();
         for (&subject, entry) in &self.entries {
-            for look in entry.looks() {
-                next.take(look.opacity.next_step(now));
+            for (part, looks) in (0_u8..).zip(&entry.parts) {
+                for look in looks {
+                    let sprite = look.piece.sprite(table, self.salt, subject, part);
+                    let own = sprite.map(|sprite| art.catalog.sprite(sprite));
+                    // Art drawn at its own opacity, the same by day and night, shows a step
+                    // of its look's only where the scaled opacity moves.
+                    let plain = own.filter(|own| {
+                        own.night_opacity.is_none()
+                            && !own.flags.contains(Flags::DAY_ONLY)
+                            && !own.flags.contains(Flags::NIGHT_ONLY)
+                    });
+                    next.take(match plain {
+                        Some(own) => look
+                            .opacity
+                            .next_step_by(now, |value| scale(own.opacity, value)),
+                        None => look.opacity.next_step(now),
+                    });
+                }
             }
-            let shown: Vec<SpriteId> = entry
-                .looks()
-                .filter(|look| look.opacity.value(now) > 0)
-                .filter_map(|look| look.piece.sprite(table, self.salt, subject, 0))
-                .collect();
             if let Subject::Cloud(i) = subject {
-                let widest = shown
-                    .iter()
-                    .map(|&s| i32::from(art.catalog.sprite(s).rect.w))
-                    .max();
+                // Each look's width, and whether it is behind a wipe.
+                let shown: Vec<(i32, bool)> = entry
+                    .looks()
+                    .filter(|look| look.opacity.value(now) > 0)
+                    .filter_map(|look| {
+                        let sprite = look.piece.sprite(table, self.salt, subject, 0)?;
+                        Some((i32::from(art.catalog.sprite(sprite).rect.w), look.behind))
+                    })
+                    .collect();
+                let widest = shown.iter().map(|&(width, _)| width).max();
                 let drift = self.world.cloud(i);
                 let viewport = self.viewport_width();
-                next.take(widest.map(|width| drift.next_seen_step(now, width, viewport)));
+                let step = widest.map(|width| drift.next_seen_step(now, width, viewport));
+                // While the storm front crosses, a step its cut hides before and after
+                // changes nothing; the front's own steps look again.
+                let hidden = |at: Millis| {
+                    let x = drift.x(at, viewport);
+                    shown
+                        .iter()
+                        .all(|&(width, behind)| self.cut_away(art, at, behind, (x, x + width)))
+                };
+                next.take(step.filter(|&step| !(hidden(now) && hidden(step))));
             }
         }
         next.take(Some(drift::next_step(now, SOIL_MS_PER_PX)));
@@ -1139,6 +1196,7 @@ impl Composer {
             next.take(shown.opacity.next_step(now));
         }
         next.take(self.motion_change(art, table, now));
+        next.take(self.show_next(art, table, now));
         next.0
     }
 
@@ -1205,6 +1263,7 @@ impl Composer {
             .chain(self.residents.values().map(|shown| shown.opacity))
             .map(Tween::end)
             .chain([self.residents_settle])
+            .chain(self.show_end())
             .max()
             .unwrap_or_default()
     }
@@ -1243,6 +1302,7 @@ impl Composer {
                 }
             }
         }
+        depicted.extend(self.show_depicted(now));
         depicted
     }
 
@@ -1256,6 +1316,9 @@ impl Composer {
         now: Millis,
     ) -> Vec<KeyedDraw> {
         let mut keyed = Vec::new();
+        // While a wipe crosses, which of the sky's draws are behind it.
+        let crossing = self.crossing(now).is_some();
+        let mut sky_draws = Vec::new();
         for (&subject, entry) in &self.entries {
             for (part, looks) in (0_u8..).zip(&entry.parts) {
                 for (index, look) in (0_u16..).zip(looks) {
@@ -1265,7 +1328,11 @@ impl Composer {
                     }
                     let place = Place::new(subject, part, index);
                     let lit = Lit { value, palette_mix };
+                    let from = keyed.len();
                     self.push(art, table, place, look.piece, lit, now, &mut keyed);
+                    if crossing && sky(subject) {
+                        sky_draws.extend((from..keyed.len()).map(|i| (i, look.behind)));
+                    }
                 }
             }
         }
@@ -1285,6 +1352,7 @@ impl Composer {
                 clip.x += inset;
             }
         }
+        self.push_show(art, table, palette_mix, now, &mut keyed, &sky_draws);
         keyed.sort_by_key(|keyed| keyed.key);
         keyed
     }
@@ -1466,13 +1534,8 @@ impl Composer {
                 push(place, Some((x, PLANT_GROUND_Y)), draw);
             }
             Subject::Fossil { spot, .. } => {
-                let draw = Draw::new(
-                    catalog,
-                    sprite,
-                    self.world.fossil(spot),
-                    FRAME_HEIGHT - i32::from(rect.h),
-                );
-                push(place, None, draw);
+                let (x, y) = (self.world.fossil(spot), FRAME_HEIGHT - i32::from(rect.h));
+                push(place, None, Draw::new(catalog, sprite, x, y));
             }
             Subject::Plant { cell, .. } | Subject::Fill { cell } | Subject::Weed { cell } => {
                 let x = self.layout.slot(cell).x;
@@ -1496,7 +1559,11 @@ impl Composer {
             | Subject::Label
             | Subject::Soil
             | Subject::Sweep
-            | Subject::Resident { .. } => {}
+            | Subject::Resident { .. }
+            | Subject::Front
+            | Subject::Bolt
+            | Subject::Rain
+            | Subject::Leaf(_) => {}
         }
     }
 
@@ -1795,19 +1862,33 @@ fn timing(subject: Subject, light_ms: u32) -> Timing {
         | Subject::Litter(_)
         | Subject::Fungus(_)
         // Never entries: the label keeps its own looks, timed by `update_label`, the scenery
-        // never changes, the soil and the sweep move with the clock alone, and residents keep
-        // their own looks. They are here only to keep the match whole.
+        // never changes, the soil and the sweep move with the clock alone, residents keep
+        // their own looks, and an event's pieces are its choreography's. They are here only to
+        // keep the match whole.
         | Subject::Label
         | Subject::Scenery(_)
         | Subject::Soil
         | Subject::Sweep
-        | Subject::Resident { .. } => (FILL_MS, FILL_MS, HALF_RESTYLE),
+        | Subject::Resident { .. }
+        | Subject::Front
+        | Subject::Bolt
+        | Subject::Rain
+        | Subject::Leaf(_) => (FILL_MS, FILL_MS, HALF_RESTYLE),
     };
     Timing {
         arrive,
         leave,
         change,
     }
+}
+
+/// The sky's own subjects, which a wipe carries across: the weather's backdrop, the clouds,
+/// the sun, the moon and the stars.
+const fn sky(subject: Subject) -> bool {
+    matches!(
+        subject,
+        Subject::Weather | Subject::Cloud(_) | Subject::Sun | Subject::Moon | Subject::Star(_)
+    )
 }
 
 /// A carved mark on a stone of `age` standing at `x`: at its part's point on the stone's face,
@@ -1998,6 +2079,7 @@ mod tests {
         let mut looks = vec![Look {
             piece: Piece::Tuft,
             opacity: Tween::at(SHOWN),
+            behind: false,
         }];
         raise(
             &mut looks,
@@ -2038,12 +2120,54 @@ mod tests {
         );
     }
 
+    /// A change that waits for a wipe to pass reads its looks as they will stand then: one
+    /// gone by then stays gone, whatever it shows now.
+    #[test]
+    fn a_deferred_raise_keeps_a_look_already_falling_by_then() {
+        let cloud = Piece::Cloud(CloudSize::Small);
+        let covered = Tween::new(SHOWN, 0, Millis(9999), 1);
+        let mut looks = vec![Look {
+            piece: cloud,
+            opacity: covered,
+            behind: true,
+        }];
+        raise(&mut looks, cloud, Millis(10_000), SKY_MS, HALF_RESTYLE);
+        // Not raised again from where it stands now: a new look rises from nothing then.
+        assert_eq!(looks.len(), 2);
+        assert_eq!(looks[0].opacity, covered);
+        assert_eq!(looks[1].opacity.value(Millis(10_000)), 0);
+        assert_eq!(looks[1].opacity.value(Millis(5000)), 0);
+        // An older look gone by then keeps its course too.
+        let mut looks = vec![
+            Look {
+                piece: Piece::Weather(Weather::Clear),
+                opacity: covered,
+                behind: true,
+            },
+            Look {
+                piece: Piece::Weather(Weather::Storm),
+                opacity: Tween::at(SHOWN),
+                behind: false,
+            },
+        ];
+        raise(
+            &mut looks,
+            Piece::Weather(Weather::Haze),
+            Millis(10_000),
+            HALF_RESTYLE,
+            HALF_RESTYLE,
+        );
+        assert_eq!(looks[0].opacity, covered);
+        assert_eq!(looks[1].opacity.value(Millis(9000)), SHOWN);
+    }
+
     #[test]
     fn a_film_crossfades_so_two_levels_never_stack() {
         let film = |level| Piece::Film(GlassFilm::Condensation, level);
         let mut looks = vec![Look {
             piece: film(1),
             opacity: Tween::at(SHOWN),
+            behind: false,
         }];
         raise(&mut looks, film(2), Millis(100), HALF_RESTYLE, HALF_RESTYLE);
         let mid = Millis(100 + u64::from(HALF_RESTYLE) / 2);

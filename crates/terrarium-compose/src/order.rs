@@ -25,6 +25,8 @@ pub enum Subject {
     Sun,
     Moon,
     Star(u8),
+    /// The storm front's curtain while it crosses the sky.
+    Front,
     /// A monument at its spot. Like a plant's cell, the spot is part of its identity.
     Monument {
         id: u32,
@@ -61,6 +63,12 @@ pub enum Subject {
     Litter(u8),
     /// A fungus, by its place along the ground.
     Fungus(u8),
+    /// Lightning's bolt.
+    Bolt,
+    /// Rain after drought's streaks, across the viewport.
+    Rain,
+    /// A leaf a windstorm carries, by its place in the flurry.
+    Leaf(u8),
     /// The dusk or sunburst light over the scene.
     Light,
     /// The label's text; the plate is scenery.
@@ -72,7 +80,8 @@ pub enum Subject {
 impl Subject {
     /// Whether it stands in the 640-wide scene, which a wider viewport shows in its middle.
     /// The rest belong to the viewport and reach its edges: the backdrop, the clouds, the
-    /// soil, the glass and its films and sweep, the light and the label.
+    /// soil, the glass and its films and sweep, the light, the label, and an event's pieces,
+    /// which the event places across the viewport itself.
     pub const fn in_scene(self) -> bool {
         match self {
             Subject::Sun
@@ -92,6 +101,10 @@ impl Subject {
             | Subject::Soil
             | Subject::Weather
             | Subject::Cloud(_)
+            | Subject::Front
+            | Subject::Bolt
+            | Subject::Rain
+            | Subject::Leaf(_)
             | Subject::Light
             | Subject::Label
             | Subject::Sweep => false,

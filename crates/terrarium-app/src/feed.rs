@@ -72,8 +72,19 @@ pub struct Overrides {
     pub time_of_day: Option<u32>,
     /// Dimmed or not whatever the idle time, instead of after it.
     pub dim: Option<bool>,
-    /// The foreground event, which nothing draws yet.
-    pub event: Option<terrarium_truth::scene::EventKind>,
+    /// The event the debug window's last trigger put on, in place of the feed's own.
+    pub event: Option<Trigger>,
+    /// How many triggers have been pressed, so every press is an instance of its own, even
+    /// after the event was taken off.
+    pub presses: u32,
+}
+
+/// A press of an event's trigger: the kind, and which press it was. Each press is a new
+/// instance, which the strip plays once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trigger {
+    pub kind: terrarium_truth::scene::EventKind,
+    pub press: u32,
 }
 
 pub struct Feeder {
@@ -240,8 +251,9 @@ impl Feeder {
             #[cfg(feature = "dev")]
             Feed::Synthetic(knobs) => synthetic::scene(knobs),
         };
-        if let Some(kind) = self.overrides.event {
-            synthetic::set_event(&mut scene, kind);
+        if let Some(trigger) = self.overrides.event {
+            let instance = terrarium_truth::Tick::new(trigger.press);
+            synthetic::set_event(&mut scene, trigger.kind, instance);
         }
         scene
     }

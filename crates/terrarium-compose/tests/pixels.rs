@@ -219,6 +219,118 @@ fn a_storm_sky_by_day_and_night() {
     }
 }
 
+/// Frames stacked top to bottom into one picture, a key-frame sheet.
+fn snapshot_sheet(name: &str, frames: &[Frame]) {
+    let images: Vec<_> = frames.iter().map(|frame| composite(art(), frame)).collect();
+    let width = images[0].width();
+    let pixels: Vec<Rgba> = images
+        .iter()
+        .flat_map(|image| image.pixels().iter().copied())
+        .collect();
+    let height = NATIVE_HEIGHT * u32::try_from(images.len()).unwrap();
+    snapshot(name, width, height, &pixels);
+}
+
+/// Each event in the sky, played over the thriving terrarium as truth would bring it, in key
+/// frames from its update: the storm front crossing a quarter, a half and three quarters of the
+/// way and across; the clearing likewise; lightning's two frames and after; dusk and sunburst
+/// half and wholly in; rain fading in, falling and fading out; a windstorm's leaves on their
+/// way. By day and by night, and the storm from the right by day.
+#[test]
+fn sky_events_in_key_frames_by_day_and_night() {
+    use terrarium_truth::Tick;
+    use terrarium_truth::scene::{EventKind, Side};
+
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    // A storm front crosses 640 columns and its curtain's 24, a column a frame.
+    let across = (640 + 24) * 67;
+    let cases: [(EventKind, Side, Weather, Vec<u64>); 8] = [
+        (
+            EventKind::Storm,
+            Side::Left,
+            Weather::Clear,
+            vec![0, across / 4, across / 2, 3 * across / 4, across],
+        ),
+        (
+            EventKind::Storm,
+            Side::Right,
+            Weather::Clear,
+            vec![across / 4, across / 2, 3 * across / 4],
+        ),
+        (
+            EventKind::Clearing,
+            Side::Left,
+            Weather::Storm,
+            vec![0, across / 4, across / 2, 3 * across / 4, across],
+        ),
+        (
+            EventKind::Lightning,
+            Side::Left,
+            Weather::Storm,
+            vec![0, 1, 167, 333],
+        ),
+        (
+            EventKind::Dusk,
+            Side::Left,
+            Weather::Clear,
+            vec![0, 600, 1200],
+        ),
+        (
+            EventKind::Sunburst,
+            Side::Left,
+            Weather::Clear,
+            vec![0, 600, 1200],
+        ),
+        (
+            EventKind::RainAfterDrought,
+            Side::Left,
+            Weather::Clear,
+            vec![1500, 3000, 16_000, 28_500, 30_000],
+        ),
+        (
+            EventKind::Windstorm,
+            Side::Left,
+            Weather::Clear,
+            vec![2000, 5000, 9000, 14_000, 20_000],
+        ),
+    ];
+    for (kind, side, before, moments) in cases {
+        let nights: &[bool] = if side == Side::Right {
+            &[false]
+        } else {
+            &[false, true]
+        };
+        for &night in nights {
+            let clock = if night {
+                LocalClock::midnight(preset::DATE)
+            } else {
+                LocalClock::noon(preset::DATE)
+            };
+            let overlay = OverlayInput::new(vec!["repo-terrarium".into()], clock);
+            let mut scene = preset::scene("thriving").unwrap();
+            scene.weather = before;
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.update(&scene, &overlay, Millis(0));
+            let begin = composer.settled_at();
+            synthetic::set_event(&mut scene, kind, Tick::new(1));
+            if let Some(event) = &mut scene.event {
+                event.side = side;
+            }
+            composer.update(&scene, &overlay, begin);
+            let scenery = composer.scenery(art(), &table);
+            let mix = if night { 255 } else { 0 };
+            let frames: Vec<Frame> = moments
+                .iter()
+                .map(|&ms| composer.frame(art(), &table, &scenery, mix, Millis(begin.0 + ms)))
+                .collect();
+            let name = format!("{kind:?}").to_ascii_lowercase();
+            let side = if side == Side::Right { "-right" } else { "" };
+            let when = if night { "night" } else { "day" };
+            snapshot_sheet(&format!("event-{name}{side}-{when}"), &frames);
+        }
+    }
+}
+
 /// The thriving terrarium, living, from its first update at `clock`, in `wind`, perhaps dimmed.
 fn living(clock: LocalClock, wind: Wind, dim: bool) -> (Composer, ArtTable) {
     let table = ArtTable::new(catalog()).expect("the embedded art is complete");

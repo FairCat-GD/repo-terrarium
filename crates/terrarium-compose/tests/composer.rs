@@ -8,8 +8,10 @@
 //! composer at times chosen to land on tween boundaries, either side of them, and past a step
 //! of the label's cycle. B and C are often edits of the scene before, so ids carry over and
 //! change state, stage, bloom or species, and the world's weather, cover, glass, monuments and
-//! fossils change by small steps. The rules the checks hold the composer to are written out
-//! here, never taken from the crate, so a broken rule cannot agree with itself.
+//! fossils change by small steps. Scenes carry events now and then, new instances and ones the
+//! scene before carried, with the sky truth would bring them or without it. The rules the
+//! checks hold the composer to are written out here, never taken from the crate, so a broken
+//! rule cannot agree with itself.
 
 #![forbid(unsafe_code)]
 
@@ -27,7 +29,6 @@ use terrarium_compose::frame::{
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::palette::Slot;
 use terrarium_compose::place::{CEILING, FLOOR};
-use terrarium_compose::preset;
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::sky::{LocalDate, MoonPhase, moon_phase};
 use terrarium_compose::slots::{Band, PATTERN, band_cells, screen_third};
@@ -37,11 +38,13 @@ use terrarium_compose::tween::durations::{
 };
 use terrarium_compose::variants::{ArtTable, art_key};
 use terrarium_compose::world::Scenery;
-use terrarium_truth::PresentationState;
+use terrarium_compose::{preset, synthetic};
 use terrarium_truth::scene::{
-    Energy, FossilForm, FossilView, GrowthStage, LifeStage, Light, MonumentAge, MonumentView,
-    PlantSpecies, PlantState, PlantView, ResidentSpecies, ResidentView, SceneInput, Weather, Wind,
+    Energy, EventKind, FossilForm, FossilView, GrowthStage, LifeStage, Light, MonumentAge,
+    MonumentView, PlantSpecies, PlantState, PlantView, ResidentSpecies, ResidentView, SceneInput,
+    Side, Strength, Weather, Wind,
 };
+use terrarium_truth::{PresentationState, Tick};
 
 fn config(cases: u32) -> ProptestConfig {
     ProptestConfig {
@@ -219,6 +222,27 @@ fn dress(scene: &mut SceneInput, world: u64, things: u64) {
             .collect(),
         |f| f.id,
     );
+    cue(scene, world >> 40);
+}
+
+/// An event or none from a word: any kind, an instance from a few ticks, so scenes carry the
+/// same one again, any strength and side. Mostly the scene carries the sky truth would bring
+/// with it; now and then the sky stays as it was, which the composer must take too.
+fn cue(scene: &mut SceneInput, bits: u64) {
+    if field(bits, 0, 5) >= 2 {
+        scene.event = None;
+        return;
+    }
+    let (weather, light) = (scene.weather, scene.light);
+    let tick = Tick::new(u32::try_from(field(bits, 3, 3)).unwrap());
+    synthetic::set_event(scene, pick(EventKind::ALL, field(bits, 5, 11)), tick);
+    if field(bits, 9, 4) == 0 {
+        (scene.weather, scene.light) = (weather, light);
+    }
+    if let Some(event) = &mut scene.event {
+        event.strength = pick(Strength::ALL, field(bits, 11, 3));
+        event.side = pick(Side::ALL, field(bits, 13, 2));
+    }
 }
 
 /// The world a little changed: the weather and light now and then, the cover by a few, the
@@ -354,6 +378,7 @@ enum Next {
         state: Option<u8>,
         world: u64,
         overlay: Option<u64>,
+        event: u64,
     },
     Same,
 }
@@ -367,13 +392,15 @@ fn next() -> impl Strategy<Value = Next> {
             any::<Option<u8>>(),
             any::<u64>(),
             prop::option::weighted(0.3, any::<u64>()),
+            any::<u64>(),
         )
-            .prop_map(|(edits, added, state, world, overlay)| Next::Edited {
+            .prop_map(|(edits, added, state, world, overlay, event)| Next::Edited {
                 edits,
                 added,
                 state,
                 world,
                 overlay,
+                event,
             }),
         1 => Just(Next::Same),
     ]
@@ -391,6 +418,7 @@ impl Next {
                 state,
                 world,
                 overlay: new_overlay,
+                event,
             } => {
                 // Each edit keeps the plant (most often), drops it, or changes its state, stage,
                 // bloom or species.
@@ -442,6 +470,13 @@ impl Next {
                 next.fossils.clone_from(&scene.fossils);
                 next.residents.clone_from(&scene.residents);
                 next.wind = scene.wind;
+                // The event carried on, as the engine keeps it, or a new one, or none.
+                next.event = scene.event;
+                match field(*event, 0, 4) {
+                    0 => cue(&mut next, *event >> 2),
+                    1 => next.event = None,
+                    _ => {}
+                }
                 nudge(&mut next, *world);
                 let overlay = new_overlay.map_or_else(|| overlay_before.clone(), overlay);
                 (next, overlay)
@@ -998,14 +1033,142 @@ fn at_edge(x: i32, w: i32) -> bool {
     x + w <= w.max(1) || x >= WIDTH - w
 }
 
+/// The storm front crosses a column in no less than a frame's time; a windstorm's leaf
+/// crosses one in no less than this, and bobs a row in no less than this; rain fades in and
+/// out over this long.
+const FRONT_MS_PER_PX: u64 = 67;
+const LEAF_MS_PER_PX: u64 = 16;
+const LEAF_BOB_MS: u64 = 250;
+const RAIN_FADE_MS: u64 = 3000;
+/// The storm front's curtain and a leaf, in columns.
+const CURTAIN: i32 = 24;
+const LEAF: i32 = 3;
+
+/// The columns a draw shows in the frame, after its clip; empty as `(x, x)`.
+fn columns(draw: &Draw) -> (i32, i32) {
+    let w = i32::from(art().catalog.sprite(draw.sprite).rect.w);
+    let (mut from, mut to) = (draw.x.max(0), (draw.x + w).min(WIDTH));
+    if let Some(clip) = draw.clip {
+        (from, to) = (from.max(clip.x), to.min(clip.x + clip.w));
+    }
+    (from, to.max(from))
+}
+
+/// Whether a sprite is one of an event's, by its art's name.
+fn plays(draw: &Draw, art_name: &str) -> bool {
+    art().catalog.sprite(draw.sprite).id.starts_with(art_name)
+}
+
+/// Whether a draw within `reach` columns of the frame's edges could come or go there.
+fn by_an_edge(draw: &Draw, width: i32, reach: i32) -> bool {
+    draw.x < reach || draw.x + width > WIDTH - reach
+}
+
+/// I-15 for an event's own pieces, which play their art: the curtain crosses at its pace and
+/// comes and goes only at an edge; lightning's two frames show and go as drawn (I-11: a bolt
+/// has no fade); rain's frames fall in place, fading in and out; a leaf crosses and bobs at its
+/// pace, and comes and goes only at an edge.
+fn check_event_piece(
+    subject: Subject,
+    a: Option<&Draw>,
+    b: Option<&Draw>,
+    elapsed: u64,
+) -> Result<(), TestCaseError> {
+    let steps = |ms_per_px: u64| i32::try_from(elapsed / ms_per_px + 1).unwrap();
+    match (subject, a, b) {
+        (Subject::Front, Some(a), Some(b)) => {
+            prop_assert_eq!((a.sprite, a.y, a.flip_x), (b.sprite, b.y, b.flip_x));
+            prop_assert!(
+                (b.x - a.x).abs() <= steps(FRONT_MS_PER_PX),
+                "front {} to {}",
+                a.x,
+                b.x
+            );
+        }
+        (Subject::Front, Some(at), None) | (Subject::Front, None, Some(at)) => {
+            prop_assert!(
+                by_an_edge(at, CURTAIN, steps(FRONT_MS_PER_PX)),
+                "front at {}",
+                at.x
+            );
+        }
+        (Subject::Bolt, ..) => {
+            for draw in a.into_iter().chain(b) {
+                prop_assert!(plays(draw, "tmp.sky.lightning."), "bolt");
+            }
+            if let (Some(a), Some(b)) = (a, b) {
+                prop_assert_eq!((a.x, a.y), (b.x, b.y));
+            }
+        }
+        (Subject::Rain, ..) => {
+            let own = u64::from(art().catalog.sprite(a.or(b).unwrap().sprite).opacity);
+            let bound = own * 3 * elapsed / (2 * RAIN_FADE_MS) + 1;
+            let opacity = |draw: Option<&Draw>| u64::from(draw.map_or(0, |d| d.opacity));
+            prop_assert!(opacity(a).abs_diff(opacity(b)) <= bound, "rain jumped");
+            for draw in a.into_iter().chain(b) {
+                prop_assert!(plays(draw, "tmp.sky.rain."), "rain");
+            }
+            if let (Some(a), Some(b)) = (a, b) {
+                prop_assert_eq!((a.x, a.y), (b.x, b.y));
+            }
+        }
+        (Subject::Leaf(_), Some(a), Some(b)) => {
+            prop_assert!(plays(a, "tmp.sky.wind-leaf.") && plays(b, "tmp.sky.wind-leaf."));
+            prop_assert_eq!(a.flip_x, b.flip_x);
+            prop_assert!(
+                (b.x - a.x).abs() <= steps(LEAF_MS_PER_PX),
+                "leaf {} to {}",
+                a.x,
+                b.x
+            );
+            let bob = steps(LEAF_BOB_MS).min(4);
+            prop_assert!((b.y - a.y).abs() <= bob, "leaf {} to {}", a.y, b.y);
+        }
+        (Subject::Leaf(_), Some(at), None) | (Subject::Leaf(_), None, Some(at)) => {
+            prop_assert!(
+                by_an_edge(at, LEAF, steps(LEAF_MS_PER_PX) + LEAF),
+                "leaf at {}",
+                at.x
+            );
+        }
+        _ => prop_assert!(false, "{:?} is no event's piece", subject),
+    }
+    Ok(())
+}
+
+/// One event takes the stage at a time: the pieces drawn are of one choreography at most.
+fn check_one_show(draws: &[KeyedDraw]) -> Result<(), TestCaseError> {
+    let shows: BTreeSet<u8> = draws
+        .iter()
+        .filter_map(|keyed| match keyed.key.subject {
+            Subject::Front => Some(0),
+            Subject::Bolt => Some(1),
+            Subject::Rain => Some(2),
+            Subject::Leaf(_) => Some(3),
+            _ => None,
+        })
+        .collect();
+    prop_assert!(shows.len() <= 1, "{:?} play at once", shows);
+    Ok(())
+}
+
 /// I-15 between two moments with no update between them: no draw's opacity jumps further
 /// than its fastest tween can move it, a cloud drifts no faster than its pace and wraps only
-/// out of sight, and nothing else moves.
+/// out of sight, an event's pieces play as their art does, and while the storm front crosses,
+/// the sky on either side of it is cut no faster than it moves; nothing else moves.
 fn check_continuity(
     before: &[KeyedDraw],
     after: &[KeyedDraw],
     elapsed: u64,
 ) -> Result<(), TestCaseError> {
+    // While the storm front crosses, the sky's draws are cut at it.
+    let wiping = [before, after].iter().any(|draws| {
+        draws.iter().any(|keyed| {
+            keyed.key.subject == Subject::Front
+                || (keyed.key.layer == Layer::Sky && keyed.draw.clip.is_some())
+        })
+    });
+    let front = i32::try_from(elapsed / FRONT_MS_PER_PX + 1).unwrap();
     let index = |draws: &[KeyedDraw]| -> BTreeMap<(Subject, u8, u16, u16), Draw> {
         draws
             .iter()
@@ -1023,6 +1186,31 @@ fn check_continuity(
         }
         let [a, b] = [old.get(key), new.get(key)];
         let drawn = a.or(b).unwrap();
+        if matches!(
+            key.0,
+            Subject::Front | Subject::Bolt | Subject::Rain | Subject::Leaf(_)
+        ) {
+            check_event_piece(key.0, a, b, elapsed)?;
+            continue;
+        }
+        if wiping && drawn.layer == Layer::Sky {
+            // Uncovered or covered as the curtain passes, no wider than it moved; anything
+            // wider comes or goes as any look does.
+            let (from, to) = columns(drawn);
+            if (a.is_none() || b.is_none()) && to - from <= front {
+                continue;
+            }
+            if let (Some(a), Some(b)) = (a, b) {
+                let ((a0, a1), (b0, b1)) = (columns(a), columns(b));
+                prop_assert!(
+                    (b0 - a0).abs() <= front && (b1 - a1).abs() <= front,
+                    "{:?} cut from {:?} to {:?}",
+                    key,
+                    (a0, a1),
+                    (b0, b1)
+                );
+            }
+        }
         let width = i32::from(art().catalog.sprite(drawn.sprite).rect.w);
         // A drifting tile, a cloud or the sweep may come and go at an edge of the frame;
         // anywhere else it fades like any other draw.
@@ -1222,7 +1410,8 @@ fn check_resident_opacity(
     Ok(())
 }
 
-/// Whether the resident `subject` has travelled since its turn began, up to `now`.
+/// Whether the resident `subject` has travelled or signalled since its turn began, up to `now`:
+/// either ends by covering its last pose with its rest.
 fn travelled_this_turn(composer: &Composer, mix: u8, now: Millis, subject: Subject) -> bool {
     let start = now.0 / TURN_MS * TURN_MS;
     (start..now.0).step_by(50).any(|ms| {
@@ -1237,15 +1426,24 @@ fn travelled_this_turn(composer: &Composer, mix: u8, now: Millis, subject: Subje
                 && keyed.key.part == 0
                 && matches!(
                     routine,
-                    Some("move" | "takeoff" | "flight" | "land" | "hop")
+                    Some("move" | "takeoff" | "flight" | "land" | "hop" | "signal")
                 )
         })
     })
 }
 
+/// When an event's choreography turns, from the update that cues it: lightning's frames, rain's
+/// fades (held 12, 24 or 36 s), the leaves on their way, and the storm front across 640
+/// columns and its curtain's 24, a column in 67 ms.
+const CUES: [u64; 22] = [
+    68, 134, 167, 333, 334, 2000, 2999, 3001, 9000, 15_000, 16_500, 18_000, 21_000, 27_000, 30_000,
+    33_000, 39_000, 42_000, 44_487, 44_488, 44_489, 50_000,
+];
+
 /// Moments worth looking at after an update: its tween boundaries and either side of them,
-/// and the label's cycle steps from any label set raised at `raised`.
-fn moments(update: Millis, until: Millis, raised: &[Millis]) -> Vec<Millis> {
+/// the label's cycle steps from any label set raised at `raised`, and the turns of an event's
+/// choreography when the scene carries one.
+fn moments(update: Millis, until: Millis, raised: &[Millis], cued: bool) -> Vec<Millis> {
     let half = RESTYLE_MS / 2;
     // Quarter steps keep the plants' continuity bound near 96 of 255, so a cut mid-tween
     // shows; tenths of the light's crossfade do the same for it; the boundaries and their
@@ -1276,6 +1474,9 @@ fn moments(update: Millis, until: Millis, raised: &[Millis]) -> Vec<Millis> {
     let moving = (update.0 / TURN_MS + 1) * TURN_MS;
     for offset in (0..=7000).step_by(500).chain([1, 20_000]) {
         moments.push(Millis(moving + offset));
+    }
+    if cued {
+        moments.extend(CUES.iter().map(|&ms| Millis(update.0 + ms)));
     }
     let cycle = u64::from(LABEL_CYCLE_MS);
     for &since in raised {
@@ -1351,9 +1552,10 @@ proptest! {
             let until = times.get(i + 1).copied().unwrap_or_else(|| replay.settled_at().plus(1));
             let showing: Vec<&SceneInput> = history.scenes[..=i].iter().map(|(s, _)| s).collect();
             let mut previous: Option<(Millis, Vec<KeyedDraw>)> = None;
-            for moment in moments(times[i], until, &raised) {
+            for moment in moments(times[i], until, &raised, scene.event.is_some()) {
                 let draws = drawn(&replay, mix, moment);
                 check_subset(&draws, &showing)?;
+                check_one_show(&draws)?;
                 if let Some((then, before)) = &previous {
                     check_continuity(before, &draws, moment.0 - then.0).map_err(|err| {
                         TestCaseError::fail(format!("{err} from {then:?} to {moment:?}; updates at {times:?}"))
@@ -1377,7 +1579,8 @@ proptest! {
         prop_assert_eq!(one.monument_spots(), two.monument_spots());
         prop_assert_eq!(one.fossil_spots(), two.fossil_spots());
         let end = one.settled_at().max(two.settled_at());
-        for moment in moments(times[2], end.plus(1), &[]).into_iter().chain([end]) {
+        let cued = history.scenes[2].0.event.is_some();
+        for moment in moments(times[2], end.plus(1), &[], cued).into_iter().chain([end]) {
             prop_assert_eq!(one.depicted(moment), two.depicted(moment));
         }
     }
@@ -1443,7 +1646,9 @@ proptest! {
                 moving.plus(900),
                 moving.plus(9900),
             ];
-            for start in starts {
+            // And through an event's choreography, where it turns.
+            let cues = scene.event.iter().flat_map(|_| CUES.map(|ms| Millis(now.0 + ms - 40)));
+            for start in starts.into_iter().chain(cues) {
                 let mut moment = start;
                 for _ in 0..12 {
                     let Some(next) = composer.next_change(art(), table(), moment) else {
@@ -1471,11 +1676,21 @@ proptest! {
 }
 
 /// The motion budget, as the art proposes it: at most three residents travelling at once, at
-/// most one of them flying or signalling; at most six plants leaning, none in still air; and in
-/// dim mode, travel and sway only in every fourth turn.
+/// most one of them flying or signalling; at most six plants leaning, none in still air (a
+/// storm sways them a step harder, and a windstorm at a gale); and in dim mode, travel and sway
+/// only in every fourth turn.
 const MOST_TRAVELLING: usize = 3;
 const MOST_AIRBORNE: usize = 1;
 const MOST_SWAYING: usize = 6;
+
+/// Whether the plants stand in still air: a calm that no storm or windstorm stirs.
+fn still(scene: &SceneInput) -> bool {
+    let stirred = matches!(
+        scene.event.map(|event| event.kind),
+        Some(EventKind::Storm | EventKind::Windstorm)
+    );
+    scene.wind == Wind::Calm && !stirred
+}
 
 /// How many residents travel at a moment, and how many of them fly or signal; and how many
 /// plants lean.
@@ -1544,7 +1759,7 @@ proptest! {
             prop_assert!(travelling <= MOST_TRAVELLING, "{} travel at {}", travelling, ms);
             prop_assert!(airborne <= MOST_AIRBORNE, "{} fly at {}", airborne, ms);
             prop_assert!(leaning <= MOST_SWAYING, "{} lean at {}", leaning, ms);
-            if scene.wind == Wind::Calm {
+            if still(scene) {
                 prop_assert_eq!(leaning, 0, "still air at {}", ms);
             }
             let fourth = (ms / TURN_MS).is_multiple_of(4);
@@ -1772,4 +1987,41 @@ fn the_generator_reaches_the_edges() {
         check_placement(&composer, &scene).unwrap();
         check_settled(&composer, &scene, &overlay).unwrap();
     }
+}
+
+/// The histories reach every choreography in the sky: the storm front, lightning, rain and a
+/// windstorm's leaves each play in some of them, so the properties above hold them to I-15 and
+/// I-10.
+#[test]
+fn the_histories_play_every_sky_event() {
+    use proptest::strategy::ValueTree;
+    let mut runner = proptest::test_runner::TestRunner::new(config(300));
+    let mut seen = BTreeSet::new();
+    for _ in 0..300 {
+        let history = history().new_tree(&mut runner).unwrap().current();
+        let mut composer = Composer::new(table(), InstallSalt::new([3; 16]));
+        let mut now = Millis(500);
+        for (i, (scene, overlay)) in history.scenes.iter().enumerate() {
+            if i > 0 {
+                now = match history.gaps[i - 1] {
+                    After::Ms(ms) => now.plus(ms),
+                    After::Settled => composer.settled_at().max(now),
+                };
+            }
+            composer.update(scene, overlay, now);
+            for ms in [200, 5000, 20_000] {
+                for keyed in drawn(&composer, 0, now.plus(ms)) {
+                    let show = match keyed.key.subject {
+                        Subject::Front => "front",
+                        Subject::Bolt => "bolt",
+                        Subject::Rain => "rain",
+                        Subject::Leaf(_) => "leaves",
+                        _ => continue,
+                    };
+                    seen.insert(show);
+                }
+            }
+        }
+    }
+    assert_eq!(seen, BTreeSet::from(["bolt", "front", "leaves", "rain"]));
 }

@@ -33,8 +33,9 @@ const BLOCKS_DOWN: u32 = NATIVE_HEIGHT.div_ceil(BLOCK);
 /// steps: in at x = −23, a pixel at a time to 639, then out.
 const SWEEP_SLOT_MS: u64 = 1_500_000;
 const SWEEP_STEPS: usize = 664;
-/// At most 15 frames in any second.
+/// At most 15 frames in any second, each at least this long after the one before.
 const MOST_PER_SECOND: usize = 15;
+const FRAME_MS: u64 = 67;
 
 /// Each subject's draws, by subject.
 fn by_subject(draws: &[KeyedDraw]) -> BTreeMap<Subject, Vec<Draw>> {
@@ -256,5 +257,107 @@ fn no_region_holds_still_for_an_hour() {
             "{} blocks (column, row) hold still for an hour in {viewport:?} at {clock:?}, dim {dim}: {still:?}",
             still.len()
         );
+    }
+}
+
+/// Each choreography in the sky, from the update that brings it until long after it settles:
+/// every frame drawn shows a change, never more than 15 in a second, and once it is over only
+/// the slow motions move again, at 640 columns and at 840.
+#[test]
+fn an_event_draws_at_most_15_frames_a_second_and_then_settles() {
+    use terrarium_truth::Tick;
+    use terrarium_truth::scene::{ActiveEvent, EventKind, Light, Side, Strength};
+
+    let art = Art::embedded();
+    let table = ArtTable::new(&art.catalog).expect("the embedded art is complete");
+    let overlay = OverlayInput::new(vec!["main".to_owned()], LocalClock::noon(preset::DATE));
+    for (kind, from, to) in [
+        (EventKind::Storm, Weather::Clear, Weather::Storm),
+        (EventKind::Clearing, Weather::Storm, Weather::Clear),
+        (EventKind::Lightning, Weather::Storm, Weather::Storm),
+        (EventKind::Dusk, Weather::Clear, Weather::Clear),
+        (EventKind::Sunburst, Weather::Clear, Weather::Clear),
+        (EventKind::RainAfterDrought, Weather::Clear, Weather::Clear),
+        (EventKind::Windstorm, Weather::Clear, Weather::Clear),
+    ] {
+        for columns in [640, 840] {
+            let mut before = preset::bare(PresentationState::Mature, Vec::new());
+            before.weather = from;
+            let mut after = before.clone();
+            after.weather = to;
+            after.light = match kind {
+                EventKind::Dusk => Light::Dusk,
+                EventKind::Sunburst => Light::Sunburst,
+                _ => Light::Neutral,
+            };
+            after.event = Some(ActiveEvent {
+                kind,
+                started_tick: Tick::new(1),
+                strength: Strength::High,
+                side: Side::Right,
+                fossil: None,
+            });
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.set_viewport(Viewport::new(columns));
+            composer.update(&before, &overlay, Millis(0));
+            let begin = composer.settled_at();
+            composer.update(&after, &overlay, begin);
+            let settled = composer.settled_at();
+            let draws = |now| composer.draws(art, &table, composer.palette_mix(now), now);
+            let mut pacer = Pacer::default();
+            let mut shown = draws(begin);
+            pacer.composed(begin);
+            let mut now = begin;
+            let mut frames: Vec<Millis> = Vec::new();
+            let mut played = BTreeSet::new();
+            while let Some(wake) = pacer.wake(composer.next_change(art, &table, now)) {
+                if wake.0 > settled.0 + 30_000 {
+                    break;
+                }
+                let next = draws(wake);
+                let moved = changed(&shown, &next);
+                assert!(
+                    !moved.is_empty(),
+                    "{kind:?}: a frame at {wake:?} with nothing changed"
+                );
+                for subject in moved {
+                    let piece = matches!(
+                        subject,
+                        Subject::Front
+                            | Subject::Bolt
+                            | Subject::Rain
+                            | Subject::Leaf(_)
+                            | Subject::Weather
+                            | Subject::Light
+                    );
+                    if piece {
+                        played.insert(subject);
+                    }
+                    let slow =
+                        matches!(subject, Subject::Soil | Subject::Sweep | Subject::Cloud(_));
+                    // The last change may wait out the frame before it.
+                    assert!(
+                        wake.0 <= settled.0 + FRAME_MS || slow,
+                        "{kind:?}: {subject:?} changed at {wake:?}, settled at {settled:?}"
+                    );
+                }
+                frames.push(wake);
+                pacer.composed(wake);
+                shown = next;
+                now = wake;
+            }
+            assert!(!played.is_empty(), "{kind:?} played nothing");
+            for (i, &frame) in frames.iter().enumerate() {
+                let within = frames[i..]
+                    .iter()
+                    .take_while(|&&later| later.0 < frame.0 + 1000)
+                    .count();
+                assert!(
+                    within <= MOST_PER_SECOND,
+                    "{kind:?}: {within} frames in the second from {frame:?}"
+                );
+            }
+            println!("{kind:?} at {columns}: {} frames, {played:?}", frames.len());
+        }
     }
 }

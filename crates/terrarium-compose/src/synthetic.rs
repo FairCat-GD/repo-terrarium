@@ -281,9 +281,27 @@ pub fn scene(knobs: &Knobs) -> SceneInput {
     }
 }
 
-/// Makes `kind` the scene's foreground event, of middling strength, from the left. A sinkhole
-/// reveals a fossil, and names it.
-pub fn set_event(scene: &mut SceneInput, kind: EventKind) {
+/// Makes `kind` the scene's foreground event, the instance that started at `started_tick`, of
+/// middling strength, from the left, with the sky truth's first scene of it carries: a storm or
+/// lightning under a storm, a clearing under a clear sky, dusk or sunburst in their light, and
+/// lightning's strike on the first living mature plant. A sinkhole reveals a fossil, and names
+/// it.
+pub fn set_event(scene: &mut SceneInput, kind: EventKind, started_tick: Tick) {
+    match kind {
+        EventKind::Storm | EventKind::Lightning => scene.weather = Weather::Storm,
+        EventKind::Clearing => scene.weather = Weather::Clear,
+        EventKind::Dusk => scene.light = Light::Dusk,
+        EventKind::Sunburst => scene.light = Light::Sunburst,
+        _ => {}
+    }
+    if kind == EventKind::Lightning
+        && let Some(plant) = scene
+            .plants
+            .iter_mut()
+            .find(|p| p.stage == GrowthStage::Mature && p.state != PlantState::Dead)
+    {
+        plant.scorched = true;
+    }
     let fossil = (kind == EventKind::Sinkhole).then(|| {
         let id = scene
             .fossils
@@ -299,7 +317,7 @@ pub fn set_event(scene: &mut SceneInput, kind: EventKind) {
     });
     scene.event = Some(ActiveEvent {
         kind,
-        started_tick: Tick::ZERO,
+        started_tick,
         strength: Strength::Mid,
         side: Side::Left,
         fossil,
@@ -735,7 +753,7 @@ mod tests {
         }
         for kind in EventKind::ALL {
             let mut with = scene(&NAMED[0].1);
-            set_event(&mut with, *kind);
+            set_event(&mut with, *kind, Tick::ZERO);
             assert_eq!(with.validate(), Ok(()), "{kind:?}");
         }
     }
@@ -746,12 +764,51 @@ mod tests {
             for kind in EventKind::ALL {
                 let mut scene = crate::preset::scene(name).unwrap();
                 let fossils = scene.fossils.len();
-                set_event(&mut scene, *kind);
+                set_event(&mut scene, *kind, Tick::new(9));
                 assert_eq!(scene.validate(), Ok(()), "{name}, {kind:?}");
-                assert_eq!(scene.event.map(|event| event.kind), Some(*kind));
+                assert_eq!(
+                    scene.event.map(|event| (event.kind, event.started_tick)),
+                    Some((*kind, Tick::new(9)))
+                );
                 let revealed = usize::from(*kind == EventKind::Sinkhole);
                 assert_eq!(scene.fossils.len(), fossils + revealed);
             }
+        }
+    }
+
+    #[test]
+    fn an_event_brings_the_sky_truth_puts_in_its_first_scene() {
+        let thriving = scene(&NAMED[0].1);
+        let with = |kind| {
+            let mut scene = thriving.clone();
+            set_event(&mut scene, kind, Tick::new(3));
+            scene
+        };
+        assert_eq!(thriving.weather, Weather::Clear);
+        assert_eq!(with(EventKind::Storm).weather, Weather::Storm);
+        let mut stormy = with(EventKind::Storm);
+        set_event(&mut stormy, EventKind::Clearing, Tick::new(4));
+        assert_eq!(stormy.weather, Weather::Clear);
+        assert_eq!(with(EventKind::Dusk).light, Light::Dusk);
+        assert_eq!(with(EventKind::Sunburst).light, Light::Sunburst);
+        let struck = with(EventKind::Lightning);
+        assert_eq!(struck.weather, Weather::Storm);
+        let scorched: Vec<&PlantView> = struck.plants.iter().filter(|p| p.scorched).collect();
+        assert_eq!(scorched.len(), 1);
+        assert_eq!(scorched[0].stage, GrowthStage::Mature);
+        assert_ne!(scorched[0].state, PlantState::Dead);
+        // The rest leave the sky as it was.
+        for kind in [
+            EventKind::Windstorm,
+            EventKind::RainAfterDrought,
+            EventKind::Earthquake,
+        ] {
+            let scene = with(kind);
+            assert_eq!(
+                (scene.weather, scene.light),
+                (thriving.weather, thriving.light)
+            );
+            assert!(scene.plants.iter().all(|p| !p.scorched));
         }
     }
 

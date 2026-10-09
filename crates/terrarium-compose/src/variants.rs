@@ -16,7 +16,9 @@
 //! - `Wind` has no tier sprites: the tiers differ in sway amplitude, and a breeze or a gale
 //!   uses the leaf art.
 //! - `EventKind` goes through the events manifest's `reusedActiveIds` groups plus the sprites
-//!   tagged with the event. Storm and Clearing share the storm front and body.
+//!   tagged with the event. Storm and Clearing share the storm front and body. The sky's
+//!   events also resolve each piece in its role ([`SkyEventArt`]): the front's curtain and the
+//!   sequences lightning, rain and the wind's leaves play.
 //! - The art tags the flower sprinkles `clearing-burn`, so they belong to `ClearingBurn` here.
 //!
 //! Some enums have no art by design; [`NO_ART`] lists them with the reason.
@@ -39,7 +41,7 @@ use terrarium_truth::scene::{
     MonumentAge, PlantSpecies, PlantState, ResidentSpecies, Weather, Wind,
 };
 
-use crate::catalog::{AnimationId, Art, Catalog, Layer, Point, Sprite, SpriteId};
+use crate::catalog::{AnimationId, Art, Catalog, Flags, Layer, Next, Point, Sprite, SpriteId};
 use crate::sky::CloudSize;
 use crate::text::Label;
 
@@ -720,6 +722,93 @@ const fn event_art(kind: EventKind) -> EventArt {
     }
 }
 
+/// What the sky's events play, each in its role: the storm's curtain and the authored sequences
+/// of lightning, rain and the wind's leaves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkyEventArt {
+    /// The storm front's curtain. It leads a storm in from the left, its open columns ahead;
+    /// mirrored, from the right.
+    pub front: SpriteId,
+    /// The curtain's width, whose crossing paces a wipe.
+    pub front_width: i32,
+    /// Lightning's two frames, played once and cleared.
+    pub lightning: AnimationId,
+    /// How long lightning's frames last together.
+    pub lightning_ms: u64,
+    /// Rain after drought's streaks: a loop whose frames repeat across the scene.
+    pub rain: AnimationId,
+    /// The two leaves a windstorm carries, each a loop.
+    pub leaves: [AnimationId; 2],
+    /// The widest frame of either leaf, which a leaf crosses out of sight by.
+    pub leaf_width: i32,
+}
+
+/// The sky events' art, or every gap in it: a sequence missing, or not shaped as it is played.
+fn sky_events(catalog: &Catalog) -> Result<SkyEventArt, Vec<MissingArt>> {
+    let mut gaps = Vec::new();
+    let front = catalog.id("tmp.sky.storm.front");
+    if front.is_none() {
+        gaps.push(MissingArt {
+            variant: "EventKind::Storm".into(),
+            wanted: "`tmp.sky.storm.front`".into(),
+        });
+    }
+    let mut sequence = |kind: EventKind, name: &str, looping: bool, tiled: bool| {
+        let gap = |wanted: String| MissingArt {
+            variant: format!("EventKind::{}", kind.name()),
+            wanted,
+        };
+        let Some(id) = catalog.animation_id(name) else {
+            gaps.push(gap(format!("the `{name}` sequence")));
+            return None;
+        };
+        let animation = catalog.animation(id);
+        let shaped = animation.looping == looping
+            && (looping || animation.next == Next::Clear)
+            && (!tiled
+                || animation
+                    .frames
+                    .iter()
+                    .all(|&frame| catalog.sprite(frame).flags.contains(Flags::TILE_X)));
+        if !shaped {
+            let how = match (looping, tiled) {
+                (false, _) => "played once and cleared",
+                (true, true) => "a loop of frames that repeat across the scene",
+                (true, false) => "a loop",
+            };
+            gaps.push(gap(format!("`{name}` {how}")));
+            return None;
+        }
+        Some(id)
+    };
+    let lightning = sequence(EventKind::Lightning, "lightning", false, false);
+    let rain = sequence(EventKind::RainAfterDrought, "rain", true, true);
+    let leaves = [
+        sequence(EventKind::Windstorm, "wind-leaf-1", true, false),
+        sequence(EventKind::Windstorm, "wind-leaf-2", true, false),
+    ];
+    match (front, lightning, rain, leaves) {
+        (Some(front), Some(lightning), Some(rain), [Some(first), Some(second)]) => {
+            Ok(SkyEventArt {
+                front,
+                front_width: i32::from(catalog.sprite(front).rect.w),
+                lightning,
+                lightning_ms: crate::anim::length_ms(catalog.animation(lightning))
+                    .unwrap_or_default(),
+                rain,
+                leaves: [first, second],
+                leaf_width: [first, second]
+                    .iter()
+                    .flat_map(|&leaf| &catalog.animation(leaf).frames)
+                    .map(|&frame| i32::from(catalog.sprite(frame).rect.w))
+                    .max()
+                    .unwrap_or(0),
+            })
+        }
+        _ => Err(gaps),
+    }
+}
+
 /// Every sprite the event plays, sorted and without repeats.
 fn event(catalog: &Catalog, kind: EventKind) -> Result<Vec<SpriteId>, MissingArt> {
     let variant = format!("EventKind::{}", kind.name());
@@ -768,6 +857,7 @@ pub struct ArtTable {
     tufts: Vec<SpriteId>,
     dead_stems: Vec<SpriteId>,
     world: Option<WorldArt>,
+    sky_events: Option<SkyEventArt>,
 }
 
 impl ArtTable {
@@ -792,6 +882,7 @@ impl ArtTable {
             tufts: Vec::new(),
             dead_stems: Vec::new(),
             world: None,
+            sky_events: None,
         }
     }
 
@@ -914,10 +1005,8 @@ impl ArtTable {
         }
         keep(named(catalog, "filler tufts", &TUFTS).map(|ids| table.tufts = ids));
         keep(named(catalog, "filler dead stems", &DEAD_STEMS).map(|ids| table.dead_stems = ids));
-        match world(catalog) {
-            Ok(world) => table.world = Some(world),
-            Err(found) => gaps.extend(found),
-        }
+        table.world = world(catalog).map_err(|found| gaps.extend(found)).ok();
+        table.sky_events = sky_events(catalog).map_err(|found| gaps.extend(found)).ok();
         if gaps.is_empty() {
             Ok(table)
         } else {
@@ -973,6 +1062,16 @@ impl ArtTable {
         self.world
             .as_ref()
             .expect("a table that built has its world art")
+    }
+
+    /// What the sky's events play.
+    ///
+    /// # Panics
+    /// Never once `new` succeeded, which resolves it.
+    pub fn sky_events(&self) -> &SkyEventArt {
+        self.sky_events
+            .as_ref()
+            .expect("a table that built has its sky events' art")
     }
 
     /// The scorched foliage that stands in for a mature plant's while lightning's scorch plays.
@@ -1187,6 +1286,40 @@ mod tests {
         );
         assert_eq!(table.carved_marks().len(), CARVED_MARKS.len());
         assert_eq!(table.monument(MonumentAge::Ancient).len(), 2);
+    }
+
+    /// Each sky event's art in its role, and a sequence not shaped as it is played is a gap:
+    /// rain whose frames do not repeat across the scene, lightning that loops.
+    #[test]
+    fn the_sky_choreography_art_resolves() {
+        let art = sky_events(catalog()).expect("the embedded sky events' art");
+        assert_eq!(catalog().sprite(art.front).id, "tmp.sky.storm.front");
+        assert_eq!(
+            ArtTable::new(catalog()).unwrap().weather(Weather::Storm)[1],
+            art.front
+        );
+        let name = |id: AnimationId| catalog().animation(id).name.as_str();
+        assert_eq!(
+            [art.lightning, art.rain, art.leaves[0], art.leaves[1]].map(name),
+            ["lightning", "rain", "wind-leaf-1", "wind-leaf-2"]
+        );
+        assert_eq!(catalog().animation(art.lightning).frames.len(), 2);
+
+        let mut untiled = catalog().clone();
+        let streak = untiled.animation(art.rain).frames[1];
+        untiled.sprites[streak.index()].flags = Flags::default();
+        let gaps = sky_events(&untiled).unwrap_err();
+        assert_eq!(
+            lines(&gaps),
+            "EventKind::RainAfterDrought: `rain` a loop of frames that repeat across the scene"
+        );
+
+        let mut looping = catalog().clone();
+        looping.animations[art.lightning.index()].looping = true;
+        assert_eq!(
+            lines(&sky_events(&looping).unwrap_err()),
+            "EventKind::Lightning: `lightning` played once and cleared"
+        );
     }
 
     #[test]

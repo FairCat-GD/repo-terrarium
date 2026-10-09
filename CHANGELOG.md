@@ -5,6 +5,37 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-09
+
+The sky's events play: storms roll in and clear, lightning strikes, rain falls after a drought,
+and a windstorm carries leaves across.
+
+### Added
+
+- **A storm rolls in from its side.** When the tests start failing, the storm front crosses the
+  strip a pixel at a time, from the left or the right, the dark sky behind it and the old sky
+  ahead, which holds still until it is covered. When they pass again, the clearing comes in
+  from the same side and carries the storm on out the far side. A crossing takes 45 to 58
+  seconds, by the strip's width.
+- **Lightning strikes** the plant it scorches, in two frames, or the ground where that plant
+  is not drawn.
+- **Rain after drought** falls across the whole strip, fading in, holding for longer the
+  longer the drought, and fading out.
+- **A windstorm carries leaves** across from its side, each at its own pace and height.
+- **Dusk and sunburst** settle over the scene as their own light.
+- **The plants sway harder while a storm or a windstorm is under way,** from the next turn of
+  motion.
+- **Each event plays once and one at a time,** however long the repository's history keeps it
+  current; one that arrives while another plays is passed over, and its weather or light
+  arrives as usual.
+- **The debug window's event triggers** (dev builds): each press plays its event again, with
+  the weather or light it brings.
+
+### Changed
+
+- **The strip draws fewer frames** while the light or a glass film fades, and none for a cloud
+  the storm has covered: only when something on screen changes.
+
 ## [0.18.2] - 2026-10-09
 
 A repository coming back from a long silence now reads at its own pace, and a cleanup of the

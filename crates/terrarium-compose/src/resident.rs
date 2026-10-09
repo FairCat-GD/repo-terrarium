@@ -687,6 +687,20 @@ mod tests {
     use crate::motion::{Clock, TURN_MS};
     use crate::sky::LocalDate;
 
+    /// The budget the composer keeps is the one the creature manifests propose: a delivery
+    /// that changed it fails here rather than drifting from what is drawn.
+    #[test]
+    fn the_motion_budget_is_the_art_s() {
+        let residents = &Art::embedded().catalog.residents;
+        assert_eq!(usize::from(residents.moving), MOST_MOVING);
+        assert_eq!(usize::from(residents.flying_or_signalling), MOST_FLYING);
+        assert_eq!(u32::from(residents.transition_ms), TRANSITION_MS);
+        assert_eq!(
+            crate::schedule::MIN_FRAME_MS,
+            1000_u64.div_ceil(u64::from(residents.render_cap_fps))
+        );
+    }
+
     fn scene(residents: Vec<Resident>, weather: Weather, hour: u32) -> Snapshot {
         Snapshot {
             state: PresentationState::Thriving,

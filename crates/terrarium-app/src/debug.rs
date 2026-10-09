@@ -1,7 +1,7 @@
 //! The debug window (dev builds only): what the strip shows, chosen by hand, and how much it
 //! costs. It is the harness for judging the looks: presets, or the synthetic climate's knobs
-//! with health and activity as two sliders; the foreground event; the time of day; dim; and the
-//! frames, compositions and memory the strip is spending.
+//! with health and activity as two sliders; a trigger for each foreground event; the time of
+//! day; dim; and the frames, compositions and memory the strip is spending.
 //!
 //! The panel keeps its own state, so it survives its window closing and the egui host being
 //! dropped. The strip takes its changes (`take_change`) after each pass and gives them to the
@@ -19,7 +19,7 @@ use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{EventKind, Light, Weather};
 
 use crate::copy::debug as text;
-use crate::feed::{Feed, Overrides};
+use crate::feed::{Feed, Overrides, Trigger};
 
 /// How often the open window refreshes its readout: often enough to read, rarely enough that
 /// an open window costs the strip almost nothing.
@@ -63,7 +63,8 @@ pub struct DebugPanel {
     fixed_time: bool,
     minute_of_day: u32,
     dim: DimChoice,
-    event: Option<EventKind>,
+    event: Option<Trigger>,
+    presses: u32,
     changed: bool,
 }
 
@@ -91,6 +92,7 @@ impl DebugPanel {
                 Some(false) => DimChoice::Off,
             },
             event: overrides.event,
+            presses: overrides.presses,
             changed: false,
         }
     }
@@ -119,6 +121,7 @@ impl DebugPanel {
                 DimChoice::Off => Some(false),
             },
             event: self.event,
+            presses: self.presses,
         }
     }
 
@@ -201,17 +204,29 @@ impl DebugPanel {
 
     fn events(&mut self, ui: &mut Ui) {
         ui.heading(text::EVENT);
-        ui.label(text::EVENTS_NOT_DRAWN);
-        let before = self.event;
+        ui.label(text::EVENT_TRIGGERS);
         ui.horizontal_wrapped(|ui| {
             for &kind in EventKind::ALL {
-                ui.selectable_value(&mut self.event, Some(kind), text::event(kind));
+                let on = self.event.is_some_and(|trigger| trigger.kind == kind);
+                if ui.selectable_label(on, text::event(kind)).clicked() {
+                    self.press(kind);
+                }
             }
             if ui.button(text::CLEAR_EVENT).clicked() {
-                self.event = None;
+                self.changed |= self.event.take().is_some();
             }
         });
-        self.changed |= self.event != before;
+    }
+
+    /// Puts `kind` on the strip as a new instance, which plays once, however often the same
+    /// kind was pressed before.
+    fn press(&mut self, kind: EventKind) {
+        self.presses += 1;
+        self.event = Some(Trigger {
+            kind,
+            press: self.presses,
+        });
+        self.changed = true;
     }
 
     fn clock(&mut self, ui: &mut Ui) {
@@ -271,8 +286,10 @@ impl FpsMeter {
 #[cfg(test)]
 mod tests {
     use terrarium_compose::sky::LocalDate;
+    use terrarium_compose::tween::Millis;
 
     use super::*;
+    use crate::feed::{Feeder, Os};
 
     fn readout() -> Readout {
         Readout {
@@ -309,7 +326,11 @@ mod tests {
         let overrides = Overrides {
             time_of_day: Some(22 * 3_600_000),
             dim: Some(true),
-            event: Some(EventKind::Storm),
+            event: Some(Trigger {
+                kind: EventKind::Storm,
+                press: 3,
+            }),
+            presses: 3,
         };
         let mut panel = DebugPanel::new(&Feed::Preset("dormant"), overrides);
         assert_eq!(panel.feed(), Feed::Preset("dormant"));
@@ -327,6 +348,60 @@ mod tests {
             })
         );
         assert_eq!(panel.take_change(), None);
+    }
+
+    #[test]
+    fn each_press_is_a_new_instance() {
+        let mut panel = DebugPanel::new(&Feed::Thriving, Overrides::default());
+        panel.press(EventKind::Storm);
+        let (_, first) = panel.take_change().unwrap();
+        panel.press(EventKind::Storm);
+        let (_, again) = panel.take_change().unwrap();
+        assert_eq!(first.event.map(|t| t.kind), Some(EventKind::Storm));
+        assert_ne!(
+            first.event, again.event,
+            "the same kind pressed again plays again"
+        );
+        // Taken off and the window opened anew, the next press is still new.
+        let mut reopened = DebugPanel::new(
+            &Feed::Thriving,
+            Overrides {
+                event: None,
+                ..again
+            },
+        );
+        reopened.press(EventKind::Storm);
+        let (_, later) = reopened.take_change().unwrap();
+        assert!(later.event.unwrap().press > again.event.unwrap().press);
+        // The strip's scene carries each press as an instance of its own.
+        let instance = |overrides: Overrides| {
+            let mut feeder = Feeder::new(
+                Feed::Thriving,
+                Millis(0),
+                &Os {
+                    clock: None,
+                    idle: None,
+                },
+            );
+            feeder.choose(
+                Feed::Thriving,
+                overrides,
+                Millis(1),
+                &Os {
+                    clock: None,
+                    idle: None,
+                },
+            );
+            feeder
+                .scene()
+                .event
+                .map(|event| (event.kind, event.started_tick))
+        };
+        assert_ne!(instance(first), instance(again));
+        assert_eq!(
+            instance(first).map(|(kind, _)| kind),
+            Some(EventKind::Storm)
+        );
     }
 
     #[test]

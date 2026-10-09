@@ -38,6 +38,10 @@ Depiction: from `SceneInput` to pixels.
   storms, lifecycle steps through the art's own hand-offs, and each turn's plan: at most three
   travelling, one of them in the air.
 - Sway (`sway`): stepped shears of living foliage, six cells in thirty each turn.
+- The foreground event's choreography in the sky (`composer::event`): the storm front wiping
+  the sky in from the event's side and a clearing carrying it on out, lightning's two frames,
+  dusk and sunburst, rain after drought tiled across the viewport, and a windstorm's leaves;
+  each instance once, one at a time. The ground's events come next.
 - Day and night on the local clock, and dim mode (`clock`); the soil's drift and the
   reflection sweep (`drift`).
 - The frame scheduler: `Composer::next_change` names the next moment the picture may change,

@@ -658,8 +658,8 @@ pub mod debug {
     pub const AGE: &str = "Age in years";
     pub const RECOVERING: &str = "Recovering";
     pub const EVENT: &str = "Event";
-    pub const EVENTS_NOT_DRAWN: &str =
-        "The scene carries the event; its choreography is not drawn yet.";
+    pub const EVENT_TRIGGERS: &str = "Each press plays the event once, with the sky it \
+        brings. The ground's events are not drawn yet.";
     pub const CLEAR_EVENT: &str = "None";
     pub const CLOCK: &str = "Clock";
     pub const FIXED_TIME: &str = "A fixed time of day";

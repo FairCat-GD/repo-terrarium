@@ -101,16 +101,24 @@ impl Tween {
     /// or `None` if it never will. The value only ever moves toward its target, so the moment
     /// is found by halving.
     pub fn next_step(self, after: Millis) -> Option<Millis> {
-        let now = self.value(after);
+        self.next_step_by(after, |value| value)
+    }
+
+    /// As [`Tween::next_step`], for what `seen` makes of the value: the first moment it shows
+    /// otherwise. `seen` must never turn back as the value moves on, as an opacity scaled by
+    /// a sprite's own never does, so a step it hides is passed over.
+    pub fn next_step_by(self, after: Millis, seen: impl Fn(u8) -> u8) -> Option<Millis> {
+        let now = seen(self.value(after));
         let end = self.end();
-        if after >= end || now == self.to {
+        if after >= end || now == seen(self.to) {
             return None;
         }
-        // `value(end)` is the target, which differs from `now`: the step lies in (lo, hi].
+        // What `end` shows is the target's, which differs from `now`: the step lies in
+        // (lo, hi].
         let (mut lo, mut hi) = (after.0.max(self.start.0), end.0);
         while hi - lo > 1 {
             let mid = lo + (hi - lo) / 2;
-            if self.value(Millis(mid)) == now {
+            if seen(self.value(Millis(mid))) == now {
                 lo = mid;
             } else {
                 hi = mid;
@@ -191,6 +199,27 @@ mod tests {
             }
         }
         assert_eq!(Tween::at(4).next_step(Millis(0)), None);
+    }
+
+    #[test]
+    fn a_step_hidden_by_a_faint_opacity_is_passed_over() {
+        // Against stepping one millisecond at a time, for faint and full art.
+        for own in [26_u16, 34, 100, 255] {
+            let seen = |value: u8| u8::try_from((u16::from(value) * own + 127) / 255).unwrap();
+            for tween in [
+                Tween::new(0, 255, Millis(10), 1200),
+                Tween::new(255, 0, Millis(0), 3000),
+            ] {
+                let last = tween.end().0 + 5;
+                for t in (0..=last).step_by(7) {
+                    let after = Millis(t);
+                    let expected = (t + 1..=last)
+                        .find(|&s| seen(tween.value(Millis(s))) != seen(tween.value(after)))
+                        .map(Millis);
+                    assert_eq!(tween.next_step_by(after, seen), expected, "{own} at {t}");
+                }
+            }
+        }
     }
 
     #[test]

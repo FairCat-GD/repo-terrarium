@@ -16,6 +16,9 @@ pub enum Purpose {
     WorldVariant,
     /// When in its slot a reflection sweep crosses the glass.
     Sweep,
+    /// Where an event's piece goes: a windstorm leaf's height, the ground lightning strikes
+    /// where no struck plant is drawn.
+    EventPlace,
 }
 
 impl Purpose {
@@ -26,6 +29,7 @@ impl Purpose {
             Purpose::WorldPlace => 3,
             Purpose::WorldVariant => 4,
             Purpose::Sweep => 5,
+            Purpose::EventPlace => 6,
         }
     }
 }
