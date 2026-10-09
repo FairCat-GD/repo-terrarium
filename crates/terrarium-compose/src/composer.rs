@@ -704,6 +704,7 @@ impl Composer {
             };
             entry.show(pieces, starts, rise, timing.change);
         }
+        self.note_left(now);
         self.update_label(&overlay.label, now);
         self.update_clock(overlay, now);
         let residents = self.update_residents(input, now);

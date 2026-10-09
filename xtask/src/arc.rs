@@ -200,12 +200,7 @@ fn contact_sheet(frames: &[(NativeImage, NativeImage)]) -> Vec<u8> {
         let y0 = GUTTER + row * (NATIVE_HEIGHT + GUTTER);
         for (column, image) in (0_u32..).zip([day, night]) {
             let x0 = GUTTER + column * (NATIVE_WIDTH + GUTTER);
-            for y in 0..NATIVE_HEIGHT {
-                for x in 0..NATIVE_WIDTH {
-                    let at = usize::try_from((y0 + y) * width + x0 + x).unwrap_or(0);
-                    pixels[at] = image.pixel(x, y);
-                }
-            }
+            gallery::blit(image, (x0, y0), width, &mut pixels);
         }
     }
     export::png(width, height, &pixels)

@@ -1350,16 +1350,16 @@ fn check_continuity(
         }
         // Burn-off steps its weeds out and its fresh soil in, as the art keys them.
         let burned = match key.0 {
-            Subject::Weed { cell } => burning.contains(&cell),
-            Subject::Mark { at, .. } => {
-                family(drawn) == "tmp.soil.fresh-patch." && burning.contains(&at)
+            Subject::Weed { cell } if burning.contains(&cell) => Some(false),
+            Subject::Mark { at, .. }
+                if family(drawn) == "tmp.soil.fresh-patch." && burning.contains(&at) =>
+            {
+                Some(true)
             }
-            _ => false,
+            _ => None,
         };
-        if burned {
-            if let (Some(a), Some(b)) = (a, b) {
-                prop_assert_eq!((a.sprite, a.x, a.y), (b.sprite, b.x, b.y), "{:?}", key);
-            }
+        if let Some(soil) = burned {
+            check_burned(key, a, b, soil, elapsed)?;
             continue;
         }
         if wiping && drawn.layer == Layer::Sky {
@@ -1403,6 +1403,40 @@ fn check_continuity(
     }
     Ok(())
 }
+
+/// On a cell a burn plays on, a weed only falls or goes, and fresh soil only rises or comes, at
+/// the art's keys; but fresh soil the scene stopped holding mid-burn fades out over what is left
+/// of the show, at least the sprinkles' 2.7 s.
+fn check_burned(
+    key: &(Subject, u8, u16, u16),
+    a: Option<&Draw>,
+    b: Option<&Draw>,
+    soil: bool,
+    elapsed: u64,
+) -> Result<(), TestCaseError> {
+    let opacity = |draw: Option<&Draw>| u64::from(draw.map_or(0, |d| d.opacity));
+    let (from, to) = (opacity(a), opacity(b));
+    let fading = 255 * 3 * elapsed / (2 * LEAVING_MS) + 2;
+    prop_assert!(
+        if soil {
+            to >= from || from - to <= fading
+        } else {
+            to <= from
+        },
+        "{:?} stepped from {} to {} against the burn",
+        key,
+        from,
+        to
+    );
+    if let (Some(a), Some(b)) = (a, b) {
+        prop_assert_eq!((a.sprite, a.x, a.y), (b.sprite, b.x, b.y), "{:?}", key);
+    }
+    Ok(())
+}
+
+/// The shortest a burn's fresh soil the scene stopped holding takes to fade out: the show left
+/// after the ash clears, the sprinkles' 900, 600 and 1200 ms.
+const LEAVING_MS: u64 = 2700;
 
 /// The cells a burn plays on, and the plants a scorch stands over, at either of two moments.
 fn ground_shows(before: &[KeyedDraw], after: &[KeyedDraw]) -> (BTreeSet<u8>, BTreeSet<u32>) {

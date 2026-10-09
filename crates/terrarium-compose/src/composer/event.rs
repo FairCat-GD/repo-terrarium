@@ -590,8 +590,7 @@ impl Composer {
             Play::Bolt { .. } => Subject::Bolt,
             Play::Rain { .. } => Subject::Rain,
             Play::Leaves { .. } => Subject::Leaf(0),
-            Play::Burn { .. } => Subject::Burn(0),
-            Play::Ground { .. } => Subject::Mark { id: 0, at: 0 },
+            Play::Burn { .. } | Play::Ground { .. } => self.stage_subject()?,
             // The blooms are the plants' own looks.
             Play::Light | Play::Bloom { .. } => return None,
         };

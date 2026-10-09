@@ -26,7 +26,9 @@
 
 use std::collections::BTreeMap;
 
-use terrarium_truth::scene::{GroundMark, GrowthStage, PlantSpecies, PlantView, SceneInput, Side};
+use terrarium_truth::scene::{
+    GroundMark, GrowthStage, PlantSpecies, PlantState, PlantView, SceneInput, Side,
+};
 
 use super::{
     BLOOM, Composer, FOLIAGE, FOLIAGE_PART, GROUND, Lit, Look, PARTS, PLANT_GLOW, Piece, Pieces,
@@ -66,6 +68,11 @@ pub(super) struct Stage {
     /// The fresh soil a burn leaves: its mark, and the cells it lies on with the look each
     /// steps in by.
     fresh: Option<(u32, Vec<(u8, u16)>)>,
+    /// When that fresh soil's own look takes over from the show's keys.
+    whole: Millis,
+    /// When the scene stopped holding that fresh soil before its look took over, and when the
+    /// show ends: the show fades it, and the flowers on it, out between.
+    left: Option<(Millis, Millis)>,
     /// The marks a show opens into their settled frames, each with the look that settles.
     settling: Vec<(Subject, GroundMark, u16)>,
     /// When each plant a flowering opens blooms.
@@ -203,13 +210,16 @@ impl Composer {
             .collect()
     }
 
-    /// The cell of the plant the scene no longer holds, the lowest id of several: the one a
-    /// sinkhole first carried in this scene swallowed.
+    /// The cell of the living plant the scene no longer holds, the lowest id of several: the
+    /// one a sinkhole first carried in this scene swallowed, as truth swallows only a living
+    /// plant (a dead one leaves at a day's close).
     fn swallowed(&self, input: &SceneInput) -> Option<u8> {
         self.placement
             .plants
             .iter()
-            .filter(|(id, _)| !input.plants.iter().any(|p| p.id == **id))
+            .filter(|(id, placed)| {
+                placed.view.state != PlantState::Dead && !input.plants.iter().any(|p| p.id == **id)
+            })
             .map(|(_, placed)| placed.cell)
             .next()
     }
@@ -268,10 +278,15 @@ impl Composer {
         }
     }
 
-    /// The fossils' spots as they stand, with the spot a sinkhole chose for a fossil arriving
-    /// with it, for `assign_spots` to keep.
+    /// The spots of the scene's fossils as they stand, with the spot a sinkhole chose for a
+    /// fossil arriving with it, for `assign_spots` to keep.
     pub(super) fn fossil_claims(&self, input: &SceneInput) -> BTreeMap<u32, u8> {
-        let mut claims = self.fossils.clone();
+        let mut claims: BTreeMap<u32, u8> = self
+            .fossils
+            .iter()
+            .filter(|(id, _)| input.fossils.iter().any(|f| f.id == **id))
+            .map(|(&id, &spot)| (id, spot))
+            .collect();
         for fossil in &input.fossils {
             if let Some(&spot) = self.sunk.get(&fossil.id)
                 && !claims.contains_key(&fossil.id)
@@ -284,16 +299,19 @@ impl Composer {
     }
 
     /// Keeps the spot of each fossil a sinkhole names, once spots are assigned, while a mark
-    /// names it: its own, or for a fossil every spot was taken from, one of its id's.
+    /// names it: the spot its fossil was given, so the hole always stands over it; for a fossil
+    /// gone, the spot it last had; for one no spot was free for, one of its id's.
     pub(super) fn settle_sunk(&mut self, input: &SceneInput) {
         let named: Vec<u32> = input.ground_marks.iter().filter_map(|m| m.fossil).collect();
         for &fossil in &named {
-            let spot = self
-                .fossils
-                .get(&fossil)
-                .copied()
-                .unwrap_or_else(|| spot_of(fossil));
-            self.sunk.entry(fossil).or_insert(spot);
+            match self.fossils.get(&fossil) {
+                Some(&spot) => {
+                    self.sunk.insert(fossil, spot);
+                }
+                None => {
+                    self.sunk.entry(fossil).or_insert_with(|| spot_of(fossil));
+                }
+            }
         }
         self.sunk.retain(|fossil, _| named.contains(fossil));
     }
@@ -462,6 +480,7 @@ impl Composer {
             } = art.sprinkle;
             end = end.plus(u32::from(enter_ms) + u32::from(hold_ms) + u32::from(exit_ms));
             stage.fresh = Some((mark.id, lying));
+            stage.whole = whole;
         }
         stage.bare = cells;
         stage.bare_until = end;
@@ -540,7 +559,10 @@ impl Composer {
         let mut stage = Stage::default();
         let mut end = start;
         for (subject, kind) in new {
-            let settles = Millis(start.0 + self.settles_ms(kind));
+            let Some((_, settles_ms)) = self.opening(kind) else {
+                continue;
+            };
+            let settles = Millis(start.0 + settles_ms);
             let looks = &mut self.entries.entry(subject).or_default().parts[0];
             stage.settling.push((
                 subject,
@@ -558,12 +580,21 @@ impl Composer {
         Some(end)
     }
 
-    /// How far into its sequence a mark's settled frame takes over.
-    fn settles_ms(&self, kind: GroundMark) -> u64 {
+    /// What a ground show plays on first: the first cell a burn burns, the first mark that
+    /// opens.
+    pub(super) fn stage_subject(&self) -> Option<Subject> {
+        let burn = self.stage.bare.first().map(|&cell| Subject::Burn(cell));
+        burn.or_else(|| self.stage.settling.first().map(|&(subject, ..)| subject))
+    }
+
+    /// The sequence a mark opens in, and how far into it its settled frame takes over; fresh
+    /// soil opens in none.
+    fn opening(&self, kind: GroundMark) -> Option<(crate::catalog::AnimationId, u64)> {
+        let art = &self.ground_art;
         match kind {
-            GroundMark::Crack => self.ground_art.crack_settles_ms,
-            GroundMark::Sinkhole => self.ground_art.sinkhole_settles_ms,
-            GroundMark::FreshSoil => self.ground_art.fresh_from_ms,
+            GroundMark::Crack => Some((art.crack, art.crack_settles_ms)),
+            GroundMark::Sinkhole => Some((art.sinkhole, art.sinkhole_settles_ms)),
+            GroundMark::FreshSoil => None,
         }
     }
 
@@ -637,20 +668,34 @@ impl Composer {
                     let value = scale(burnt.value, weeds);
                     self.push(art, table, place, burnt.piece, lit(value), now, out);
                 }
-                let fresh = permille(keys.fresh_soil_permille);
-                if fresh > 0
-                    && elapsed < ground.fresh_from_ms
-                    && let Some((id, lying)) = &self.stage.fresh
-                {
-                    for &(cell, look) in lying {
-                        let place = Place::new(Subject::Mark { id: *id, at: cell }, 0, look);
-                        let piece = Piece::Ground(GroundMark::FreshSoil);
-                        self.push(art, table, place, piece, lit(fresh), now, out);
-                    }
-                }
             }
         }
-        let value = self.sprinkled(start, now);
+        // The fresh soil steps in by the art's keys until its own look takes over, or, where
+        // the scene stopped holding it, fades out from where the keys have it.
+        let key = if pose.done {
+            SHOWN
+        } else {
+            catalog
+                .sprite(pose.frame)
+                .burnoff
+                .map_or(0, |keys| permille(keys.fresh_soil_permille))
+        };
+        let leaving = self.leaving().map(|tween| tween.value(now));
+        let fresh = match leaving {
+            Some(leaving) => scale(key, leaving),
+            None if !pose.done && elapsed < ground.fresh_from_ms => key,
+            None => 0,
+        };
+        if fresh > 0
+            && let Some((id, lying)) = &self.stage.fresh
+        {
+            for &(cell, look) in lying {
+                let place = Place::new(Subject::Mark { id: *id, at: cell }, 0, look);
+                let piece = Piece::Ground(GroundMark::FreshSoil);
+                self.push(art, table, place, piece, lit(fresh), now, out);
+            }
+        }
+        let value = scale(self.sprinkled(start, now), leaving.unwrap_or(SHOWN));
         if value == 0 {
             return;
         }
@@ -669,6 +714,36 @@ impl Composer {
                 }
             }
         }
+    }
+
+    /// Notes, after an update, that the scene stopped holding a burn's fresh soil before its
+    /// look took over from the show's keys: that look was lowered from nothing, so the show
+    /// fades the soil out instead. Once the look has taken over, it fades as any look does.
+    pub(super) fn note_left(&mut self, now: Millis) {
+        let Some(end) = self
+            .show_end()
+            .filter(|&end| now < end && now < self.stage.whole)
+        else {
+            return;
+        };
+        let Some((id, lying)) = &self.stage.fresh else {
+            return;
+        };
+        let held = lying.iter().any(|&(cell, _)| {
+            self.entries
+                .get(&Subject::Mark { id: *id, at: cell })
+                .is_some_and(|entry| entry.looks().any(|look| look.opacity.target() == SHOWN))
+        });
+        if !held && self.stage.left.is_none() {
+            self.stage.left = Some((now, end));
+        }
+    }
+
+    /// How the fresh soil a scene stopped holding mid-burn fades out.
+    fn leaving(&self) -> Option<Tween> {
+        let (from, until) = self.stage.left?;
+        let ms = u32::try_from(until.0.saturating_sub(from.0)).unwrap_or(u32::MAX);
+        Some(Tween::new(SHOWN, 0, from, ms))
     }
 
     /// The sprinkles' envelope, from when the burn's ash clears.
@@ -719,10 +794,10 @@ impl Composer {
             let Subject::Mark { id, at } = subject else {
                 continue;
             };
-            let Some(sequence) = self.sequence(kind) else {
+            let Some((sequence, settles_ms)) = self.opening(kind) else {
                 continue;
             };
-            if elapsed >= self.settles_ms(kind) {
+            if elapsed >= settles_ms {
                 continue;
             }
             let frame = anim::pose(catalog, catalog.animation(sequence), elapsed).frame;
@@ -739,14 +814,6 @@ impl Composer {
                     draw,
                 ));
             }
-        }
-    }
-
-    fn sequence(&self, kind: GroundMark) -> Option<crate::catalog::AnimationId> {
-        match kind {
-            GroundMark::Crack => Some(self.ground_art.crack),
-            GroundMark::Sinkhole => Some(self.ground_art.sinkhole),
-            GroundMark::FreshSoil => None,
         }
     }
 
@@ -812,7 +879,8 @@ impl Composer {
             .fresh
             .as_ref()
             .and_then(|_| next_of(&self.sprinkle_tweens(start), now));
-        [frame, sprinkles].into_iter().flatten().min()
+        let leaving = self.leaving().and_then(|tween| tween.next_step(now));
+        [frame, sprinkles, leaving].into_iter().flatten().min()
     }
 
     /// The first moment after `now` at which a mark the show opens shows its next frame, or
@@ -828,9 +896,10 @@ impl Composer {
             .settling
             .iter()
             .filter_map(|&(_, kind, _)| {
-                let sequence = catalog.animation(self.sequence(kind)?);
+                let (sequence, settles_ms) = self.opening(kind)?;
+                let sequence = catalog.animation(sequence);
                 let ms = anim::next_frame_at(sequence, elapsed)?;
-                (ms <= self.settles_ms(kind)).then_some(Millis(start.0 + ms))
+                (ms <= settles_ms).then_some(Millis(start.0 + ms))
             })
             .min()
     }
@@ -1040,6 +1109,9 @@ mod tests {
                 None => assert!(lying.is_empty(), "{ms}"),
             }
         }
+        // What plays is named by a cell it burns.
+        let playing = composer.show_depicted(after(now, 1)).map(|d| d.subject);
+        assert!(matches!(playing, Some(Subject::Burn(cell)) if cells.contains(&cell)));
         // The ash clears; the sprinkles come over 900 ms, hold and go over 1200; the soil stays.
         assert!(burns(941).is_empty());
         let sprinkles = |ms| {
@@ -1062,6 +1134,39 @@ mod tests {
             opacities(&soil(settled.0 - now.0 + 60_000)),
             BTreeSet::from([255])
         );
+    }
+
+    #[test]
+    fn fresh_soil_the_scene_drops_mid_burn_fades_out_rather_than_vanishing() {
+        let burnt = with(&poor(), EventKind::ClearingBurn, Side::Left);
+        let (mut composer, now) = played(&poor(), &burnt);
+        let soil = |composer: &Composer, ms: u64| -> u8 {
+            of(composer, after(now, ms), |s| {
+                matches!(s, Subject::Mark { .. })
+            })
+            .iter()
+            .map(|k| k.draw.opacity)
+            .max()
+            .unwrap_or(0)
+        };
+        // Truth drops it while it stands at 0.4 of itself.
+        let mut dropped = burnt.clone();
+        dropped.ground_marks.clear();
+        let frame = composer.draws(art(), table(), 0, after(now, 500));
+        composer.update(&dropped, &overlay(false), after(now, 500));
+        assert_eq!(composer.draws(art(), table(), 0, after(now, 500)), frame);
+        let mut last = soil(&composer, 500);
+        assert_eq!(last, 102);
+        let mut rose = false;
+        for ms in (501..4000).step_by(7) {
+            let next = soil(&composer, ms);
+            // No step wider than the art's own, from 0.4 to 1.
+            assert!(next.abs_diff(last) <= 153, "{ms}: {last} to {next}");
+            rose |= next > last;
+            last = next;
+        }
+        assert!(rose, "it still steps in by the keys");
+        assert_eq!(soil(&composer, composer.settled_at().0 - now.0), 0);
     }
 
     #[test]
@@ -1334,6 +1439,12 @@ mod tests {
             ]
         );
         assert!(seen.iter().all(|m| m.0 == seen[0].0), "one key throughout");
+        let playing = composer.show_depicted(after(now, 1)).map(|d| d.subject);
+        assert_eq!(
+            playing,
+            Some(seen[0].0),
+            "what plays is named by the mark it opens"
+        );
         let later = marks_at(&composer, after(composer.settled_at(), 600_000));
         assert_eq!(later, [(seen[0].0, "tmp.ground.crack.settled", 255)]);
         assert_eq!(composer.show_end(), Some(after(now, 1 + 498)));
@@ -1421,6 +1532,79 @@ mod tests {
         let middle = composer.mark_x(art(), table(), GroundMark::Sinkhole, 0, spot);
         assert_eq!(hole.key.x, middle);
         assert_eq!(middle, composer.world.fossil(spot) + 4);
+    }
+
+    #[test]
+    fn a_hole_stands_over_its_fossil_though_a_fossil_left_that_spot_in_the_same_update() {
+        let base = thriving();
+        let sunk = with(&base, EventKind::Sinkhole, Side::Left);
+        let gone = base
+            .plants
+            .iter()
+            .find(|p| !sunk.plants.iter().any(|q| q.id == p.id))
+            .unwrap()
+            .id;
+        let fresh = || {
+            let mut composer = Composer::new(table(), preset::SALT);
+            composer.update(&base, &overlay(false), Millis(0));
+            composer
+        };
+        let cell = fresh().placement.plants[&gone].cell;
+        let x = slots::centre(usize::from(cell));
+        let nearest = (0..world::FOSSILS)
+            .min_by_key(|&s| (world::fossil_centre(s) - x).abs())
+            .unwrap();
+        // A fossil the composer puts at that spot, which leaves as the hole opens.
+        let leaving = (100..200)
+            .find(|&id| {
+                let mut with_fossil = base.clone();
+                with_fossil.fossils.push(FossilView {
+                    id,
+                    form: FossilForm::Shell,
+                });
+                let mut composer = Composer::new(table(), preset::SALT);
+                composer.update(&with_fossil, &overlay(false), Millis(0));
+                usize::from(composer.fossil_spots()[&id]) == nearest
+            })
+            .expect("an id the spot goes to");
+        let mut before = base.clone();
+        before.fossils.push(FossilView {
+            id: leaving,
+            form: FossilForm::Shell,
+        });
+        let (composer, _) = played(&before, &sunk);
+        let fossil = sunk.event.unwrap().fossil.unwrap();
+        assert_eq!(composer.sunk[&fossil], composer.fossil_spots()[&fossil]);
+        assert_eq!(usize::from(composer.sunk[&fossil]), nearest);
+    }
+
+    #[test]
+    fn a_dead_plant_leaving_with_the_swallowed_one_is_not_taken_for_it() {
+        let mut base = thriving();
+        let sunk = with(&base, EventKind::Sinkhole, Side::Left);
+        let swallowed = base
+            .plants
+            .iter()
+            .find(|p| !sunk.plants.iter().any(|q| q.id == p.id))
+            .unwrap()
+            .id;
+        // A dead plant with a lower id leaves at the same update.
+        base.plants.push(PlantView {
+            id: 1,
+            species: PlantSpecies::Thistle,
+            stage: GrowthStage::Mature,
+            state: PlantState::Dead,
+            bloom: false,
+            scorched: false,
+            order: 99,
+        });
+        let mut composer = Composer::new(table(), preset::SALT);
+        composer.update(&base, &overlay(false), Millis(0));
+        assert!(composer.placement.plants.contains_key(&1));
+        assert_eq!(
+            composer.swallowed(&sunk),
+            Some(composer.placement.plants[&swallowed].cell)
+        );
     }
 
     #[test]

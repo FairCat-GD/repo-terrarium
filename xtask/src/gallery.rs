@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::export;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, NativeImage};
+use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, NativeImage, Rgba};
 use terrarium_compose::synthetic::{self, Cell};
 use terrarium_compose::variants::ArtTable;
 
@@ -133,15 +133,20 @@ fn contact_sheet(cells: &[(usize, usize, NativeImage, NativeImage)]) -> Vec<u8> 
         let x0 = GUTTER + u32::try_from(*column).unwrap_or(0) * (NATIVE_WIDTH + GUTTER);
         let y0 = GUTTER + u32::try_from(*row).unwrap_or(0) * (cell_height + GUTTER);
         for (image, top) in [(day, y0), (night, y0 + NATIVE_HEIGHT + GAP)] {
-            for y in 0..NATIVE_HEIGHT {
-                for x in 0..NATIVE_WIDTH {
-                    let at = usize::try_from((top + y) * width + x0 + x).unwrap_or(0);
-                    pixels[at] = image.pixel(x, y);
-                }
-            }
+            blit(image, (x0, top), width, &mut pixels);
         }
     }
     export::png(width, height, &pixels)
+}
+
+/// Copies a native frame into a sheet `width` pixels wide, its top-left at `(x0, y0)`.
+pub fn blit(image: &NativeImage, (x0, y0): (u32, u32), width: u32, pixels: &mut [Rgba]) {
+    for y in 0..NATIVE_HEIGHT {
+        for x in 0..image.width() {
+            let at = usize::try_from((y0 + y) * width + x0 + x).unwrap_or(0);
+            pixels[at] = image.pixel(x, y);
+        }
+    }
 }
 
 #[cfg(test)]
