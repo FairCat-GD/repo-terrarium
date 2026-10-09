@@ -23,8 +23,12 @@ The headless live pipeline, run on a worker thread.
   reports are written into, and the recorded runs' directory; registered in one batch.
 - **The clock** (`clock`): the wall clock, behind a trait so tests set it.
 - The headless replay (`headless`): read a repository, import an observations export into a
-  store in a directory the caller owns, and dump truth's replay. `repo-terrarium replay
-  --dump` and `cargo xtask golden` run through it.
+  store in a directory the caller owns, and dump truth's replay, or replay it a day at a time
+  into each day's scene. `repo-terrarium replay --dump`, `cargo xtask golden` and `cargo xtask
+  arc` run through it.
+- Which event a scene plays (`showing`): the best not yet shown, held through the next hour
+  unless outranked; the live view, the day-by-day replay and the debug window's simulation
+  all choose it there.
 - Observations (`observe`): a report an adapter read, HEAD and a time become the store's
   record; and a ref rewrite's record. Only a known reading is recorded; dead code waits for the
   export count the tree-sitter reader brings.

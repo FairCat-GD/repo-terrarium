@@ -185,8 +185,8 @@ pub fn place(prev: &Placement, input: &SceneInput, bands: &Bands) -> Placement {
 fn weeds(taken: &mut [bool; CELLS], plants: usize, count: u8) -> BTreeMap<u8, WeedForm> {
     let count = usize::from(count);
     let cells = count.min(WEED_CELLS).min(CEILING.saturating_sub(plants));
-    let chosen: BTreeSet<u8> = (0..CELLS)
-        .map(|i| (WEED_START + i * WEED_STRIDE) % CELLS)
+    let chosen: BTreeSet<u8> = weed_walk()
+        .map(usize::from)
         .filter(|&cell| !taken[cell])
         .take(cells)
         .filter_map(|cell| u8::try_from(cell).ok())
@@ -205,6 +205,11 @@ fn weeds(taken: &mut [bool; CELLS], plants: usize, count: u8) -> BTreeMap<u8, We
             (cell, form)
         })
         .collect()
+}
+
+/// The cells weeds take, in the order they take them: every cell once.
+pub fn weed_walk() -> impl Iterator<Item = u8> {
+    (0..CELLS).filter_map(|i| u8::try_from((WEED_START + i * WEED_STRIDE) % CELLS).ok())
 }
 
 /// Each id's spot among `n`: kept while the id stays, a new id preferring `id × stride mod n`

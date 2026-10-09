@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 
 use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{
-    EventKind, FossilForm, GrowthStage, LifeStage, Light, MonumentAge, PlantSpecies, PlantState,
-    PlantView, ResidentSpecies, ResidentView, SceneInput, Weather,
+    EventKind, FossilForm, GroundMark, GrowthStage, LifeStage, Light, MonumentAge, PlantSpecies,
+    PlantState, PlantView, ResidentSpecies, ResidentView, SceneInput, Weather,
 };
 
 use crate::anim;
@@ -41,7 +41,7 @@ use crate::drift::{self, SOIL_MS_PER_PX, SOIL_PERIOD};
 use crate::frame::{
     Area, Draw, Frame, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Shear, Viewport,
 };
-use crate::motion::{Clock, DIM_EVERY, Eras, Snapshot, motion_turn, turn, turn_start};
+use crate::motion::{Clock, DIM_EVERY, Eras, Shaken, Snapshot, motion_turn, turn, turn_start};
 use crate::order::{KeyedDraw, Place, Subject, merged};
 use crate::place::{Bands, FillForm, Placement, WeedForm, assign_spots, place};
 use crate::plant::{self, shows_bloom, shows_glow, sways};
@@ -57,10 +57,11 @@ use crate::tween::durations::{
     RESTYLE_MS, SKY_MS, VANISH_MS,
 };
 use crate::tween::{Millis, Tween};
-use crate::variants::{ArtTable, GlassFilm, PlantArt, SkyEventArt};
+use crate::variants::{ArtTable, GlassFilm, GroundEventArt, PlantArt, SkyEventArt};
 use crate::world::{self, Kind, LABEL_X, LABEL_Y, Scenery, WorldLayout};
 
 mod event;
+mod ground;
 
 const SHOWN: u8 = u8::MAX;
 const HALF_RESTYLE: u32 = RESTYLE_MS / 2;
@@ -150,6 +151,8 @@ pub enum Piece {
     },
     LichenGlow(MonumentAge),
     Fossil(FossilForm),
+    /// A mark an event left in the ground, settled.
+    Ground(GroundMark),
     Weather(Weather),
     Cloud(CloudSize),
     Sun,
@@ -238,6 +241,10 @@ impl Piece {
                 world::pick(salt, Kind::Mark, mark, table.carved_marks())
             }
             Piece::Fossil(form) => Some(table.fossil(form)),
+            Piece::Ground(GroundMark::FreshSoil) => {
+                pick(Kind::Ground, table.ground_mark(GroundMark::FreshSoil))
+            }
+            Piece::Ground(mark) => table.ground_mark(mark).first().copied(),
             Piece::Weather(weather) => table.weather(weather).first().copied(),
             Piece::Cloud(size) => pick(Kind::Cloud, world.clouds(size)),
             Piece::Sun => Some(world.sun),
@@ -256,9 +263,13 @@ impl Piece {
 /// The number a subject's salted choices are drawn for: its cell, its place or its id.
 fn item(subject: Subject) -> u64 {
     match subject {
-        Subject::Weed { cell } | Subject::Fill { cell } | Subject::Plant { cell, .. } => {
-            u64::from(cell)
-        }
+        Subject::Weed { cell }
+        | Subject::Fill { cell }
+        | Subject::Plant { cell, .. }
+        | Subject::Scorch { cell, .. }
+        | Subject::Burn(cell)
+        | Subject::Sprinkle(cell)
+        | Subject::Mark { at: cell, .. } => u64::from(cell),
         Subject::Cloud(i)
         | Subject::Star(i)
         | Subject::Dressing(i)
@@ -374,15 +385,24 @@ impl Entry {
         self.parts.iter().flatten()
     }
 
-    /// Moves each part toward its piece from `start`, rising over `rise`; a part with none
+    /// Moves each part toward its piece from its start, rising over `rise`; a part with none
     /// falls over `change` once the others have risen.
-    fn show(&mut self, pieces: Pieces, start: Millis, rise: u32, change: u32) {
-        for (looks, piece) in self.parts.iter_mut().zip(pieces) {
+    fn show(&mut self, pieces: Pieces, starts: [Millis; PARTS], rise: u32, change: u32) {
+        for ((looks, piece), start) in self.parts.iter_mut().zip(pieces).zip(starts) {
             match piece {
                 Some(piece) => raise(looks, piece, start, rise, change),
                 None => lower(looks, start, start.plus(rise), change),
             }
         }
+    }
+
+    /// Whether every look of `parts` holds still from `now` until it is gone by `until`, or for
+    /// good: a change can wait until then without cutting any look that moves now.
+    fn still(&self, parts: std::ops::Range<usize>, now: Millis, until: Millis) -> bool {
+        self.parts[parts].iter().flatten().all(|look| {
+            let tween = look.opacity;
+            tween.end() <= now || (tween.target() == 0 && tween.end() <= until)
+        })
     }
 
     fn hide(&mut self, start: Millis, ms: u32) {
@@ -547,6 +567,16 @@ pub struct Composer {
     curtain: OnceCell<event::Curtain>,
     /// The event's choreography, playing or played.
     show: Option<event::Show>,
+    /// What the ground's events play.
+    ground_art: GroundEventArt,
+    /// What a ground choreography keeps beside its show.
+    stage: ground::Stage,
+    /// The cells each patch of fresh soil lies on, by its mark: the cells a burn took the weeds
+    /// from.
+    fresh: BTreeMap<u32, Vec<u8>>,
+    /// The spot of each fossil a sinkhole names, by the fossil, while a mark names it: a fossil
+    /// a rewrite took leaves its hole where it lay.
+    sunk: BTreeMap<u32, u8>,
 }
 
 /// A resident as drawn: how visible it is, what it was when last in the scene, and, through
@@ -595,6 +625,10 @@ impl Composer {
             played: Vec::new(),
             curtain: OnceCell::new(),
             show: None,
+            ground_art: table.ground_events().clone(),
+            stage: ground::Stage::default(),
+            fresh: BTreeMap::new(),
+            sunk: BTreeMap::new(),
         }
     }
 
@@ -629,6 +663,9 @@ impl Composer {
         }
         self.entries
             .retain(|_, entry| entry.looks().next().is_some());
+        // Where the scene's marks lie is read from the scene before this one: the weeds a burn
+        // took, the plant a sinkhole swallowed.
+        self.remember_marks(input, now);
         self.placement = place(&self.placement, input, &self.bands);
         self.monuments = assign_spots(
             &self.monuments,
@@ -636,15 +673,16 @@ impl Composer {
             world::MONUMENTS,
         );
         self.fossils = assign_spots(
-            &self.fossils,
+            &self.fossil_claims(input),
             input.fossils.iter().map(|f| f.id),
             world::FOSSILS,
         );
+        self.settle_sunk(input);
         let wanted = self.wanted(input, overlay);
         // A change of the sky waits for a wipe crossing to pass; one the event begins is the
         // change itself.
         let sky_from = self.sky_from(now);
-        let wipe = self.cue(input, now);
+        let wipe = self.cue(input, &wanted, now);
         if let Some(wipe) = wipe {
             self.wipe_sky(&wanted, now, wipe.end());
         }
@@ -657,13 +695,14 @@ impl Composer {
         }
         for (subject, pieces) in wanted.into_iter().filter(|(s, _)| moved(*s)) {
             let timing = timing(subject, self.light_ms);
+            let starts = self.starts(subject, start(subject), now);
             let entry = self.entries.entry(subject).or_default();
             let rise = if entry.shown() {
                 timing.change
             } else {
                 timing.arrive
             };
-            entry.show(pieces, start(subject), rise, timing.change);
+            entry.show(pieces, starts, rise, timing.change);
         }
         self.update_label(&overlay.label, now);
         self.update_clock(overlay, now);
@@ -673,6 +712,13 @@ impl Composer {
         self.note_arrivals(&snapshot, running);
         if resident::pending(self.eras.at(running), &snapshot, running, &self.arrivals()) {
             let settles = turn_start(running + 1).plus(resident::CHANGE_SETTLES_MS);
+            self.residents_settle = self.residents_settle.max(settles);
+        }
+        // Residents an earthquake sends into hiding come out the turn after.
+        if let Some(shaken) = snapshot.shaken.filter(|_| !snapshot.residents.is_empty())
+            && shaken.turn > running
+        {
+            let settles = turn_start(shaken.turn + 1).plus(resident::CHANGE_SETTLES_MS);
             self.residents_settle = self.residents_settle.max(settles);
         }
         self.eras.record(now, snapshot);
@@ -840,7 +886,25 @@ impl Composer {
             },
             swaying,
             residents,
+            shaken: self.shaken(input, now),
         }
+    }
+
+    /// The earthquake the scene carries, and the turn it shakes: the one after the update that
+    /// first carried it, kept while later updates carry it on.
+    fn shaken(&self, input: &SceneInput, now: Millis) -> Option<Shaken> {
+        let event = input
+            .event
+            .filter(|event| event.kind == EventKind::Earthquake)?;
+        let carried = self
+            .eras
+            .latest()
+            .and_then(|snapshot| snapshot.shaken)
+            .filter(|shaken| shaken.instance == event.started_tick);
+        Some(carried.unwrap_or(Shaken {
+            instance: event.started_tick,
+            turn: turn(now) + 1,
+        }))
     }
 
     /// What every resident does in turn `w`, by id. It never reads the salt (I-2).
@@ -1062,6 +1126,9 @@ impl Composer {
                 };
                 wanted.insert(subject, one(Piece::Fossil(fossil.form)));
             }
+        }
+        for (subject, kind) in self.marks(input) {
+            wanted.insert(subject, one(Piece::Ground(kind)));
         }
         let weather = input.weather;
         wanted.insert(Subject::Weather, one(Piece::Weather(weather)));
@@ -1305,8 +1372,9 @@ impl Composer {
         }
         for (&subject, entry) in &self.entries {
             for (part, looks) in (0_u8..).zip(&entry.parts) {
+                let veil = self.veil(subject, part, now);
                 for look in looks {
-                    let opacity = look.opacity.value(now);
+                    let opacity = scale(look.opacity.value(now), veil);
                     if opacity > 0 {
                         depicted.push(Depicted {
                             subject,
@@ -1337,8 +1405,9 @@ impl Composer {
         let mut sky_draws = Vec::new();
         for (&subject, entry) in &self.entries {
             for (part, looks) in (0_u8..).zip(&entry.parts) {
+                let veil = self.veil(subject, part, now);
                 for (index, look) in (0_u16..).zip(looks) {
-                    let value = look.opacity.value(now);
+                    let value = scale(look.opacity.value(now), veil);
                     if value == 0 {
                         continue;
                     }
@@ -1355,6 +1424,7 @@ impl Composer {
         self.push_label(art, now, &mut keyed);
         self.push_drifts(art, table, now, &mut keyed);
         self.push_residents(art, table, palette_mix, now, &mut keyed);
+        self.push_ground(art, table, palette_mix, now, &mut keyed);
         // The scene stands in the middle of the viewport; everything else is laid out across
         // the viewport already.
         let inset = self.viewport.inset();
@@ -1493,6 +1563,7 @@ impl Composer {
             });
         };
         let ground = |x| Draw::anchored(catalog, sprite, x, PLANT_GROUND_Y);
+        let at = |(x, y)| Draw::new(catalog, sprite, x, y);
         match place.subject {
             Subject::Weather => {
                 // The backdrop is the whole scene, held still at its place: a new weather
@@ -1509,23 +1580,13 @@ impl Composer {
                     push(place, None, Draw::new(catalog, sprite, x, drift.y));
                 }
             }
-            Subject::Sun => {
-                let (x, y) = self.world.sun();
-                push(place, None, Draw::new(catalog, sprite, x, y));
-            }
+            Subject::Sun => push(place, None, at(self.world.sun())),
             Subject::Moon => {
-                let (x, y) = self.world.moon();
-                let mirrored = matches!(piece, Piece::Moon(look) if look.mirrored);
-                let draw = Draw {
-                    flip_x: mirrored,
-                    ..Draw::new(catalog, sprite, x, y)
-                };
-                push(place, None, draw);
+                let flip_x = matches!(piece, Piece::Moon(look) if look.mirrored);
+                let draw = at(self.world.moon());
+                push(place, None, Draw { flip_x, ..draw });
             }
-            Subject::Star(i) => {
-                let (x, y) = self.world.star(i);
-                push(place, None, Draw::new(catalog, sprite, x, y));
-            }
+            Subject::Star(i) => push(place, None, at(self.world.star(i))),
             Subject::Light | Subject::Film(_) => {
                 let draws = match place.subject {
                     Subject::Light => light(catalog, sprite, self.viewport),
@@ -1538,21 +1599,24 @@ impl Composer {
             Subject::Monument { spot, .. } => {
                 let x = self.world.monument(spot);
                 let draw = match piece {
-                    Piece::Mark { age } => {
-                        let Some(draw) = mark(catalog, table, age, place.part, sprite, x) else {
-                            return;
-                        };
-                        draw
-                    }
-                    _ => ground(x),
+                    Piece::Mark { age } => mark(catalog, table, age, place.part, sprite, x),
+                    _ => Some(ground(x)),
                 };
                 // Every part keyed at the monument's ground point, so the marks paint over
                 // their stone rather than sorting under it.
-                push(place, Some((x, PLANT_GROUND_Y)), draw);
+                if let Some(draw) = draw {
+                    push(place, Some((x, PLANT_GROUND_Y)), draw);
+                }
             }
             Subject::Fossil { spot, .. } => {
                 let (x, y) = (self.world.fossil(spot), FRAME_HEIGHT - i32::from(rect.h));
                 push(place, None, Draw::new(catalog, sprite, x, y));
+            }
+            Subject::Mark { id, at } => {
+                // Keyed at the ground line, after the soil's tiles, so it lies on them.
+                if let Some((point, draw)) = self.mark_draw(art, table, piece, (id, at), sprite) {
+                    push(place, Some(point), draw);
+                }
             }
             Subject::Plant { cell, .. } | Subject::Fill { cell } | Subject::Weed { cell } => {
                 let x = self.layout.slot(cell).x;
@@ -1580,7 +1644,10 @@ impl Composer {
             | Subject::Front
             | Subject::Bolt
             | Subject::Rain
-            | Subject::Leaf(_) => {}
+            | Subject::Leaf(_)
+            | Subject::Scorch { .. }
+            | Subject::Burn(_)
+            | Subject::Sprinkle(_) => {}
         }
     }
 
@@ -1878,6 +1945,7 @@ fn timing(subject: Subject, light_ms: u32) -> Timing {
         | Subject::Dressing(_)
         | Subject::Litter(_)
         | Subject::Fungus(_)
+        | Subject::Mark { .. }
         // Never entries: the label keeps its own looks, timed by `update_label`, the scenery
         // never changes, the soil and the sweep move with the clock alone, residents keep
         // their own looks, and an event's pieces are its choreography's. They are here only to
@@ -1890,7 +1958,10 @@ fn timing(subject: Subject, light_ms: u32) -> Timing {
         | Subject::Front
         | Subject::Bolt
         | Subject::Rain
-        | Subject::Leaf(_) => (FILL_MS, FILL_MS, HALF_RESTYLE),
+        | Subject::Leaf(_)
+        | Subject::Scorch { .. }
+        | Subject::Burn(_)
+        | Subject::Sprinkle(_) => (FILL_MS, FILL_MS, HALF_RESTYLE),
     };
     Timing {
         arrive,

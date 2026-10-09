@@ -29,6 +29,12 @@ pub const LABEL_Y: i32 = 2;
 /// How many of each piece the world has places for.
 pub const MONUMENTS: usize = 3;
 pub const FOSSILS: usize = 6;
+/// The fossil spots' strata, and how far the salt moves a spot into its stratum.
+const FOSSILS_FROM: i32 = 24;
+const FOSSILS_TO: i32 = 616;
+const FOSSIL_JITTER: i32 = 91;
+/// A crack keeps this far inside the scene's edges.
+const CRACK_MARGIN: i32 = 24;
 pub const PEBBLES: usize = 10;
 pub const DRESSING: usize = 6;
 pub const LITTER: usize = 8;
@@ -66,6 +72,8 @@ pub enum Kind {
     Fungus,
     Mark,
     Resident,
+    /// What the ground's events leave: where a crack opens, which fresh patch and sprinkle.
+    Ground,
 }
 
 impl Kind {
@@ -84,6 +92,7 @@ impl Kind {
             Kind::Fungus => 11,
             Kind::Mark => 12,
             Kind::Resident => 13,
+            Kind::Ground => 14,
         }
     }
 
@@ -139,7 +148,8 @@ impl WorldLayout {
     pub fn new(salt: InstallSalt, art: &WorldArt) -> WorldLayout {
         let (body, star) = (art.body_side, art.star_side);
         let fossils = std::array::from_fn(|i| {
-            stratum(24, 616, FOSSILS, i) + place(salt, Kind::Fossil, i, 0, 91)
+            stratum(FOSSILS_FROM, FOSSILS_TO, FOSSILS, i)
+                + place(salt, Kind::Fossil, i, 0, FOSSIL_JITTER)
         });
         let sun = (480 + place(salt, Kind::Sun, 0, 0, 101), BODY_ROW);
         let moon = (150 + place(salt, Kind::Moon, 0, 0, 111), BODY_ROW);
@@ -218,6 +228,20 @@ impl WorldLayout {
         self.fossils[usize::from(spot) % FOSSILS]
     }
 
+    /// Where a crack `width` wide that truth's mark `id` names opens: its left edge, a salted
+    /// place kept clear of the scene's edges.
+    pub fn crack(&self, id: u32, width: i32) -> i32 {
+        let item = usize::try_from(id).unwrap_or(0);
+        CRACK_MARGIN
+            + place(
+                self.salt,
+                Kind::Ground,
+                item,
+                0,
+                WIDTH - 2 * CRACK_MARGIN - width,
+            )
+    }
+
     /// A decorative tuft's ground point x.
     pub fn dressing(&self, i: u8) -> i32 {
         self.dressing[usize::from(i) % DRESSING]
@@ -261,6 +285,12 @@ impl WorldLayout {
     pub fn pebbles(&self) -> &[(i32, i32); PEBBLES] {
         &self.pebbles
     }
+}
+
+/// The middle of fossil spot `spot` before the salt moves it: the same on every install, so a
+/// choice made by it is too.
+pub fn fossil_centre(spot: usize) -> i32 {
+    stratum(FOSSILS_FROM, FOSSILS_TO, FOSSILS, spot) + FOSSIL_JITTER / 2
 }
 
 /// Where resident stretch `i` begins and ends: the same on every install.

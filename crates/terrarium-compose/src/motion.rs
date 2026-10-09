@@ -9,8 +9,8 @@
 
 use std::collections::BTreeSet;
 
-use terrarium_truth::PresentationState;
 use terrarium_truth::scene::{Weather, Wind};
+use terrarium_truth::{PresentationState, Tick};
 
 use crate::clock::{DayNight, LocalClock, NIGHT_FROM};
 use crate::order::Subject;
@@ -88,6 +88,16 @@ pub struct Snapshot {
     pub swaying: BTreeSet<Subject>,
     /// The residents drawn, by id, each at its spot and home.
     pub residents: Vec<Resident>,
+    /// The earthquake the scene carries, and the one turn it sends the residents into hiding.
+    pub shaken: Option<Shaken>,
+}
+
+/// An earthquake, by the tick it started in, and the turn after the update that first carried
+/// it: the one the residents flee in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shaken {
+    pub instance: Tick,
+    pub turn: u64,
 }
 
 /// The scene each turn reads. An update stands from the turn after the one it arrives in;
@@ -123,6 +133,11 @@ impl Eras {
             .map(|(_, snapshot)| snapshot)
     }
 
+    /// The scene the last update recorded.
+    pub fn latest(&self) -> Option<&Snapshot> {
+        self.eras.last().map(|(_, snapshot)| snapshot)
+    }
+
     /// The first turn any record stands for.
     pub fn first(&self) -> Option<u64> {
         self.eras.first().map(|&(first, _)| first)
@@ -147,6 +162,7 @@ mod tests {
             },
             swaying: BTreeSet::new(),
             residents: Vec::new(),
+            shaken: None,
         }
     }
 

@@ -30,6 +30,8 @@ mod record_tests;
 #[cfg(feature = "dev")]
 mod repaint;
 mod replay;
+#[cfg(feature = "dev")]
+mod sandbox;
 mod strip;
 
 use std::process::ExitCode;

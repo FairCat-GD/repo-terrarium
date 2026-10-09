@@ -18,8 +18,11 @@
 //! - `EventKind` goes through the events manifest's `reusedActiveIds` groups plus the sprites
 //!   tagged with the event. Storm and Clearing share the storm front and body. The sky's
 //!   events also resolve each piece in its role ([`SkyEventArt`]): the front's curtain and the
-//!   sequences lightning, rain and the wind's leaves play.
-//! - The art tags the flower sprinkles `clearing-burn`, so they belong to `ClearingBurn` here.
+//!   sequences lightning, rain and the wind's leaves play; and so do the ground's
+//!   ([`GroundEventArt`]): burn-off and its keys, the crack and the sinkhole settling, the
+//!   sprinkles.
+//! - The art tags the flower sprinkles `clearing-burn` and sets them on a burn's fresh soil, so
+//!   they belong to `ClearingBurn`, not to Flowering.
 //!
 //! Some enums have no art by design; [`NO_ART`] lists them with the reason.
 //!
@@ -41,7 +44,9 @@ use terrarium_truth::scene::{
     MonumentAge, PlantSpecies, PlantState, ResidentSpecies, Weather, Wind,
 };
 
-use crate::catalog::{AnimationId, Art, Catalog, Flags, Layer, Next, Point, Sprite, SpriteId};
+use crate::catalog::{
+    AnimationId, Art, Catalog, Envelope, Flags, Layer, Next, Point, Sprite, SpriteId,
+};
 use crate::sky::CloudSize;
 use crate::text::Label;
 
@@ -173,10 +178,11 @@ fn scorch(catalog: &Catalog, species: PlantSpecies) -> Result<SpriteId, MissingA
     one(
         catalog,
         &format!("PlantSpecies::{} scorched", species.name()),
-        "a lightning scorch with its eligibility",
+        "a lightning scorch with its eligibility and envelope",
         |sprite| {
             let keys = &sprite.keys;
             sprite.scorch.is_some()
+                && sprite.envelope.is_some()
                 && keys.event.as_deref() == Some("lightning")
                 && keys.part.as_deref() == Some("foliage")
                 && keys.species.as_deref() == Some(sp.as_str())
@@ -809,6 +815,182 @@ fn sky_events(catalog: &Catalog) -> Result<SkyEventArt, Vec<MissingArt>> {
     }
 }
 
+/// What the ground's events play, each in its role: burn-off with the keys it steps the
+/// weeds and the fresh soil by, the crack and the sinkhole opening into the settled frames truth
+/// keeps, and the sprinkles of flowers a burn leaves on its fresh soil. Each species' scorch is
+/// the table's own (`ArtTable::scorch`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroundEventArt {
+    /// Burn-off's frames, played once and cleared, each keying the weeds it burns and the fresh
+    /// soil it leaves at its start.
+    pub burnoff: AnimationId,
+    /// How long burn-off plays, and how far into it the fresh soil it leaves is whole.
+    pub burnoff_ms: u64,
+    pub fresh_from_ms: u64,
+    /// The earthquake's crack and the sinkhole: each played once into its settled frame, which
+    /// takes over this far into it.
+    pub crack: AnimationId,
+    pub crack_settles_ms: u64,
+    pub sinkhole: AnimationId,
+    pub sinkhole_settles_ms: u64,
+    /// The two sprinkles of flowers, equivalent, and how they come and go.
+    pub sprinkles: [SpriteId; 2],
+    pub sprinkle: Envelope,
+    /// Each species' scorch, as the table resolved it.
+    pub scorches: BTreeMap<PlantSpecies, ScorchArt>,
+}
+
+/// A species' scorch: the foliage it stands in for a mature plant's, how it comes and goes,
+/// and the stages and states it may scorch, as the art has them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScorchArt {
+    pub foliage: SpriteId,
+    pub envelope: Envelope,
+    pub stages: Vec<GrowthStage>,
+    pub states: Vec<PlantState>,
+}
+
+impl ScorchArt {
+    fn of(catalog: &Catalog, foliage: SpriteId) -> Option<ScorchArt> {
+        let sprite = catalog.sprite(foliage);
+        let scorch = sprite.scorch.as_ref()?;
+        Some(ScorchArt {
+            foliage,
+            envelope: sprite.envelope?,
+            stages: eligible(&scorch.eligible_stages, GrowthStage::ALL, GrowthStage::name),
+            states: eligible(&scorch.eligible_states, PlantState::ALL, PlantState::name),
+        })
+    }
+
+    /// Whether a plant in this stage and state takes the scorch.
+    pub fn takes(&self, growth: GrowthStage, health: PlantState) -> bool {
+        self.stages.contains(&growth) && self.states.contains(&health)
+    }
+}
+
+/// The variants the art names, by their keys.
+fn eligible<T: Copy>(names: &[String], all: &[T], name: fn(T) -> &'static str) -> Vec<T> {
+    all.iter()
+        .copied()
+        .filter(|&variant| names.iter().any(|n| *n == art_key(name(variant))))
+        .collect()
+}
+
+/// How long the frames before an animation's last one last together.
+fn before_last(catalog: &Catalog, id: AnimationId) -> u64 {
+    let durations = &catalog.animation(id).durations_ms;
+    let before = durations.len().saturating_sub(1);
+    durations[..before].iter().map(|&ms| u64::from(ms)).sum()
+}
+
+/// The ground events' art, or every gap in it: a sequence missing or not shaped as it is played,
+/// a burn-off frame without its keys, a sprinkle without its envelope.
+fn ground_events(
+    catalog: &Catalog,
+    scorches: &BTreeMap<PlantSpecies, SpriteId>,
+) -> Result<GroundEventArt, Vec<MissingArt>> {
+    let mut gaps = Vec::new();
+    let mut sequence = |kind: EventKind, name: &str, settles: Option<GroundMark>| {
+        let gap = |wanted: String| MissingArt {
+            variant: format!("EventKind::{}", kind.name()),
+            wanted,
+        };
+        let Some(id) = catalog.animation_id(name) else {
+            gaps.push(gap(format!("the `{name}` sequence")));
+            return None;
+        };
+        let animation = catalog.animation(id);
+        let last = animation.frames.last().map(|&frame| catalog.sprite(frame));
+        let shaped = !animation.looping
+            && match settles {
+                // Its last frame is the mark truth keeps, settled, and held.
+                Some(mark) => {
+                    animation.next == Next::Hold
+                        && last.is_some_and(|last| last.flags.contains(Flags::SETTLED))
+                        && animation.frames.last().copied()
+                            == ground_mark(catalog, mark)
+                                .ok()
+                                .and_then(|ids| ids.first().copied())
+                }
+                None => {
+                    animation.next == Next::Clear
+                        && animation
+                            .frames
+                            .iter()
+                            .all(|&frame| catalog.sprite(frame).burnoff.is_some())
+                }
+            };
+        if !shaped {
+            let how = if settles.is_some() {
+                "played once into its settled mark"
+            } else {
+                "played once and cleared, each frame keyed"
+            };
+            gaps.push(gap(format!("`{name}` {how}")));
+            return None;
+        }
+        Some(id)
+    };
+    let burnoff = sequence(EventKind::ClearingBurn, "burnoff", None);
+    let crack = sequence(EventKind::Earthquake, "earthquake", Some(GroundMark::Crack));
+    let sinkhole = sequence(EventKind::Sinkhole, "sinkhole", Some(GroundMark::Sinkhole));
+    let sprinkles = named(catalog, "EventKind::ClearingBurn", &SPRINKLES)
+        .map_err(|gap| gaps.push(gap))
+        .ok();
+    let envelope = sprinkles.as_ref().and_then(|ids| {
+        let envelopes: Vec<Option<Envelope>> =
+            ids.iter().map(|&id| catalog.sprite(id).envelope).collect();
+        let first = envelopes.first().copied().flatten();
+        if first.is_none() || envelopes.iter().any(|&envelope| envelope != first) {
+            gaps.push(MissingArt {
+                variant: "EventKind::ClearingBurn".into(),
+                wanted: "sprinkles that come and go alike".into(),
+            });
+            return None;
+        }
+        first
+    });
+    match (burnoff, crack, sinkhole, sprinkles.as_deref(), envelope) {
+        (Some(burnoff), Some(crack), Some(sinkhole), Some(&[first, second]), Some(sprinkle)) => {
+            let animation = catalog.animation(burnoff);
+            let mut fresh_from_ms = 0;
+            for (&frame, &ms) in animation.frames.iter().zip(&animation.durations_ms) {
+                let whole = catalog
+                    .sprite(frame)
+                    .burnoff
+                    .is_some_and(|keys| keys.fresh_soil_permille >= 1000);
+                if whole {
+                    break;
+                }
+                fresh_from_ms += u64::from(ms);
+            }
+            Ok(GroundEventArt {
+                burnoff,
+                burnoff_ms: crate::anim::length_ms(animation).unwrap_or_default(),
+                fresh_from_ms,
+                crack,
+                crack_settles_ms: before_last(catalog, crack),
+                sinkhole,
+                sinkhole_settles_ms: before_last(catalog, sinkhole),
+                sprinkles: [first, second],
+                sprinkle,
+                scorches: scorches
+                    .iter()
+                    .filter_map(|(&species, &id)| Some((species, ScorchArt::of(catalog, id)?)))
+                    .collect(),
+            })
+        }
+        _ => Err(gaps),
+    }
+}
+
+/// The two sprinkles of flowers a clearing burn leaves on its fresh soil (the art's own tag,
+/// `clearing-burn`, not Flowering's).
+const SPRINKLES: [&str; 2] = [
+    "tmp.event.flower-sprinkle.01",
+    "tmp.event.flower-sprinkle.02",
+];
+
 /// Every sprite the event plays, sorted and without repeats.
 fn event(catalog: &Catalog, kind: EventKind) -> Result<Vec<SpriteId>, MissingArt> {
     let variant = format!("EventKind::{}", kind.name());
@@ -858,6 +1040,7 @@ pub struct ArtTable {
     dead_stems: Vec<SpriteId>,
     world: Option<WorldArt>,
     sky_events: Option<SkyEventArt>,
+    ground_events: Option<GroundEventArt>,
 }
 
 impl ArtTable {
@@ -883,6 +1066,7 @@ impl ArtTable {
             dead_stems: Vec::new(),
             world: None,
             sky_events: None,
+            ground_events: None,
         }
     }
 
@@ -1007,6 +1191,8 @@ impl ArtTable {
         keep(named(catalog, "filler dead stems", &DEAD_STEMS).map(|ids| table.dead_stems = ids));
         table.world = world(catalog).map_err(|found| gaps.extend(found)).ok();
         table.sky_events = sky_events(catalog).map_err(|found| gaps.extend(found)).ok();
+        let ground = ground_events(catalog, &table.scorches);
+        table.ground_events = ground.map_err(|found| gaps.extend(found)).ok();
         if gaps.is_empty() {
             Ok(table)
         } else {
@@ -1072,6 +1258,16 @@ impl ArtTable {
         self.sky_events
             .as_ref()
             .expect("a table that built has its sky events' art")
+    }
+
+    /// What the ground's events play.
+    ///
+    /// # Panics
+    /// Never once `new` succeeded, which resolves it.
+    pub fn ground_events(&self) -> &GroundEventArt {
+        self.ground_events
+            .as_ref()
+            .expect("a table that built has its ground events' art")
     }
 
     /// The scorched foliage that stands in for a mature plant's while lightning's scorch plays.
@@ -1319,6 +1515,81 @@ mod tests {
         assert_eq!(
             lines(&sky_events(&looping).unwrap_err()),
             "EventKind::Lightning: `lightning` played once and cleared"
+        );
+    }
+
+    /// Each ground event's art in its role, and a piece not shaped as it is played is a gap: a
+    /// burn-off frame without its keys, a crack that does not settle into the mark truth keeps, a
+    /// sprinkle without its envelope, a scorch without its own.
+    #[test]
+    fn the_ground_choreography_art_resolves() {
+        let table = ArtTable::new(catalog()).unwrap();
+        let ground = |catalog: &Catalog| ground_events(catalog, &table.scorches);
+        let art = ground(catalog()).expect("the embedded ground events' art");
+        let name = |id: AnimationId| catalog().animation(id).name.as_str();
+        assert_eq!(
+            [art.burnoff, art.crack, art.sinkhole].map(name),
+            ["burnoff", "earthquake", "sinkhole"]
+        );
+        let durations = |id: AnimationId| catalog().animation(id).durations_ms.clone();
+        assert_eq!(durations(art.burnoff), [180, 220, 240, 300]);
+        assert_eq!(&durations(art.crack)[..3], [166, 166, 166]);
+        assert_eq!(
+            (art.burnoff_ms, art.fresh_from_ms, art.crack_settles_ms),
+            (940, 640, 498)
+        );
+        assert!(art.scorches[&PlantSpecies::Oak].takes(GrowthStage::Mature, PlantState::Dormant));
+        assert!(!art.scorches[&PlantSpecies::Oak].takes(GrowthStage::Mature, PlantState::Dead));
+        assert!(!art.scorches[&PlantSpecies::Oak].takes(GrowthStage::Young, PlantState::Thriving));
+        assert_eq!(
+            catalog().animation(art.sinkhole).frames.last(),
+            table.ground_mark(GroundMark::Sinkhole).first()
+        );
+        assert_eq!(
+            (
+                art.sprinkle.enter_ms,
+                art.sprinkle.hold_ms,
+                art.sprinkle.exit_ms
+            ),
+            (900, 600, 1200)
+        );
+        for &species in PlantSpecies::ALL {
+            let scorch = catalog().sprite(table.scorch(species));
+            assert_eq!(
+                scorch.envelope.map(|e| (e.enter_ms, e.hold_ms, e.exit_ms)),
+                Some((600, 900, 1200))
+            );
+        }
+
+        let mut unkeyed = catalog().clone();
+        let ash = unkeyed.animation(art.burnoff).frames[3];
+        unkeyed.sprites[ash.index()].burnoff = None;
+        assert_eq!(
+            lines(&ground(&unkeyed).unwrap_err()),
+            "EventKind::ClearingBurn: `burnoff` played once and cleared, each frame keyed"
+        );
+
+        let mut unsettled = catalog().clone();
+        unsettled.animations[art.crack.index()].next = Next::Clear;
+        assert_eq!(
+            lines(&ground(&unsettled).unwrap_err()),
+            "EventKind::Earthquake: `earthquake` played once into its settled mark"
+        );
+
+        let mut bare = catalog().clone();
+        bare.sprites[art.sprinkles[1].index()].envelope = None;
+        assert_eq!(
+            lines(&ground(&bare).unwrap_err()),
+            "EventKind::ClearingBurn: sprinkles that come and go alike"
+        );
+
+        let mut unscheduled = catalog().clone();
+        let oak = table.scorch(PlantSpecies::Oak);
+        unscheduled.sprites[oak.index()].envelope = None;
+        let gaps = ArtTable::new(&unscheduled).unwrap_err();
+        assert_eq!(
+            lines(&gaps),
+            "PlantSpecies::Oak scorched: a lightning scorch with its eligibility and envelope"
         );
     }
 

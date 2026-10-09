@@ -15,6 +15,9 @@ use terrarium_compose::sky::LocalDate;
 use terrarium_compose::synthetic;
 #[cfg(feature = "dev")]
 use terrarium_compose::synthetic::Knobs;
+
+#[cfg(feature = "dev")]
+use crate::sandbox::{Sandbox, Settings};
 use terrarium_compose::tween::Millis;
 use terrarium_platform::clock::LocalNow;
 use terrarium_truth::scene::SceneInput;
@@ -26,6 +29,9 @@ use crate::{copy, demo, idle};
 const CLOCK_EVERY_MS: u32 = 3_600_000;
 /// How often `--demo` asks its cycle for the climate.
 const DEMO_EVERY_MS: u32 = 60_000;
+/// How often the debug window's simulation steps while it runs.
+#[cfg(feature = "dev")]
+const SIM_STEP_MS: u32 = 1000;
 
 /// What the strip shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +48,9 @@ pub enum Feed {
     /// The synthetic climate at these knobs (dev builds, from the debug window).
     #[cfg(feature = "dev")]
     Synthetic(Knobs),
+    /// The real sim, driven by these settings (dev builds, from the debug window).
+    #[cfg(feature = "dev")]
+    Simulation(Settings),
 }
 
 /// What the strip reads from the OS each time it looks.
@@ -113,6 +122,12 @@ pub struct Feeder {
     scene_due: Millis,
     clock_due: Millis,
     idle_due: Millis,
+    /// The debug window's simulation, kept while another choice is shown, and when it next
+    /// steps.
+    #[cfg(feature = "dev")]
+    sandbox: Option<Sandbox>,
+    #[cfg(feature = "dev")]
+    sim_due: Millis,
 }
 
 impl Feeder {
@@ -145,6 +160,10 @@ impl Feeder {
             scene_due: now,
             clock_due: now,
             idle_due: now,
+            #[cfg(feature = "dev")]
+            sandbox: None,
+            #[cfg(feature = "dev")]
+            sim_due: now,
         };
         feeder.tick(now, os, true);
         feeder
@@ -180,13 +199,24 @@ impl Feeder {
 
     /// When the feed next wants to look.
     pub fn due(&self) -> Millis {
-        self.scene_due.min(self.clock_due).min(self.idle_due)
+        let due = self.scene_due.min(self.clock_due).min(self.idle_due);
+        #[cfg(feature = "dev")]
+        if let Feed::Simulation(settings) = &self.feed
+            && settings.speed > 0
+        {
+            return due.min(self.sim_due);
+        }
+        due
     }
 
     /// Brings the feed to `now` with what the OS says. True when the strip must be updated
     /// with `scene()` and `overlay()`. `force` looks at everything at once, as after a wake,
     /// when the carried clock has fallen behind (on macOS the monotonic clock stops in sleep).
     pub fn tick(&mut self, now: Millis, os: &Os, force: bool) -> bool {
+        #[cfg(feature = "dev")]
+        let stepped = self.step_sandbox(now);
+        #[cfg(not(feature = "dev"))]
+        let stepped = false;
         let mut changed = force;
         if force || now >= self.idle_due {
             let (dim, look_again) = idle::check(os.idle);
@@ -194,7 +224,7 @@ impl Feeder {
             changed |= dim != self.idle_dim;
             self.idle_dim = dim;
         }
-        if force || now >= self.scene_due {
+        if force || stepped || now >= self.scene_due {
             self.scene_due = now.plus(self.scene_every());
             let scene = self.scene_at(now);
             changed |= scene != self.scene;
@@ -228,6 +258,42 @@ impl Feeder {
         &self.feed
     }
 
+    /// How many days the debug window's simulation has run, while it is shown.
+    #[cfg(feature = "dev")]
+    pub fn sim_day(&self) -> Option<u32> {
+        matches!(self.feed, Feed::Simulation(_))
+            .then(|| self.sandbox.as_ref().map(Sandbox::day))
+            .flatten()
+    }
+
+    /// Steps the simulation while it is shown: a new one for a first look or a start over, so
+    /// many days a second while it runs, and a day for an action asked for while it holds.
+    /// True when its scene moved on.
+    #[cfg(feature = "dev")]
+    fn step_sandbox(&mut self, now: Millis) -> bool {
+        let Feed::Simulation(settings) = self.feed else {
+            return false;
+        };
+        let sandbox = match &mut self.sandbox {
+            Some(sandbox) if sandbox.restarts() == settings.restarts => sandbox,
+            slot => {
+                *slot = Some(Sandbox::new(&settings));
+                self.sim_due = now.plus(SIM_STEP_MS);
+                return true;
+            }
+        };
+        if settings.speed > 0 && now >= self.sim_due {
+            sandbox.step(&settings, u32::from(settings.speed));
+            self.sim_due = now.plus(SIM_STEP_MS);
+            true
+        } else if settings.speed == 0 && sandbox.pending(&settings) {
+            sandbox.step(&settings, 1);
+            true
+        } else {
+            false
+        }
+    }
+
     #[cfg(feature = "dev")]
     pub fn overrides(&self) -> Overrides {
         self.overrides
@@ -259,6 +325,13 @@ impl Feeder {
             Feed::Preset(name) => preset::scene(name).expect("a known preset"),
             #[cfg(feature = "dev")]
             Feed::Synthetic(knobs) => synthetic::scene(knobs),
+            #[cfg(feature = "dev")]
+            Feed::Simulation(_) => self
+                .sandbox
+                .as_ref()
+                .map_or_else(crate::live::unknown_scene, |sandbox| {
+                    sandbox.scene().clone()
+                }),
         };
         if let Some(trigger) = self.overrides.event {
             synthetic::set_event(&mut scene, trigger.kind, trigger.instance());
@@ -431,5 +504,69 @@ mod tests {
             ms_of_day: 1234,
         };
         assert_eq!(local_clock(now), LocalClock::new(DATE, 1234));
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_simulation_steps_only_while_it_runs_and_an_action_plays_at_once() {
+        use terrarium_truth::scene::EventKind;
+
+        let os = os(12 * 3_600_000, 0);
+        let mut feeder = Feeder::new(Feed::Thriving, Millis(0), &os);
+        assert_eq!(feeder.sim_day(), None);
+        let running = Settings::default();
+        feeder.choose(
+            Feed::Simulation(running),
+            Overrides::default(),
+            Millis(0),
+            &os,
+        );
+        let first = feeder.sim_day().expect("a sim");
+        assert_eq!(feeder.due(), Millis(1000));
+        // A quiet day can bring the same scene, which updates nothing; the day passes anyway.
+        feeder.tick(Millis(1000), &os, false);
+        assert_eq!(feeder.sim_day(), Some(first + 1));
+        // Held, it asks for no look of its own, and no day passes.
+        let held = Settings {
+            speed: 0,
+            ..running
+        };
+        feeder.choose(
+            Feed::Simulation(held),
+            Overrides::default(),
+            Millis(1500),
+            &os,
+        );
+        let scene = feeder.scene().clone();
+        assert!(feeder.due() > Millis(2500));
+        feeder.tick(Millis(2500), &os, false);
+        assert_eq!(feeder.sim_day(), Some(first + 1));
+        assert_eq!(feeder.scene(), &scene);
+        // An action asked for while it holds plays on a day of its own, at once.
+        let release = Settings {
+            releases: 1,
+            ..held
+        };
+        feeder.choose(
+            Feed::Simulation(release),
+            Overrides::default(),
+            Millis(3000),
+            &os,
+        );
+        assert_eq!(feeder.sim_day(), Some(first + 2));
+        assert_eq!(
+            feeder.scene().event.map(|e| e.kind),
+            Some(EventKind::Flowering)
+        );
+        // Shown again after another choice, it carries on where it was.
+        feeder.choose(Feed::Thriving, Overrides::default(), Millis(4000), &os);
+        assert_eq!(feeder.sim_day(), None);
+        feeder.choose(
+            Feed::Simulation(release),
+            Overrides::default(),
+            Millis(5000),
+            &os,
+        );
+        assert_eq!(feeder.sim_day(), Some(first + 2));
     }
 }

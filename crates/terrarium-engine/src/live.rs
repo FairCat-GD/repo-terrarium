@@ -26,7 +26,7 @@
 //! **Time** is the wall clock's, never lower than it was earlier in the session: a clock set
 //! back neither rewinds the scene nor dates an observation before one already applied.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -47,8 +47,6 @@ use terrarium_store::{
 };
 use terrarium_truth::climate::ClimateReport;
 use terrarium_truth::domain::{ObservationHead, merge_key};
-use terrarium_truth::events::Candidate;
-use terrarium_truth::scene::EventKind;
 use terrarium_truth::{
     Basis, CommitId, Observation, Prepared, ReplayError, SIM_VERSION, SceneInput, SimState, Tick,
     observation_tick, project_showing,
@@ -58,6 +56,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::observe;
 use crate::schedule::DEBOUNCE;
 use crate::schedule::{Cause, Reach, Refresh};
+use crate::showing::Showing;
 use crate::watch::{Places, WatchSet};
 
 /// How long a history read runs before its progress is shown: a short one never flickers a
@@ -185,10 +184,6 @@ impl From<StoreError> for Problem {
     }
 }
 
-/// How long a playing event stays in the scenes after the hour it was first shown in: through
-/// the next hour, long enough for any burst of snapshots to reach the composer.
-const PLAY_HOLD_TICKS: u32 = 1;
-
 /// What a history read found.
 struct HistoryRead {
     changed: bool,
@@ -288,13 +283,8 @@ pub struct Live {
     cached_tick: Option<Tick>,
     view: Option<View>,
     shown: Option<Shown>,
-    /// The event instances the state last projected held: what a later refresh has already
-    /// had the chance to play. `None` before anything was projected and with no cached state.
-    seen: Option<BTreeSet<(Tick, EventKind)>>,
-    /// The event the scene plays, and the tick it was first shown at. It stays in the scenes
-    /// through the hour after that, so a burst of snapshots never drops it, unless an unseen
-    /// event outranks it; the composer plays each instance once.
-    playing: Option<((Tick, EventKind), Tick)>,
+    /// Which event the scenes play.
+    showing: Showing,
     /// The session's time: the wall clock, never lower than before.
     now: i64,
     watch: Option<WatchSet>,
@@ -342,7 +332,7 @@ impl Live {
             Some((base, tick)) => (Some(base), Some(tick)),
             None => (None, None),
         };
-        let seen = base.as_ref().map(|base| base.events.keys());
+        let showing = Showing::after(base.as_ref().map(|base| base.events.keys()));
         Ok(Some(Live {
             status_file: config.data.local_tests(&terrarium.seed),
             patterns: discovery::report_patterns(&overrides),
@@ -361,8 +351,7 @@ impl Live {
             cached_tick,
             view: None,
             shown: None,
-            seen,
-            playing: None,
+            showing,
             now,
             watch: None,
         }))
@@ -540,37 +529,10 @@ impl Live {
         })
     }
 
-    /// The view's scene. It plays the best event the state last projected did not hold (with
-    /// none projected, the newest tick's best), unless the one already playing is still within
-    /// its hold and outranks it: one foreground event at a time, as arbitration among events
-    /// that come close together.
+    /// The view's scene, playing the event [`Showing`] chooses.
     fn scene(&mut self) -> Option<SceneInput> {
         let view = self.view.as_ref()?;
-        let now = view.live.now();
-        let events = &view.live.events;
-        let held = self
-            .playing
-            .filter(|&(_, shown)| now.hours_since(shown) <= PLAY_HOLD_TICKS)
-            .and_then(|(key, _)| events.find(key));
-        let fresh = match &self.seen {
-            Some(seen) => events.unseen(seen),
-            None => events.current(now),
-        };
-        if let Some(fresh) = fresh {
-            let winner = terrarium_truth::events::arbitrate(held.into_iter().chain([fresh]));
-            if winner.map(Candidate::key) == Some(fresh.key()) {
-                self.playing = Some((fresh.key(), now));
-            }
-        }
-        let playing = self
-            .playing
-            .filter(|&(_, shown)| now.hours_since(shown) <= PLAY_HOLD_TICKS)
-            .and_then(|(key, _)| events.find(key));
-        if playing.is_none() {
-            self.playing = None;
-        }
-        self.seen = Some(events.keys());
-        Some(project_showing(&view.live, playing))
+        Some(self.showing.scene(&view.live))
     }
 
     /// `moved` with what it took: the fossils the state last shown (or, failing that, the

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use terrarium_adapters::fixture::{self, ARC_REPLAY_END_SECS, Phase};
 use terrarium_adapters::git::{GitRepo, History};
-use terrarium_engine::headless::{Request, replay_dump};
+use terrarium_engine::headless::{Request, daily_scenes, replay_dump};
 use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store, StoredObservation};
 use terrarium_truth::habitat::{plant_capacity, resident_capacity};
 use terrarium_truth::replay::first_close;
@@ -129,6 +129,53 @@ fn the_arc_reaches_every_presentation_state() {
     assert_eq!(dump.scene.presentation.state, PresentationState::Dormant);
     assert_eq!(dump.scene.condensation, 3);
     assert_eq!(dump.scene.validate(), Ok(()));
+}
+
+#[test]
+fn the_day_by_day_replay_shows_every_state_and_keeps_the_golden_s_timeline() {
+    let arc = ArcDir::new();
+    let observations = committed_observations();
+    let mut input: &[u8] = observations.as_bytes();
+    let days = daily_scenes(Request {
+        repo: &arc.repo(),
+        data: &arc.data("days"),
+        observations: Some(&mut input as &mut dyn BufRead),
+        at_secs: ARC_REPLAY_END_SECS,
+        install_salt: [0; 16],
+    })
+    .expect("replays");
+    let dump = arc.dump("data", &committed_observations(), 0);
+    let (last, _) = *days.days.last().expect("days");
+    let timeline: Vec<_> = dump
+        .state
+        .timeline
+        .entries
+        .iter()
+        .filter(|entry| entry.tick <= last)
+        .copied()
+        .collect();
+    assert_eq!(days.timeline, timeline);
+    // The scenes themselves show all six, each day's as its timeline has it.
+    let shown: BTreeSet<PresentationState> = days
+        .days
+        .iter()
+        .map(|(_, scene)| scene.presentation.state)
+        .collect();
+    assert_eq!(shown, PresentationState::ALL.iter().copied().collect());
+    assert!(
+        days.days
+            .iter()
+            .all(|(_, scene)| scene.validate() == Ok(()))
+    );
+    // Each event the story holds is played on some day, as the live view chooses it.
+    let played: BTreeSet<EventKind> = days
+        .days
+        .iter()
+        .filter_map(|(_, scene)| scene.event.map(|event| event.kind))
+        .collect();
+    assert!(played.contains(&EventKind::Sinkhole));
+    assert!(played.contains(&EventKind::ClearingBurn));
+    assert!(played.contains(&EventKind::Flowering));
 }
 
 #[test]

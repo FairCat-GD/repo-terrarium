@@ -361,3 +361,99 @@ fn an_event_draws_at_most_15_frames_a_second_and_then_settles() {
         }
     }
 }
+
+/// Each choreography on the ground, over a still terrarium that holds what it acts on (weeds to
+/// burn, a mature plant to scorch, plants to bloom, fossils), from the update that brings it
+/// until long after it settles: every frame drawn shows a change, never more than 15 in a
+/// second, and once it is over only the slow motions move again, at 640 columns and at 840.
+#[test]
+fn a_ground_event_draws_at_most_15_frames_a_second_and_then_settles() {
+    use terrarium_compose::synthetic;
+    use terrarium_truth::Tick;
+    use terrarium_truth::scene::{EventKind, Side, Wind};
+
+    let art = Art::embedded();
+    let table = ArtTable::new(&art.catalog).expect("the embedded art is complete");
+    let overlay = OverlayInput::new(vec!["main".to_owned()], LocalClock::noon(preset::DATE));
+    // Still: no residents and no wind, so nothing moves but the event and the slow motions.
+    let still = |name: &str| {
+        let mut scene = preset::scene(name).unwrap();
+        scene.residents.clear();
+        scene.wind = Wind::Calm;
+        scene
+    };
+    for (kind, name) in [
+        (EventKind::ClearingBurn, "struggling-poor-soil"),
+        (EventKind::Lightning, "thriving"),
+        (EventKind::Flowering, "thriving"),
+        (EventKind::Earthquake, "struggling-poor-soil"),
+        (EventKind::Sinkhole, "thriving"),
+    ] {
+        for columns in [640, 840] {
+            let before = still(name);
+            let mut after = before.clone();
+            synthetic::set_event(&mut after, kind, Tick::new(1));
+            after.event.as_mut().unwrap().side = Side::Right;
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.set_viewport(Viewport::new(columns));
+            composer.update(&before, &overlay, Millis(0));
+            let begin = composer.settled_at();
+            composer.update(&after, &overlay, begin);
+            let settled = composer.settled_at();
+            let draws = |now| composer.draws(art, &table, composer.palette_mix(now), now);
+            let mut pacer = Pacer::default();
+            let mut shown = draws(begin);
+            pacer.composed(begin);
+            let mut now = begin;
+            let mut frames: Vec<Millis> = Vec::new();
+            let mut played = BTreeSet::new();
+            while let Some(wake) = pacer.wake(composer.next_change(art, &table, now)) {
+                if wake.0 > settled.0 + 30_000 {
+                    break;
+                }
+                let next = draws(wake);
+                let moved = changed(&shown, &next);
+                assert!(
+                    !moved.is_empty(),
+                    "{kind:?} at {columns}: a frame at {wake:?} with nothing changed"
+                );
+                for subject in moved {
+                    let piece = matches!(
+                        subject,
+                        Subject::Burn(_)
+                            | Subject::Sprinkle(_)
+                            | Subject::Scorch { .. }
+                            | Subject::Mark { .. }
+                            | Subject::Plant { .. }
+                    );
+                    if piece {
+                        played.insert(subject);
+                    }
+                    let slow =
+                        matches!(subject, Subject::Soil | Subject::Sweep | Subject::Cloud(_));
+                    // The last change may wait out the frame before it.
+                    assert!(
+                        wake.0 <= settled.0 + FRAME_MS || slow,
+                        "{kind:?}: {subject:?} changed at {wake:?}, settled at {settled:?}"
+                    );
+                }
+                frames.push(wake);
+                pacer.composed(wake);
+                shown = next;
+                now = wake;
+            }
+            assert!(!played.is_empty(), "{kind:?} played nothing");
+            for (i, &frame) in frames.iter().enumerate() {
+                let within = frames[i..]
+                    .iter()
+                    .take_while(|&&later| later.0 < frame.0 + 1000)
+                    .count();
+                assert!(
+                    within <= MOST_PER_SECOND,
+                    "{kind:?}: {within} frames in the second from {frame:?}"
+                );
+            }
+            println!("{kind:?} at {columns}: {} frames", frames.len());
+        }
+    }
+}

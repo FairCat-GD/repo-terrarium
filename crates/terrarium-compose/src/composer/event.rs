@@ -1,5 +1,6 @@
-//! The foreground event's choreography in the sky: the storm front and the clearing, lightning,
-//! dusk and sunburst, rain after drought and the windstorm. The ground's events are their own.
+//! The foreground event's choreography: which instance plays, and in the sky the storm front
+//! and the clearing, lightning, dusk and sunburst, rain after drought and the windstorm. The
+//! ground's choreography is [`super::ground`]'s.
 //!
 //! Truth puts an event in the first scene that carries its effects, and the engine keeps it in
 //! the scenes after, so an instance, its kind and its tick, plays once: from the update that
@@ -12,7 +13,7 @@
 //!   the far side. A wipe plays only where the weather crosses its way, and while it plays
 //!   every other change of the sky waits for it to pass.
 //! - **Lightning** plays its two frames above the struck plant, or strikes the ground where no
-//!   struck plant is drawn. The scorch that follows is the plant's.
+//!   struck plant is drawn. The scorch that follows on the plant is the show's too.
 //! - **Dusk and sunburst** are the light's own crossfade.
 //! - **Rain after drought** falls across the viewport, fading in, holding and fading out.
 //! - **A windstorm** carries leaves across from its side.
@@ -24,10 +25,13 @@
 
 use terrarium_truth::Tick;
 use terrarium_truth::scene::{
-    ActiveEvent, EventKind, PlantView, SceneInput, Side, Strength, Weather, Wind,
+    ActiveEvent, EventKind, GroundMark, PlantView, SceneInput, Side, Strength, Weather, Wind,
 };
 
-use super::{Composer, Depicted, Earliest, Entry, FRAME_HEIGHT, Lit, Look, Piece, SHOWN, standing};
+use super::ground::Scorched;
+use super::{
+    Composer, Depicted, Earliest, Entry, FRAME_HEIGHT, Lit, Look, Piece, Pieces, SHOWN, standing,
+};
 use crate::anim;
 use crate::catalog::{AnimationId, Art, SpriteId};
 use crate::frame::{Area, Draw, PLANT_GROUND_Y};
@@ -67,20 +71,6 @@ const STRIKE: u64 = 0xff;
 /// One instance of an event: its kind and the tick it started in.
 pub(super) type Instance = (EventKind, Tick);
 
-/// Whether an event plays in the sky here.
-const fn in_the_sky(kind: EventKind) -> bool {
-    matches!(
-        kind,
-        EventKind::Storm
-            | EventKind::Clearing
-            | EventKind::Lightning
-            | EventKind::Dusk
-            | EventKind::Sunburst
-            | EventKind::RainAfterDrought
-            | EventKind::Windstorm
-    )
-}
-
 const fn by_strength<T: Copy>(values: [T; 3], strength: Strength) -> T {
     match strength {
         Strength::Low => values[0],
@@ -101,10 +91,11 @@ pub(super) struct Show {
 enum Play {
     Wipe(Wipe),
     /// Lightning from `start`, above the struck plant as it stood in its cell when the strike
-    /// began, so no later update moves the bolt.
+    /// began, so no later update moves the bolt; then the scorch it leaves on that plant.
     Bolt {
         start: Millis,
         struck: Option<(u8, PlantView)>,
+        scorch: Option<Scorched>,
     },
     /// The light's crossfade, which its own look plays.
     Light,
@@ -116,6 +107,19 @@ enum Play {
         start: Millis,
         width: i32,
     },
+    /// Burn-off over the weeds, the fresh soil it leaves and the flowers on it; what it burns
+    /// is staged beside the show.
+    Burn {
+        start: Millis,
+    },
+    /// The blooms opening across the strip, each at its turn.
+    Bloom {
+        start: Millis,
+    },
+    /// The crack or the sinkhole opening into what truth keeps.
+    Ground {
+        start: Millis,
+    },
 }
 
 impl Show {
@@ -123,7 +127,12 @@ impl Show {
     fn playing(&self, now: Millis) -> bool {
         let from = match self.play {
             Play::Wipe(wipe) => wipe.begin,
-            Play::Bolt { start, .. } | Play::Rain { start } | Play::Leaves { start, .. } => start,
+            Play::Bolt { start, .. }
+            | Play::Rain { start }
+            | Play::Leaves { start, .. }
+            | Play::Burn { start }
+            | Play::Bloom { start }
+            | Play::Ground { start } => start,
             Play::Light => return false,
         };
         from <= now && now < self.end
@@ -360,12 +369,18 @@ impl Entry {
 
 impl Composer {
     /// Begins the choreography of the instance the scene carries, unless it has played or
-    /// another still plays; returns the wipe it begins, if it is one. It reads the sky as it
-    /// stands, so it runs before the update moves any look.
-    pub(super) fn cue(&mut self, input: &SceneInput, now: Millis) -> Option<Wipe> {
+    /// another still plays; returns the wipe it begins, if it is one. It reads the sky and the
+    /// ground as they stand, so it runs before the update moves any look; what the scene now
+    /// holds is `wanted`.
+    pub(super) fn cue(
+        &mut self,
+        input: &SceneInput,
+        wanted: &std::collections::BTreeMap<Subject, Pieces>,
+        now: Millis,
+    ) -> Option<Wipe> {
         let event = input.event?;
         let instance = (event.kind, event.started_tick);
-        if !in_the_sky(event.kind) || self.played.contains(&instance) {
+        if self.played.contains(&instance) {
             return None;
         }
         if self.played.len() == PLAYED_KEPT {
@@ -381,7 +396,13 @@ impl Composer {
         } else {
             now
         };
+        // A show begun is its own stage.
+        self.stage = super::ground::Stage::default();
         let width = self.viewport_width();
+        let nothing = |composer: &mut Composer| {
+            composer.show = None;
+            None
+        };
         let (play, end) = match event.kind {
             EventKind::Storm | EventKind::Clearing => {
                 let storm = event.kind == EventKind::Storm;
@@ -399,20 +420,50 @@ impl Composer {
                 let start = start.plus(1);
                 let target = input.plants.iter().find(|plant| plant.scorched);
                 let placed = target.and_then(|plant| self.placement.plants.get(&plant.id));
+                let struck = placed.map(|placed| (placed.cell, placed.view));
+                let bolt_end = Millis(start.0 + self.sky.lightning_ms);
+                let scorch = self.scorch_for(struck, bolt_end);
                 let play = Play::Bolt {
                     start,
-                    struck: placed.map(|placed| (placed.cell, placed.view)),
+                    struck,
+                    scorch,
                 };
-                (play, Millis(start.0 + self.sky.lightning_ms))
+                (play, scorch.map_or(bolt_end, Scorched::end))
             }
             EventKind::Dusk | EventKind::Sunburst => (Play::Light, now.plus(self.light_ms)),
             EventKind::RainAfterDrought => {
                 let hold = by_strength(RAIN_HOLD_MS, event.strength);
                 (Play::Rain { start }, start.plus(2 * RAIN_FADE_MS + hold))
             }
-            _ => {
+            EventKind::Windstorm => {
                 let end = flurry_end(&event, start, width, self.sky.leaf_width);
                 (Play::Leaves { start, width }, end)
+            }
+            EventKind::ClearingBurn => {
+                let start = start.plus(1);
+                let Some(end) = self.cue_burn(input, now, start) else {
+                    return nothing(self);
+                };
+                (Play::Burn { start }, end)
+            }
+            EventKind::Flowering => {
+                let Some(end) = self.cue_bloom(wanted, start, event.side) else {
+                    return nothing(self);
+                };
+                (Play::Bloom { start }, end)
+            }
+            EventKind::Earthquake | EventKind::Sinkhole => {
+                // An earthquake opens with its crack the sinkholes of the fossils it took.
+                let kinds: &[GroundMark] = if event.kind == EventKind::Earthquake {
+                    &[GroundMark::Crack, GroundMark::Sinkhole]
+                } else {
+                    &[GroundMark::Sinkhole]
+                };
+                let start = start.plus(1);
+                let Some(end) = self.cue_settling(wanted, now, start, kinds) else {
+                    return nothing(self);
+                };
+                (Play::Ground { start }, end)
             }
         };
         self.show = Some(Show { event, play, end });
@@ -539,7 +590,10 @@ impl Composer {
             Play::Bolt { .. } => Subject::Bolt,
             Play::Rain { .. } => Subject::Rain,
             Play::Leaves { .. } => Subject::Leaf(0),
-            Play::Light => return None,
+            Play::Burn { .. } => Subject::Burn(0),
+            Play::Ground { .. } => Subject::Mark { id: 0, at: 0 },
+            // The blooms are the plants' own looks.
+            Play::Light | Play::Bloom { .. } => return None,
         };
         Some(Depicted {
             subject,
@@ -577,7 +631,7 @@ impl Composer {
                 divide(&art.catalog, keyed, sky, placing.columns(), width);
                 keyed.extend(front(art, events.front, curtain, placing, width, lit));
             }
-            Play::Bolt { start, struck } => {
+            Play::Bolt { start, struck, .. } => {
                 let strike = self.strike(art, table, &show.event, struck);
                 keyed.extend(bolt(art, events.lightning, start, strike, lit, now));
             }
@@ -592,7 +646,42 @@ impl Composer {
                 let flurry = (start, width);
                 keyed.extend(self.leaves(art, events, &show.event, flurry, lit, now));
             }
-            Play::Light => {}
+            // The ground's pieces stand in the scene, drawn with it.
+            Play::Light | Play::Burn { .. } | Play::Bloom { .. } | Play::Ground { .. } => {}
+        }
+    }
+
+    /// The ground's pieces at `now`, in the scene's columns, added to `keyed`: burn-off, the
+    /// marks opening and the scorch.
+    pub(super) fn push_ground(
+        &self,
+        art: &Art,
+        table: &ArtTable,
+        palette_mix: u8,
+        now: Millis,
+        keyed: &mut Vec<KeyedDraw>,
+    ) {
+        let Some(show) = self.show.filter(|show| show.playing(now)) else {
+            return;
+        };
+        match show.play {
+            Play::Burn { start } => self.push_burn(art, table, start, palette_mix, now, keyed),
+            Play::Ground { start } => {
+                self.push_settling(art, table, start, palette_mix, now, keyed);
+            }
+            Play::Bolt {
+                scorch: Some(scorched),
+                ..
+            } => self.push_scorch(art, table, scorched, palette_mix, now, keyed),
+            _ => {}
+        }
+    }
+
+    /// The scorch the show leaves, while it is the show.
+    pub(super) fn scorched(&self) -> Option<Scorched> {
+        match self.show?.play {
+            Play::Bolt { scorch, .. } => scorch,
+            _ => None,
         }
     }
 
@@ -696,12 +785,15 @@ impl Composer {
                 let curtain = self.curtain(art);
                 next.take(wipe.next_step(now, self.viewport_width(), curtain));
             }
-            Play::Bolt { start, .. } => {
+            Play::Bolt { start, scorch, .. } => {
                 next.take(if now < start {
                     Some(start)
                 } else {
                     frames(events.lightning, start)
                 });
+                if let Some(scorched) = scorch {
+                    next.take(self.scorch_next(art, table, scorched, now));
+                }
             }
             Play::Rain { start } => {
                 let [rise, fall] = rain_tweens(start, show.end);
@@ -735,7 +827,10 @@ impl Composer {
                     next.take(frames(events.leaves[leaf.art], leaf.set_off));
                 }
             }
-            Play::Light => {}
+            Play::Burn { start } => next.take(self.burn_next(art, start, now)),
+            Play::Ground { start } => next.take(self.settling_next(art, start, now)),
+            // The blooms are the plants' own looks, which name their own steps.
+            Play::Light | Play::Bloom { .. } => {}
         }
         next.0
     }
@@ -1649,21 +1744,6 @@ mod tests {
             assert!(of(&composer, Millis(at), |s| matches!(s, Subject::Leaf(_))).is_empty());
         }
         assert!(!of(&composer, now.plus(5000), |s| s == Subject::Rain).is_empty());
-    }
-
-    #[test]
-    fn ground_events_are_left_to_their_own_session() {
-        for kind in [
-            EventKind::ClearingBurn,
-            EventKind::Flowering,
-            EventKind::Earthquake,
-            EventKind::Sinkhole,
-        ] {
-            let after = carrying(scene(Weather::Clear), event(kind, 6, Side::Left));
-            let (composer, _) = played(&scene(Weather::Clear), &after, preset::SALT);
-            assert_eq!(composer.show, None, "{kind:?}");
-            assert!(composer.played.is_empty());
-        }
     }
 
     #[test]

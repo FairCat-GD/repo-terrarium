@@ -7,11 +7,11 @@
 //! between; otherwise it rests, breathing in its idle, feed or sleep loop as authored.
 //!
 //! At most three residents move in a turn, and at most one of them flies or signals: the art's
-//! budget. Which three rotates turn by turn; each one's energy and the scene's state decide
-//! whether it uses its turn. Night and day, storms and lifecycle steps change what a resident
-//! rests in; the change plays at the start of the next turn, through the art's own hand-off
-//! where it has one (a hatch, a withdrawal into a shell) and otherwise as a cover: the new pose
-//! rises over the old, then the old falls. Nothing here reads the salt.
+//! budget. Which three rotates turn by turn; each one's energy and the scene's state
+//! decide whether it uses its turn. Night and day, storms, an earthquake's turn and lifecycle
+//! steps change what a resident rests in; the change plays at the start of the next turn, through the art's own
+//! hand-off where it has one (a hatch, a withdrawal into a shell) and otherwise as a cover: the
+//! new pose rises over the old, then the old falls. Nothing here reads the salt.
 
 use std::collections::BTreeMap;
 
@@ -171,7 +171,7 @@ impl Routines<'_> {
 #[derive(Clone, Copy, Debug)]
 struct Conditions {
     state: PresentationState,
-    storm: bool,
+    sheltering: bool,
     night: bool,
 }
 
@@ -179,7 +179,7 @@ impl Conditions {
     fn of(snapshot: &Snapshot, w: u64) -> Conditions {
         Conditions {
             state: snapshot.state,
-            storm: snapshot.weather == Weather::Storm,
+            sheltering: sheltering(snapshot, w),
             night: snapshot.clock.night(turn_start(w)),
         }
     }
@@ -187,6 +187,12 @@ impl Conditions {
     fn asleep(self, species: ResidentSpecies) -> bool {
         self.state == PresentationState::Dormant || !awake(species, self.night)
     }
+}
+
+/// Whether the scene sends residents into hiding in turn `w`: through a storm, and in the one
+/// turn an earthquake shakes.
+pub fn sheltering(snapshot: &Snapshot, w: u64) -> bool {
+    snapshot.weather == Weather::Storm || snapshot.shaken.is_some_and(|shaken| shaken.turn == w)
 }
 
 /// What a resident rests in under these conditions; `None` if the art lacks it, which
@@ -210,7 +216,7 @@ fn rest(art: &Routines, resident: &Resident, at: Conditions) -> Option<Rest> {
             still: false,
         }),
         LifeStage::Juvenile => {
-            let sheltering = at.storm || at.asleep(art.species);
+            let sheltering = at.sheltering || at.asleep(art.species);
             let name = if resident.plant.is_some() && !sheltering {
                 "feed"
             } else {
@@ -222,7 +228,7 @@ fn rest(art: &Routines, resident: &Resident, at: Conditions) -> Option<Rest> {
             })
         }
         LifeStage::Adult => {
-            let name = if at.storm {
+            let name = if at.sheltering {
                 "hide"
             } else if at.asleep(art.species) {
                 "sleep"
@@ -369,14 +375,14 @@ pub const CHANGE_SETTLES_MS: u32 = 8000;
 
 /// Whether the turn after `w` will change how some resident rests or where it lives, given
 /// the scene turn `w` reads (`None` before the first) and what the residents not in it arrived
-/// with: a lifecycle step, a new home or species, a storm coming or going, dormancy, or day
-/// turning to night. A change of energy alone changes no rest. It reads no art, so it may answer yes where in the end nothing changes,
-/// never the other way.
+/// with: a lifecycle step, a new home or species, a storm or a quake's turn coming or going,
+/// dormancy, or day turning to night. A change of energy alone changes no rest. It reads no art,
+/// so it may answer yes where in the end nothing changes, never the other way.
 pub fn pending(before: Option<&Snapshot>, now: &Snapshot, w: u64, arrivals: &Arrivals) -> bool {
     let conditions = |snapshot: &Snapshot, w: u64| {
         (
             snapshot.state == PresentationState::Dormant,
-            snapshot.weather == Weather::Storm,
+            sheltering(snapshot, w),
             snapshot.clock.night(turn_start(w)),
         )
     };
@@ -714,6 +720,7 @@ mod tests {
             },
             swaying: BTreeSet::new(),
             residents,
+            shaken: None,
         }
     }
 

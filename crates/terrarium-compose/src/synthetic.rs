@@ -8,12 +8,12 @@
 //! plants' vigor, ground cover, residents, glass, monuments) is a plain integer function of the
 //! knobs, so the same knobs always give the same scene. Every row keeps its id whatever the
 //! knobs, so a moving knob tweens the terrarium rather than replacing it. Events are not a knob:
-//! [`set_event`] puts one on any scene, and a sinkhole reveals and names its fossil.
+//! [`set_event`] puts one on any scene with what truth's first scene of it carries.
 
 use terrarium_truth::scene::{
-    ActiveEvent, Energy, EventKind, FossilForm, FossilView, GrowthStage, LifeStage, Light,
-    MonumentAge, MonumentView, PlantSpecies, PlantState, PlantView, Presentation, ResidentSpecies,
-    ResidentView, SceneInput, Side, Strength, Weather, Wind,
+    ActiveEvent, Energy, EventKind, FossilForm, FossilView, GroundMark, GroundMarkView,
+    GrowthStage, LifeStage, Light, MonumentAge, MonumentView, PlantSpecies, PlantState, PlantView,
+    Presentation, ResidentSpecies, ResidentView, SceneInput, Side, Strength, Weather, Wind,
 };
 use terrarium_truth::{PresentationState, Tick};
 
@@ -282,10 +282,13 @@ pub fn scene(knobs: &Knobs) -> SceneInput {
 }
 
 /// Makes `kind` the scene's foreground event, the instance that started at `started_tick`, of
-/// middling strength, from the left, with the sky truth's first scene of it carries: a storm or
-/// lightning under a storm, a clearing under a clear sky, dusk or sunburst in their light, and
-/// lightning's strike on the first living mature plant. A sinkhole reveals a fossil, and names
-/// it.
+/// middling strength, from the left, with what truth's first scene of it carries:
+/// - a storm or lightning under a storm, a clearing under a clear sky, dusk or sunburst in their
+///   light, and lightning's strike on the first living mature plant;
+/// - a clearing burn's weeds gone and its fresh soil; a flowering's bloom on every mature
+///   thriving plant; an earthquake's crack; rain after drought washing the settled marks away;
+/// - a sinkhole's fossil, which it names, its settled hole, and the first living plant
+///   swallowed.
 pub fn set_event(scene: &mut SceneInput, kind: EventKind, started_tick: Tick) {
     match kind {
         EventKind::Storm | EventKind::Lightning => scene.weather = Weather::Storm,
@@ -315,6 +318,35 @@ pub fn set_event(scene: &mut SceneInput, kind: EventKind, started_tick: Tick) {
         });
         id
     });
+    match kind {
+        EventKind::ClearingBurn => {
+            scene.weeds = 0;
+            leave_mark(scene, GroundMark::FreshSoil, started_tick, None);
+        }
+        EventKind::Flowering => {
+            for plant in &mut scene.plants {
+                plant.bloom |=
+                    plant.stage == GrowthStage::Mature && plant.state == PlantState::Thriving;
+            }
+        }
+        EventKind::Earthquake => leave_mark(scene, GroundMark::Crack, started_tick, None),
+        EventKind::RainAfterDrought => {
+            scene
+                .ground_marks
+                .retain(|mark| mark.kind == GroundMark::FreshSoil);
+        }
+        EventKind::Sinkhole => {
+            leave_mark(scene, GroundMark::Sinkhole, started_tick, fossil);
+            if let Some(i) = scene
+                .plants
+                .iter()
+                .position(|p| p.state != PlantState::Dead)
+            {
+                scene.plants.remove(i);
+            }
+        }
+        _ => {}
+    }
     scene.event = Some(ActiveEvent {
         kind,
         started_tick,
@@ -322,6 +354,15 @@ pub fn set_event(scene: &mut SceneInput, kind: EventKind, started_tick: Tick) {
         side: Side::Left,
         fossil,
     });
+}
+
+/// Leaves a mark of `kind` in the scene's ground, under an id of its own made from the tick.
+fn leave_mark(scene: &mut SceneInput, kind: GroundMark, tick: Tick, fossil: Option<u32>) {
+    let mut id = tick.hours() ^ 0x6d61_726b;
+    while scene.ground_marks.iter().any(|mark| mark.id == id) {
+        id = id.wrapping_add(1);
+    }
+    scene.ground_marks.push(GroundMarkView { id, kind, fossil });
 }
 
 fn count(value: u32, max: u32) -> u8 {
@@ -810,6 +851,51 @@ mod tests {
             );
             assert!(scene.plants.iter().all(|p| !p.scorched));
         }
+    }
+
+    #[test]
+    fn a_ground_event_brings_what_truth_leaves_in_the_ground() {
+        let poor = scene(&named("struggling-poor-soil").unwrap());
+        assert!(poor.weeds > 0);
+        let with = |base: &SceneInput, kind| {
+            let mut scene = base.clone();
+            set_event(&mut scene, kind, Tick::new(3));
+            assert_eq!(scene.validate(), Ok(()), "{kind:?}");
+            scene
+        };
+        let marks = |scene: &SceneInput| -> Vec<GroundMark> {
+            scene.ground_marks.iter().map(|m| m.kind).collect()
+        };
+        let burnt = with(&poor, EventKind::ClearingBurn);
+        assert_eq!(burnt.weeds, 0);
+        assert_eq!(marks(&burnt), [GroundMark::FreshSoil]);
+
+        let thriving = scene(&NAMED[0].1);
+        let flowering = with(&thriving, EventKind::Flowering);
+        assert!(flowering.plants.iter().all(
+            |p| p.bloom == (p.stage == GrowthStage::Mature && p.state == PlantState::Thriving)
+        ));
+        assert!(flowering.plants.iter().any(|p| p.bloom));
+
+        let shaken = with(&thriving, EventKind::Earthquake);
+        assert_eq!(marks(&shaken), [GroundMark::Crack]);
+        // The same instance carried again leaves its mark under the same id.
+        assert_eq!(
+            shaken.ground_marks,
+            with(&thriving, EventKind::Earthquake).ground_marks
+        );
+
+        let sunk = with(&shaken, EventKind::Sinkhole);
+        assert_eq!(marks(&sunk), [GroundMark::Crack, GroundMark::Sinkhole]);
+        let fossil = sunk.event.and_then(|e| e.fossil);
+        assert_eq!(sunk.ground_marks[1].fossil, fossil);
+        assert!(sunk.fossils.iter().any(|f| Some(f.id) == fossil));
+        assert_eq!(sunk.plants.len(), thriving.plants.len() - 1);
+
+        let washed = with(&sunk, EventKind::RainAfterDrought);
+        assert!(washed.ground_marks.is_empty());
+        let burnt_then_washed = with(&burnt, EventKind::RainAfterDrought);
+        assert_eq!(marks(&burnt_then_washed), [GroundMark::FreshSoil]);
     }
 
     #[test]

@@ -26,7 +26,8 @@ The `repo-terrarium` binary.
 - `--probe pinning` (`probe`): the strip with a recorder, a guided checklist and a report.
 - In dev builds (`--features dev`): the egui windows (`egui_host`), on one wgpu device made with
   the first window and dropped with the last, painted only when egui asks (`repaint`); the debug
-  window (`debug`); and `--probe egui` (`egui_probe`).
+  window (`debug`), with its simulation of the real sim over a history its sliders make
+  (`sandbox`); and `--probe egui` (`egui_probe`).
 
 ## Why it is a crate of its own
 

@@ -28,7 +28,7 @@ use crate::render::{LABEL, large_png};
 use crate::sweep;
 
 /// The contact sheet's gutter between cells, and between a cell's day and night.
-const GUTTER: u32 = 4;
+pub const GUTTER: u32 = 4;
 const GAP: u32 = 2;
 
 /// The gallery's files, by path under its directory, in the order written.

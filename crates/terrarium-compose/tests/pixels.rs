@@ -331,6 +331,81 @@ fn sky_events_in_key_frames_by_day_and_night() {
     }
 }
 
+/// Each event on the ground, played over the terrarium that holds what it acts on, as truth
+/// would bring it, in key frames from its update: burn-off frame by frame, its ash cleared and
+/// the sprinkles on the fresh soil; the scorch after lightning's bolt entering, holding over the
+/// plant's foliage gone behind it, and giving it back; a flowering across its minute; the
+/// crack and the sinkhole in their three frames and settled. Each ends settled. By day and by
+/// night.
+#[test]
+fn ground_events_in_key_frames_by_day_and_night() {
+    use terrarium_truth::Tick;
+    use terrarium_truth::scene::{EventKind, Side};
+
+    let table = ArtTable::new(catalog()).expect("the embedded art is complete");
+    let cases: [(&str, EventKind, &str, Vec<u64>); 5] = [
+        (
+            "burn",
+            EventKind::ClearingBurn,
+            "struggling-poor-soil",
+            vec![0, 100, 300, 500, 800, 1400, 2200],
+        ),
+        (
+            "scorch",
+            EventKind::Lightning,
+            "thriving",
+            vec![333, 633, 933, 1833, 2133, 2733],
+        ),
+        (
+            "flowering",
+            EventKind::Flowering,
+            "thriving",
+            vec![0, 15_000, 30_000, 45_000],
+        ),
+        (
+            "earthquake",
+            EventKind::Earthquake,
+            "struggling-poor-soil",
+            vec![1, 167, 333],
+        ),
+        (
+            "sinkhole",
+            EventKind::Sinkhole,
+            "thriving",
+            vec![1, 167, 333],
+        ),
+    ];
+    for (name, kind, preset_name, moments) in cases {
+        for night in [false, true] {
+            let clock = if night {
+                LocalClock::midnight(preset::DATE)
+            } else {
+                LocalClock::noon(preset::DATE)
+            };
+            let overlay = OverlayInput::new(vec!["repo-terrarium".into()], clock);
+            let mut scene = preset::scene(preset_name).unwrap();
+            let mut composer = Composer::new(&table, preset::SALT);
+            composer.update(&scene, &overlay, Millis(0));
+            let begin = composer.settled_at();
+            synthetic::set_event(&mut scene, kind, Tick::new(1));
+            if let Some(event) = &mut scene.event {
+                event.side = Side::Left;
+            }
+            composer.update(&scene, &overlay, begin);
+            let settled = composer.settled_at().0 - begin.0;
+            let scenery = composer.scenery(art(), &table);
+            let mix = if night { 255 } else { 0 };
+            let frames: Vec<Frame> = moments
+                .iter()
+                .chain([&settled])
+                .map(|&ms| composer.frame(art(), &table, &scenery, mix, Millis(begin.0 + ms)))
+                .collect();
+            let when = if night { "night" } else { "day" };
+            snapshot_sheet(&format!("ground-{name}-{when}"), &frames);
+        }
+    }
+}
+
 /// The thriving terrarium, living, from its first update at `clock`, in `wind`, perhaps dimmed.
 fn living(clock: LocalClock, wind: Wind, dim: bool) -> (Composer, ArtTable) {
     let table = ArtTable::new(catalog()).expect("the embedded art is complete");

@@ -6,6 +6,7 @@ pub mod headless;
 pub mod live;
 pub mod observe;
 pub mod schedule;
+pub mod showing;
 pub mod watch;
 pub mod worker;
 

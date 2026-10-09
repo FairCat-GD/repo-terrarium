@@ -37,6 +37,12 @@ pub enum Subject {
         id: u32,
         spot: u8,
     },
+    /// A mark an event left in the ground, by truth's id and where it lies: a settled crack
+    /// (at 0), a settled sinkhole at its fossil's spot, or fresh soil in a cell.
+    Mark {
+        id: u32,
+        at: u8,
+    },
     /// A decorative tuft between the slots: dressing, never filler.
     Dressing(u8),
     /// The weeds in a cell.
@@ -50,6 +56,12 @@ pub enum Subject {
     /// A plant in a cell. The cell is part of its identity, so a plant that ever stood
     /// elsewhere is another subject, fading in while the old one fades out.
     Plant {
+        id: u32,
+        cell: u8,
+    },
+    /// Lightning's scorch over the plant it struck, in that plant's cell: it paints over the
+    /// plant it stands in for.
+    Scorch {
         id: u32,
         cell: u8,
     },
@@ -69,6 +81,10 @@ pub enum Subject {
     Rain,
     /// A leaf a windstorm carries, by its place in the flurry.
     Leaf(u8),
+    /// Burn-off over the weeds of a cell.
+    Burn(u8),
+    /// A sprinkle of flowers on the fresh soil of a cell.
+    Sprinkle(u8),
     /// The dusk or sunburst light over the scene.
     Light,
     /// The label's text; the plate is scenery.
@@ -80,8 +96,9 @@ pub enum Subject {
 impl Subject {
     /// Whether it stands in the 640-wide scene, which a wider viewport shows in its middle.
     /// The rest belong to the viewport and reach its edges: the backdrop, the clouds, the
-    /// soil, the glass and its films and sweep, the light, the label, and an event's pieces,
-    /// which the event places across the viewport itself.
+    /// soil, the glass and its films and sweep, the light, the label, and the sky's event
+    /// pieces, which the event places across the viewport itself. The ground's event pieces
+    /// stand in the scene, on what they act on.
     pub const fn in_scene(self) -> bool {
         match self {
             Subject::Sun
@@ -95,7 +112,11 @@ impl Subject {
             | Subject::Plant { .. }
             | Subject::Resident { .. }
             | Subject::Litter(_)
-            | Subject::Fungus(_) => true,
+            | Subject::Fungus(_)
+            | Subject::Mark { .. }
+            | Subject::Scorch { .. }
+            | Subject::Burn(_)
+            | Subject::Sprinkle(_) => true,
             Subject::Film(_)
             | Subject::Scenery(_)
             | Subject::Soil

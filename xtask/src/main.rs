@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
+mod arc;
 mod assets;
 mod bench;
 mod fixture;
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
         [task, flag] if task == "assets" && flag == "--check" => {
             assets::run(root, assets::Mode::Check)
         }
+        [task] if task == "arc" => arc::run(root),
         [task] if task == "bench" => bench::run(root),
         [task, flag] if task == "fixture" && flag == "--bless" => fixture::bless(root),
         [task, out] if task == "fixture" && !out.starts_with('-') => {
@@ -64,7 +66,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask verify | assets [--check] | bench | fixture <dir> | fixture \
+                "usage: cargo xtask verify | arc | assets [--check] | bench | fixture <dir> | fixture \
                  --bless | gallery | golden [--check | --bless [--same-version]] | probe-zip | \
                  render --demo <out.png> | render --preset <name> <out.png>"
             );

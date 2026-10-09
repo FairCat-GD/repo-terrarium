@@ -5,6 +5,35 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-09
+
+The ground's events play, the marks they leave stay as long as truth keeps them, and the arc
+and the real sim can be watched.
+
+### Added
+
+- **A clearing burn** burns off every weed in its frames, the weeds giving way and fresh soil
+  coming in step by step as the art keys them; when the ash clears, a few flowers come up on the
+  fresh soil for a moment. The fresh soil stays two weeks.
+- **Lightning scorches the plant it strikes:** after the bolt the scorched foliage rises over
+  the plant, holds, and gives back whatever foliage the plant has by then; it never heals the
+  plant by itself. A bloom and the night glow hide while it shows.
+- **A release flowers across the strip:** each plant that blooms opens in turn from one side,
+  over about a minute, and stays in bloom for the day.
+- **An earthquake** opens a crack in three frames into the settled crack, which stays until the
+  next rain after a drought or for 30 days; residents hide for a moment, then come out. A
+  rewrite that takes a fossil opens its sinkhole with the crack.
+- **A sinkhole** opens over the fossil it reveals, as near the plant it swallowed as a fossil's
+  place allows, and stays as the crack does.
+- **Marks in the ground** (the crack, the sinkhole, fresh soil) now show whenever the
+  repository's history leaves them, fading in and out like the rest of the ground.
+- **`cargo xtask arc`** replays the fixture arc a day at a time and writes a picture, by day and
+  by night, of each change of state, each day an event plays on the ground and the last day,
+  with a contact sheet and a key, to `target/arc/`.
+- **The debug window's Simulation** (dev builds): sliders for light, soil, rain, wind and
+  weather drive the real sim a day at a time, at up to 30 days a second, with buttons to tag a
+  release, delete a directory, rewrite the default branch, or start over.
+
 ## [0.19.0] - 2026-10-09
 
 The sky's events play: storms roll in and clear, lightning strikes, rain falls after a drought,

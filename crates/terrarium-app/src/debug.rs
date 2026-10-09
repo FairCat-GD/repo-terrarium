@@ -1,6 +1,7 @@
 //! The debug window (dev builds only): what the strip shows, chosen by hand, and how much it
 //! costs. It is the harness for judging the looks: presets, or the synthetic climate's knobs
-//! with health and activity as two sliders; a trigger for each foreground event; the time of
+//! with health and activity as two sliders; and the sim tuning harness: the real sim, driven by
+//! climate sliders and three actions. Then a trigger for each foreground event; the time of
 //! day; dim; and the frames, compositions and memory the strip is spending.
 //!
 //! The panel keeps its own state, so it survives its window closing and the egui host being
@@ -20,6 +21,7 @@ use terrarium_truth::scene::{EventKind, Light, Weather};
 
 use crate::copy::debug as text;
 use crate::feed::{Feed, Overrides, Trigger};
+use crate::sandbox::{self, Settings};
 
 /// How often the open window refreshes its readout: often enough to read, rarely enough that
 /// an open window costs the strip almost nothing.
@@ -34,6 +36,7 @@ enum Choice {
     Demo,
     Preset(usize),
     Synthetic,
+    Simulation,
 }
 
 /// Dim as the panel sets it: after idle time, as the strip does, or held on or off.
@@ -55,11 +58,14 @@ pub struct Readout {
     pub dimmed: bool,
     /// `--demo`'s stage, while the demo is shown.
     pub stage: Option<&'static str>,
+    /// How many days the simulation has run, while it is shown.
+    pub sim_day: Option<u32>,
 }
 
 pub struct DebugPanel {
     choice: Choice,
     knobs: Knobs,
+    sim: Settings,
     fixed_time: bool,
     minute_of_day: u32,
     dim: DimChoice,
@@ -71,6 +77,10 @@ pub struct DebugPanel {
 impl DebugPanel {
     /// A panel showing what the strip shows now.
     pub fn new(feed: &Feed, overrides: Overrides) -> DebugPanel {
+        let sim = match feed {
+            Feed::Simulation(settings) => *settings,
+            _ => Settings::default(),
+        };
         let (choice, knobs) = match feed {
             Feed::Live => (Choice::Live, synthetic::NAMED[0].1),
             Feed::Thriving => (Choice::Thriving, synthetic::NAMED[0].1),
@@ -80,10 +90,12 @@ impl DebugPanel {
                 synthetic::NAMED[0].1,
             ),
             Feed::Synthetic(knobs) => (Choice::Synthetic, *knobs),
+            Feed::Simulation(_) => (Choice::Simulation, synthetic::NAMED[0].1),
         };
         DebugPanel {
             choice,
             knobs,
+            sim,
             fixed_time: overrides.time_of_day.is_some(),
             minute_of_day: overrides.time_of_day.map_or(12 * 60, |ms| ms / 60_000),
             dim: match overrides.dim {
@@ -109,6 +121,7 @@ impl DebugPanel {
             Choice::Demo => Feed::Demo,
             Choice::Preset(index) => Feed::Preset(preset::NAMES[index]),
             Choice::Synthetic => Feed::Synthetic(self.knobs),
+            Choice::Simulation => Feed::Simulation(self.sim),
         }
     }
 
@@ -134,6 +147,10 @@ impl DebugPanel {
                 self.climate(ui);
                 ui.separator();
             }
+            if self.choice == Choice::Simulation {
+                self.simulation(ui);
+                ui.separator();
+            }
             self.events(ui);
             ui.separator();
             self.clock(ui);
@@ -152,7 +169,42 @@ impl DebugPanel {
             ui.radio_value(&mut self.choice, Choice::Preset(index), text::preset(name));
         }
         ui.radio_value(&mut self.choice, Choice::Synthetic, text::SYNTHETIC);
+        ui.radio_value(&mut self.choice, Choice::Simulation, text::SIMULATION);
         self.changed |= self.choice != before;
+    }
+
+    fn simulation(&mut self, ui: &mut Ui) {
+        ui.heading(text::SIMULATION);
+        ui.label(text::SIMULATION_NOTE);
+        let before = self.sim;
+        let sim = &mut self.sim;
+        ui.add(egui::Slider::new(&mut sim.light, 0..=synthetic::FULL).text(text::LIGHT));
+        ui.add(egui::Slider::new(&mut sim.soil, 0..=synthetic::FULL).text(text::SOIL));
+        ui.add(egui::Slider::new(&mut sim.rain, 0..=MAX_RATIO).text(text::RAIN));
+        ui.add(egui::Slider::new(&mut sim.wind, 0..=MAX_RATIO).text(text::WIND));
+        egui::ComboBox::from_label(text::WEATHER)
+            .selected_text(text::weather(sim.weather))
+            .show_ui(ui, |ui| {
+                for weather in sandbox::WEATHERS {
+                    ui.selectable_value(&mut sim.weather, weather, text::weather(weather));
+                }
+            });
+        ui.add(egui::Slider::new(&mut sim.speed, 0..=30).text(text::SPEED));
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(text::TAG_RELEASE).clicked() {
+                sim.releases += 1;
+            }
+            if ui.button(text::DELETE_DIRECTORY).clicked() {
+                sim.deletions += 1;
+            }
+            if ui.button(text::REWRITE_HISTORY).clicked() {
+                sim.rewrites += 1;
+            }
+            if ui.button(text::START_OVER).clicked() {
+                sim.restarts += 1;
+            }
+        });
+        self.changed |= self.sim != before;
     }
 
     fn climate(&mut self, ui: &mut Ui) {
@@ -304,6 +356,7 @@ mod tests {
             clock: LocalClock::noon(LocalDate::new(2026, 10, 1)),
             dimmed: false,
             stage: Some("mature"),
+            sim_day: Some(130),
         }
     }
 

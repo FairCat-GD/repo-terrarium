@@ -1,8 +1,8 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `probe-zip` and
-`render`.
+The tasks are `verify`, `arc`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `probe-zip`
+and `render`.
 
 ## `verify`
 
@@ -84,6 +84,23 @@ arithmetic. `src/purity.rs` lexes every `.rs` file in `crates/terrarium-truth` w
   the terminal without naming `std::io`.
 
 It reads tokens, so comments, strings and char literals never trigger it.
+
+## `arc`
+
+`cargo xtask arc` replays the fixture arc a day at a time, as a strip looking once a day would
+show it, and writes its key frames for review into `target/arc/`, replacing what an
+earlier run left. One composer takes each day's
+scene in turn and settles between days. A frame is kept at each change of the presentation
+timeline, on the first day of each run of days an event plays on the ground, and on the last day:
+
+- `frames/NN-day.png` and `NN-night.png`: each kept frame at 3×;
+- `contact-sheet.png`: every kept frame at 1×, its day beside its night;
+- `key.csv`: each frame's day of the arc, tick, presentation state, health and activity class,
+  and the events played since the frame before;
+- `SHA256SUMS`: every other file's hash. The same build writes the same bytes.
+
+It fails unless the frames show all six presentation states. It is not part of `verify`; the
+arc's six states are `terrarium-engine`'s own test.
 
 ## `gallery`
 

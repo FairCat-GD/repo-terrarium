@@ -645,6 +645,16 @@ pub mod debug {
     pub const THRIVING: &str = "Thriving, the sample shown with no repository connected";
     pub const DEMO: &str = "The demo cycle, from its start";
     pub const SYNTHETIC: &str = "Synthetic climate";
+    pub const SIMULATION: &str = "Simulation";
+    pub const SIMULATION_NOTE: &str = "The real sim, a day at a time, over a history these \
+        sliders make. Rain and wind are measured against the usual pace, so one held high \
+        settles back to usual. Haze is a test run that tells nothing. Soil rising fast clears \
+        the dead code: a clearing burn.";
+    pub const SPEED: &str = "Days a second (0 holds)";
+    pub const TAG_RELEASE: &str = "Tag a release";
+    pub const DELETE_DIRECTORY: &str = "Delete a directory";
+    pub const REWRITE_HISTORY: &str = "Rewrite the default branch";
+    pub const START_OVER: &str = "Start over";
     pub const CLIMATE: &str = "Climate";
     pub const HEALTH: &str = "Health (light and soil)";
     pub const ACTIVITY: &str = "Activity (rain and wind)";
@@ -658,8 +668,8 @@ pub mod debug {
     pub const AGE: &str = "Age in years";
     pub const RECOVERING: &str = "Recovering";
     pub const EVENT: &str = "Event";
-    pub const EVENT_TRIGGERS: &str = "Each press plays the event once, with the sky it \
-        brings. The ground's events are not drawn yet.";
+    pub const EVENT_TRIGGERS: &str = "Each press plays the event once, with what it brings \
+        to the sky and the ground.";
     pub const CLEAR_EVENT: &str = "None";
     pub const CLOCK: &str = "Clock";
     pub const FIXED_TIME: &str = "A fixed time of day";
@@ -751,6 +761,9 @@ pub mod debug {
         ];
         if let Some(stage) = readout.stage {
             lines.push(format!("demo stage: {stage}"));
+        }
+        if let Some(day) = readout.sim_day {
+            lines.push(format!("simulated day: {day}"));
         }
         lines.push(match readout.memory {
             Some(memory) => match memory.footprint {

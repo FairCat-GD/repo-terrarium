@@ -869,6 +869,7 @@ impl Strip {
             clock: overlay.clock,
             dimmed: overlay.dim,
             stage: feeder.stage(Scene::millis(*origin, now)),
+            sim_day: feeder.sim_day(),
         })
     }
 }
