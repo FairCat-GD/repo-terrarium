@@ -398,6 +398,9 @@ mod tests {
                 .map(|event| (event.kind, event.started_tick))
         };
         assert_ne!(instance(first), instance(again));
+        // Far from truth's own ticks, which count hours from a repository's first commit.
+        let tick = instance(first).unwrap().1.hours();
+        assert!(tick > u32::MAX - 1000, "{tick}");
         assert_eq!(
             instance(first).map(|(kind, _)| kind),
             Some(EventKind::Storm)

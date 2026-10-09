@@ -1434,7 +1434,8 @@ fn travelled_this_turn(composer: &Composer, mix: u8, now: Millis, subject: Subje
 
 /// When an event's choreography turns, from the update that cues it: lightning's frames, rain's
 /// fades (held 12, 24 or 36 s), the leaves on their way, and the storm front across 640
-/// columns and its curtain's 24, a column in 67 ms.
+/// columns and its curtain's 24, a column in 67 ms. The frame-holds property adds the end of
+/// the front's crossing for each of its viewports.
 const CUES: [u64; 22] = [
     68, 134, 167, 333, 334, 2000, 2999, 3001, 9000, 15_000, 16_500, 18_000, 21_000, 27_000, 30_000,
     33_000, 39_000, 42_000, 44_487, 44_488, 44_489, 50_000,
@@ -1646,8 +1647,15 @@ proptest! {
                 moving.plus(900),
                 moving.plus(9900),
             ];
-            // And through an event's choreography, where it turns.
-            let cues = scene.event.iter().flat_map(|_| CUES.map(|ms| Millis(now.0 + ms - 40)));
+            // And through an event's choreography, where it turns, the front's crossing
+            // ending by this viewport's width.
+            let across = (u64::from(columns) + 24) * FRONT_MS_PER_PX;
+            let cues = scene.event.iter().flat_map(|_| {
+                CUES.iter()
+                    .chain(&[across - 1, across, across + 1])
+                    .map(|&ms| Millis(now.0 + ms - 40))
+                    .collect::<Vec<_>>()
+            });
             for start in starts.into_iter().chain(cues) {
                 let mut moment = start;
                 for _ in 0..12 {

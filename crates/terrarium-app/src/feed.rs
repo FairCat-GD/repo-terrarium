@@ -87,6 +87,15 @@ pub struct Trigger {
     pub press: u32,
 }
 
+impl Trigger {
+    /// The press as an instance's tick, counted down from the last tick there is: truth's
+    /// ticks count hours up from a repository's first commit, so a press never stands for
+    /// one of truth's own instances.
+    pub fn instance(self) -> terrarium_truth::Tick {
+        terrarium_truth::Tick::new(u32::MAX - self.press)
+    }
+}
+
 pub struct Feeder {
     feed: Feed,
     /// When the strip started, from which `--demo`'s cycle counts.
@@ -252,8 +261,7 @@ impl Feeder {
             Feed::Synthetic(knobs) => synthetic::scene(knobs),
         };
         if let Some(trigger) = self.overrides.event {
-            let instance = terrarium_truth::Tick::new(trigger.press);
-            synthetic::set_event(&mut scene, trigger.kind, instance);
+            synthetic::set_event(&mut scene, trigger.kind, trigger.instance());
         }
         scene
     }

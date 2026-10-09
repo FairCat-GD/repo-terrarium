@@ -24,6 +24,7 @@
 //! The fixed rest of the world, which never changes while the app runs, is the
 //! [`Scenery`].
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
 use terrarium_truth::PresentationState;
@@ -539,8 +540,11 @@ pub struct Composer {
     residents_settle: Millis,
     /// What the sky's events play.
     sky: SkyEventArt,
-    /// The last event instance begun or passed over: each plays once.
-    played: Option<event::Instance>,
+    /// The event instances begun or passed over lately, oldest first: each plays once, even
+    /// when another came between.
+    played: Vec<event::Instance>,
+    /// The storm front's curtain, read from the art the first time a wipe needs it.
+    curtain: OnceCell<event::Curtain>,
     /// The event's choreography, playing or played.
     show: Option<event::Show>,
 }
@@ -588,7 +592,8 @@ impl Composer {
             residents: BTreeMap::new(),
             residents_settle: Millis(0),
             sky: table.sky_events().clone(),
-            played: None,
+            played: Vec::new(),
+            curtain: OnceCell::new(),
             show: None,
         }
     }
@@ -1127,49 +1132,60 @@ impl Composer {
     /// every moment before it (I-10).
     pub fn next_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
         let mut next = Earliest::default();
+        // While the storm front crosses, a step of the sky that its cut hides before and after
+        // changes nothing; the front's own steps look again.
+        let crossing = self.crossing(now).is_some();
+        let seen = |subject: Subject, step: Millis, looks: &[(Place, &Look)]| {
+            !crossing
+                || !sky(subject)
+                || [now, step].iter().any(|&at| {
+                    looks
+                        .iter()
+                        .any(|&(place, look)| !self.covered(art, table, place, look, at))
+                })
+        };
         for (&subject, entry) in &self.entries {
             for (part, looks) in (0_u8..).zip(&entry.parts) {
-                for look in looks {
-                    let sprite = look.piece.sprite(table, self.salt, subject, part);
-                    let own = sprite.map(|sprite| art.catalog.sprite(sprite));
+                for (index, look) in (0_u16..).zip(looks) {
+                    let Some(step) = look.opacity.next_step(now) else {
+                        continue;
+                    };
                     // Art drawn at its own opacity, the same by day and night, shows a step
                     // of its look's only where the scaled opacity moves.
-                    let plain = own.filter(|own| {
-                        own.night_opacity.is_none()
-                            && !own.flags.contains(Flags::DAY_ONLY)
-                            && !own.flags.contains(Flags::NIGHT_ONLY)
-                    });
-                    next.take(match plain {
+                    let own = look
+                        .piece
+                        .sprite(table, self.salt, subject, part)
+                        .map(|sprite| art.catalog.sprite(sprite))
+                        .filter(|own| {
+                            own.night_opacity.is_none()
+                                && !own.flags.contains(Flags::DAY_ONLY)
+                                && !own.flags.contains(Flags::NIGHT_ONLY)
+                        });
+                    let step = match own {
                         Some(own) => look
                             .opacity
                             .next_step_by(now, |value| scale(own.opacity, value)),
-                        None => look.opacity.next_step(now),
-                    });
+                        None => Some(step),
+                    };
+                    let place = Place::new(subject, part, index);
+                    next.take(step.filter(|&step| seen(subject, step, &[(place, look)])));
                 }
             }
             if let Subject::Cloud(i) = subject {
-                // Each look's width, and whether it is behind a wipe.
-                let shown: Vec<(i32, bool)> = entry
-                    .looks()
-                    .filter(|look| look.opacity.value(now) > 0)
-                    .filter_map(|look| {
-                        let sprite = look.piece.sprite(table, self.salt, subject, 0)?;
-                        Some((i32::from(art.catalog.sprite(sprite).rect.w), look.behind))
-                    })
+                let shown: Vec<(Place, &Look)> = (0_u16..)
+                    .zip(&entry.parts[0])
+                    .filter(|(_, look)| look.opacity.value(now) > 0)
+                    .map(|(index, look)| (Place::new(subject, 0, index), look))
                     .collect();
-                let widest = shown.iter().map(|&(width, _)| width).max();
+                let widest = shown
+                    .iter()
+                    .filter_map(|(_, look)| look.piece.sprite(table, self.salt, subject, 0))
+                    .map(|sprite| i32::from(art.catalog.sprite(sprite).rect.w))
+                    .max();
                 let drift = self.world.cloud(i);
                 let viewport = self.viewport_width();
                 let step = widest.map(|width| drift.next_seen_step(now, width, viewport));
-                // While the storm front crosses, a step its cut hides before and after
-                // changes nothing; the front's own steps look again.
-                let hidden = |at: Millis| {
-                    let x = drift.x(at, viewport);
-                    shown
-                        .iter()
-                        .all(|&(width, behind)| self.cut_away(art, at, behind, (x, x + width)))
-                };
-                next.take(step.filter(|&step| !(hidden(now) && hidden(step))));
+                next.take(step.filter(|&step| seen(subject, step, &shown)));
             }
         }
         next.take(Some(drift::next_step(now, SOIL_MS_PER_PX)));
@@ -1360,6 +1376,7 @@ impl Composer {
     /// Composes for `viewport` from now on; its scenery is [`Composer::scenery`]'s anew.
     pub fn set_viewport(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        self.refit_show();
     }
 
     pub fn viewport(&self) -> Viewport {

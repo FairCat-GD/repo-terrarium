@@ -58,6 +58,9 @@ const LEAF_ROWS: u64 = 40;
 /// A leaf bobs a pixel at a time, up two and down two.
 const WOBBLE: [i32; 8] = [0, 1, 2, 1, 0, -1, -2, -1];
 const WOBBLE_STEP_MS: u64 = 250;
+/// How many instances begun or passed over are remembered: more than the engine ever holds
+/// in turn, so a scene that carries an earlier one again never plays it twice.
+const PLAYED_KEPT: usize = 16;
 /// The salted index of the ground lightning strikes without a plant, apart from any leaf's.
 const STRIKE: u64 = 0xff;
 
@@ -139,7 +142,7 @@ pub(super) struct Wipe {
 
 /// The curtain as delivered: its width, and how many columns on its left and right are empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Curtain {
+pub(super) struct Curtain {
     width: i32,
     open: (i32, i32),
 }
@@ -311,6 +314,14 @@ impl Leaf {
     }
 }
 
+/// When the last of a flurry's leaves has crossed a viewport `width` wide.
+fn flurry_end(event: &ActiveEvent, start: Millis, width: i32, leaf_width: i32) -> Millis {
+    (0..by_strength(LEAVES, event.strength))
+        .map(|i| Leaf::of(event, start, i).gone(width, leaf_width))
+        .max()
+        .unwrap_or(start)
+}
+
 /// The wind the plants sway in: a step harder while the scene carries a storm, a gale while it
 /// carries a windstorm.
 pub(super) fn wind(input: &SceneInput) -> Wind {
@@ -354,10 +365,13 @@ impl Composer {
     pub(super) fn cue(&mut self, input: &SceneInput, now: Millis) -> Option<Wipe> {
         let event = input.event?;
         let instance = (event.kind, event.started_tick);
-        if !in_the_sky(event.kind) || self.played == Some(instance) {
+        if !in_the_sky(event.kind) || self.played.contains(&instance) {
             return None;
         }
-        self.played = Some(instance);
+        if self.played.len() == PLAYED_KEPT {
+            self.played.drain(..1);
+        }
+        self.played.push(instance);
         if self.show.is_some_and(|show| now < show.end) {
             return None;
         }
@@ -397,11 +411,8 @@ impl Composer {
                 (Play::Rain { start }, start.plus(2 * RAIN_FADE_MS + hold))
             }
             _ => {
-                let gone = (0..by_strength(LEAVES, event.strength))
-                    .map(|i| Leaf::of(&event, start, i).gone(width, self.sky.leaf_width))
-                    .max()
-                    .unwrap_or(start);
-                (Play::Leaves { start, width }, gone)
+                let end = flurry_end(&event, start, width, self.sky.leaf_width);
+                (Play::Leaves { start, width }, end)
             }
         };
         self.show = Some(Show { event, play, end });
@@ -409,6 +420,26 @@ impl Composer {
             Play::Wipe(wipe) => Some(wipe),
             _ => None,
         }
+    }
+
+    /// A flurry under way crosses the viewport as it now is, from its own side's edge: a
+    /// new width re-lays the leaves, as it re-lays everything, and moves the flurry's end.
+    pub(super) fn refit_show(&mut self) {
+        let width = self.viewport_width();
+        let leaf_width = self.sky.leaf_width;
+        if let Some(show) = &mut self.show
+            && let Play::Leaves { start, .. } = show.play
+        {
+            show.play = Play::Leaves { start, width };
+            show.end = flurry_end(&show.event, start, width, leaf_width);
+        }
+    }
+
+    /// The storm front's curtain, read from the art once.
+    fn curtain(&self, art: &Art) -> Curtain {
+        *self
+            .curtain
+            .get_or_init(|| Curtain::of(art, self.sky.front))
     }
 
     /// The weather the sky is showing or becoming.
@@ -457,23 +488,42 @@ impl Composer {
         }
     }
 
-    /// Whether a crossing wipe at `at` cuts away all of a sky look's columns `from..to`, on
-    /// the side it is on: behind the wipe or ahead of it.
-    pub(super) fn cut_away(
+    /// Whether nothing of a sky look shows at `at` while a wipe crosses: each of its draws
+    /// lies wholly on the side of the line its look is not on, or the look shows nothing.
+    pub(super) fn covered(
         &self,
         art: &Art,
+        table: &ArtTable,
+        place: Place,
+        look: &Look,
         at: Millis,
-        behind: bool,
-        (from, to): (i32, i32),
     ) -> bool {
         let Some(wipe) = self.crossing(at) else {
             return false;
         };
+        let value = look.opacity.value(at);
+        if value == 0 {
+            return true;
+        }
+        let mut draws = Vec::new();
+        let lit = Lit {
+            value,
+            palette_mix: self.palette_mix(at),
+        };
+        self.push(art, table, place, look.piece, lit, at, &mut draws);
         let width = self.viewport_width();
-        let curtain = Curtain::of(art, self.sky.front);
-        let [new, old] = wipe.placing(at, width, curtain).columns();
-        let (lo, hi) = if behind { old } else { new };
-        from.max(0).max(lo) >= to.min(width).min(hi)
+        let inset = if place.subject.in_scene() {
+            self.viewport.inset()
+        } else {
+            0
+        };
+        let [new, old] = wipe.placing(at, width, self.curtain(art)).columns();
+        let (lo, hi) = if look.behind { old } else { new };
+        draws.iter().all(|keyed| {
+            let from = keyed.draw.x + inset;
+            let to = from + i32::from(art.catalog.sprite(keyed.draw.sprite).rect.w);
+            from.max(0).max(lo) >= to.min(width).min(hi)
+        })
     }
 
     /// When the choreography playing is over.
@@ -522,7 +572,7 @@ impl Composer {
         let events = table.sky_events();
         match show.play {
             Play::Wipe(wipe) => {
-                let curtain = Curtain::of(art, events.front);
+                let curtain = self.curtain(art);
                 let placing = wipe.placing(now, width, curtain);
                 divide(&art.catalog, keyed, sky, placing.columns(), width);
                 keyed.extend(front(art, events.front, curtain, placing, width, lit));
@@ -643,7 +693,7 @@ impl Composer {
         };
         match show.play {
             Play::Wipe(wipe) => {
-                let curtain = Curtain::of(art, events.front);
+                let curtain = self.curtain(art);
                 next.take(wipe.next_step(now, self.viewport_width(), curtain));
             }
             Play::Bolt { start, .. } => {
@@ -1529,6 +1579,57 @@ mod tests {
         assert!(!of(&composer, end.plus(6000), |s| s == Subject::Rain).is_empty());
     }
 
+    /// An instance the scenes carry again after another came between plays no more: a debug
+    /// trigger pressed and taken off while truth holds its own, or any such interleaving.
+    #[test]
+    fn an_instance_carried_again_after_another_plays_no_more() {
+        let rain = |tick| {
+            carrying(
+                scene(Weather::Clear),
+                event(EventKind::RainAfterDrought, tick, Side::Left),
+            )
+        };
+        let (mut composer, now) = played(&scene(Weather::Clear), &rain(40), preset::SALT);
+        let end = composer.settled_at();
+        composer.update(&rain(41), &overlay(false), end.plus(1000));
+        let later = composer.settled_at();
+        assert!(later > end, "the other one plays");
+        composer.update(&rain(40), &overlay(false), later.plus(1000));
+        assert_eq!(
+            composer.settled_at(),
+            later,
+            "the first does not play again"
+        );
+        assert!(of(&composer, later.plus(6000), |s| s == Subject::Rain).is_empty());
+        assert!(now < end);
+    }
+
+    /// A flurry under way when the viewport widens crosses the new width, from its own edge,
+    /// and its end moves with it.
+    #[test]
+    fn a_flurry_crosses_a_wider_viewport_from_its_own_edge() {
+        let blow = carrying(
+            scene(Weather::Clear),
+            event(EventKind::Windstorm, 12, Side::Right),
+        );
+        let (mut composer, now) = played(&scene(Weather::Clear), &blow, preset::SALT);
+        let narrow = composer.settled_at();
+        composer.set_viewport(Viewport::new(840));
+        assert!(composer.settled_at() > narrow);
+        // The first leaf, just set off, comes in at the wider viewport's right edge.
+        let at = now.plus(100);
+        let first = of(&composer, at, |s| s == Subject::Leaf(0));
+        assert_eq!(first.len(), 1);
+        assert!(first[0].draw.x > 830, "{}", first[0].draw.x);
+        assert!(
+            of(&composer, composer.settled_at(), |s| matches!(
+                s,
+                Subject::Leaf(_)
+            ))
+            .is_empty()
+        );
+    }
+
     #[test]
     fn an_instance_arriving_mid_play_is_dropped() {
         let rain = carrying(
@@ -1561,7 +1662,7 @@ mod tests {
             let after = carrying(scene(Weather::Clear), event(kind, 6, Side::Left));
             let (composer, _) = played(&scene(Weather::Clear), &after, preset::SALT);
             assert_eq!(composer.show, None, "{kind:?}");
-            assert_eq!(composer.played, None);
+            assert!(composer.played.is_empty());
         }
     }
 
