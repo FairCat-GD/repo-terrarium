@@ -20,7 +20,8 @@ and a windstorm carries leaves across.
 - **Lightning strikes** the plant it scorches, in two frames, or the ground where that plant
   is not drawn.
 - **Rain after drought** falls across the whole strip, fading in, holding for longer the
-  longer the drought, and fading out.
+  longer the drought, and fading out. Its streaks are drawn in the stone's light colour at
+  150, so they read against the pale daytime sky.
 - **A windstorm carries leaves** across from its side, each at its own pace and height.
 - **Dusk and sunburst** settle over the scene as their own light.
 - **The plants sway harder while a storm or a windstorm is under way,** from the next turn of

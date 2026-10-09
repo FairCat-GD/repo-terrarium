@@ -1359,6 +1359,8 @@ mod tests {
             let streaks = |at: Millis| of(&composer, at, |s| s == Subject::Rain);
             let frames = &art().catalog.animation(table().sky_events().rain).frames;
             let w = i32::from(art().catalog.sprite(frames[0]).rect.w);
+            // Held, the streaks show at the art's own opacity.
+            let own = art().catalog.sprite(frames[0]).opacity;
             assert!(streaks(now).is_empty());
             let held = streaks(now.plus(RAIN_FADE_MS + 1000));
             assert_eq!(
@@ -1367,7 +1369,7 @@ mod tests {
             );
             assert!(
                 held.iter()
-                    .all(|k| k.draw.opacity == 100 && k.draw.blend == Blend::Normal)
+                    .all(|k| k.draw.opacity == own && k.draw.blend == Blend::Normal)
             );
             let xs: Vec<i32> = held.iter().map(|k| k.draw.x).collect();
             assert_eq!(
@@ -1378,7 +1380,7 @@ mod tests {
                     .collect::<Vec<_>>()
             );
             let rising = streaks(now.plus(RAIN_FADE_MS / 2))[0].draw.opacity;
-            assert!(rising > 0 && rising < 100);
+            assert!(rising > 0 && rising < own);
             // Every frame of the loop shows, at the art's own pace.
             let seen: std::collections::BTreeSet<SpriteId> = (0..6)
                 .map(|i| streaks(now.plus(5000 + i * 166))[0].draw.sprite)
@@ -1388,7 +1390,7 @@ mod tests {
             let falling = streaks(Millis(end.0 - u64::from(RAIN_FADE_MS) / 2))[0]
                 .draw
                 .opacity;
-            assert!(falling > 0 && falling < 100);
+            assert!(falling > 0 && falling < own);
             assert!(streaks(end).is_empty());
             assert_eq!(composer.settled_at(), end);
         }
