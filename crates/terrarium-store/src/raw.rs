@@ -6,6 +6,7 @@
 //! rewrite's refs, so a row truth could not convert never enters the append-only table. The
 //! other shapes are what adapters write, and are checked only as JSON.
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use terrarium_truth::domain::{ObservationValue, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind};
@@ -124,6 +125,26 @@ pub(crate) fn value(
         _ => serde_json::Value::Null,
     };
     from_json(kind, source, json)
+}
+
+/// `raw` parsed once, for [`ObservationRecord::check`](crate::ObservationRecord::check): its
+/// syntax for every kind, and the value itself for the kinds whose value is in it. For the
+/// others, any text a JSON parser accepts passes, numbers of any size included, so nothing is
+/// built from it.
+pub(crate) fn parse(kind: ObservationKind, raw: &str) -> Result<serde_json::Value, Invalid> {
+    let is_json = |raw: &str| serde_json::from_str::<IgnoredAny>(raw).is_ok();
+    match kind {
+        ObservationKind::DeadCode | ObservationKind::RefRewrite => serde_json::from_str(raw)
+            .map_err(|_| {
+                if is_json(raw) {
+                    Invalid::RawShape(kind)
+                } else {
+                    Invalid::RawNotJson
+                }
+            }),
+        _ if is_json(raw) => Ok(serde_json::Value::Null),
+        _ => Err(Invalid::RawNotJson),
+    }
 }
 
 /// [`value`], from `raw` already parsed.

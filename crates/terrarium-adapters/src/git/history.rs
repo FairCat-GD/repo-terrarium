@@ -44,7 +44,15 @@ pub struct History {
 }
 
 impl History {
-    /// The commits on the default branch's first-parent chain.
+    /// Whether `commit` is on the default branch's first-parent chain: one scan, for a single
+    /// question.
+    pub fn on_default_chain(&self, commit: &CommitId) -> bool {
+        self.commits
+            .iter()
+            .any(|c| c.on_default_first_parent && &c.id == commit)
+    }
+
+    /// The commits on the default branch's first-parent chain, for many questions.
     pub fn default_chain(&self) -> BTreeSet<&CommitId> {
         self.commits
             .iter()

@@ -631,7 +631,7 @@ impl Live {
                 .base
                 .as_ref()
                 .and_then(|base| base.habitat.default_tip.clone())
-                .filter(|tip| !history.default_chain().contains(tip))
+                .filter(|tip| !history.on_default_chain(tip))
                 .zip(history.state.branches.get(branch).cloned())
                 .map(|(old, new)| observe::Rewrite {
                     old,
@@ -724,6 +724,20 @@ impl Live {
         )
     }
 
+    /// Whether an observation held has `record`'s merge key. The key is built once, and only an
+    /// observation at the same second builds its own.
+    fn holds_key_of(&self, record: &ObservationRecord) -> bool {
+        let key = merge_key(
+            record.recorded_at,
+            record.kind,
+            record.source.as_ref(),
+            &record.head.commit,
+        );
+        self.observations
+            .iter()
+            .any(|o| o.recorded_at == record.recorded_at && o.merge_key() == key)
+    }
+
     /// Stores `record` with a `recorded_at` no stored observation of its kind, source and head
     /// already has, and keeps it for replay.
     fn append(
@@ -731,7 +745,7 @@ impl Live {
         producer: Option<Format>,
         mut record: ObservationRecord,
     ) -> Result<(), Fault> {
-        while self.observations.iter().any(|o| same_key(o, &record)) {
+        while self.holds_key_of(&record) {
             record.recorded_at += 1;
         }
         let id = self.store.append_observation(self.terrarium.id, &record)?;
@@ -924,17 +938,6 @@ fn note_newest(newest: &mut BTreeMap<Format, Newest>, row: &StoredObservation) {
             },
         );
     }
-}
-
-/// Whether `observation` has `record`'s merge key.
-fn same_key(observation: &Observation, record: &ObservationRecord) -> bool {
-    observation.merge_key()
-        == merge_key(
-            record.recorded_at,
-            record.kind,
-            record.source.as_ref(),
-            &record.head.commit,
-        )
 }
 
 /// How much longer the newest of `files` must stay untouched before it is read, or `None` when

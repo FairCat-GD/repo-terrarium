@@ -18,8 +18,8 @@ whole codebase.
     starts the reckoning afresh.
   - The weeks after a long break no longer read as a gale or rush every plant back at once.
   - A steady or sparse rhythm, such as a commit or two a week, reads exactly as before.
-- **`cargo xtask verify` lints the shipped code on its own:** the app and the adapters as a
-  release builds them, without the test fixtures. It has 12 stages.
+- **`cargo xtask verify` lints the shipped code on its own,** for macOS and Windows: the app
+  and the adapters as a release builds them, without the test fixtures. It has 13 stages.
 - **`cargo xtask gallery` and `probe-zip` write under `CARGO_TARGET_DIR`** when it is set, as
   cargo does.
 - The terrarium's history replays once more after this update (simulation version 6).
@@ -29,7 +29,8 @@ whole codebase.
 - **A bare repository records its `record-tests` runs:** the status file lives in the data
   directory, so a repository without a working tree has one too.
 - **A refresh that finds itself without its history or its scene is reported and tried again.**
-  Before, the engine stopped there silently, and the strip froze with no note.
+  Before, the engine stopped there silently, and the strip froze with no note. Any refresh
+  that ends that way when nothing stopped the engine now halts it and the label says so.
 - **`--version` and `--probe-readme` no longer fail** when the reader closes early, as `head`
   does.
 

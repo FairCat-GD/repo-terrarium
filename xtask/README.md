@@ -15,19 +15,21 @@ summary. The stages:
 3. **clippy (dev)**: the same with `--all-features`: the debug window and its egui and wgpu.
 4. **clippy (windows)**: `--all-features` for `x86_64-pc-windows-msvc`. There is no CI, so
    this is what compiles and lints the Windows code.
-5. **clippy (shipped)**: `cargo clippy --package terrarium-app --package terrarium-adapters --
-   -D warnings`, the code that ships as it is built. Every workspace stage compiles adapters
-   with `fixture`, which xtask and the dev-dependencies turn on; with no tests and no xtask,
-   nothing does here.
-6. **nextest**: `cargo nextest run --workspace --all-features`.
-7. **nextest (release)**: `cargo nextest run --package terrarium-app`, the app's tests again
+5. **clippy (shipped)**: the code that ships, as it is built:
+   `cargo clippy --package terrarium-app --package terrarium-adapters -- -D warnings`. Every
+   workspace stage compiles adapters with `fixture`, which xtask and the dev-dependencies turn
+   on; with no tests and no xtask, nothing does here.
+6. **clippy (shipped, windows)**: the same for `x86_64-pc-windows-msvc`, whose own code ships
+   too.
+7. **nextest**: `cargo nextest run --workspace --all-features`.
+8. **nextest (release)**: `cargo nextest run --package terrarium-app`, the app's tests again
    without `dev`, for what only a release build does. The app is the only crate with features.
-8. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
-9. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
-10. **graph**: the crate-graph check below, including the scan of truth's sources.
-11. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
+9. **doctest**: `cargo test --workspace --doc --all-features`, because nextest skips doctests.
+10. **deny**: `cargo deny check`, with the policy in `deny.toml`, over every feature.
+11. **graph**: the crate-graph check below, including the scan of truth's sources.
+12. **assets**: `cargo xtask assets --check`, below. It runs in process, and a panic fails only
     this stage.
-12. **golden**: `cargo xtask golden --check`, below, in process like `assets`.
+13. **golden**: `cargo xtask golden --check`, below, in process like `assets`.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
 tool is missing, or at another version, fails and names the install command.

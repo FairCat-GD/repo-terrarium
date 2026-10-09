@@ -120,6 +120,27 @@ const STAGES: &[Stage] = &[
             env: &[],
         },
     },
+    // The same for the Windows target, whose own code ships too and which the Windows stage
+    // above lints only with `fixture` on.
+    Stage {
+        name: "clippy (shipped, windows)",
+        step: Step::Cargo {
+            args: &[
+                "clippy",
+                "--package",
+                "terrarium-app",
+                "--package",
+                "terrarium-adapters",
+                "--target",
+                windows::TARGET,
+                "--",
+                "-D",
+                "warnings",
+            ],
+            tool: None,
+            env: windows::LINT_ENV,
+        },
+    },
     Stage {
         name: "nextest",
         step: Step::Cargo {
@@ -199,7 +220,7 @@ pub fn run(root: &Path) -> ExitCode {
         let seconds = started.elapsed().as_secs_f64();
         let verdict = if passed { "ok" } else { "FAILED" };
         println!("--> {} {verdict} ({seconds:.1}s)", stage.name);
-        summary.push(format!("  {:<18} {verdict}", stage.name));
+        summary.push(format!("  {:<26} {verdict}", stage.name));
         if !passed {
             failed.push(stage.name);
         }

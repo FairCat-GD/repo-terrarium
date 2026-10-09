@@ -33,7 +33,8 @@ pub enum Update {
     Snapshot(Box<Snapshot>),
     /// The repository cannot be read: the scene freezes and no time passes until it can.
     RepoNotFound,
-    /// A panic stopped the engine for this session (I-16).
+    /// A panic stopped the engine for this session (I-16), or a refresh ended without reaching
+    /// the repository though nothing cancelled it: a bug, stopped the same way.
     Halted,
     /// A refresh failed in a way the next may not; sent once until it changes.
     Problem(Problem),
@@ -230,14 +231,20 @@ impl Worker {
                         cancel,
                     )
                 }));
-                let Ok(done) = ran else {
+                // Only a stop cancels, and a stopped worker ends. A panic, or a refresh that ends
+                // without a reach when nothing cancelled it, is a bug: the engine halts and says
+                // so, rather than freezing the strip with no note.
+                if matches!(&ran, Ok(done) if done.reach.is_none())
+                    && self.cancel.load(Ordering::Relaxed)
+                {
+                    return;
+                }
+                let Some((reached, done)) = ran.ok().and_then(|done| Some((done.reach?, done)))
+                else {
                     pipeline = None;
                     watching = Watching::default();
                     (self.sink)(Update::Halted);
                     continue;
-                };
-                let Some(reached) = done.reach else {
-                    return;
                 };
                 let mono = started.elapsed();
                 schedule.reached(reached, mono);
@@ -410,6 +417,34 @@ mod tests {
         engine.wake();
         thread::sleep(Duration::from_millis(100));
         assert_eq!(heard.lock().unwrap().len(), 2);
+        let stopped = Instant::now();
+        engine.shutdown();
+        assert!(stopped.elapsed() < SHUTDOWN_WAIT);
+    }
+
+    /// A pipeline whose refresh ends without a reach, though nothing cancelled it.
+    struct Unreached;
+
+    impl Pipeline for Unreached {
+        fn refresh(&mut self, _: Refresh, _: &mut dyn FnMut(u8), _: &AtomicBool) -> Done {
+            Done::default()
+        }
+
+        fn watch_set(&self) -> Option<&WatchSet> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_refresh_that_ends_unreached_without_a_cancel_halts_the_engine() {
+        let (sink, heard) = recording();
+        let (engine, _) = Engine::spawn_pipeline(
+            || Ok(Some((Unreached, Start::NotConnected))),
+            Arc::new(ManualClock::at(0)),
+            sink,
+        )
+        .unwrap();
+        wait_for(&heard, |u| matches!(u, [Update::Halted]));
         let stopped = Instant::now();
         engine.shutdown();
         assert!(stopped.elapsed() < SHUTDOWN_WAIT);

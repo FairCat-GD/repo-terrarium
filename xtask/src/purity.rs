@@ -11,7 +11,8 @@
 //! that reach outside the process, whatever the path is named: a `use` group's items count, and
 //! an alias of `std` itself is refused, since the paths under it would pass unseen. A module
 //! alias (`use std::env as e`) is refused at its `use`. The printing macros write to the
-//! terminal without naming `std::io`, so they are refused by name.
+//! terminal without naming `std::io`, and `env!` and `option_env!` read the build's environment
+//! without naming `std::env`, so they are refused by name, as is a glob of `std`.
 //!
 //! It works on tokens, not text, so comments, strings and char literals never trigger it.
 
@@ -38,6 +39,9 @@ const FLOAT_TYPES: &[&str] = &["f16", "f32", "f64", "f128"];
 const IO_MODULES: &[&str] = &["fs", "env", "net", "process", "thread", "io"];
 
 const PRINT_MACROS: &[&str] = &["print", "println", "eprint", "eprintln", "dbg"];
+
+/// The macros that read the build's environment into the code.
+const ENV_MACROS: &[&str] = &["env", "option_env"];
 
 /// One place a file breaks the wall, at a 1-based line.
 #[derive(Debug, PartialEq, Eq)]
@@ -103,6 +107,12 @@ fn scan_stream(tokens: TokenStream, findings: &mut Vec<Finding>) {
                         what: format!("`{name}!`, which writes to the terminal"),
                     });
                 }
+                if ENV_MACROS.contains(&name) && bang {
+                    findings.push(Finding {
+                        line,
+                        what: format!("`{name}!`, which reads the build's environment"),
+                    });
+                }
                 if name == "std" {
                     findings.extend(
                         through_std(&tokens[index + 1..])
@@ -162,15 +172,18 @@ fn is_tuple_index(
 }
 
 /// What a path through `std` reaches, from the tokens after `std`: an IO module after `::`,
-/// each IO module among a `{…}` group's items, or an alias of `std` itself.
+/// each IO module among a `{…}` group's items, an alias of `std` itself, or a glob, which brings
+/// the IO modules in under their bare names.
 fn through_std(rest: &[TokenTree]) -> Vec<String> {
     let path = |module: &str| format!("a path through `std::{module}`, which does IO");
+    let glob = || "a glob of `std`, which brings its IO modules in unnamed".to_owned();
     match rest {
         [TokenTree::Ident(word), ..] if word == "as" => vec![alias_of_std()],
         [TokenTree::Punct(a), TokenTree::Punct(b), next, ..]
             if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':' =>
         {
             match next {
+                TokenTree::Punct(star) if star.as_char() == '*' => vec![glob()],
                 TokenTree::Ident(module) => io_module(module).map(path).into_iter().collect(),
                 TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
                     group_items(group.stream())
@@ -181,6 +194,7 @@ fn through_std(rest: &[TokenTree]) -> Vec<String> {
                             {
                                 Some(alias_of_std())
                             }
+                            [TokenTree::Punct(star)] if star.as_char() == '*' => Some(glob()),
                             [TokenTree::Ident(module), ..] => io_module(module).map(path),
                             _ => None,
                         })
@@ -339,6 +353,22 @@ mod tests {
                 "1: an alias of `std`, which hides the paths under it from the scan",
                 "2: a path through `std::net`, which does IO",
                 "3: an alias of `std`, which hides the paths under it from the scan"
+            ]
+        );
+        assert_eq!(
+            found(
+                "use std::*;\nuse std::{collections::BTreeMap, *};\nfn f() { let _ = fs::read(\"x\"); }"
+            ),
+            [
+                "1: a glob of `std`, which brings its IO modules in unnamed",
+                "2: a glob of `std`, which brings its IO modules in unnamed"
+            ]
+        );
+        assert_eq!(
+            found("const A: &str = env!(\"HOME\");\nconst B: Option<&str> = option_env!(\"X\");"),
+            [
+                "1: `env!`, which reads the build's environment",
+                "2: `option_env!`, which reads the build's environment"
             ]
         );
         assert_eq!(

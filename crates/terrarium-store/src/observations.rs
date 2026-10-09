@@ -88,7 +88,7 @@ impl ObservationRecord {
         if self.raw.len() > MAX_RAW_BYTES {
             return Err(Invalid::RawTooLarge(self.raw.len()));
         }
-        let json = serde_json::from_str(&self.raw).map_err(|_| Invalid::RawNotJson)?;
+        let json = raw::parse(self.kind, &self.raw)?;
         if self.kind == ObservationKind::RefRewrite && self.normalized.is_some() {
             return Err(Invalid::NormalizedOnRefRewrite);
         }
@@ -637,6 +637,22 @@ mod tests {
          head_commit, head_branch, at_default_tip, source, report_mtime, content_hash, \
          '{\"replaced\":true}', normalized, confidence, contributors \
          FROM observations WHERE id = ?1";
+
+    #[test]
+    fn raw_is_json_by_its_syntax_whatever_its_numbers_hold() {
+        // Past f64's range: valid JSON, which a parser that keeps nothing accepts.
+        let big = r#"{"lines_found":1e400}"#;
+        let mut coverage = record(ObservationKind::Coverage, 100);
+        coverage.raw = big.to_owned();
+        assert_eq!(coverage.check(), Ok(()));
+        // A kind whose value is in `raw` cannot hold it, so its shape is wrong, not its JSON.
+        let mut dead_code = record(ObservationKind::DeadCode, 100);
+        dead_code.raw = big.to_owned();
+        assert_eq!(
+            dead_code.check(),
+            Err(Invalid::RawShape(ObservationKind::DeadCode))
+        );
+    }
 
     #[test]
     fn an_update_is_refused() {
