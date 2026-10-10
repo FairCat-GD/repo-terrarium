@@ -51,8 +51,8 @@ use crate::climate::rhythm::Rhythm;
 use crate::climate::weather::{ChangeAt, InEffect, WeatherChange, WeatherState};
 use crate::climate::{self, ClimateReport, DailyClimate, SoilCauses, Trends};
 use crate::domain::{
-    ActivityClass, Climate, CommitFacts, Habitat, MergeKey, Observation, ObservationKind,
-    ObservationValue, Reading,
+    ActivityClass, Climate, CommitFacts, Habitat, LeftCommit, MergeKey, Observation,
+    ObservationKind, ObservationValue, Reading,
 };
 use crate::events::{Events, Qualified, release, strength};
 use crate::fauna::{Fauna, close_living};
@@ -60,13 +60,13 @@ use crate::fixed::{Q16, Q32};
 use crate::habitat::HabitatState;
 use crate::identity::{CommitId, RepoSeed, SIM_VERSION, SimVersion};
 use crate::keep_newest;
-use crate::landmarks::{Buried, Landmarks, commit_key, fossil_id};
+use crate::landmarks::{Buried, Landmarks, burying, commit_key, fossil_id};
 use crate::scene::{EventKind, GroundMark, Strength};
 use crate::time::{SECONDS_PER_TICK, TICKS_PER_DAY, Tick, TickGrid, days};
 use crate::timeline::{Moment, PresentationTimeline};
 use crate::tuning::{
     BLOOM_TICKS, CLEARING_BURN_BANDS, CLEARING_BURN_ITEMS, CLEARING_BURN_PERCENT, DAILY_RECORDS,
-    DROUGHT_BANDS, DROUGHT_DAYS, EARTHQUAKE_BANDS, INACTIVE_TICKS, LIGHT_SHIFT_BANDS,
+    DROUGHT_BANDS, DROUGHT_DAYS, EARTHQUAKE_BANDS, FOSSILS_MAX, INACTIVE_TICKS, LIGHT_SHIFT_BANDS,
     LIGHT_SHIFT_STEP, LIGHTNING_BANDS, LIGHTNING_DIP, LIGHTNING_FROM_DAYS, NEUTRAL, PASS_FROM,
     RECOVERY_WINDOW_TICKS, SECONDS_PER_DAY, SETTLING_TICKS, SINKHOLE_BANDS, WINDSTORM_BANDS,
 };
@@ -215,6 +215,40 @@ fn applies_at(
         Some(&at) if reading && observation.head.at_default_tip => at.max(own),
         _ => own,
     }
+}
+
+/// A ref rewrite as replay reads it.
+#[derive(Clone, Copy)]
+struct Rewrite<'a> {
+    reference: &'a str,
+    /// When it was seen, Unix seconds.
+    recorded_at: i64,
+    rewritten: Option<u32>,
+    fossils: &'a [CommitId],
+    left: &'a [LeftCommit],
+}
+
+/// The commits whose fossils a rewrite took, in chain order. The commits it took off the
+/// chain are the old chain's newest, so the fossils it showed were those of its newest
+/// [`FOSSILS_MAX`] that left one: each that [`burying`] names a directory for, and that had
+/// applied by the move (a commit dated later, by its clamped time, had not). A row recorded
+/// before the commits were names its fossils' commits instead.
+fn taken<'a>(rewrite: &Rewrite<'a>) -> Vec<&'a CommitId> {
+    let mut taken: Vec<&CommitId> = rewrite
+        .left
+        .iter()
+        .filter(|commit| commit.time <= rewrite.recorded_at)
+        .filter(|commit| burying(&commit.deleted_dirs).is_some())
+        .map(|commit| &commit.commit)
+        .collect();
+    let older = taken.len().saturating_sub(FOSSILS_MAX);
+    taken.drain(..older);
+    for commit in rewrite.fossils {
+        if !taken.contains(&commit) {
+            taken.push(commit);
+        }
+    }
+    taken
 }
 
 impl<'a> Prepared<'a> {
@@ -567,24 +601,18 @@ impl SimState {
     }
 
     /// An earthquake for a non-fast-forward move of the default branch, which settles as a
-    /// crack; and a sinkhole for each fossil shown before it whose commit it took off the
-    /// default chain, unless the history as of this tick has that commit on it again.
-    fn earthquake(
-        &mut self,
-        prepared: &Prepared<'_>,
-        tick: Tick,
-        reference: &str,
-        rewritten: Option<u32>,
-        fossils: &[CommitId],
-    ) {
-        if reference.strip_prefix("refs/heads/") != Some(self.basis.default_branch.as_str()) {
+    /// crack; and a sinkhole for each fossil it took ([`taken`]), unless the history as of this
+    /// tick has that fossil's commit on the default chain again.
+    fn earthquake(&mut self, prepared: &Prepared<'_>, tick: Tick, rewrite: Rewrite<'_>) {
+        if rewrite.reference.strip_prefix("refs/heads/") != Some(self.basis.default_branch.as_str())
+        {
             return;
         }
-        let shaken = strength(rewritten.unwrap_or(0), EARTHQUAKE_BANDS);
+        let shaken = strength(rewrite.rewritten.unwrap_or(0), EARTHQUAKE_BANDS);
         self.qualify(EventKind::Earthquake, tick, shaken, None, None);
         self.events.mark(GroundMark::Crack, tick, None);
-        for commit in fossils
-            .iter()
+        for commit in taken(&rewrite)
+            .into_iter()
             .filter(|c| !prepared.on_default_chain_by(c, tick))
         {
             let fossil = fossil_id(commit);
@@ -731,8 +759,19 @@ impl SimState {
                 reference,
                 rewritten,
                 fossils,
+                left,
                 ..
-            } => self.earthquake(prepared, tick, reference, *rewritten, fossils),
+            } => self.earthquake(
+                prepared,
+                tick,
+                Rewrite {
+                    reference,
+                    recorded_at: observation.recorded_at,
+                    rewritten: *rewritten,
+                    fossils,
+                    left,
+                },
+            ),
             value => {
                 let head = &observation.head;
                 if head.at_default_tip && prepared.applied_by(&head.commit, tick) {

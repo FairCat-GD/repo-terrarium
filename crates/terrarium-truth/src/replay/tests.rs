@@ -8,7 +8,7 @@ use crate::climate::weather::{ChangeAt, WeatherChange};
 use crate::domain::{DeletedDir, ObservationHead, TagFact, WeatherSource};
 use crate::landmarks::fossil_id;
 use crate::test_support::{
-    HOUR, ORIGIN, basis, ci, commit, coverage, daily_commits, grid, id, observation,
+    HOUR, ORIGIN, basis, ci, commit, coverage, daily_commits, grid, id, left, observation,
     proptest_config, weather,
 };
 
@@ -412,13 +412,44 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 6\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 7\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())
     );
     assert_eq!(dump.scene.validate(), Ok(()));
     assert_eq!(dump.samples.len(), 1);
+}
+
+#[test]
+fn a_rewrite_takes_the_fossils_of_the_newest_five_taken_commits_that_left_one() {
+    let at = ORIGIN + 10 * HOUR;
+    let taken_from = |left: &[LeftCommit], fossils: &[CommitId]| -> Vec<CommitId> {
+        taken(&Rewrite {
+            reference: "refs/heads/main",
+            recorded_at: at,
+            rewritten: None,
+            fossils,
+            left,
+        })
+        .into_iter()
+        .cloned()
+        .collect()
+    };
+    // Seven that left one, among others that did not: the old history showed the newest five.
+    let mut commits: Vec<LeftCommit> = (80..87).map(|n| left(n, n - 79, 900)).collect();
+    commits.insert(3, left(60, 3, 499));
+    commits.push(left(61, 9, 0));
+    let ids = |ns: &[u32]| -> Vec<CommitId> { ns.iter().map(|n| id(*n)).collect() };
+    assert_eq!(taken_from(&commits, &[]), ids(&[82, 83, 84, 85, 86]));
+    // One dated after the move had not applied: the five end before it.
+    commits.push(left(87, 11, 900));
+    assert_eq!(taken_from(&commits, &[]), ids(&[82, 83, 84, 85, 86]));
+    // An older row's named fossils follow, once each.
+    assert_eq!(
+        taken_from(&commits[..2], &ids(&[81, 50])),
+        ids(&[80, 81, 50])
+    );
 }
 
 // Generated histories for the property tests: up to 40 commits over about 1,200 hours, and up
@@ -437,7 +468,19 @@ fn generated_value(kind: u8, n: u32) -> ObservationValue {
         old: id(1_000 + n),
         new: id(2_000 + n),
         rewritten: (!n.is_multiple_of(3)).then_some(n % 12),
-        fossils: vec![id(n % 45), id(3_000 + n)],
+        fossils: if n.is_multiple_of(2) {
+            vec![id(n % 45), id(3_000 + n)]
+        } else {
+            Vec::new()
+        },
+        left: if n.is_multiple_of(2) {
+            Vec::new()
+        } else {
+            vec![
+                crate::test_support::left(n % 45, n % 1_200, u64::from(n % 3) * 400),
+                crate::test_support::left(3_000 + n, n % 1_200, 900),
+            ]
+        },
     };
     match kind {
         0 => ObservationValue::Coverage,

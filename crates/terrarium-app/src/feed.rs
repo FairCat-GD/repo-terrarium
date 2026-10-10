@@ -1,7 +1,6 @@
 //! What the living strip shows, and when it looks again: a connected repository's terrarium as
-//! the engine sends it, the thriving sample when none is connected, or `--demo`'s cycle; always
-//! on the local clock and dimmed after a while without input. Dev builds add the debug window's
-//! choices.
+//! the engine sends it, or `--demo`'s cycle; always on the local clock and dimmed after a while
+//! without input. Dev builds add the debug window's choices, the thriving sample among them.
 //!
 //! The feeder is pure: the strip reads the OS (`Os::read`) and passes it in with the time, so
 //! it is driven the same way in tests.
@@ -38,7 +37,8 @@ const SIM_STEP_MS: u32 = 1000;
 pub enum Feed {
     /// A connected repository: the scene and the label the engine's updates make.
     Live,
-    /// The thriving sample, when no repository is connected.
+    /// The thriving sample: the debug window's choice, and what the egui probe shows.
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     Thriving,
     /// `--demo`'s cycle through the named states.
     Demo,
@@ -253,7 +253,6 @@ impl Feeder {
         self.tick(now, os, true);
     }
 
-    #[cfg(feature = "dev")]
     pub fn feed(&self) -> &Feed {
         &self.feed
     }

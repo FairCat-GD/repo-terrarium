@@ -7,6 +7,7 @@ pub mod clock;
 pub mod geometry;
 pub mod idle;
 pub mod interrupt;
+pub mod login;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod memory;

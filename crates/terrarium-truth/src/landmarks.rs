@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::canon::{canonical_struct, count_of};
-use crate::domain::CommitFacts;
+use crate::domain::{CommitFacts, DeletedDir};
 use crate::identity::{CommitId, RepoSeed};
 use crate::keep_newest;
 use crate::rng::{Pcg32, StreamTag, digest_u32, digest_u64};
@@ -133,6 +133,14 @@ pub fn fossil_form(seed: &RepoSeed, commit: &CommitId) -> FossilForm {
         .unwrap_or(FossilForm::Shell)
 }
 
+/// The directory that names the fossil a commit deleting `dirs` leaves, if it leaves one: the
+/// largest whole directory of 500 lines or more, the first by path among equals.
+pub fn burying(dirs: &[DeletedDir]) -> Option<&DeletedDir> {
+    dirs.iter()
+        .filter(|dir| dir.lines >= FOSSIL_MIN_LINES)
+        .min_by_key(|dir| (Reverse(dir.lines), dir.path.as_str()))
+}
+
 impl Landmarks {
     /// At a close: a stone for a full year of age not yet marked, while fewer than three stand.
     /// `root` is the default branch's first commit.
@@ -174,18 +182,13 @@ impl Landmarks {
         }
     }
 
-    /// As `commit` applies: a fossil, if it deletes a whole directory of 500 lines or more on
-    /// the default branch's first-parent chain. The largest such directory names it, the first
-    /// by path among equals.
+    /// As `commit` applies: a fossil, if it is on the default branch's first-parent chain and
+    /// [`burying`] names a directory it deleted.
     pub fn bury(&mut self, seed: &RepoSeed, commit: &CommitFacts) -> Option<Buried> {
         if !commit.on_default_first_parent {
             return None;
         }
-        let dir = commit
-            .deleted_dirs
-            .iter()
-            .filter(|dir| dir.lines >= FOSSIL_MIN_LINES)
-            .min_by_key(|dir| (Reverse(dir.lines), dir.path.as_str()))?;
+        let dir = burying(&commit.deleted_dirs)?;
         let id = fossil_id(&commit.id);
         self.fossils.push(Fossil {
             id,
@@ -237,7 +240,6 @@ impl Landmarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::DeletedDir;
     use crate::test_support::{commit, id};
 
     fn seed() -> RepoSeed {

@@ -18,10 +18,13 @@ use terrarium_adapters::report::{Format, Report};
 use terrarium_engine::live::Done;
 use terrarium_engine::observe::record;
 use terrarium_engine::schedule::{Cause, Reach, Refresh};
-use terrarium_engine::{Branch, EngineConfig, Live, ManualClock, Replay, Snapshot, Start};
+use terrarium_engine::{
+    Branch, ConnectError, EngineConfig, Live, ManualClock, Replay, Snapshot, Start, lifecycle,
+};
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
 use terrarium_store::raw::RefRewriteRaw;
 use terrarium_store::{DataDir, InstallKey, SimCache, Store, StoredObservation};
+use terrarium_truth::landmarks::fossil_id;
 use terrarium_truth::scene::{EventKind, GroundMark, Light, Strength};
 use terrarium_truth::{
     Basis, CommitId, ObservationKind, Prepared, SIM_VERSION, SimState, SimVersion,
@@ -193,15 +196,12 @@ fn connect_derives_the_seed_as_record_tests_does_and_relinks_by_it() {
     let git = GitRepo::open(&fx.repo_path()).unwrap();
     let seed = git.identity(&git.default_branch().unwrap()).unwrap().seed;
     assert_eq!(live.terrarium().seed, seed);
-    let Start::Connected {
-        repo_name,
-        install_salt,
-        scene,
-    } = live.start()
-    else {
+    let Start::Connected { terrarium, scene } = live.start() else {
         panic!("connected");
     };
-    assert_eq!(repo_name, "repo");
+    let install_salt = terrarium.install_salt;
+    assert_eq!(*terrarium, *live.terrarium());
+    assert_eq!(terrarium.repo.name, "repo");
     assert_eq!(scene, None, "no cache yet");
     assert_ne!(install_salt, [0; 16], "a random salt");
     fx.report("coverage/lcov.info", LCOV);
@@ -474,7 +474,20 @@ fn a_rewrite_that_takes_a_fossil_records_it_and_opens_a_sinkhole_for_it() {
     let shaken = shown(&mut live, Cause::Watch, true);
     let rows = fx.rows(ObservationKind::RefRewrite);
     let raw: RefRewriteRaw = serde_json::from_str(&rows[0].record.raw).unwrap();
-    assert_eq!((raw.rewritten, raw.fossils), (Some(1), vec![cleared]));
+    assert!(raw.fossils.is_empty());
+    let left: Vec<(&CommitId, &str, u64)> = raw
+        .left
+        .iter()
+        .flat_map(|l| {
+            l.deleted
+                .iter()
+                .map(move |d| (&l.commit, d.path.as_str(), d.lines))
+        })
+        .collect();
+    assert_eq!(
+        (raw.rewritten, left),
+        (Some(1), vec![(&cleared, "src/old", 600)])
+    );
     assert!(shaken.scene.fossils.is_empty());
     assert_eq!(
         shaken.scene.event.map(|e| e.kind),
@@ -564,20 +577,124 @@ fn a_rewrite_made_while_closed_is_recorded_at_the_next_start() {
     let rows = fx.rows(ObservationKind::RefRewrite);
     assert_eq!(rows.len(), 1);
     let raw: RefRewriteRaw = serde_json::from_str(&rows[0].record.raw).unwrap();
+    // What it took off is read back from the object database: three days' commits.
     assert_eq!(
         (raw.old, raw.new, raw.rewritten),
-        (fx.main[11].clone(), new, None)
+        (fx.main[11].clone(), new, Some(3))
     );
     let quake = started.scene.event.expect("an earthquake");
     assert_eq!(
         (quake.kind, quake.strength),
-        (EventKind::Earthquake, Strength::Low)
+        (EventKind::Earthquake, Strength::Mid)
     );
     // The next start records nothing more.
     drop(next);
     let mut again = fx.reconnect().unwrap();
     shown(&mut again, Cause::Connect, true);
     assert_eq!(fx.rows(ObservationKind::RefRewrite).len(), 1);
+}
+
+#[test]
+fn a_fast_forward_made_while_closed_through_a_merge_records_nothing() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.clock.advance(3 * HOUR);
+    refresh(&mut live, Cause::Hour, false);
+    drop(live);
+    // A branch merges main into itself, and main fast-forwards to the merge: the old tip is
+    // an ancestor of the new one, though no longer on its first-parent chain.
+    let old_tip = fx.repo.tip("main");
+    fx.repo.branch("moss", "main").unwrap();
+    fx.repo.reset("moss", &fx.main[6]).unwrap();
+    commit(&mut fx.repo, "moss", 12 * DAY + 2 * HOUR + 40 * MINUTE);
+    let at = terrarium_engine::Clock::wall_secs(&fx.clock) - MINUTE;
+    let merged = fx
+        .repo
+        .merge("moss", "main", Stamp::at(at), "merge main")
+        .unwrap();
+    fx.repo.reset("main", &merged).unwrap();
+    fx.clock.advance(HOUR);
+    let mut next = fx.reconnect().unwrap();
+    shown(&mut next, Cause::Connect, true);
+    let history = GitRepo::open(&fx.repo_path())
+        .unwrap()
+        .read_history("main", &mut |_| ControlFlow::Continue(()))
+        .unwrap();
+    assert!(!history.on_default_chain(&old_tip), "off the chain");
+    assert!(fx.rows(ObservationKind::RefRewrite).is_empty());
+}
+
+#[test]
+fn a_rewrite_opens_sinkholes_for_exactly_the_shown_fossils_it_took() {
+    for kept in [false, true] {
+        let mut fx = Fixture::new(12);
+        let mut live = fx.connect();
+        shown(&mut live, Cause::Connect, true);
+        let at = |fx: &Fixture| Stamp::at(terrarium_engine::Clock::wall_secs(&fx.clock) - MINUTE);
+        // Seven modules planted and cleared, so seven fossils, of which five show.
+        let mut cleared = Vec::new();
+        let mut planted = Vec::new();
+        for k in 0..7 {
+            fx.clock.advance(HOUR);
+            let file = format!("src/m{k}/roots.rs");
+            planted.push(
+                fx.repo
+                    .commit(
+                        "main",
+                        at(&fx),
+                        "plant",
+                        &[
+                            Edit::write("src/keep.rs", "keep\n"),
+                            Edit::write(&file, &"root\n".repeat(600)),
+                        ],
+                    )
+                    .unwrap(),
+            );
+            fx.clock.advance(HOUR);
+            cleared.push(
+                fx.repo
+                    .commit("main", at(&fx), "clear", &[Edit::Remove(file)])
+                    .unwrap(),
+            );
+        }
+        let before = shown(&mut live, Cause::Watch, true);
+        let showing: Vec<u32> = before.scene.fossils.iter().map(|f| f.id).collect();
+        let ids = |commits: &[CommitId]| -> Vec<u32> { commits.iter().map(fossil_id).collect() };
+        assert_eq!(showing, ids(&cleared[2..]));
+        let state = live.state().unwrap().clone();
+        // The last two clearings are amended away.
+        if kept {
+            fx.repo.branch("kept", "main").unwrap();
+        }
+        fx.clock.advance(HOUR);
+        fx.repo.reset("main", &planted[5]).unwrap();
+        fx.commit_now();
+        let shaken = shown(&mut live, Cause::Watch, true);
+        let history = GitRepo::open(&fx.repo_path())
+            .unwrap()
+            .read_history("main", &mut |_| ControlFlow::Continue(()))
+            .unwrap();
+        let chain = history.default_chain();
+        // What the state shown before held and the move took off the chain.
+        let took: Vec<u32> = state
+            .landmarks
+            .fossils
+            .iter()
+            .filter(|f| !chain.contains(&f.commit))
+            .map(|f| f.id)
+            .collect();
+        let sinkholes: Vec<u32> = shaken
+            .scene
+            .ground_marks
+            .iter()
+            .filter(|m| m.kind == GroundMark::Sinkhole)
+            .filter_map(|m| m.fossil)
+            .collect();
+        assert_eq!(took, ids(&cleared[5..]), "kept: {kept}");
+        assert_eq!(sinkholes, took, "kept: {kept}");
+        assert_eq!(live.state(), Some(&fx.full_replay()));
+    }
 }
 
 #[test]
@@ -677,7 +794,7 @@ fn a_refresh_reaches_its_snapshot_within_60_ms_of_the_adapters() {
 
 #[test]
 fn a_cache_from_another_sim_version_is_ignored_and_the_label_notes_it_once() {
-    let fx = Fixture::new(12);
+    let mut fx = Fixture::new(12);
     let mut live = fx.connect();
     shown(&mut live, Cause::Connect, true);
     let id = live.terrarium().id;
@@ -698,7 +815,7 @@ fn a_cache_from_another_sim_version_is_ignored_and_the_label_notes_it_once() {
     assert_eq!(scene, None, "an old version's cache is never decoded");
     let snapshot = shown(&mut upgraded, Cause::Connect, true);
     assert_eq!(snapshot.stats.replay, Replay::Full);
-    assert!(snapshot.sim_note);
+    assert!(snapshot.notes.sim_updated);
     assert_eq!(
         fx.store()
             .sim_cache(id)
@@ -706,9 +823,47 @@ fn a_cache_from_another_sim_version_is_ignored_and_the_label_notes_it_once() {
             .map(|cache: SimCache| cache.sim_version),
         Some(SIM_VERSION)
     );
+    // One snapshot carries it, and the next start has nothing to note.
+    fx.commit_now();
+    assert!(!shown(&mut upgraded, Cause::Watch, true).notes.sim_updated);
     drop(upgraded);
     let mut next = fx.reconnect().unwrap();
-    assert!(!shown(&mut next, Cause::Connect, true).sim_note);
+    assert!(!shown(&mut next, Cause::Connect, true).notes.sim_updated);
+}
+
+#[test]
+fn the_sim_note_waits_for_a_snapshot_to_carry_it() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    drop(live);
+    fx.store()
+        .set_install_value(InstallKey::LastSimVersion, &(SIM_VERSION.0 - 1).to_string())
+        .unwrap();
+    // The repository is away when the upgraded app starts: nothing is shown, nothing noted.
+    let away = fx.dir.path().join("away");
+    fs::rename(fx.repo_path(), &away).unwrap();
+    let mut upgraded = fx.reconnect().unwrap();
+    assert_eq!(
+        refresh(&mut upgraded, Cause::Connect, true).reach,
+        Some(Reach::NotFound)
+    );
+    drop(upgraded);
+    let mut again = fx.reconnect().unwrap();
+    assert_eq!(
+        refresh(&mut again, Cause::Connect, true).reach,
+        Some(Reach::NotFound)
+    );
+    // Back: the first snapshot carries the note.
+    fs::rename(&away, fx.repo_path()).unwrap();
+    assert!(shown(&mut again, Cause::Watch, true).notes.sim_updated);
+    assert_eq!(
+        fx.store()
+            .install_value(InstallKey::LastSimVersion)
+            .unwrap()
+            .as_deref(),
+        Some(SIM_VERSION.0.to_string().as_str())
+    );
 }
 
 #[test]
@@ -905,4 +1060,185 @@ fn a_path_through_a_parent_names_the_folder_it_means() {
         .unwrap();
     assert_eq!(live.terrarium().repo.name, "repo");
     assert!(!live.terrarium().repo.path.contains(".."));
+}
+
+// Lifecycle: connect (above), relink, re-seed and disconnect, each as the app runs them with
+// the engine stopped.
+
+/// A second repository beside the fixture's, with history of its own.
+fn other_repository(fx: &Fixture) -> PathBuf {
+    let path = fx.dir.path().join("other");
+    let mut other = FixtureRepo::init(&path).unwrap();
+    commit(&mut other, "main", 3 * DAY + 7 * HOUR);
+    path
+}
+
+#[test]
+fn a_moved_repository_is_relinked_to_its_terrarium_and_resumes() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    fx.report("coverage/lcov.info", LCOV);
+    let before = shown(&mut live, Cause::Connect, true);
+    let terrarium = live.terrarium().clone();
+    let moved = fx.dir.path().join("moved");
+    fs::rename(fx.repo_path(), &moved).unwrap();
+    assert_eq!(
+        refresh(&mut live, Cause::Watch, true).reach,
+        Some(Reach::NotFound)
+    );
+    drop(live);
+    let relinked = lifecycle::relink(&fx.data(), terrarium.id, &moved).unwrap();
+    assert_eq!(relinked.repo.path, moved.display().to_string());
+    assert_eq!(relinked.repo.name, "moved");
+    assert_eq!(
+        (
+            relinked.id,
+            relinked.install_salt,
+            relinked.seed,
+            relinked.active
+        ),
+        (terrarium.id, terrarium.install_salt, terrarium.seed, true)
+    );
+    let mut resumed = fx.reconnect().expect("the relinked terrarium");
+    let after = shown(&mut resumed, Cause::Connect, true);
+    assert_eq!(after.scene, before.scene);
+    assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
+}
+
+#[test]
+fn relinking_to_another_repository_or_a_plain_folder_changes_nothing() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    let terrarium = live.terrarium().clone();
+    drop(live);
+    let other = other_repository(&fx);
+    assert!(matches!(
+        lifecycle::relink(&fx.data(), terrarium.id, &other),
+        Err(ConnectError::OtherRepository)
+    ));
+    let plain = fx.dir.path().join("plain");
+    fs::create_dir(&plain).unwrap();
+    assert!(matches!(
+        lifecycle::relink(&fx.data(), terrarium.id, &plain),
+        Err(ConnectError::Git(_))
+    ));
+    assert_eq!(fx.store().terrarium(terrarium.id).unwrap(), Some(terrarium));
+}
+
+#[test]
+fn a_reseed_lays_the_terrarium_out_anew_and_keeps_its_truth() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    fx.report("coverage/lcov.info", LCOV);
+    let before = shown(&mut live, Cause::Connect, true);
+    let terrarium = live.terrarium().clone();
+    drop(live);
+    assert!(fx.store().sim_cache(terrarium.id).unwrap().is_some());
+    let salt = lifecycle::reseed(&fx.data(), terrarium.id).unwrap();
+    assert_ne!(salt, terrarium.install_salt);
+    assert_eq!(fx.store().sim_cache(terrarium.id).unwrap(), None);
+    assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
+    let mut reseeded = fx.reconnect().expect("still connected");
+    let Start::Connected {
+        terrarium: now,
+        scene,
+    } = reseeded.start()
+    else {
+        panic!("connected");
+    };
+    assert_eq!(now.install_salt, salt);
+    assert_eq!(scene, None, "nothing cached to start from");
+    let after = shown(&mut reseeded, Cause::Connect, true);
+    assert_eq!(after.stats.replay, Replay::Full);
+    assert_eq!((after.scene, after.report), (before.scene, before.report));
+}
+
+#[test]
+fn a_disconnect_keeping_observations_connects_nothing_until_the_repository_comes_back() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    fx.report("coverage/lcov.info", LCOV);
+    shown(&mut live, Cause::Connect, true);
+    let id = live.terrarium().id;
+    drop(live);
+    lifecycle::disconnect(&fx.data(), id, false).unwrap();
+    assert!(fx.reconnect().is_none(), "a plain run connects nothing");
+    let mut store = fx.store();
+    assert!(!store.terrarium(id).unwrap().unwrap().active);
+    // Nor when the setting still names it, as an older install's disconnect left it.
+    store.set_setting(SETTING_REPO_ACTIVE, &id.get()).unwrap();
+    assert!(fx.reconnect().is_none());
+    assert_eq!(store.sim_cache(id).unwrap(), None);
+    assert_eq!(store.observations(id, None).unwrap().len(), 1);
+    drop(store);
+    // Connected again: the same terrarium, its history kept.
+    let again = fx.connect();
+    assert_eq!(again.terrarium().id, id);
+    assert!(again.terrarium().active);
+    assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
+}
+
+#[test]
+fn a_disconnect_deleting_observations_leaves_nothing_of_the_terrarium() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    fx.report("coverage/lcov.info", LCOV);
+    shown(&mut live, Cause::Connect, true);
+    let terrarium = live.terrarium().clone();
+    drop(live);
+    let status = fx.data().local_tests(&terrarium.seed);
+    write_still(&status, "{}");
+    lifecycle::disconnect(&fx.data(), terrarium.id, true).unwrap();
+    let store = fx.store();
+    assert_eq!(store.terrarium(terrarium.id).unwrap(), None);
+    assert!(store.observations(terrarium.id, None).unwrap().is_empty());
+    assert_eq!(store.sim_cache(terrarium.id).unwrap(), None);
+    assert_eq!(store.install_value(InstallKey::ShownEvents).unwrap(), None);
+    assert_eq!(store.setting::<i64>(SETTING_REPO_ACTIVE).unwrap(), None);
+    drop(store);
+    assert!(!status.exists(), "its local test runs went with it");
+    assert!(fx.reconnect().is_none());
+    // Connected again, it starts afresh: a new salt and no observations.
+    let mut again = fx.connect();
+    assert_ne!(again.terrarium().install_salt, terrarium.install_salt);
+    shown(&mut again, Cause::Connect, false);
+    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+}
+
+#[test]
+fn a_restart_within_an_event_s_hour_does_not_play_it_again() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.repo.reset("main", &fx.main[5]).unwrap();
+    fx.commit_now();
+    let shaken = shown(&mut live, Cause::Watch, true);
+    assert_eq!(
+        shaken.scene.event.map(|e| e.kind),
+        Some(EventKind::Earthquake)
+    );
+    assert!(shaken.notes.history_rewritten);
+    drop(live);
+    // Restarted in the same hour: the earthquake was shown, so it does not play again.
+    let mut restarted = fx.reconnect().unwrap();
+    let again = shown(&mut restarted, Cause::Connect, true);
+    assert_eq!(again.scene.event, None);
+    assert!(!again.notes.history_rewritten, "noted once");
+}
+
+#[test]
+fn a_recorded_rewrite_is_noted_by_one_snapshot() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    assert!(
+        !shown(&mut live, Cause::Connect, true)
+            .notes
+            .history_rewritten
+    );
+    fx.repo.reset("main", &fx.main[5]).unwrap();
+    fx.commit_now();
+    assert!(shown(&mut live, Cause::Watch, true).notes.history_rewritten);
+    fx.commit_now();
+    assert!(!shown(&mut live, Cause::Watch, true).notes.history_rewritten);
 }

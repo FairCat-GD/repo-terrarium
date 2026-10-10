@@ -203,6 +203,22 @@ pub struct DeletedDir {
 
 canonical_struct!(DeletedDir { path, lines });
 
+/// A commit a rewrite took off the default branch's first-parent chain, as git said it was: its
+/// committer time and the directories it deleted entirely.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftCommit {
+    pub commit: CommitId,
+    /// Unix seconds, UTC: the committer's, unclamped.
+    pub time: i64,
+    pub deleted_dirs: Vec<DeletedDir>,
+}
+
+canonical_struct!(LeftCommit {
+    commit,
+    time,
+    deleted_dirs,
+});
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rename {
     pub from: String,
@@ -284,15 +300,17 @@ pub enum ObservationValue {
     /// `normalized`: 1 for pass, 0 for fail, absent for unknown.
     Weather { source: WeatherSource },
     /// A non-fast-forward move of the default branch. `normalized` is absent. `rewritten` is
-    /// how many commits it took off the default branch's first-parent chain, and `fossils` the
-    /// commits of the fossils shown before it that it took off: both `None` and empty when the
-    /// record predates them or could not tell.
+    /// how many commits it took off the default branch's first-parent chain, and `left` those
+    /// of them that deleted whole directories, oldest first: `None` and empty when the record
+    /// predates them or could not tell. `fossils` is what rows recorded before `left` said
+    /// instead: the commits of the fossils the recording install showed that it took off.
     RefRewrite {
         reference: String,
         old: CommitId,
         new: CommitId,
         rewritten: Option<u32>,
         fossils: Vec<CommitId>,
+        left: Vec<LeftCommit>,
     },
 }
 
@@ -338,12 +356,14 @@ impl Canonical for ObservationValue {
                 new,
                 rewritten,
                 fossils,
+                left,
             } => {
                 w.field("reference", reference);
                 w.field("old", old);
                 w.field("new", new);
                 w.field("rewritten", rewritten);
                 w.field("fossils", fossils);
+                w.field("left", left);
             }
         }
     }
@@ -368,6 +388,7 @@ impl Canonical for ObservationValue {
                 new: r.field("new")?,
                 rewritten: r.field("rewritten")?,
                 fossils: r.field("fossils")?,
+                left: r.field("left")?,
             },
         })
     }
@@ -606,6 +627,7 @@ mod tests {
                 new: commit('c'),
                 rewritten: None,
                 fossils: Vec::new(),
+                left: Vec::new(),
             },
             ObservationValue::RefRewrite {
                 reference: "refs/heads/main".to_owned(),
@@ -613,6 +635,14 @@ mod tests {
                 new: commit('c'),
                 rewritten: Some(3),
                 fossils: vec![commit('f'), commit('0')],
+                left: vec![LeftCommit {
+                    commit: commit('e'),
+                    time: 1_700_000_000,
+                    deleted_dirs: vec![DeletedDir {
+                        path: "src/old".to_owned(),
+                        lines: 640,
+                    }],
+                }],
             },
         ];
         for (value, id) in values.into_iter().zip(1..) {

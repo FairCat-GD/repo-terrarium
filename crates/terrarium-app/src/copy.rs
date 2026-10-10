@@ -15,12 +15,14 @@ use terrarium_adapters::report::{
 };
 use terrarium_engine::headless::HeadlessError;
 use terrarium_engine::{Branch, ConnectError, Problem};
+use terrarium_platform::login::LoginError;
 use terrarium_truth::ReplayError;
 use terrarium_truth::scene::Weather;
 
 use crate::cli::UsageError;
 use crate::discover::Reads;
-use crate::live::LabelFacts;
+use crate::egui_host::{HostError, WindowKind};
+use crate::live::{LabelFacts, Once};
 use crate::pinning::AttachError;
 use crate::present::PresentError;
 use crate::strip::StripError;
@@ -98,7 +100,13 @@ pub fn live_label(facts: &LabelFacts) -> Vec<String> {
     } else if let Some(percent) = note.progress {
         Some(format!("history {percent}%"))
     } else {
-        note.sim_updated.then(|| "sim updated".to_owned())
+        note.once.first().map(|once| {
+            match once {
+                Once::SimUpdated => "sim updated",
+                Once::HistoryRewritten => "history rewritten",
+            }
+            .to_owned()
+        })
     };
     lines.extend(note);
     lines
@@ -129,8 +137,37 @@ pub fn connect_failed(repo: Option<&Path>, err: &ConnectError) -> String {
         (ConnectError::Salt(err), _) => format!("no random bytes for a new terrarium: {err}"),
         (ConnectError::Thread(err), _) => format!("the engine could not start: {err}"),
         (ConnectError::Halted, _) => "connecting stopped on an internal error".to_owned(),
+        (ConnectError::OtherRepository, _) => other_repository().to_owned(),
     };
     format!("{BINARY_NAME}: {problem}")
+}
+
+/// Why a folder could not be connected, relinked, or a terrarium changed, as its window says
+/// it.
+pub fn connect_problem(err: &ConnectError) -> String {
+    match err {
+        ConnectError::Git(err) => {
+            format!("This folder is not a git repository that can be read: {err}.")
+        }
+        ConnectError::Path(err) => format!("This folder's path could not be read: {err}."),
+        ConnectError::Store(err) => format!("The data directory failed: {err}."),
+        ConnectError::Salt(err) => format!("No random bytes for a new terrarium: {err}."),
+        ConnectError::Thread(err) => format!("The engine could not start: {err}."),
+        ConnectError::Halted => "Connecting stopped on an internal error.".to_owned(),
+        ConnectError::OtherRepository => format!("{}.", capitalized(other_repository())),
+    }
+}
+
+fn other_repository() -> &'static str {
+    "that folder holds another repository"
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 pub fn data_dir_unavailable(err: &impl Display) -> String {
@@ -237,10 +274,29 @@ pub fn record_tests_not_recorded(err: &impl Display) -> String {
 /// The width of the labels in the discovery report.
 const LABEL_WIDTH: usize = 18;
 
-/// The discovery report: what was found, what each report reads as, what was not found, and one
-/// line per missing adapter on how it connects. Facts only; the lines on connecting belong to
-/// the settings form of the report.
-pub fn discovery_report(found: &Discovery, reads: &Reads) -> String {
+/// Where light, soil and weather are kept, for the discovery report.
+pub const DEVICE_LOSS: &str = "Light, soil and weather are recorded on this machine only. On a \
+    new machine or after a reinstall, the git history replays, and they read as unknown before \
+    that day.";
+
+/// Whether the discovery report says how each missing adapter connects: the command line and
+/// the settings say it; the report shown once at connect says only what was found and not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hints {
+    Shown,
+    Left,
+}
+
+/// The discovery report: what was found, what each report reads as, what was not found, one
+/// line per missing adapter on how it connects when `hints` asks, and where light, soil and
+/// weather are kept. Facts only.
+pub fn discovery_report(found: &Discovery, reads: &Reads, hints: Hints) -> String {
+    let mut out = report_rows(found, reads, hints);
+    let _ = writeln!(out, "\n{DEVICE_LOSS}");
+    out
+}
+
+fn report_rows(found: &Discovery, reads: &Reads, hints: Hints) -> String {
     let mut out = String::from("Found\n");
     let mut missing: Vec<(&str, Option<String>, Hint)> = Vec::new();
     if let Ok(branch) = &found.git {
@@ -322,6 +378,9 @@ pub fn discovery_report(found: &Discovery, reads: &Reads) -> String {
     out.push_str("Not found\n");
     for (label, detail, _) in &missing {
         row(&mut out, label, detail.as_deref().unwrap_or(""));
+    }
+    if hints == Hints::Left {
+        return out;
     }
     out.push_str("To connect\n");
     let runner = found.runners.first().map(|r| r.runner);
@@ -557,6 +616,13 @@ impl Display for StripError {
             Self::Attach(err) => write!(f, "the window could not be pinned: {}", attach(err)),
             Self::Present(err) => write!(f, "{err}"),
             Self::NoDisplay => write!(f, "no display is connected"),
+            Self::Connect(_, err) => write!(f, "{}", connect_problem(err)),
+            Self::NoConnectWindow => {
+                write!(
+                    f,
+                    "no repository is connected, and its window could not open"
+                )
+            }
         }
     }
 }
@@ -602,6 +668,119 @@ pub fn menu_quit() -> &'static str {
     "Quit"
 }
 
+pub fn menu_settings() -> &'static str {
+    "Settings"
+}
+
+/// An egui window's title.
+pub fn egui_window_title(kind: WindowKind) -> String {
+    match kind {
+        WindowKind::Connect => PRODUCT_NAME.to_owned(),
+        WindowKind::Settings => format!("{PRODUCT_NAME}: settings"),
+        #[cfg(feature = "dev")]
+        WindowKind::Debug => format!("{PRODUCT_NAME} {VERSION}: debug"),
+    }
+}
+
+pub fn host_failed(err: &HostError) -> String {
+    let why = match err {
+        HostError::Window(err) => format!("the window could not be created: {err}"),
+        HostError::Gpu(err) => format!("no graphics device: {err}"),
+    };
+    format!("{BINARY_NAME}: a window could not open: {why}")
+}
+
+/// The connect window.
+pub mod connect {
+    pub const HEADING: &str = "Connect a repository";
+    pub const INTRO: &str = "The terrarium grows from one local git repository. Only its git \
+        history is read; nothing in it runs.";
+    pub const CHOOSE: &str = "Choose folder…";
+    pub const NONE_CHOSEN: &str = "No folder chosen";
+    pub const OPEN_AT_LOGIN: &str = "Open at login";
+    pub const CONNECT: &str = "Connect";
+    pub const READING: &str = "Reading the repository…";
+    pub const DONE: &str = "Done";
+
+    pub fn connected(name: &str) -> String {
+        format!("{name} is connected")
+    }
+}
+
+/// The settings window's repository section.
+pub mod settings {
+    pub const REPOSITORY: &str = "Repository";
+    pub const NAME: &str = "Name";
+    pub const FOLDER: &str = "Folder";
+    pub const DEFAULT_BRANCH: &str = "Default branch";
+    pub const NOT_FOUND: &str = "Not found at this folder.";
+    pub const LOCATE: &str = "Locate…";
+    pub const RELINK: &str = "Relink";
+    pub const NEW_TERRARIUM: &str = "New terrarium…";
+    pub const RESEED_STATEMENT: &str = "A new terrarium lays the same history out anew: \
+        plants, residents and stones take new places. Its history, and what it shows, stay as \
+        they are.";
+    pub const RESEED: &str = "New terrarium";
+    pub const DISCONNECT_BUTTON: &str = "Disconnect…";
+    pub const DELETE_OBSERVATIONS: &str = "Delete its recorded observations";
+    pub const DELETE_STATEMENT: &str = "Light, soil and weather history exist only in these \
+        observations, so they would be lost. The git history still replays.";
+    pub const DISCONNECT: &str = "Disconnect";
+    pub const CANCEL: &str = "Cancel";
+    pub const WORKING: &str = "Working…";
+
+    pub fn chosen(path: &str) -> String {
+        format!("Chosen: {path}")
+    }
+
+    pub fn disconnect_statement(name: &str) -> String {
+        format!(
+            "Disconnecting stops showing {name}. Its git history replays whenever it is \
+             connected again."
+        )
+    }
+}
+
+/// A second launch found the app running, and asked it to show its settings.
+pub fn shown_in_running() -> String {
+    format!("{BINARY_NAME}: already running; its settings are shown")
+}
+
+/// A second launch with `--repo` found the app running: it connects nothing.
+pub fn repo_while_running() -> String {
+    format!("{BINARY_NAME}: already running; --repo connects only when it starts the app")
+}
+
+pub fn instance_unavailable(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the data directory's lock could not be taken: {err}")
+}
+
+pub fn request_failed(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the running app could not be asked to show its settings: {err}")
+}
+
+/// A second launch's requests are not watched, so only a restart shows the settings.
+pub fn requests_unwatched(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: a second launch cannot reach this one: {err}")
+}
+
+/// "Open at login" was checked but not set.
+pub fn login_not_set(err: &LoginError) -> String {
+    match err {
+        LoginError::NotBundled => format!(
+            "{BINARY_NAME}: open at login applies to the installed app; this build is not one"
+        ),
+        LoginError::Os(reason) => {
+            format!("{BINARY_NAME}: open at login could not be set: {reason}")
+        }
+    }
+}
+
+/// Connecting from the window went on without its report.
+pub fn report_unavailable() -> &'static str {
+    "The report could not be made."
+}
+
 pub fn menu_unavailable(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the right-click menu is unavailable: {err}")
 }
@@ -637,12 +816,11 @@ pub mod debug {
 
     use super::{BINARY_NAME, PRODUCT_NAME, VERSION};
     use crate::debug::Readout;
-    use crate::egui_host::{HostError, WindowKind};
     use crate::egui_probe::{Phase, Sample};
 
     pub const SCENE: &str = "Scene";
     pub const LIVE: &str = "The connected repository, as the engine sends it";
-    pub const THRIVING: &str = "Thriving, the sample shown with no repository connected";
+    pub const THRIVING: &str = "Thriving, the sample";
     pub const DEMO: &str = "The demo cycle, from its start";
     pub const SYNTHETIC: &str = "Synthetic climate";
     pub const SIMULATION: &str = "Simulation";
@@ -678,12 +856,6 @@ pub mod debug {
     pub const DIM_ON: &str = "on";
     pub const DIM_OFF: &str = "off";
     pub const READOUT: &str = "Readout";
-
-    pub fn window_title(kind: WindowKind) -> String {
-        match kind {
-            WindowKind::Debug => format!("{PRODUCT_NAME} {VERSION}: debug"),
-        }
-    }
 
     pub fn preset(name: &str) -> String {
         format!("Preset: {name}")
@@ -777,14 +949,6 @@ pub mod debug {
             None => "memory: not known".to_owned(),
         });
         lines
-    }
-
-    pub fn host_failed(err: &HostError) -> String {
-        let why = match err {
-            HostError::Window(err) => format!("the window could not be created: {err}"),
-            HostError::Gpu(err) => format!("no graphics device: {err}"),
-        };
-        format!("{BINARY_NAME}: the debug window could not open: {why}")
     }
 
     fn phase(phase: Phase) -> String {
@@ -1021,7 +1185,7 @@ mod tests {
             Format, KnipCounts, Known, Outcome, Reading, Report, Why,
         };
 
-        use super::super::discovery_report;
+        use super::super::{DEVICE_LOSS, Hints, discovery_report, report_rows};
         use crate::discover::Reads;
 
         fn known(format: Format, files: &[&str], reading: Reading) -> Report {
@@ -1116,7 +1280,7 @@ mod tests {
                 dead_code: None,
             };
             assert_eq!(
-                discovery_report(&discovery, &reads),
+                report_rows(&discovery, &reads, Hints::Shown),
                 "Found\n\
                  \x20 git               default branch main\n\
                  \x20 coverage report   coverage/lcov.info, lcov: 1204 of 1530 lines covered\n\
@@ -1136,6 +1300,29 @@ mod tests {
         }
 
         #[test]
+        fn the_report_says_where_light_soil_and_weather_are_kept_and_hints_only_when_asked() {
+            let everything = Discovery {
+                coverage: found(Format::Lcov, "coverage/lcov.info", &["coverage/lcov.info"]),
+                local_tests: true,
+                dead_code: found(Format::Knip, "knip-report.json", &["knip-report.json"]),
+                ci_workflows: vec![".github/workflows/ci.yml".to_owned()],
+                ..nothing()
+            };
+            let little = nothing();
+            for discovery in [&everything, &little] {
+                for hints in [Hints::Shown, Hints::Left] {
+                    let text = discovery_report(discovery, &no_reads(), hints);
+                    assert!(text.ends_with(&format!("\n{DEVICE_LOSS}\n")), "{text}");
+                    assert_eq!(
+                        text.contains("To connect"),
+                        hints == Hints::Shown && discovery == &little
+                    );
+                }
+            }
+            assert!(discovery_report(&little, &no_reads(), Hints::Left).contains("Not found"));
+        }
+
+        #[test]
         fn what_is_missing_gets_one_line_each_and_the_runner_s_own_way() {
             let discovery = Discovery {
                 runners: vec![RunnerFound {
@@ -1145,7 +1332,7 @@ mod tests {
                 knip_config: Some("knip.json".to_owned()),
                 ..nothing()
             };
-            let text = discovery_report(&discovery, &no_reads());
+            let text = report_rows(&discovery, &no_reads(), Hints::Shown);
             let (found, rest) = text.split_once("Not found\n").unwrap();
             assert!(found.contains("  Knip              knip.json\n"), "{found}");
             let (missing, connect) = rest.split_once("To connect\n").unwrap();
@@ -1170,7 +1357,7 @@ mod tests {
                 local_tests: true,
                 ..nothing()
             };
-            assert!(!discovery_report(&recorded, &no_reads()).contains("  test report"));
+            assert!(!report_rows(&recorded, &no_reads(), Hints::Shown).contains("  test report"));
         }
 
         #[test]
@@ -1196,7 +1383,7 @@ mod tests {
                 )),
                 ..no_reads()
             };
-            assert!(discovery_report(&discovery, &reads).contains(
+            assert!(report_rows(&discovery, &reads, Hints::Shown).contains(
                 "  test report       target/surefire-reports/TEST-*.xml, 1 JUnit file: 1 test, \
                  none failing, but a suite failed outside its tests\n"
             ));
@@ -1247,7 +1434,7 @@ mod tests {
                     }),
                     ..no_reads()
                 };
-                let text = discovery_report(&discovery, &reads);
+                let text = report_rows(&discovery, &reads, Hints::Shown);
                 assert!(
                     text.contains(&format!("junit.xml, JUnit: not read, {expected}\n")),
                     "{text}"
@@ -1268,7 +1455,7 @@ mod tests {
                 ..no_reads()
             };
             assert!(
-                discovery_report(&knip, &old).contains(
+                report_rows(&knip, &old, Hints::Shown).contains(
                     "not read, it is from Knip 5.88.0, and reports from Knip 6 on are read"
                 )
             );
@@ -1284,7 +1471,7 @@ mod tests {
                 )),
                 ..no_reads()
             };
-            assert!(discovery_report(&knip, &read).contains(
+            assert!(report_rows(&knip, &read, Hints::Shown).contains(
                 "knip-report.json, Knip: 1 unused export and 2 unused files, not part of soil yet"
             ));
         }

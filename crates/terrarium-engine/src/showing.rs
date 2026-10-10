@@ -33,6 +33,20 @@ impl Showing {
         }
     }
 
+    /// Takes the instances in `seen` as already had the chance to play: what the scenes of an
+    /// earlier session played.
+    pub fn also_seen(&mut self, seen: BTreeSet<(Tick, EventKind)>) {
+        match &mut self.seen {
+            Some(already) => already.extend(seen),
+            None => self.seen = Some(seen),
+        }
+    }
+
+    /// The instances the state last projected held.
+    pub fn seen(&self) -> Option<&BTreeSet<(Tick, EventKind)>> {
+        self.seen.as_ref()
+    }
+
     /// The state's scene. It plays the best event the state last projected did not hold (with
     /// none projected, the newest tick's best), unless the one already playing is still within
     /// its hold and outranks it.

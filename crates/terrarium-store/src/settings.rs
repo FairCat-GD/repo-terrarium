@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::identifiers::{INSTALL_FIRST_RUN_DONE, INSTALL_LAST_SIM_VERSION};
+use crate::identifiers::{INSTALL_FIRST_RUN_DONE, INSTALL_LAST_SIM_VERSION, INSTALL_SHOWN_EVENTS};
 use crate::{Store, StoreError};
 
 /// The `install` keys a caller may write. The deletion guard's key is not one of them, so only
@@ -14,6 +14,9 @@ use crate::{Store, StoreError};
 pub enum InstallKey {
     LastSimVersion,
     FirstRunDone,
+    /// The events the connected terrarium's scenes last had the chance to play, so a restart
+    /// does not play them again.
+    ShownEvents,
 }
 
 impl InstallKey {
@@ -21,6 +24,7 @@ impl InstallKey {
         match self {
             InstallKey::LastSimVersion => INSTALL_LAST_SIM_VERSION,
             InstallKey::FirstRunDone => INSTALL_FIRST_RUN_DONE,
+            InstallKey::ShownEvents => INSTALL_SHOWN_EVENTS,
         }
     }
 }
@@ -69,6 +73,12 @@ impl Store {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![key.as_key(), value],
         )?;
+        Ok(())
+    }
+
+    pub fn clear_install_value(&mut self, key: InstallKey) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM install WHERE key = ?1", [key.as_key()])?;
         Ok(())
     }
 }
@@ -130,6 +140,16 @@ mod tests {
         fx.store
             .set_install_value(InstallKey::FirstRunDone, "true")
             .unwrap();
+        fx.store
+            .set_install_value(InstallKey::ShownEvents, "{}")
+            .unwrap();
+        fx.store
+            .clear_install_value(InstallKey::ShownEvents)
+            .unwrap();
+        assert_eq!(
+            fx.store.install_value(InstallKey::ShownEvents).unwrap(),
+            None
+        );
         assert_eq!(
             fx.store
                 .install_value(InstallKey::LastSimVersion)

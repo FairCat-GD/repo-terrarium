@@ -8,7 +8,7 @@
 
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
-use terrarium_truth::domain::{ObservationValue, WeatherSource};
+use terrarium_truth::domain::{DeletedDir, LeftCommit, ObservationValue, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind};
 
 use crate::Invalid;
@@ -80,8 +80,10 @@ pub enum WeatherState {
 
 /// `ref_rewrite`: a default-branch ref moved from `old` to `new` without fast-forwarding.
 /// `rewritten` counts the commits it took off the default branch's first-parent chain, and
-/// `fossils` names the commits of the fossils shown before it that it took off; rows written
-/// before either was recorded lack them.
+/// `left` holds, oldest first, those of them that deleted whole directories, as git read them.
+/// Rows written before either was recorded lack them. `fossils` is what rows written before
+/// `left` held instead, the commits of the fossils the recording install showed that the move
+/// took off; it is read still and never written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefRewriteRaw {
     #[serde(rename = "ref")]
@@ -92,6 +94,57 @@ pub struct RefRewriteRaw {
     pub rewritten: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fossils: Vec<CommitId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<LeftRaw>,
+}
+
+/// One commit a rewrite took off the chain: its committer time (Unix seconds, clamped as the
+/// history read it) and the directories it deleted entirely.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftRaw {
+    pub commit: CommitId,
+    pub time: i64,
+    pub deleted: Vec<DeletedRaw>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletedRaw {
+    pub path: String,
+    pub lines: u64,
+}
+
+impl From<&LeftCommit> for LeftRaw {
+    fn from(commit: &LeftCommit) -> LeftRaw {
+        LeftRaw {
+            commit: commit.commit.clone(),
+            time: commit.time,
+            deleted: commit
+                .deleted_dirs
+                .iter()
+                .map(|dir| DeletedRaw {
+                    path: dir.path.clone(),
+                    lines: dir.lines,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<LeftRaw> for LeftCommit {
+    fn from(raw: LeftRaw) -> LeftCommit {
+        LeftCommit {
+            commit: raw.commit,
+            time: raw.time,
+            deleted_dirs: raw
+                .deleted
+                .into_iter()
+                .map(|dir| DeletedDir {
+                    path: dir.path,
+                    lines: dir.lines,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A raw shape: what an adapter writes into `raw`.
@@ -185,6 +238,7 @@ pub(crate) fn from_json(
                 new,
                 rewritten,
                 fossils,
+                left,
             } = serde_json::from_value(object()?).map_err(shape)?;
             ObservationValue::RefRewrite {
                 reference,
@@ -192,6 +246,7 @@ pub(crate) fn from_json(
                 new,
                 rewritten,
                 fossils,
+                left: left.into_iter().map(LeftCommit::from).collect(),
             }
         }
     })
@@ -253,6 +308,7 @@ mod tests {
             new: commit('b'),
             rewritten: None,
             fossils: Vec::new(),
+            left: Vec::new(),
         };
         assert_eq!(
             rewrite.to_raw(),
@@ -274,6 +330,28 @@ mod tests {
                 "a".repeat(40),
                 "b".repeat(40),
                 "c".repeat(40)
+            )
+        );
+        let taking = RefRewriteRaw {
+            rewritten: Some(3),
+            fossils: Vec::new(),
+            left: vec![LeftRaw {
+                commit: commit('d'),
+                time: 1_700_000_000,
+                deleted: vec![DeletedRaw {
+                    path: "src/old".into(),
+                    lines: 640,
+                }],
+            }],
+            ..dropping
+        };
+        assert_eq!(
+            taking.to_raw(),
+            format!(
+                r#"{{"ref":"refs/heads/main","old":"{}","new":"{}","rewritten":3,"left":[{{"commit":"{}","time":1700000000,"deleted":[{{"path":"src/old","lines":640}}]}}]}}"#,
+                "a".repeat(40),
+                "b".repeat(40),
+                "d".repeat(40)
             )
         );
     }
@@ -306,6 +384,7 @@ mod tests {
                 new: commit('b'),
                 rewritten: None,
                 fossils: Vec::new(),
+                left: Vec::new(),
             })
         );
         let raw = RefRewriteRaw {
@@ -314,6 +393,11 @@ mod tests {
             new: commit('b'),
             rewritten: Some(4),
             fossils: vec![commit('d'), commit('e')],
+            left: vec![LeftRaw {
+                commit: commit('f'),
+                time: 7,
+                deleted: Vec::new(),
+            }],
         }
         .to_raw();
         assert_eq!(
@@ -324,6 +408,11 @@ mod tests {
                 new: commit('b'),
                 rewritten: Some(4),
                 fossils: vec![commit('d'), commit('e')],
+                left: vec![LeftCommit {
+                    commit: commit('f'),
+                    time: 7,
+                    deleted_dirs: Vec::new(),
+                }],
             })
         );
         let local = WeatherSource::Local;
@@ -362,10 +451,22 @@ mod tests {
             );
         }
         let ids = format!(r#""old":"{}","new":"{}""#, "a".repeat(40), "b".repeat(40));
+        let left = |entry: &str| format!(r#""left":[{entry}]"#);
+        let c = "c".repeat(40);
         for extra in [
-            r#""fossils":["zz"]"#,
-            r#""rewritten":-1"#,
-            r#""fossils":"c""#,
+            r#""fossils":["zz"]"#.to_owned(),
+            r#""rewritten":-1"#.to_owned(),
+            r#""fossils":"c""#.to_owned(),
+            r#""left":"c""#.to_owned(),
+            left(r#"{"commit":"zz","time":1,"deleted":[]}"#),
+            left(&format!(r#"{{"commit":"{c}","deleted":[]}}"#)),
+            left(&format!(r#"{{"commit":"{c}","time":1}}"#)),
+            left(&format!(
+                r#"{{"commit":"{c}","time":1,"deleted":[{{"path":"a","lines":-5}}]}}"#
+            )),
+            left(&format!(
+                r#"{{"commit":"{c}","time":1,"deleted":[{{"lines":5}}]}}"#
+            )),
         ] {
             let raw = format!(r#"{{"ref":"refs/heads/main",{ids},{extra}}}"#);
             assert_eq!(

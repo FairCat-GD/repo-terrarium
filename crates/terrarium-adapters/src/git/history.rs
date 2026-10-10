@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
-use terrarium_truth::domain::TagFact;
+use terrarium_truth::domain::{LeftCommit, TagFact};
 use terrarium_truth::history::EARLIEST_COMMIT_SECS;
 use terrarium_truth::{CommitFacts, CommitId, Tick, TickGrid};
 
@@ -111,10 +111,11 @@ pub enum Change {
     },
     /// The history was read again in full, because earlier facts changed. `left_chain` holds
     /// the commits that were on the default branch's first-parent chain and no longer are, in
-    /// the order the old history held them: what a rewrite of the default branch took off it.
+    /// the order the old history held them, with the facts it held: what a rewrite of the
+    /// default branch took off it.
     Rewritten {
         reason: RewriteReason,
-        left_chain: Vec<CommitId>,
+        left_chain: Vec<LeftCommit>,
     },
 }
 
@@ -399,11 +400,100 @@ pub(crate) fn read_since(
     let chain = history.default_chain();
     let left_chain = old
         .commits
-        .into_iter()
+        .iter()
         .filter(|c| c.on_default_first_parent && !chain.contains(&c.id))
-        .map(|c| c.id)
+        .map(|c| left_commit(&old, c))
         .collect();
     Ok(Change::Rewritten { reason, left_chain })
+}
+
+/// `commit` of `history` as a commit taken off the chain: its clamped time and deletions.
+fn left_commit(history: &History, commit: &CommitFacts) -> LeftCommit {
+    LeftCommit {
+        commit: commit.id.clone(),
+        time: history
+            .index
+            .get(&to_object_id(&commit.id))
+            .map_or(EARLIEST_COMMIT_SECS, |indexed| indexed.placed.clamped),
+        deleted_dirs: commit.deleted_dirs.clone(),
+    }
+}
+
+/// What a move of the default branch from `old_tip` took off its first-parent chain, as a
+/// move seen live gives it ([`Change::Rewritten`]), for a move made while nothing watched:
+/// from `old_tip` along first parents to the first commit `history` has on its default chain,
+/// oldest first. A commit `history` still holds (on another branch) is taken from it; the rest
+/// are read and diffed from the object database, which keeps a dropped commit until it is
+/// collected. `None` when the old tip is no longer there.
+pub(crate) fn left_between(
+    repo: &gix::Repository,
+    old_tip: &CommitId,
+    history: &History,
+    progress: &mut dyn FnMut(Progress) -> ControlFlow<()>,
+) -> Result<Option<Vec<LeftCommit>>, GitError> {
+    let tip = to_object_id(old_tip);
+    if !repo.has_object(tip) {
+        return Ok(None);
+    }
+    let known = &history.index;
+    let (nodes, _) = walk::walk(
+        repo,
+        [tip],
+        &|id| known.contains_key(id),
+        &shallow_ids(&history.state),
+    )?;
+    let placed = walk::place(&nodes, &|id| known.get(id).map(|k| k.placed));
+    let first_parent = |id: &gix::ObjectId| {
+        nodes
+            .get(id)
+            .map(|n| n.first_parent)
+            .or_else(|| known.get(id).map(|k| k.first_parent))
+            .flatten()
+    };
+    let chain = history.default_chain();
+    let mut ids: Vec<gix::ObjectId> = walk::first_parent_chain(tip, &first_parent)
+        .into_iter()
+        .take_while(|id| !chain.contains(&to_commit_id(*id)))
+        .collect();
+    ids.reverse();
+    let held: BTreeMap<gix::ObjectId, &CommitFacts> = history
+        .commits
+        .iter()
+        .map(|c| (to_object_id(&c.id), c))
+        .filter(|(id, _)| known.contains_key(id) && ids.contains(id))
+        .collect();
+    let mut differ = Differ::new(repo);
+    let mut left = Vec::with_capacity(ids.len());
+    for (done, id) in ids.iter().enumerate() {
+        if progress(Progress {
+            diffed: done,
+            total: ids.len(),
+        })
+        .is_break()
+        {
+            return Err(GitError::Cancelled);
+        }
+        if let Some(commit) = held.get(id) {
+            left.push(left_commit(history, commit));
+            continue;
+        }
+        let node = &nodes[id];
+        let parent_tree = match node.first_parent {
+            Some(parent) => Some(tree_of(repo, &nodes, parent)?),
+            None => None,
+        };
+        let changes = differ.changes(repo, parent_tree, node.tree)?;
+        left.push(LeftCommit {
+            commit: to_commit_id(*id),
+            time: placed[id].clamped,
+            deleted_dirs: changes.deleted_dirs,
+        });
+    }
+    let _ = progress(Progress {
+        diffed: ids.len(),
+        total: ids.len(),
+    });
+    Ok(Some(left))
 }
 
 /// Reads only the commits `history` lacks into it, or says why every earlier fact no longer

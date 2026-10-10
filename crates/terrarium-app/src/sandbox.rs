@@ -228,6 +228,7 @@ impl Sandbox {
                     new,
                     rewritten: Some(3),
                     fossils: Vec::new(),
+                    left: Vec::new(),
                 },
             );
         }

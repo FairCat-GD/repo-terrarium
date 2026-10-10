@@ -1,4 +1,4 @@
-//! The strip's right-click menu: Quit, and in dev builds the debug window.
+//! The strip's right-click menu: Settings and Quit, and in dev builds the debug window.
 
 use muda::{Menu, MenuEvent, MenuId, MenuItem};
 use winit::event_loop::EventLoopProxy;
@@ -16,6 +16,7 @@ pub fn forward_events(proxy: EventLoopProxy<UserEvent>) {
 
 pub struct StripMenu {
     menu: Menu,
+    settings: MenuItem,
     quit: MenuItem,
     #[cfg(feature = "dev")]
     debug: MenuItem,
@@ -29,10 +30,13 @@ impl StripMenu {
         let debug = MenuItem::new(copy::menu_debug(), true, None);
         #[cfg(feature = "dev")]
         menu.append(&debug)?;
+        let settings = MenuItem::new(copy::menu_settings(), true, None);
+        menu.append(&settings)?;
         let quit = MenuItem::new(copy::menu_quit(), true, None);
         menu.append(&quit)?;
         Ok(Self {
             menu,
+            settings,
             quit,
             #[cfg(feature = "dev")]
             debug,
@@ -45,6 +49,10 @@ impl StripMenu {
 
     pub fn is_quit(&self, id: &MenuId) -> bool {
         self.quit.id() == id
+    }
+
+    pub fn is_settings(&self, id: &MenuId) -> bool {
+        self.settings.id() == id
     }
 
     #[cfg(feature = "dev")]

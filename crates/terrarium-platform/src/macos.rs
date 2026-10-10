@@ -9,8 +9,10 @@ use std::sync::Arc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{NSObjectProtocol, ProtocolObject};
-use objc2::{AnyThread, MainThreadMarker};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationDidBecomeActiveNotification,
     NSApplicationDidChangeScreenParametersNotification, NSApplicationDidResignActiveNotification,
@@ -22,8 +24,8 @@ use objc2_app_kit::{
 use objc2_core_foundation::{CFRetained, CFUUID};
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
 use objc2_foundation::{
-    NSNotification, NSNotificationCenter, NSNumber, NSOperationQueue, NSPoint, NSProcessInfo,
-    NSRect, NSSize, ns_string,
+    NSAppleEventManager, NSNotification, NSNotificationCenter, NSNumber, NSObject,
+    NSOperationQueue, NSPoint, NSProcessInfo, NSRect, NSSize, ns_string,
 };
 use raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle};
 
@@ -233,6 +235,103 @@ fn display_uuid(display_id: u32) -> Option<String> {
     // over that one reference and releases it when dropped.
     let uuid = unsafe { CFRetained::from_raw(uuid) };
     CFUUID::new_string(None, Some(&uuid)).map(|text| text.to_string())
+}
+
+/// Makes the app active and brings `window` in front of the other apps' windows, with the
+/// keyboard: an accessory app is not activated by a window of its own. Does nothing off the
+/// main thread.
+pub fn bring_forward(window: &impl HasWindowHandle) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    // `activate` is macOS 14's; the app's floor, 13, has only the older call.
+    if app.respondsToSelector(sel!(activate)) {
+        app.activate();
+    } else {
+        #[expect(deprecated, reason = "macOS 13 has no `activate`")]
+        app.activateIgnoringOtherApps(true);
+    }
+    if let Ok(window) =
+        appkit_view(window).and_then(|view| view.window().ok_or(PlatformError::NoWindow))
+    {
+        window.makeKeyAndOrderFront(None);
+        window.orderFrontRegardless();
+    }
+}
+
+/// `kCoreEventClass` and `kAEReopenApplication`: the Apple Event a second launch of a running
+/// app sends it ('aevt', 'rapp').
+const CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+const REOPEN_APPLICATION: u32 = u32::from_be_bytes(*b"rapp");
+
+/// What the reopen handler calls.
+struct ReopenIvars {
+    on_reopen: Box<dyn Fn()>,
+}
+
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements, and the class implements no `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "IoGithubFaircatGdRepoTerrariumReopen"]
+    #[ivars = ReopenIvars]
+    struct ReopenHandler;
+
+    impl ReopenHandler {
+        #[unsafe(method(handleReopen:withReplyEvent:))]
+        fn handle_reopen(&self, _event: *mut AnyObject, _reply: *mut AnyObject) {
+            (self.ivars().on_reopen)();
+        }
+    }
+);
+
+/// The reopen handler, while it is installed. Dropping this removes it.
+pub struct ReopenHook {
+    _handler: Retained<ReopenHandler>,
+}
+
+/// Calls `on_reopen` on the main thread whenever the app is launched again while it runs, as
+/// opening the installed app a second time does: macOS sends the running app a reopen event
+/// instead of starting another. winit keeps the application delegate for itself, so the event
+/// is taken from the Apple Event manager. Install it once the app has finished launching, or
+/// `AppKit`'s own handler replaces it. `None` off the main thread.
+pub fn on_reopen(on_reopen: impl Fn() + 'static) -> Option<ReopenHook> {
+    let mtm = MainThreadMarker::new()?;
+    let handler = mtm.alloc::<ReopenHandler>().set_ivars(ReopenIvars {
+        on_reopen: Box::new(on_reopen),
+    });
+    // SAFETY: `NSObject`'s `init` on a freshly allocated object, as every subclass does.
+    let handler: Retained<ReopenHandler> = unsafe { msg_send![super(handler), init] };
+    let manager = NSAppleEventManager::sharedAppleEventManager();
+    // SAFETY: the handler implements the selector, with the signature the manager calls it
+    // with (the event and its reply, as objects); the manager does not retain it, and the
+    // hook keeps it alive until it removes it. The class and id are `FourCharCode`s.
+    unsafe {
+        let _: () = msg_send![
+            &manager,
+            setEventHandler: &*handler,
+            andSelector: sel!(handleReopen:withReplyEvent:),
+            forEventClass: CORE_EVENT_CLASS,
+            andEventID: REOPEN_APPLICATION,
+        ];
+    }
+    Some(ReopenHook { _handler: handler })
+}
+
+impl Drop for ReopenHook {
+    fn drop(&mut self) {
+        let manager = NSAppleEventManager::sharedAppleEventManager();
+        // SAFETY: removes the handler for this class and id, which the hook installed; the
+        // handler is still alive, so no event can reach a freed object meanwhile.
+        unsafe {
+            let _: () = msg_send![
+                &manager,
+                removeEventHandlerForEventClass: CORE_EVENT_CLASS,
+                andEventID: REOPEN_APPLICATION,
+            ];
+        }
+    }
 }
 
 /// Whether the app is the active one. False off the main thread.

@@ -6,23 +6,23 @@ and CI or local tests are the weather. It is built in Rust for macOS and Windows
 
 ## Status
 
-Pre-release, in a private repository, at version 0.18.2. The strip:
+Pre-release, in a private repository, at version 0.21.0. The strip:
 - is a borderless band along the bottom of a monitor;
 - on macOS, is pinned below ordinary windows;
 - on Windows, is a topmost bar on a reserved edge, the way the taskbar is. It is untested on
   real hardware yet;
-- runs on one local repository: `--repo <path>` connects it, and a plain run opens the one
-  connected last. With none connected, it shows a sample terrarium;
+- runs on one local repository: with none connected, a window opens to choose and connect one
+  (`--repo <path>` connects it from the command line), and a plain run opens the one connected
+  last. One app runs at a time; launching it again shows its settings;
 - reads the repository's history, its coverage, test and dead-code reports, and the test runs
   `record-tests` records;
-- simulates from them, the same way on every computer:
+- simulates from them, the same way on every computer, and draws:
   - the plants;
   - the residents;
   - the standing stones and the fossils;
-  - the events that happen to them.
-
-  The scene draws all of these except the events, which come next;
-- has a raise hotkey (Ctrl+Alt+T) and a right-click **Quit**.
+  - the events that happen to them, in the sky and on the ground;
+- has a raise hotkey (Ctrl+Alt+T) and a right-click **Settings** (where the repository is,
+  relinking it, a new terrarium, disconnecting) and **Quit**.
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ Pre-release, in a private repository, at version 0.18.2. The strip:
 
 ```sh
 cargo run -p terrarium-app -- --repo <path>          # connects a repository and runs the strip
-cargo run -p terrarium-app                           # runs on the repository connected last
+cargo run -p terrarium-app                           # the one connected last, or the connect window
 cargo run -p terrarium-app -- --demo                 # the strip through its named looks
 cargo run -p terrarium-app -- discover <path>        # what each report adapter finds there
 cargo run -p terrarium-app -- record-tests -- <cmd>  # runs tests; their result is the weather
@@ -48,7 +48,7 @@ cargo xtask probe-zip                                # the Windows probe zip for
 cargo xtask render --demo out.png                    # the sample scene, out.png and out@3x.png
 ```
 
-Right-click the strip to quit.
+Right-click the strip for its settings or to quit.
 
 There is no CI. `cargo xtask verify` runs locally before every commit. It includes a clippy pass
 for the Windows target, so Windows code is compiled and linted on a Mac.

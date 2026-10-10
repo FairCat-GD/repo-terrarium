@@ -148,9 +148,40 @@ pub fn rewrite(
             new: id(9_998),
             rewritten,
             fossils,
+            left: Vec::new(),
         },
         hours,
         1,
         None,
     )
+}
+
+/// A ref rewrite of `main` recorded `hours` after the origin that took `left` off the chain.
+pub fn rewrite_left(
+    hours: u32,
+    rewritten: Option<u32>,
+    left: Vec<crate::domain::LeftCommit>,
+) -> crate::Observation {
+    let mut observation = rewrite(hours, "refs/heads/main", rewritten, Vec::new());
+    if let crate::domain::ObservationValue::RefRewrite { left: taken, .. } = &mut observation.value
+    {
+        *taken = left;
+    }
+    observation
+}
+
+/// The commit `n` taken off the chain, dated `hours` after the origin, that deleted a directory
+/// of `lines` (none for 0).
+pub fn left(n: u32, hours: u32, lines: u64) -> crate::domain::LeftCommit {
+    crate::domain::LeftCommit {
+        commit: id(n),
+        time: ORIGIN + i64::from(hours) * HOUR,
+        deleted_dirs: (lines > 0)
+            .then(|| crate::domain::DeletedDir {
+                path: format!("src/gone{n}"),
+                lines,
+            })
+            .into_iter()
+            .collect(),
+    }
 }

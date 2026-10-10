@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use terrarium_truth::RepoSeed;
 
 use crate::error::is_unique_violation;
-use crate::identifiers::INSTALL_DELETING_TERRARIUM;
+use crate::identifiers::{INSTALL_DELETING_TERRARIUM, SETTING_REPO_ACTIVE};
 use crate::{Store, StoreError};
 
 /// A terrarium's row id. It is local to this install; the seed is what identifies a
@@ -140,14 +140,32 @@ impl Store {
         Ok(())
     }
 
+    /// A new terrarium for the same repository (re-seed): a new install salt, so everything the
+    /// salt places takes a new place, and the cached replay dropped. Its observations, and with
+    /// them its truth, are kept.
+    pub fn reseed(&mut self, id: TerrariumId, install_salt: [u8; 16]) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        if tx.execute(
+            "UPDATE terrariums SET install_salt = ?2 WHERE id = ?1",
+            params![id.0, install_salt],
+        )? != 1
+        {
+            return Err(StoreError::NoSuchTerrarium(id));
+        }
+        tx.execute("DELETE FROM sim_cache WHERE terrarium_id = ?1", [id.0])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Disconnects a terrarium and keeps its observations: the row stays, so connecting the
-    /// same repository again relinks to it.
+    /// same repository again relinks to it. A plain run connects nothing after.
     pub fn disconnect(&mut self, id: TerrariumId) -> Result<(), StoreError> {
         let tx = self.conn.transaction()?;
         if tx.execute("UPDATE terrariums SET active = 0 WHERE id = ?1", [id.0])? != 1 {
             return Err(StoreError::NoSuchTerrarium(id));
         }
         tx.execute("DELETE FROM sim_cache WHERE terrarium_id = ?1", [id.0])?;
+        forget_active(&tx, id)?;
         tx.commit()?;
         Ok(())
     }
@@ -172,9 +190,20 @@ impl Store {
             "DELETE FROM install WHERE key = ?1",
             [INSTALL_DELETING_TERRARIUM],
         )?;
+        forget_active(&tx, id)?;
         tx.commit()?;
         Ok(())
     }
+}
+
+/// Clears `repo.active` when it names `id`.
+fn forget_active(tx: &rusqlite::Transaction<'_>, id: TerrariumId) -> Result<(), StoreError> {
+    let named = serde_json::to_string(&id.0)?;
+    tx.execute(
+        "DELETE FROM settings WHERE key = ?1 AND value = ?2",
+        params![SETTING_REPO_ACTIVE, named],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -241,6 +270,65 @@ mod tests {
         assert!(!fx.store.terrarium(id).unwrap().unwrap().active);
         assert_eq!(fx.store.sim_cache(id).unwrap(), None);
         assert_eq!(fx.store.observations(id, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reseeding_replaces_the_salt_drops_the_cache_and_keeps_the_rest() {
+        let mut fx = Fixture::new();
+        let id = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
+        let other = fx.store.create_terrarium(&new_terrarium(2)).unwrap();
+        fx.store
+            .append_observation(id, &record(ObservationKind::Coverage, 100))
+            .unwrap();
+        for terrarium in [id, other] {
+            fx.store
+                .write_sim_cache(terrarium, &cache(Some(1), 40))
+                .unwrap();
+        }
+        let before = fx.store.terrarium(id).unwrap().unwrap();
+        fx.store.reseed(id, [42; 16]).unwrap();
+        let after = fx.store.terrarium(id).unwrap().unwrap();
+        assert_eq!(after.install_salt, [42; 16]);
+        assert_eq!(
+            Terrarium {
+                install_salt: before.install_salt,
+                ..after
+            },
+            before,
+            "nothing else"
+        );
+        assert_eq!(fx.store.sim_cache(id).unwrap(), None);
+        assert_eq!(fx.store.observations(id, None).unwrap().len(), 1);
+        assert_eq!(fx.store.sim_cache(other).unwrap(), Some(cache(Some(1), 40)));
+        assert!(matches!(
+            fx.store.reseed(TerrariumId(9), [0; 16]),
+            Err(StoreError::NoSuchTerrarium(_))
+        ));
+    }
+
+    #[test]
+    fn disconnecting_either_way_forgets_the_active_terrarium_only_when_it_is_that_one() {
+        for delete in [false, true] {
+            let mut fx = Fixture::new();
+            let one = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
+            let two = fx.store.create_terrarium(&new_terrarium(2)).unwrap();
+            fx.store.set_setting(SETTING_REPO_ACTIVE, &two.0).unwrap();
+            let disconnect = |fx: &mut Fixture, id| {
+                if delete {
+                    fx.store.delete_terrarium(id)
+                } else {
+                    fx.store.disconnect(id)
+                }
+            };
+            disconnect(&mut fx, one).unwrap();
+            assert_eq!(
+                fx.store.setting::<i64>(SETTING_REPO_ACTIVE).unwrap(),
+                Some(two.0),
+                "another terrarium stays active"
+            );
+            disconnect(&mut fx, two).unwrap();
+            assert_eq!(fx.store.setting::<i64>(SETTING_REPO_ACTIVE).unwrap(), None);
+        }
     }
 
     #[test]

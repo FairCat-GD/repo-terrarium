@@ -5,13 +5,16 @@ Persistence: the `SQLite` database in the app-data directory.
 ## Owns
 
 - The schema and its forward-only migrations.
-- Terrariums: created, found by seed to relink, activated, disconnected, and deleted only
-  through the guarded path.
+- Terrariums: created, found by seed to relink, activated, re-seeded (a new salt, the cache
+  dropped), disconnected, and deleted only through the guarded path; a disconnect either way
+  clears `repo.active` when it names that terrarium.
 - Appending and querying observations.
 - The sim cache.
 - Settings and install facts.
 - JSONL export and import of observations.
-- The machine identifiers data lives under (`identifiers`).
+- The machine identifiers data lives under (`identifiers`), and where the data directory keeps
+  each thing (`DataDir`): the database, the recorded test runs, the running app's lock and the
+  requests a second launch leaves it.
 
 ## Why it is a crate of its own
 
@@ -101,7 +104,7 @@ ever gain optional keys; readers ignore keys they do not know.
 | `coverage` | `{"format":"lcov"\|"cobertura","lines_found":n,"lines_hit":n}` | JSON only |
 | `dead_code` | `{"unused_items":n,"exported_items":n}` | yes |
 | `weather` | `{"state":"pass"\|"fail"\|"unknown"}` | JSON only |
-| `ref_rewrite` | `{"ref":"<ref>","old":"<hex>","new":"<hex>"}`, `normalized` null | yes |
+| `ref_rewrite` | `{"ref":"<ref>","old":"<hex>","new":"<hex>"}`, plus `rewritten` (the commits taken off the default chain) and `left` (those that deleted whole directories: `commit`, `time`, `deleted` paths and lines) when known; older rows may hold `fossils` instead. `normalized` null | yes |
 | `complexity`, `todo_density` | defined by the tree-sitter adapter | JSON only |
 
 The store enforces what truth reads, so every stored row converts:

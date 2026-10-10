@@ -17,7 +17,7 @@ use std::path::Path;
 
 use gix::bstr::ByteSlice as _;
 
-use terrarium_truth::domain::ObservationHead;
+use terrarium_truth::domain::{LeftCommit, ObservationHead};
 use terrarium_truth::{CommitId, RepoSeed};
 
 pub use history::{Change, History, HistoryNotes, Progress, RewriteReason};
@@ -208,5 +208,17 @@ impl GitRepo {
         progress: &mut dyn FnMut(Progress) -> std::ops::ControlFlow<()>,
     ) -> Result<Change, GitError> {
         history::read_since(&self.repo, history, default_branch, progress)
+    }
+
+    /// What a move of the default branch from `old_tip`, made while nothing watched, took off
+    /// its first-parent chain, oldest first; `None` when `old_tip` is no longer in the
+    /// repository. `history` is the history as it is now.
+    pub fn left_between(
+        &self,
+        old_tip: &CommitId,
+        history: &History,
+        progress: &mut dyn FnMut(Progress) -> std::ops::ControlFlow<()>,
+    ) -> Result<Option<Vec<LeftCommit>>, GitError> {
+        history::left_between(&self.repo, old_tip, history, progress)
     }
 }

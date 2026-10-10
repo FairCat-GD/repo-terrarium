@@ -1,27 +1,22 @@
-//! What a dev build adds to the strip's loop: the egui host while a window is open, the debug
-//! panel's state, the frame meter, the loop's wake count, and the egui memory probe.
+//! What a dev build adds to the strip's loop: the debug panel's state, the frame meter, the
+//! loop's wake count, and the egui memory probe. The debug window opens on the shell's host,
+//! beside the app's own windows.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::WindowId;
 
 use crate::copy;
 use crate::debug::{DebugPanel, FpsMeter, Readout};
-use crate::egui_host::{EguiHost, WindowKind};
+use crate::egui_host::WindowKind;
 use crate::egui_probe::{EguiProbe, Phase, Step};
 use crate::feed::{Feed, Overrides};
 use crate::pinning;
+use crate::shell::Shell;
 
 #[derive(Default)]
 pub struct Dev {
-    /// Only while an egui window is open: dropping it drops the graphics device.
-    host: Option<EguiHost>,
-    /// The app the user was in when the first window opened, given the keyboard back when the
-    /// last one closes.
-    previous: Option<pinning::PreviousApp>,
     /// Kept when its window closes, so it opens again as it was left.
     panel: Option<DebugPanel>,
     pub fps: FpsMeter,
@@ -38,73 +33,38 @@ impl Dev {
         }
     }
 
-    /// The loop woke at `now`: windows due a repaint are asked to redraw.
-    pub fn woke(&mut self, now: Instant) {
+    /// The loop woke.
+    pub fn woke(&mut self) {
         self.wakes += 1;
-        if let Some(host) = &mut self.host {
-            host.redraw_due(now);
-        }
     }
 
-    /// The earliest moment a window wants painting or the probe its next step.
-    pub fn deadline(&mut self) -> Option<Instant> {
-        let repaint = self.host.as_mut().and_then(EguiHost::next_repaint);
-        let probe = self.probe.as_ref().and_then(EguiProbe::due);
-        [repaint, probe].into_iter().flatten().min()
+    /// The moment the probe wants its next step.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.probe.as_ref().and_then(EguiProbe::due)
     }
 
     /// Opens the debug window, showing `feed` and `overrides` the first time.
-    pub fn open_debug(&mut self, event_loop: &ActiveEventLoop, feed: &Feed, overrides: Overrides) {
+    pub fn open_debug(
+        &mut self,
+        shell: &mut Shell,
+        event_loop: &ActiveEventLoop,
+        feed: &Feed,
+        overrides: Overrides,
+    ) {
         self.panel
             .get_or_insert_with(|| DebugPanel::new(feed, overrides));
-        if self.host.is_none() {
-            self.previous = pinning::PreviousApp::frontmost();
-        }
-        let host = self.host.get_or_insert_with(EguiHost::new);
-        if let Err(err) = host.open(event_loop, WindowKind::Debug) {
-            eprintln!("{}", copy::debug::host_failed(&err));
-            self.drop_empty_host();
-        }
+        shell.open(event_loop, WindowKind::Debug);
     }
 
-    fn close_debug(&mut self) {
-        if let Some(host) = &mut self.host {
-            host.close(WindowKind::Debug);
-        }
-        self.drop_empty_host();
-    }
-
-    fn drop_empty_host(&mut self) {
-        if self.host.as_ref().is_some_and(EguiHost::is_empty) {
-            self.host = None;
-            if let Some(previous) = self.previous.take() {
-                previous.restore();
-            }
+    /// Draws the debug window's panel with `readout`.
+    pub fn draw(&mut self, ui: &mut egui::Ui, readout: Option<&Readout>) {
+        if let (Some(panel), Some(readout)) = (self.panel.as_mut(), readout) {
+            panel.ui(ui, readout);
         }
     }
 
-    pub fn owns(&self, id: WindowId) -> bool {
-        self.host.as_ref().is_some_and(|host| host.owns(id))
-    }
-
-    /// Handles `event` for an egui window. The panel's changes, if any, are returned for the
-    /// strip to show.
-    pub fn window_event(
-        &mut self,
-        id: WindowId,
-        event: &WindowEvent,
-        readout: Option<&Readout>,
-    ) -> Option<(Feed, Overrides)> {
-        let Dev { host, panel, .. } = self;
-        let host = host.as_mut()?;
-        host.window_event(id, event, &mut |kind, ui| match kind {
-            WindowKind::Debug => {
-                if let (Some(panel), Some(readout)) = (panel.as_mut(), readout) {
-                    panel.ui(ui, readout);
-                }
-            }
-        });
-        self.drop_empty_host();
+    /// The panel's changes, if any, for the strip to show.
+    pub fn take_change(&mut self) -> Option<(Feed, Overrides)> {
         self.panel.as_mut().and_then(DebugPanel::take_change)
     }
 
@@ -120,6 +80,7 @@ impl Dev {
     /// strip should exit.
     pub fn probe(
         &mut self,
+        shell: &mut Shell,
         event_loop: &ActiveEventLoop,
         now: Instant,
         shown: (&Feed, Overrides),
@@ -128,8 +89,8 @@ impl Dev {
             return false;
         };
         match step {
-            Step::Open => self.open_debug(event_loop, shown.0, shown.1),
-            Step::Close => self.close_debug(),
+            Step::Open => self.open_debug(shell, event_loop, shown.0, shown.1),
+            Step::Close => shell.close(WindowKind::Debug),
             Step::Sample(phase) => self.sample(phase, now),
             Step::Finish => {
                 self.write_report();

@@ -5,6 +5,52 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-10
+
+A repository is connected from a window, and the terrarium's life around it is in reach: open
+at login, one app at a time, relinking a moved repository, a new terrarium, and disconnecting.
+
+### Added
+
+- **A connect window** opens when no repository is connected, instead of the sample terrarium:
+  choose the repository's folder, then connect it. The first time, "Open at login" is offered,
+  checked; it is not offered again. Once connected, the strip appears and the window shows what
+  was found in the repository and what was not, once, ending with where light, soil and weather
+  are kept. Closing the window with nothing connected quits.
+- **Open at login** registers the installed app as a login item on macOS and adds it to the
+  Windows Run key. A build run from the command line is not an installed app; it says so and
+  registers nothing.
+- **One app at a time.** Launching it again while it runs shows the running one's settings
+  (or its connect window); `--repo` with one running connects nothing and says so.
+- **Settings** (right-click the strip, or launch again) show the connected repository's name,
+  folder and default branch, and three changes, none made by a single press:
+  - **Locate and relink**, while the repository is not where it was connected from: choose its
+    new folder, then relink. Only the same repository relinks; its history is kept.
+  - **New terrarium** lays the same history out anew: plants, residents and stones take new
+    places, dissolving from the old layout over a few seconds. What the terrarium shows of the
+    repository stays as it is.
+  - **Disconnect**, keeping the recorded observations unless asked to delete them, and saying
+    that light, soil and weather history would be lost. The strip closes and the connect
+    window opens.
+- **The label notes a history rewrite once:** `history rewritten`, for one turn of its cycle.
+- **The discovery report** (`discover`, and the connect window) ends with a sentence on where
+  light, soil and weather are kept: on this machine only.
+
+### Changed
+
+- **`sim updated`** shows for one turn of the label's cycle, not the whole session.
+- **A force push is recorded as git read it:** which commits it took off the default branch,
+  and which of them deleted whole directories; the terrarium decides from those which fossils
+  the push took. A push made while the app was closed is read back the same way at the next
+  start, so its earthquake has its true strength. The simulation's version is 7: every
+  terrarium replays once.
+- **A restart within an event's hour** no longer plays the event again.
+
+### Fixed
+
+- A fast-forward of the default branch through a merge, made while the app was closed, no
+  longer shakes the terrarium as if it were a force push.
+
 ## [0.20.0] - 2026-10-09
 
 The ground's events play, the marks they leave stay as long as truth keeps them, and the arc

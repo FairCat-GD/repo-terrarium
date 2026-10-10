@@ -756,9 +756,102 @@ fn left_chain(change: fn(&mut FixtureRepo, &[CommitId])) -> (Vec<CommitId>, Vec<
     let update = since(&repo, &previous);
     assert_full(&repo, &update);
     match update.change {
-        Change::Rewritten { left_chain, .. } => (left_chain, ids),
+        Change::Rewritten { left_chain, .. } => (
+            left_chain.into_iter().map(|left| left.commit).collect(),
+            ids,
+        ),
         other => panic!("not read again: {other:?}"),
     }
+}
+
+/// `main` with a 600-line directory planted at hour 20 and deleted at 21, on top of [`base`];
+/// the deletion's id.
+fn planted_and_cleared(repo: &mut FixtureRepo) -> CommitId {
+    commit(
+        repo,
+        "main",
+        20,
+        &[
+            Edit::write("src/keep.rs", "keep\n"),
+            Edit::write("src/old/roots.rs", &text("root", 600)),
+        ],
+    );
+    commit(repo, "main", 21, &[Edit::Remove("src/old/roots.rs".into())])
+}
+
+#[test]
+fn a_rewrite_carries_what_git_read_of_each_commit_it_took_off() {
+    let dir = temp();
+    let (mut repo, ids) = base(&dir);
+    let cleared = planted_and_cleared(&mut repo);
+    let previous = read(&repo);
+    repo.reset("main", &ids[2]).unwrap();
+    commit(&mut repo, "main", 30, &[Edit::write("a.rs", "again\n")]);
+    let Change::Rewritten { left_chain, .. } = since(&repo, &previous).change else {
+        panic!("read again");
+    };
+    let taken: Vec<(CommitId, i64, Vec<DeletedDir>)> = left_chain
+        .into_iter()
+        .map(|left| (left.commit, left.time, left.deleted_dirs))
+        .collect();
+    assert_eq!(taken.len(), 2);
+    assert_eq!(taken[0].1, T0 + 20 * HOUR);
+    assert!(taken[0].2.is_empty());
+    assert_eq!(
+        taken[1],
+        (
+            cleared,
+            T0 + 21 * HOUR,
+            vec![DeletedDir {
+                path: "src/old".to_owned(),
+                lines: 600
+            }]
+        )
+    );
+}
+
+#[test]
+fn a_move_made_while_nothing_watched_is_read_back_as_a_move_seen_live() {
+    // Seen live: the facts the old history held.
+    let live = |change: fn(&mut FixtureRepo, &[CommitId])| {
+        let dir = temp();
+        let (mut repo, ids) = base(&dir);
+        planted_and_cleared(&mut repo);
+        let old_tip = repo.tip("main");
+        let previous = read(&repo);
+        change(&mut repo, &ids);
+        let update = since(&repo, &previous);
+        let Change::Rewritten { left_chain, .. } = update.change else {
+            panic!("read again");
+        };
+        // Read back from the object database, from the history as it is now.
+        let found = open(&repo)
+            .left_between(&old_tip, &read(&repo), &mut go)
+            .unwrap();
+        (Some(left_chain), found)
+    };
+    // Dropped: read and diffed from the objects.
+    let (seen, found) = live(|repo, ids| {
+        repo.reset("main", &ids[1]).unwrap();
+        commit(repo, "main", 30, &[Edit::write("a.rs", "again\n")]);
+    });
+    assert_eq!(found, seen);
+    assert_eq!(found.map(|left| left.len()), Some(3));
+    // Kept on another branch: taken from the history.
+    let (seen, found) = live(|repo, ids| {
+        repo.branch("kept", "main").unwrap();
+        repo.reset("main", &ids[2]).unwrap();
+        commit(repo, "main", 30, &[Edit::write("a.rs", "kept\n")]);
+    });
+    assert_eq!(found, seen);
+    // An old tip the repository no longer has.
+    let dir = temp();
+    let (repo, _) = base(&dir);
+    let gone = CommitId::from_hex(&"e".repeat(40)).unwrap();
+    assert_eq!(
+        open(&repo).left_between(&gone, &read(&repo), &mut go),
+        Ok(None)
+    );
 }
 
 #[test]

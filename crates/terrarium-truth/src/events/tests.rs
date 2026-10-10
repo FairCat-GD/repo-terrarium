@@ -1,10 +1,10 @@
 use super::*;
-use crate::domain::{CommitFacts, DeletedDir, Observation, Rename, TagFact};
+use crate::domain::{CommitFacts, DeletedDir, Observation, ObservationValue, Rename, TagFact};
 use crate::landmarks::fossil_id;
 use crate::replay::{Prepared, SimState};
 use crate::scene::GrowthStage;
 use crate::test_support::{
-    basis, ci, commit, coverage, daily_commits, dead_code, id, rewrite, weather,
+    basis, ci, commit, coverage, daily_commits, dead_code, id, left, rewrite, rewrite_left, weather,
 };
 use crate::{Q16, project, project_showing};
 
@@ -371,6 +371,50 @@ fn a_rewrite_that_took_a_shown_fossil_opens_a_sinkhole_naming_it() {
     let scene = project(&replay(&commits, &observations, 10));
     assert_eq!(scene.event.map(|e| e.kind), Some(Earthquake));
     assert_eq!(scene.validate(), Ok(()));
+}
+
+/// The fossils whose sinkholes a replay of `observations` over `commits` opened, oldest first.
+fn sinkholes(commits: &[CommitFacts], observations: &[Observation]) -> Vec<u32> {
+    let state = replay(commits, observations, 20);
+    state
+        .events
+        .marks
+        .iter()
+        .filter(|m| m.kind == GroundMark::Sinkhole)
+        .filter_map(|m| m.fossil)
+        .collect()
+}
+
+#[test]
+fn a_rewrite_takes_the_fossils_its_newest_taken_commits_left() {
+    let commits = [commit(1, 0), commit(2, 5)];
+    let fossils = |ids: &[u32]| -> Vec<u32> { ids.iter().map(|n| fossil_id(&id(*n))).collect() };
+    // A commit that deleted a directory of 500 lines or more left a fossil; 400 lines left none,
+    // nor did a commit that deleted nothing.
+    let taking = [left(70, 3, 600), left(71, 4, 400), left(72, 5, 0)];
+    assert_eq!(
+        sinkholes(&commits, &[rewrite_left(10, Some(3), taking.to_vec())]),
+        fossils(&[70])
+    );
+    // A commit dated after the move had not applied, so its fossil was never shown.
+    let later = [left(90, 3, 900), left(91, 11, 900)];
+    assert_eq!(
+        sinkholes(&commits, &[rewrite_left(10, Some(2), later.to_vec())]),
+        fossils(&[90])
+    );
+    // A commit the history has on the default chain again lost nothing.
+    let back = [left(2, 3, 900), left(92, 4, 900)];
+    assert_eq!(
+        sinkholes(&commits, &[rewrite_left(10, Some(2), back.to_vec())]),
+        fossils(&[92])
+    );
+    // A row recorded before the commits were names its fossils; a commit named both ways
+    // opens one sinkhole.
+    let mut both = rewrite_left(10, Some(1), vec![left(93, 3, 900)]);
+    if let ObservationValue::RefRewrite { fossils: named, .. } = &mut both.value {
+        *named = vec![id(93), id(94)];
+    }
+    assert_eq!(sinkholes(&commits, &[both]), fossils(&[93, 94]));
 }
 
 /// Thirty days of a commit a day, so a terrarium has grown, and `extra` after them.

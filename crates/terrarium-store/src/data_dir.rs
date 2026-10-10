@@ -8,9 +8,13 @@ use std::path::{Path, PathBuf};
 
 use terrarium_truth::RepoSeed;
 
-use crate::identifiers::{BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE, LOCAL_TESTS_DIR};
+use crate::identifiers::{
+    BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE, INSTANCE_LOCK_FILE, LOCAL_TESTS_DIR, REQUESTS_DIR,
+    SHOW_SETTINGS_REQUEST,
+};
 
-/// A data directory: the database, the local test results, and later the logs.
+/// A data directory: the database, the local test results, the running app's lock and the
+/// requests a second launch leaves it, and later the logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataDir(PathBuf);
 
@@ -77,6 +81,21 @@ impl DataDir {
         self.local_tests_dir()
             .join(format!("{}.json", seed.to_hex()))
     }
+
+    /// The file the running app holds its lock on.
+    pub fn instance_lock(&self) -> PathBuf {
+        self.0.join(INSTANCE_LOCK_FILE)
+    }
+
+    /// Where a second launch leaves its requests for the running app.
+    pub fn requests_dir(&self) -> PathBuf {
+        self.0.join(REQUESTS_DIR)
+    }
+
+    /// The request to show the settings.
+    pub fn show_settings_request(&self) -> PathBuf {
+        self.requests_dir().join(SHOW_SETTINGS_REQUEST)
+    }
 }
 
 /// This crate's own tests, or any test nextest runs: nextest sets `NEXTEST` in every test
@@ -139,6 +158,11 @@ mod tests {
             data.local_tests(&seed),
             dir.join("local-tests")
                 .join(format!("{}.json", "ab".repeat(32)))
+        );
+        assert_eq!(data.instance_lock(), dir.join("instance.lock"));
+        assert_eq!(
+            data.show_settings_request(),
+            dir.join("requests").join("show-settings")
         );
     }
 

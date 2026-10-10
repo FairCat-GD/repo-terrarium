@@ -10,14 +10,14 @@
 use sha2::{Digest, Sha256};
 use terrarium_adapters::report::{Format, Reading, Report};
 use terrarium_store::raw::{
-    CoverageFormat, CoverageRaw, RefRewriteRaw, Shape as _, WeatherRaw, WeatherState,
+    CoverageFormat, CoverageRaw, LeftRaw, RefRewriteRaw, Shape as _, WeatherRaw, WeatherState,
 };
-use terrarium_store::{Contributor, ObservationRecord};
-use terrarium_truth::domain::{ObservationHead, WeatherSource};
+use terrarium_store::{Contributor, MAX_RAW_BYTES, ObservationRecord};
+use terrarium_truth::domain::{LeftCommit, ObservationHead, WeatherSource};
 use terrarium_truth::{CommitId, ObservationKind, Q16};
 
 /// The `adapter_version` of the ref rewrites the live refresh records.
-const REF_REWRITE_VERSION: u32 = 2;
+const REF_REWRITE_VERSION: u32 = 3;
 
 /// The observation `report` makes when HEAD was at `head` at `recorded_at` (Unix seconds,
 /// UTC), or `None` when it is not recorded.
@@ -99,34 +99,53 @@ pub fn record(
 }
 
 /// A default branch that moved without fast-forwarding, and what the move took off its
-/// first-parent chain.
+/// first-parent chain, as git read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rewrite {
     pub old: CommitId,
     pub new: CommitId,
-    /// How many commits left the chain; `None` when the history they were on is no longer
-    /// known.
-    pub rewritten: Option<u32>,
-    /// The commits of the fossils shown before the move that left the chain.
-    pub fossils: Vec<CommitId>,
+    /// The commits that left the chain, oldest first; `None` when they are no longer in the
+    /// repository.
+    pub left: Option<Vec<LeftCommit>>,
 }
 
-/// The observation of `branch` making `rewrite`, seen while HEAD was at `head`. Its content
-/// hash is the SHA-256 of its `raw`.
+/// The observation of `branch` making `rewrite`, seen while HEAD was at `head`: how many
+/// commits it took off the chain, and those that deleted whole directories, which truth reads
+/// its fossils from. A row that would pass [`MAX_RAW_BYTES`] keeps the newest of them, which
+/// are the ones whose fossils showed. Its content hash is the SHA-256 of its `raw`.
 pub fn ref_rewrite(
     branch: &str,
     rewrite: Rewrite,
     head: ObservationHead,
     recorded_at: i64,
 ) -> ObservationRecord {
-    let raw = RefRewriteRaw {
+    let rewritten = rewrite
+        .left
+        .as_ref()
+        .map(|left| u32::try_from(left.len()).unwrap_or(u32::MAX));
+    let mut shape = RefRewriteRaw {
         reference: format!("refs/heads/{branch}"),
         old: rewrite.old,
         new: rewrite.new,
-        rewritten: rewrite.rewritten,
-        fossils: rewrite.fossils,
+        rewritten,
+        fossils: Vec::new(),
+        left: rewrite
+            .left
+            .iter()
+            .flatten()
+            .filter(|commit| !commit.deleted_dirs.is_empty())
+            .map(LeftRaw::from)
+            .collect(),
+    };
+    let mut raw = shape.to_raw();
+    while raw.len() > MAX_RAW_BYTES && !shape.left.is_empty() {
+        // Entries are of a size, so the excess over their mean length names about how many
+        // to drop; the loop makes up any shortfall.
+        let mean = raw.len() / shape.left.len();
+        let over = (raw.len() - MAX_RAW_BYTES).div_ceil(mean.max(1));
+        shape.left.drain(..over.clamp(1, shape.left.len()));
+        raw = shape.to_raw();
     }
-    .to_raw();
     ObservationRecord {
         kind: ObservationKind::RefRewrite,
         adapter_version: REF_REWRITE_VERSION,
@@ -183,7 +202,7 @@ mod tests {
     use terrarium_adapters::report::Why;
     use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store};
     use terrarium_truth::RepoSeed;
-    use terrarium_truth::domain::ObservationValue;
+    use terrarium_truth::domain::{DeletedDir, ObservationValue};
 
     use super::*;
 
@@ -336,8 +355,7 @@ mod tests {
             Rewrite {
                 old: CommitId::from_hex(&"a".repeat(40)).unwrap(),
                 new: CommitId::from_hex(&"b".repeat(40)).unwrap(),
-                rewritten: None,
-                fossils: Vec::new(),
+                left: None,
             },
             head(),
             7,
@@ -349,23 +367,34 @@ mod tests {
     fn a_ref_rewrite_is_stored_and_replay_reads_its_refs() {
         let old = CommitId::from_hex(&"a".repeat(40)).unwrap();
         let new = CommitId::from_hex(&"b".repeat(40)).unwrap();
-        let fossil = CommitId::from_hex(&"c".repeat(40)).unwrap();
+        let taken = |n: char, lines: u64| LeftCommit {
+            commit: CommitId::from_hex(&n.to_string().repeat(40)).unwrap(),
+            time: 1_700_000_000,
+            deleted_dirs: (lines > 0)
+                .then(|| DeletedDir {
+                    path: "src/old".into(),
+                    lines,
+                })
+                .into_iter()
+                .collect(),
+        };
+        let deleting = taken('c', 640);
         let rewrite = Rewrite {
             old: old.clone(),
             new: new.clone(),
-            rewritten: Some(3),
-            fossils: vec![fossil.clone()],
+            left: Some(vec![taken('e', 0), deleting.clone(), taken('f', 0)]),
         };
         let record = ref_rewrite("trunk", rewrite, head(), 42);
         record.check().unwrap();
-        assert_eq!(record.adapter_version, 2);
+        assert_eq!(record.adapter_version, 3);
+        // How many left, and those that deleted something.
         assert_eq!(
             record.raw,
             format!(
-                r#"{{"ref":"refs/heads/trunk","old":"{}","new":"{}","rewritten":3,"fossils":["{}"]}}"#,
+                r#"{{"ref":"refs/heads/trunk","old":"{}","new":"{}","rewritten":3,"left":[{{"commit":"{}","time":1700000000,"deleted":[{{"path":"src/old","lines":640}}]}}]}}"#,
                 old.as_str(),
                 new.as_str(),
-                fossil.as_str()
+                "c".repeat(40)
             )
         );
         assert_eq!(
@@ -395,9 +424,41 @@ mod tests {
                 old,
                 new,
                 rewritten: Some(3),
-                fossils: vec![fossil],
+                fossils: Vec::new(),
+                left: vec![deleting],
             }
         );
+    }
+
+    #[test]
+    fn a_rewrite_too_large_for_a_row_keeps_its_newest_deletions() {
+        let id = |n: u32| CommitId::from_hex(&format!("{n:040x}")).unwrap();
+        let left: Vec<LeftCommit> = (0..2_000)
+            .map(|n| LeftCommit {
+                commit: id(n),
+                time: 1_700_000_000,
+                deleted_dirs: vec![DeletedDir {
+                    path: format!("src/module{n}"),
+                    lines: 600,
+                }],
+            })
+            .collect();
+        let record = ref_rewrite(
+            "main",
+            Rewrite {
+                old: id(9_000),
+                new: id(9_001),
+                left: Some(left),
+            },
+            head(),
+            7,
+        );
+        record.check().unwrap();
+        assert!(record.raw.len() <= MAX_RAW_BYTES);
+        let raw: RefRewriteRaw = serde_json::from_str(&record.raw).unwrap();
+        assert_eq!(raw.rewritten, Some(2_000));
+        assert!(raw.left.len() > 100, "{}", raw.left.len());
+        assert_eq!(raw.left.last().map(|l| &l.commit), Some(&id(1_999)));
     }
 
     #[test]

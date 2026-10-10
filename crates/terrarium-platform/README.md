@@ -41,8 +41,13 @@ Operating-system integration that needs FFI.
 - `memory`: the process's resident size, and on macOS its footprint, for the debug window and
   the egui memory probe.
 - On macOS, the app the user was in, so an egui window that took the keyboard can give it back
-  (`macos::PreviousApp`).
-- Later: the login item, and power notifications on Windows.
+  (`macos::PreviousApp`); bringing a window forward with the keyboard though the app is an
+  accessory (`macos::bring_forward`); and the reopen event a second launch of the installed
+  app sends (`macos::on_reopen`, through the Apple Event manager, since winit keeps the
+  application delegate).
+- `login`: opening at login, through `SMAppService` on macOS (only in an app bundle; any other
+  build says so and touches nothing) and the per-user `Run` key on Windows.
+- Later: power notifications on Windows.
 
 ## Why it is a crate of its own
 

@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 
 use terrarium_adapters::fixture::{self, Edit, FixtureRepo, Stamp};
 use terrarium_adapters::git::{GitRepo, History};
-use terrarium_truth::domain::{ObservationHead, ObservationValue, WeatherSource};
+use terrarium_truth::domain::{
+    DeletedDir, LeftCommit, ObservationHead, ObservationValue, WeatherSource,
+};
 use terrarium_truth::{Basis, Observation, Prepared, Q16, RepoSeed, SimState, project};
 
 const BUDGET: Duration = Duration::from_secs(30);
@@ -96,7 +98,15 @@ fn observations(history: &History) -> Vec<Observation> {
                     old: head.clone(),
                     new: head.clone(),
                     rewritten: Some(u32::try_from(day % 13).unwrap_or(0)),
-                    fossils: vec![head.clone()],
+                    fossils: Vec::new(),
+                    left: vec![LeftCommit {
+                        commit: head.clone(),
+                        time: 0,
+                        deleted_dirs: vec![DeletedDir {
+                            path: "src/old".to_owned(),
+                            lines: 600,
+                        }],
+                    }],
                 },
                 180,
                 None,

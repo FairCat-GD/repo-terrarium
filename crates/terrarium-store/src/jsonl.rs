@@ -110,8 +110,8 @@ impl Line {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportReport {
     /// The sim version the file was exported under. Any version imports: observations are
-    /// inputs, read alike by every version. Only a `ref_rewrite`'s fossils came from a replay,
-    /// the one the exporting install showed.
+    /// inputs, read alike by every version. Only an older `ref_rewrite`'s `fossils` came from a
+    /// replay, the one the exporting install showed; rows record what git said instead now.
     pub sim_version: SimVersion,
     pub inserted: u64,
     /// Lines equal to a stored observation in every column.

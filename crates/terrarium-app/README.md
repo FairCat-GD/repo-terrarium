@@ -11,10 +11,21 @@ The `repo-terrarium` binary.
 - The living strip (`animate`): a scene through the composer, composed only when the composer
   says the picture changes and at most 15 times a second.
 - The live strip (`live`): the engine started on the repository `--repo` names or the one
-  connected last, its updates applied to the scene and the label, and the label's words.
-- What it shows (`feed`): the live scene, the thriving preset when nothing is connected, or
-  `--demo`'s cycle (`demo`), always on the local clock, taken again every hour and after a
-  wake, and dimmed after 30 minutes without input (`idle`).
+  connected last, its updates applied to the scene and the label, and the label's words,
+  among them the notes shown once.
+- What it shows (`feed`): the live scene or `--demo`'s cycle (`demo`), always on the local
+  clock, taken again every hour and after a wake, and dimmed after 30 minutes without input
+  (`idle`).
+- The windows beside the strip (`shell`), on one egui host (`egui_host`) made with the first
+  window and dropped with the last, painted only when egui asks (`repaint`): the connect window
+  (`connect`), open while no repository is connected, and the settings window's repository
+  section (`settings`). Their forms are tested models whose presses come back as intents; the
+  folder picker is the first of two steps.
+- The terrarium's lifecycle (`lifecycle`): connecting from the window, relinking, re-seeding
+  and disconnecting, each on a thread of its own that stops the engine, changes the store and
+  starts a new engine, whose generation tags its updates.
+- One app at a time (`instance`): a lock in the data directory, and the requests a second
+  launch leaves there. Opening at login (`login`), through the platform's login item.
 - The `Presenter` that puts composed pixels on screen (`present`), with softbuffer as the first
   backend. It presents on resize, re-placement and the OS's expose requests, and when the
   living strip's pixels change; a still strip draws no frames.
@@ -24,10 +35,8 @@ The `repo-terrarium` binary.
   `terrarium-platform`. On macOS the strip is a desktop-level window; on Windows it is an
   `AppBar` on a reserved edge, sized to the band Windows grants.
 - `--probe pinning` (`probe`): the strip with a recorder, a guided checklist and a report.
-- In dev builds (`--features dev`): the egui windows (`egui_host`), on one wgpu device made with
-  the first window and dropped with the last, painted only when egui asks (`repaint`); the debug
-  window (`debug`), with its simulation of the real sim over a history its sliders make
-  (`sandbox`); and `--probe egui` (`egui_probe`).
+- In dev builds (`--features dev`): the debug window (`debug`), with its simulation of the real
+  sim over a history its sliders make (`sandbox`), and `--probe egui` (`egui_probe`).
 
 ## Why it is a crate of its own
 
@@ -44,7 +53,10 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
 - The event loop sleeps in `ControlFlow::Wait`. It waits until a deadline only for a raise
   ending, the living strip's next change, the feed's next look, or an open egui window's next
   repaint; the strip asks for none while it is covered, and other threads wake it only through
-  the `EventLoopProxy`.
+  the `EventLoopProxy`. It never waits on another thread: the engine starts before it runs,
+  and every later start and stop happens on a thread of the app's.
+- Nothing is opened or changed from inside a window's drawing; dialogs are split from the
+  writes they lead to, so a harness drives every write without a dialog.
 - The debug window and `--probe egui` exist only with the `dev` feature, which no build enables
   by default (`cargo xtask verify`'s graph check).
 - `--probe pinning` shows the still sample, so its idle step can count on no frames.
@@ -53,8 +65,10 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
 
 - `repo-terrarium --repo <path>` connects the repository at `<path>` (creating its terrarium,
   or relinking the one with its seed) and runs the strip on it.
-- `repo-terrarium` runs the strip on the repository connected last, or on the thriving preset
-  when none is. Right-click it and choose **Quit** to close it.
+- `repo-terrarium` runs the strip on the repository connected last, or opens the connect
+  window when none is. Right-click the strip for **Settings** or **Quit**. Launched again
+  while it runs, it shows the running app's settings and ends; with `--repo`, it connects
+  nothing and says so.
 - `repo-terrarium --demo` runs the strip through the named looks, a quarter of an hour each.
 - `repo-terrarium --version` prints the version.
 - `repo-terrarium replay <path> --dump` replays a repository through the engine's headless

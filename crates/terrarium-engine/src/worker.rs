@@ -1,6 +1,7 @@
 //! The engine's thread (I-16): it connects, then refreshes whenever the schedule says, and
 //! sends what the strip shows through a sink the app turns into `EventLoopProxy` events. The UI
-//! thread never waits on it, except for connect's first answer before the window opens.
+//! thread never waits on it: it waits for connect's first answer only before the event loop
+//! runs, and every later start and stop happens on a thread of the app's.
 //!
 //! One channel carries everything the thread hears: the app's requests and what the watcher
 //! saw. Each wait ends at the schedule's next deadline, so the thread sleeps between
@@ -172,6 +173,17 @@ impl Engine {
         self.stop();
     }
 
+    /// Stops the engine and waits for its thread to end, however long a replay in progress
+    /// takes, so nothing it writes can follow: for the app's own thread, before it changes the
+    /// terrarium.
+    pub fn shutdown_and_join(mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(Message::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+
     fn stop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         let _ = self.tx.send(Message::Shutdown);
@@ -341,7 +353,7 @@ mod tests {
 
     use super::*;
     use crate::clock::ManualClock;
-    use crate::live::{Branch, RefreshStats, Replay};
+    use crate::live::{Branch, News, RefreshStats, Replay};
     use crate::schedule::Cause;
 
     /// A pipeline whose second refresh panics, as a truth bug would.
@@ -364,7 +376,7 @@ mod tests {
                     scene: terrarium_truth::project(&state),
                     report: state.report(),
                     branch: Branch::Named("main".into()),
-                    sim_note: false,
+                    notes: News::default(),
                     stats: RefreshStats {
                         cause: refresh.cause,
                         replay: Replay::Full,
@@ -433,6 +445,44 @@ mod tests {
         fn watch_set(&self) -> Option<&WatchSet> {
             None
         }
+    }
+
+    /// A pipeline whose refresh takes `ms` and ignores the cancel, as a replay does.
+    struct Slow {
+        ms: u64,
+        ended: Arc<AtomicBool>,
+    }
+
+    impl Pipeline for Slow {
+        fn refresh(&mut self, _: Refresh, _: &mut dyn FnMut(u8), _: &AtomicBool) -> Done {
+            thread::sleep(Duration::from_millis(self.ms));
+            self.ended.store(true, Ordering::SeqCst);
+            Done {
+                reach: Some(Reach::Found),
+                ..Done::default()
+            }
+        }
+
+        fn watch_set(&self) -> Option<&WatchSet> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_join_waits_for_a_refresh_past_the_shutdown_wait() {
+        let ended = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ended);
+        let (sink, _) = recording();
+        let ms = u64::try_from(SHUTDOWN_WAIT.as_millis()).unwrap() + 300;
+        let (engine, _) = Engine::spawn_pipeline(
+            move || Ok(Some((Slow { ms, ended: flag }, Start::NotConnected))),
+            Arc::new(ManualClock::at(0)),
+            sink,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(50));
+        engine.shutdown_and_join();
+        assert!(ended.load(Ordering::SeqCst), "the refresh ended first");
     }
 
     #[test]

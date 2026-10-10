@@ -3,6 +3,7 @@
 
 mod animate;
 mod cli;
+mod connect;
 mod copy;
 #[cfg(feature = "dev")]
 mod debug;
@@ -10,7 +11,6 @@ mod demo;
 #[cfg(feature = "dev")]
 mod dev;
 mod discover;
-#[cfg(feature = "dev")]
 mod egui_host;
 #[cfg(feature = "dev")]
 mod egui_probe;
@@ -18,7 +18,10 @@ mod feed;
 mod hotkey;
 mod hover;
 mod idle;
+mod instance;
+mod lifecycle;
 mod live;
+mod login;
 mod menu;
 mod monitor;
 mod output;
@@ -27,11 +30,12 @@ mod present;
 mod probe;
 mod raise;
 mod record_tests;
-#[cfg(feature = "dev")]
 mod repaint;
 mod replay;
 #[cfg(feature = "dev")]
 mod sandbox;
+mod settings;
+mod shell;
 mod strip;
 
 use std::process::ExitCode;
@@ -75,9 +79,13 @@ pub(crate) fn now_secs() -> i64 {
         })
 }
 
-fn run(mode: &Mode, connection: Option<live::Connection>) -> ExitCode {
-    match strip::run(mode, connection) {
+fn run(mode: &Mode, launch: Option<live::Launch>) -> ExitCode {
+    match strip::run(mode, launch) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(strip::StripError::Connect(repo, err)) => {
+            eprintln!("{}", copy::connect_failed(repo.as_deref(), &err));
+            ExitCode::FAILURE
+        }
         Err(err) => {
             eprintln!("{}", copy::window_failed(&err));
             ExitCode::FAILURE

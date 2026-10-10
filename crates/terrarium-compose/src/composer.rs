@@ -1163,6 +1163,24 @@ impl Composer {
         wanted
     }
 
+    /// Whether line `index` of the label's lines showing at `now` has had its turn on the plate:
+    /// the cycle has moved on from it at least once. A set of one line never moves on, and a
+    /// new set starts its cycle again.
+    pub fn label_step_done(&self, index: usize, now: Millis) -> bool {
+        let Some(look) = self
+            .label
+            .last()
+            .filter(|look| look.opacity.target() == SHOWN)
+        else {
+            return false;
+        };
+        if look.lines.len() <= 1 || index >= look.lines.len() {
+            return false;
+        }
+        let steps = u64::try_from(index).map_or(u64::MAX, |index| index.saturating_add(1));
+        now.0.saturating_sub(look.since.0) >= steps.saturating_mul(u64::from(LABEL_CYCLE_MS))
+    }
+
     /// Raises a new set of label lines when they change, crossfading from the old. The lines
     /// are fitted to the plate here, once, rather than on every frame.
     fn update_label(&mut self, lines: &[String], now: Millis) {
@@ -2541,6 +2559,37 @@ mod tests {
             ..look.clone()
         };
         assert_eq!(single.showing(Millis(1000 + 5 * cycle)), [(0, SHOWN)]);
+    }
+
+    #[test]
+    fn a_label_line_s_turn_ends_when_the_cycle_moves_on_from_it() {
+        let table = table();
+        let mut composer = Composer::new(&table, preset::SALT);
+        let input = preset::bare(PresentationState::Thriving, Vec::new());
+        let cycle = u64::from(LABEL_CYCLE_MS);
+        composer.update(
+            &input,
+            &overlay(&["moss", "main - clear", "sim updated"]),
+            Millis(0),
+        );
+        assert!(!composer.label_step_done(2, Millis(3 * cycle - 1)));
+        assert!(composer.label_step_done(2, Millis(3 * cycle)));
+        assert!(composer.label_step_done(0, Millis(cycle)));
+        assert!(
+            !composer.label_step_done(3, Millis(10 * cycle)),
+            "no such line"
+        );
+        // A new set starts again.
+        composer.update(
+            &input,
+            &overlay(&["moss", "sim updated"]),
+            Millis(3 * cycle),
+        );
+        assert!(!composer.label_step_done(1, Millis(4 * cycle)));
+        assert!(composer.label_step_done(1, Millis(5 * cycle)));
+        // One line never moves on.
+        composer.update(&input, &overlay(&["moss"]), Millis(5 * cycle));
+        assert!(!composer.label_step_done(0, Millis(50 * cycle)));
     }
 
     #[test]

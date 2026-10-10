@@ -558,6 +558,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
 ]
 
@@ -2431,6 +2433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -2623,6 +2626,29 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
+]
+
+[[package]]
+name = "objc2-security"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "709fe137109bd1e8b5a99390f77a7d8b2961dafc1a1c5db8f2e60329ad6d895a"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-service-management"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b213642d6959cc6023ceb1217aa595eaaf09b8094ce95127c103cab611fe65e8"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-security",
 ]
 
 [[package]]
@@ -3112,6 +3138,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rfd"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "js-sys",
+ "libc",
+ "log",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "percent-encoding",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.40.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3473,7 +3522,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "gix",
  "proptest",
@@ -3487,14 +3536,16 @@ dependencies = [
 
 [[package]]
 name = "terrarium-app"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
  "global-hotkey",
  "muda",
+ "notify",
  "pollster",
+ "rfd",
  "serde",
  "serde_json",
  "softbuffer",
@@ -3511,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "insta",
  "png",
@@ -3524,11 +3575,12 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "getrandom 0.4.3",
  "notify",
  "postcard",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -3539,7 +3591,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "block2 0.6.2",
  "libc",
@@ -3549,6 +3601,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-service-management",
  "raw-window-handle",
  "windows",
  "winit",
@@ -3556,7 +3609,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "directories",
  "proptest",
@@ -3571,7 +3624,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-truth"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -4606,7 +4659,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "cargo_metadata",
  "png",

@@ -6,15 +6,23 @@ The headless live pipeline, run on a worker thread.
 
 - **Connect** (`live`): `--repo <path>` creates the terrarium or relinks the one with the
   repository's seed, derived as `record-tests` derives it; a plain run takes the one
-  `repo.active` names, with its recorded default branch.
+  `repo.active` names, with its recorded default branch, unless it was disconnected.
+- **The lifecycle** (`lifecycle`): relinking a terrarium to a repository that moved (only the
+  same repository), re-seeding (a new install salt, the cache dropped, the observations kept),
+  and disconnecting, with or without deleting the observations. The app runs each with the
+  engine stopped.
 - **Refresh** (`live`): git, then the reports, then replay. A report is read only once it has
   been still for 500 ms, and recorded only when its content changed since its format's last
-  observation. A default branch moved without fast-forwarding is recorded as a `ref_rewrite`.
+  observation. A default branch moved without fast-forwarding is recorded as a `ref_rewrite`, with what git
+  read of the commits it took off the chain; a move made while the app was closed is read back
+  from the object database at the next start.
   Replay resumes the cached state before the open hour when truth accepts it, and replays in
   full otherwise; the cache is written about once an hour.
 - **The worker** (`worker`): the thread, its channel and its sink. A panic in a refresh is
   caught: the scene freezes and `Halted` is sent. Shutting down stops a history read in
-  progress.
+  progress; a join waits out a replay too, before a lifecycle change.
+- **What the label notes once** (`live`): a simulation-version change and a recorded history
+  rewrite, each held until a snapshot carries it.
 - **When to refresh** (`schedule`): 500 ms after the watcher's last event, a follow-up for a
   report still being written, the wall clock's hour changing (the hourly tick, and any wake or
   clock jump), a wake from the platform, and a retry once a minute while the repository is
@@ -28,7 +36,8 @@ The headless live pipeline, run on a worker thread.
   arc` run through it.
 - Which event a scene plays (`showing`): the best not yet shown, held through the next hour
   unless outranked; the live view, the day-by-day replay and the debug window's simulation
-  all choose it there.
+  all choose it there. What the live scenes had the chance to play is kept across restarts
+  (`shown`), so a restart within an event's hour does not play it again.
 - Observations (`observe`): a report an adapter read, HEAD and a time become the store's
   record; and a ref rewrite's record. Only a known reading is recorded; dead code waits for the
   export count the tree-sitter reader brings.

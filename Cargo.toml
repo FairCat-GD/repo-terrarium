@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.20.0"
+version = "0.21.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -31,6 +31,9 @@ egui-wgpu = { version = "0.36.2", default-features = false, features = ["winit"]
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "metal", "dx12"] }
 pollster = "1.0.1"
 muda = { version = "0.20.0", default-features = false }
+# The folder picker, one step of the two-step connect and locate flows. Only the macOS and
+# Windows dialogs: no Linux portal or GTK.
+rfd = { version = "0.17.2", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # Truth: postcard for the cache, without the heapless it never uses; SHA-256 for golden hashes
@@ -62,9 +65,12 @@ block2 = "0.6.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "block2",
+    "NSAppleEventManager",
     "NSArray",
+    "NSBundle",
     "NSDictionary",
     "NSEnumerator",
+    "NSError",
     "NSGeometry",
     "NSNotification",
     "NSObject",
@@ -72,6 +78,13 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSProcessInfo",
     "NSString",
     "NSValue",
+] }
+# The login item: `SMAppService`, macOS 13 and later.
+objc2-service-management = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-foundation",
+    "SMAppService",
 ] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
@@ -109,6 +122,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
     "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",

@@ -4,13 +4,15 @@
 //!
 //! It reads no clock of its own; the strip passes the time in, so it can be driven in tests.
 
-use terrarium_compose::catalog::Art;
+use terrarium_compose::blend::blend;
+use terrarium_compose::catalog::{Art, Blend};
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite_into;
-use terrarium_compose::frame::{NativeImage, Viewport};
+use terrarium_compose::frame::{NATIVE_HEIGHT, NativeImage, Viewport};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::schedule::Pacer;
-use terrarium_compose::tween::Millis;
+use terrarium_compose::tween::durations::RESTYLE_MS;
+use terrarium_compose::tween::{Millis, Tween};
 use terrarium_compose::variants::ArtTable;
 use terrarium_compose::world::Scenery;
 use terrarium_truth::scene::SceneInput;
@@ -30,6 +32,14 @@ pub struct Living {
     /// on every event it handles.
     due: Option<Millis>,
     compositions: u64,
+    /// A re-seed's handover: the strip as it stood, fading out over the new layout.
+    handover: Option<Handover>,
+}
+
+/// The picture a re-seed left, and its opacity over the new one's.
+struct Handover {
+    from: NativeImage,
+    fade: Tween,
 }
 
 impl Living {
@@ -60,18 +70,72 @@ impl Living {
             spare: blank,
             due: None,
             compositions: 0,
+            handover: None,
         };
         living.compose(now);
         living
+    }
+
+    /// A new terrarium for the same repository (re-seed): from `now` the strip shows `scene`
+    /// and `overlay` laid out by the new `salt`, and the picture as it stood dissolves into it
+    /// over a restyle's time, rather than cutting (I-15). The new layout stands whole from the
+    /// start, as if it had always been there, and replays no event the old one played.
+    pub fn reseed(
+        &mut self,
+        scene: &SceneInput,
+        overlay: &OverlayInput,
+        salt: InstallSalt,
+        now: Millis,
+    ) {
+        let quiet = SceneInput {
+            event: None,
+            ..scene.clone()
+        };
+        let viewport = self.composer.viewport();
+        let fresh = || {
+            let mut composer = Composer::new(self.table, salt);
+            composer.set_viewport(viewport);
+            composer
+        };
+        // How long its arrivals take, found on a copy: the new composer's first update is
+        // dated back by as much, so it stands settled now.
+        let mut probe = fresh();
+        probe.update(&quiet, overlay, Millis(0));
+        let settling = probe.settled_at().0;
+        let mut composer = fresh();
+        composer.update(&quiet, overlay, Millis(now.0.saturating_sub(settling)));
+        self.scenery = composer.scenery(self.art, self.table);
+        self.composer = composer;
+        self.handover = Some(Handover {
+            from: self.image.clone(),
+            fade: Tween::new(u8::MAX, 0, now, RESTYLE_MS),
+        });
+        self.due = self.pacer.wake(self.next_change(now));
+    }
+
+    /// Whether line `index` of the label showing at `now` has had its turn on the plate.
+    pub fn label_step_done(&self, index: usize, now: Millis) -> bool {
+        self.composer.label_step_done(index, now)
     }
 
     /// Moves the strip toward `scene` and `overlay` from `now`. The picture at `now` does not
     /// change, so nothing is composed; only the next moment it will is worked out again.
     pub fn update(&mut self, scene: &SceneInput, overlay: &OverlayInput, now: Millis) {
         self.composer.update(scene, overlay, now);
-        self.due = self
-            .pacer
-            .wake(self.composer.next_change(self.art, self.table, now));
+        self.due = self.pacer.wake(self.next_change(now));
+    }
+
+    /// The next moment the picture changes: the composer's next change, or a handover's next
+    /// step.
+    fn next_change(&self, now: Millis) -> Option<Millis> {
+        let fading = self
+            .handover
+            .as_ref()
+            .and_then(|handover| handover.fade.next_step(now));
+        [self.composer.next_change(self.art, self.table, now), fading]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// When the strip should next compose: at the composer's next change, but never sooner
@@ -98,6 +162,8 @@ impl Living {
         }
         self.composer.set_viewport(viewport);
         self.scenery = self.composer.scenery(self.art, self.table);
+        // The whole picture is new at another width; the handover's is the old width's.
+        self.handover = None;
         self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
         self.compose(now);
         self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
@@ -117,17 +183,35 @@ impl Living {
             .composer
             .frame(self.art, self.table, &self.scenery, mix, now);
         composite_into(self.art, &frame, &mut self.spare);
+        if let Some(handover) = &self.handover {
+            let opacity = handover.fade.value(now);
+            if opacity == 0 {
+                self.handover = None;
+            } else {
+                dissolve(&mut self.spare, &handover.from, opacity);
+            }
+        }
         self.at = now;
         self.compositions += 1;
         self.pacer.composed(now);
-        self.due = self
-            .pacer
-            .wake(self.composer.next_change(self.art, self.table, now));
+        self.due = self.pacer.wake(self.next_change(now));
         let changed = self.image != self.spare;
         if changed {
             std::mem::swap(&mut self.image, &mut self.spare);
         }
         changed
+    }
+}
+
+/// `from` drawn over `onto` at `opacity`, pixel by pixel, with the one blend rule.
+fn dissolve(onto: &mut NativeImage, from: &NativeImage, opacity: u8) {
+    for y in 0..NATIVE_HEIGHT {
+        for (out, old) in onto.row_mut(y).iter_mut().zip(from.row(y)) {
+            // Red, green and blue; every pixel of the strip is opaque.
+            for (channel, &was) in out.iter_mut().zip(old).take(3) {
+                *channel = blend(*channel, was, opacity, Blend::Normal);
+            }
+        }
     }
 }
 
@@ -224,6 +308,54 @@ mod tests {
         assert!(!living.advance(now), "the update cut the picture");
         assert_eq!(living.image(), &before);
         assert!(living.due().is_some_and(|due| due > now));
+    }
+
+    #[test]
+    fn a_reseed_dissolves_into_the_new_layout_and_never_cuts() {
+        let mut living = thriving_at(LocalClock::noon(preset::DATE));
+        let now = Millis(120_000);
+        living.advance(now);
+        let before = living.image().clone();
+        let overlay = OverlayInput::new(
+            vec![copy::sample_label().to_owned()],
+            LocalClock::noon(preset::DATE),
+        );
+        let salt = InstallSalt::new([7; 16]);
+        living.reseed(&preset::scene("thriving").unwrap(), &overlay, salt, now);
+        assert!(
+            living.composer.settled_at() <= now,
+            "the new layout stands whole from the start"
+        );
+        assert!(!living.advance(now), "the re-seed cut the picture");
+        assert_eq!(living.image(), &before);
+        // It dissolves at the strip's pace, and the old picture is gone by its end.
+        let end = now.plus(RESTYLE_MS);
+        let mut wakes = Vec::new();
+        let mut mid = None;
+        while let Some(due) = living.due().filter(|&due| due <= end) {
+            wakes.push(due);
+            living.advance(due);
+            if mid.is_none() && due >= now.plus(RESTYLE_MS / 2) {
+                mid = Some(living.image().clone());
+            }
+        }
+        assert!(
+            wakes.len() <= 15 * 6 + 1,
+            "{} wakes in six seconds",
+            wakes.len()
+        );
+        living.advance(end);
+        assert!(living.handover.is_none(), "the handover ended");
+        let mix = living.composer.palette_mix(end);
+        let frame = living
+            .composer
+            .frame(living.art, living.table, &living.scenery, mix, end);
+        let mut alone = NativeImage::new(living.composer.viewport(), [0, 0, 0, u8::MAX]);
+        composite_into(living.art, &frame, &mut alone);
+        assert_eq!(living.image(), &alone, "nothing of the old layout stays");
+        assert_ne!(&alone, &before, "a new layout");
+        let mid = mid.expect("a frame mid-way");
+        assert!(mid != before && mid != alone, "mid-way, a blend of the two");
     }
 
     #[test]

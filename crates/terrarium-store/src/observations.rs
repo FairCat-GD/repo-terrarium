@@ -439,6 +439,7 @@ mod tests {
                     new: commit('c'),
                     rewritten: None,
                     fossils: Vec::new(),
+                    left: Vec::new(),
                 },
             ]
         );

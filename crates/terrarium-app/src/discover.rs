@@ -1,6 +1,6 @@
 //! `repo-terrarium discover <path>`: what the repository has for each adapter, what each report
-//! found reads as, and, for what is missing, how it connects. The settings window shows the
-//! same report.
+//! found reads as, and, for what is missing, how it connects. The connect window shows the same
+//! report once, without the lines on connecting.
 //!
 //! It reads the repository and its reports and nothing else, and writes nothing. The data
 //! directory is only looked in, for the status file `record-tests` leaves.
@@ -12,8 +12,10 @@ use terrarium_adapters::discovery::{Discovery, Overrides, Search, discover};
 use terrarium_adapters::git::GitRepo;
 use terrarium_adapters::local_tests;
 use terrarium_adapters::report::Report;
-use terrarium_store::DataDir;
+use terrarium_engine::lifecycle::stored_overrides;
+use terrarium_store::{DataDir, Store, Terrarium};
 
+use crate::copy::Hints;
 use crate::{copy, output};
 
 /// What each report discovery found reads as.
@@ -46,9 +48,27 @@ pub fn run(repo: &Path) -> ExitCode {
     }
     let reads = read_all(repo, &found, status_file.as_deref());
     output::print(
-        &copy::discovery_report(&found, &reads),
+        &copy::discovery_report(&found, &reads, Hints::Shown),
         copy::discover_write_failed,
     )
+}
+
+/// The report the connect window shows once, for the terrarium just connected: read with the
+/// report paths its settings hold, as the strip reads them.
+pub fn at_connect(data: &DataDir, terrarium: &Terrarium) -> String {
+    let repo = PathBuf::from(&terrarium.repo.path);
+    let overrides = Store::open(data)
+        .and_then(|store| stored_overrides(&store))
+        .unwrap_or_default();
+    let status_file = data.local_tests(&terrarium.seed);
+    let found = discover(
+        &repo,
+        Ok(terrarium.repo.default_branch.clone()),
+        &overrides,
+        Some(&status_file),
+    );
+    let reads = read_all(&repo, &found, Some(&status_file));
+    copy::discovery_report(&found, &reads, Hints::Left)
 }
 
 /// Where `record-tests` keeps this repository's status file, when the data directory and the

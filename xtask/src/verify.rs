@@ -63,7 +63,7 @@ const STAGES: &[Stage] = &[
             env: &[],
         },
     },
-    // The dev build: the debug window and its egui and wgpu dependencies.
+    // The dev build: the debug window, the sandbox and the egui probe.
     Stage {
         name: "clippy (dev)",
         step: Step::Cargo {

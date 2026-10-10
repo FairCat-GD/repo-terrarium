@@ -248,6 +248,14 @@ mod discover {
             text.contains("stdout"),
             "the Knip hint says where Knip writes"
         );
+        assert!(
+            text.ends_with(
+                "\nLight, soil and weather are recorded on this machine only. On a new machine \
+                 or after a reinstall, the git history replays, and they read as unknown before \
+                 that day.\n"
+            ),
+            "{text}"
+        );
         assert!(!text.contains(dir.path().to_str().unwrap()), "{text}");
         assert!(out.stderr.is_empty());
 

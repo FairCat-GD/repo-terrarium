@@ -2,8 +2,8 @@
 # list stops the build until it is decided on; no `ignore` or exception is added without that.
 
 [graph]
-# Every feature, so the dev build's dependencies (the debug window's egui and wgpu) are held to
-# the same policy as the release build's.
+# Every feature, so what only a dev build links (adapters' fixture writer, the debug window's
+# code) is held to the same policy as the release build's.
 all-features = true
 # The shipping targets. Linux is not a product target, so its window-system crates never ship.
 targets = [

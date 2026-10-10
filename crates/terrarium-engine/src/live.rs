@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -37,13 +37,10 @@ use terrarium_adapters::discovery::{self, Overrides};
 use terrarium_adapters::git::{Change, GitError, GitRepo, History, Progress, RewriteReason};
 use terrarium_adapters::local_tests;
 use terrarium_adapters::report::{Format, Report};
-use terrarium_store::identifiers::{
-    SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE,
-    SETTING_WEATHER_REPORT_PATH,
-};
+use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
 use terrarium_store::{
-    DataDir, InstallKey, NewTerrarium, ObservationId, ObservationRecord, RepoLocation, SimCache,
-    Store, StoreError, StoredObservation, Terrarium, TerrariumId,
+    DataDir, InstallKey, NewTerrarium, ObservationId, ObservationRecord, SimCache, Store,
+    StoreError, StoredObservation, Terrarium, TerrariumId,
 };
 use terrarium_truth::climate::ClimateReport;
 use terrarium_truth::domain::{ObservationHead, merge_key};
@@ -53,10 +50,12 @@ use terrarium_truth::{
 };
 
 use crate::clock::{Clock, SystemClock};
+use crate::lifecycle::{self, stored_overrides};
 use crate::observe;
 use crate::schedule::DEBOUNCE;
 use crate::schedule::{Cause, Reach, Refresh};
 use crate::showing::Showing;
+use crate::shown::Remembered;
 use crate::watch::{Places, WatchSet};
 
 /// How long a history read runs before its progress is shown: a short one never flickers a
@@ -94,6 +93,8 @@ pub enum ConnectError {
     Path(std::io::Error),
     /// The OS gave no random bytes for a new terrarium's salt.
     Salt(String),
+    /// The folder given to relink a terrarium holds another repository.
+    OtherRepository,
     /// The worker thread could not start.
     Thread(std::io::Error),
     /// Connecting panicked (I-16).
@@ -116,9 +117,9 @@ impl From<GitError> for ConnectError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Start {
     Connected {
-        repo_name: String,
-        /// Cosmetic only (I-2): the composer is built with it.
-        install_salt: [u8; 16],
+        /// Its name, where it lives, and its install salt, which is cosmetic only (I-2): the
+        /// composer is built with it.
+        terrarium: Box<Terrarium>,
         /// The cached state's scene from the last session, if it is still valid: real truth,
         /// shown while the history is read.
         scene: Option<SceneInput>,
@@ -161,9 +162,18 @@ pub struct Snapshot {
     pub scene: SceneInput,
     pub report: ClimateReport,
     pub branch: Branch,
-    /// The simulation's version changed since this install last ran: shown for the session.
-    pub sim_note: bool,
+    /// What happened that the label notes once; each is carried by one snapshot.
+    pub notes: News,
     pub stats: RefreshStats,
+}
+
+/// What happened that the label notes once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct News {
+    /// The simulation's version changed since this install last showed a terrarium.
+    pub sim_updated: bool,
+    /// The default branch moved without fast-forwarding, and the history replayed from it.
+    pub history_rewritten: bool,
 }
 
 /// Something that went wrong in a refresh that the next one may not repeat. Its wording is the
@@ -189,8 +199,7 @@ struct HistoryRead {
     changed: bool,
     /// Read again in full because earlier facts changed.
     rewritten: bool,
-    /// The default tip's move, when it moved without fast-forwarding; its fossils are filled
-    /// in from the state last shown.
+    /// The default tip's move, when it moved without fast-forwarding, and what it took off.
     moved: Option<observe::Rewrite>,
 }
 
@@ -253,7 +262,6 @@ struct Shown {
     scene: SceneInput,
     report: ClimateReport,
     branch: Branch,
-    sim_note: bool,
 }
 
 /// The state shown, and the tick it was advanced through.
@@ -271,7 +279,8 @@ pub struct Live {
     patterns: Vec<String>,
     status_dir: PathBuf,
     status_file: PathBuf,
-    sim_note: bool,
+    /// What the next snapshot sent carries.
+    news: News,
     /// Whether the repository at the stored path has been checked to be this terrarium's.
     verified: bool,
     history: Option<History>,
@@ -285,6 +294,10 @@ pub struct Live {
     shown: Option<Shown>,
     /// Which event the scenes play.
     showing: Showing,
+    /// What an earlier session's scenes played, until the history it is keyed to is read.
+    remembered: Option<Remembered>,
+    /// What the scenes had played when it was last stored.
+    stored_seen: Option<crate::shown::Seen>,
     /// The session's time: the wall clock, never lower than before.
     now: i64,
     watch: Option<WatchSet>,
@@ -301,24 +314,28 @@ impl Live {
                 let Some(id) = store.setting::<i64>(SETTING_REPO_ACTIVE)? else {
                     return Ok(None);
                 };
-                let Some(terrarium) = store.terrarium(TerrariumId::new(id))? else {
+                let Some(terrarium) = store
+                    .terrarium(TerrariumId::new(id))?
+                    .filter(|terrarium| terrarium.active)
+                else {
                     return Ok(None);
                 };
                 (terrarium, false)
             }
             Some(path) => (connect_repo(&mut store, path, now)?, true),
         };
+        // The note waits for a snapshot to carry it, and the version is recorded only then. A
+        // first install has nothing to note.
         let current = SIM_VERSION.0.to_string();
         let last = store.install_value(InstallKey::LastSimVersion)?;
-        let sim_note = last.as_deref().is_some_and(|last| last != current);
-        if last.as_deref() != Some(current.as_str()) {
+        if last.is_none() {
             store.set_install_value(InstallKey::LastSimVersion, &current)?;
         }
-        let overrides = Overrides {
-            coverage: store.setting(SETTING_COVERAGE_REPORT_PATH)?,
-            dead_code: store.setting(SETTING_DEAD_CODE_REPORT_PATH)?,
-            weather: store.setting(SETTING_WEATHER_REPORT_PATH)?,
+        let news = News {
+            sim_updated: last.is_some_and(|last| last != current),
+            history_rewritten: false,
         };
+        let overrides = stored_overrides(&store)?;
         let status_dir = config.data.local_tests_dir();
         std::fs::create_dir_all(&status_dir).map_err(StoreError::Io)?;
         let stored = store.observations(terrarium.id, None)?;
@@ -333,6 +350,7 @@ impl Live {
             None => (None, None),
         };
         let showing = Showing::after(base.as_ref().map(|base| base.events.keys()));
+        let remembered = Remembered::read(&store)?;
         Ok(Some(Live {
             status_file: config.data.local_tests(&terrarium.seed),
             patterns: discovery::report_patterns(&overrides),
@@ -342,7 +360,7 @@ impl Live {
             progress_after: config.progress_after,
             overrides,
             status_dir,
-            sim_note,
+            news,
             verified,
             history: None,
             observations,
@@ -352,6 +370,8 @@ impl Live {
             view: None,
             shown: None,
             showing,
+            remembered,
+            stored_seen: None,
             now,
             watch: None,
         }))
@@ -360,8 +380,7 @@ impl Live {
     /// What the strip starts from.
     pub fn start(&self) -> Start {
         Start::Connected {
-            repo_name: self.terrarium.repo.name.clone(),
-            install_salt: self.terrarium.install_salt,
+            terrarium: Box::new(self.terrarium.clone()),
             scene: self.base.as_ref().map(|base| project_showing(base, None)),
         }
     }
@@ -452,9 +471,9 @@ impl Live {
         let history_changed = read.changed;
         let mut recorded = false;
         if let Some(moved) = read.moved {
-            let rewrite = self.with_fossils(moved);
-            let record = observe::ref_rewrite(&branch, rewrite, head.clone(), self.now);
+            let record = observe::ref_rewrite(&branch, moved, head.clone(), self.now);
             self.append(None, record)?;
+            self.news.history_rewritten = true;
             recorded = true;
         }
         if cancel.load(Ordering::Relaxed) {
@@ -479,12 +498,15 @@ impl Live {
                 .view
                 .as_ref()
                 .is_some_and(|view| view.through == through);
-        let (replay, problem) = if unchanged {
+        let (replay, mut problem) = if unchanged {
             (Replay::Unchanged, None)
         } else {
             self.replay(through)?
         };
         let scene = self.scene().ok_or(MISSING_VIEW)?;
+        if let Err(err) = self.remember_seen() {
+            problem.get_or_insert(err.into());
+        }
         let view = self.view.as_ref().ok_or(MISSING_VIEW)?;
         let shown = Shown {
             scene,
@@ -493,21 +515,14 @@ impl Live {
                 Some(name) => Branch::Named(name),
                 None => Branch::Detached(head.commit),
             },
-            sim_note: self.sim_note,
         };
-        let working = history_changed || recorded;
-        let snapshot = (working || self.shown.as_ref() != Some(&shown)).then(|| Snapshot {
-            scene: shown.scene.clone(),
-            report: shown.report.clone(),
-            branch: shown.branch.clone(),
-            sim_note: shown.sim_note,
-            stats: RefreshStats {
-                cause: refresh.cause,
-                replay,
-                working,
-                adapters_to_snapshot: adapters_done.elapsed(),
-            },
-        });
+        let stats = RefreshStats {
+            cause: refresh.cause,
+            replay,
+            working: history_changed || recorded,
+            adapters_to_snapshot: adapters_done.elapsed(),
+        };
+        let snapshot = self.snapshot(&shown, stats, &mut problem);
         self.shown = Some(shown);
         // Only a refresh that looked at the reports can have seen a report directory appear;
         // the git directories never move under an open repository.
@@ -529,34 +544,68 @@ impl Live {
         })
     }
 
-    /// The view's scene, playing the event [`Showing`] chooses.
+    /// The snapshot of `shown`, when the strip needs one: it shows something new, or the
+    /// refresh read new history or recorded something. It carries the news held; a simulation
+    /// note it carries is recorded as given for this version.
+    fn snapshot(
+        &mut self,
+        shown: &Shown,
+        stats: RefreshStats,
+        problem: &mut Option<Problem>,
+    ) -> Option<Snapshot> {
+        if !stats.working && self.shown.as_ref() == Some(shown) {
+            return None;
+        }
+        let notes = std::mem::take(&mut self.news);
+        if notes.sim_updated
+            && let Err(err) = self
+                .store
+                .set_install_value(InstallKey::LastSimVersion, &SIM_VERSION.0.to_string())
+        {
+            problem.get_or_insert(err.into());
+        }
+        Some(Snapshot {
+            scene: shown.scene.clone(),
+            report: shown.report.clone(),
+            branch: shown.branch.clone(),
+            notes,
+            stats,
+        })
+    }
+
+    /// The view's scene, playing the event [`Showing`] chooses. What an earlier session's
+    /// scenes played counts as seen once the history it is keyed to is read.
     fn scene(&mut self) -> Option<SceneInput> {
         let view = self.view.as_ref()?;
+        if let (Some(remembered), Some(history)) = (self.remembered.take(), &self.history)
+            && let Some(seen) = remembered.seen_for(
+                &self.terrarium.seed,
+                &self.terrarium.repo.default_branch,
+                history.grid,
+            )
+        {
+            self.showing.also_seen(seen);
+        }
         Some(self.showing.scene(&view.live))
     }
 
-    /// `moved` with what it took: the fossils the state last shown (or, failing that, the
-    /// cached one) held whose commit is no longer on the default branch's first-parent chain.
-    fn with_fossils(&self, moved: observe::Rewrite) -> observe::Rewrite {
-        let shown = self
-            .view
-            .as_ref()
-            .map(|view| &view.live)
-            .or(self.base.as_ref());
-        let fossils = match (shown, self.history.as_ref()) {
-            (Some(state), Some(history)) => {
-                let chain = history.default_chain();
-                state
-                    .landmarks
-                    .fossils
-                    .iter()
-                    .filter(|fossil| !chain.contains(&fossil.commit))
-                    .map(|fossil| fossil.commit.clone())
-                    .collect()
-            }
-            _ => Vec::new(),
+    /// Stores what the scenes have had the chance to play, when it changed.
+    fn remember_seen(&mut self) -> Result<(), StoreError> {
+        let (Some(seen), Some(history)) = (self.showing.seen(), &self.history) else {
+            return Ok(());
         };
-        observe::Rewrite { fossils, ..moved }
+        if self.stored_seen.as_ref() == Some(seen) {
+            return Ok(());
+        }
+        Remembered::new(
+            &self.terrarium.seed,
+            &self.terrarium.repo.default_branch,
+            history.grid,
+            seen.clone(),
+        )
+        .write(&mut self.store)?;
+        self.stored_seen = Some(seen.clone());
+        Ok(())
     }
 
     /// Reads the history in full the first time and what is new afterwards.
@@ -588,19 +637,25 @@ impl Live {
                 .read_history(branch, &mut on_progress)
                 .map_err(git_fault)?;
             // A move made while nothing watched: the cached state's default tip has left the
-            // first-parent chain. How many commits left with it is no longer known.
-            let moved = self
+            // first-parent chain without the branch fast-forwarding past it. What it took off
+            // is read back from the object database, which keeps it until it is collected.
+            let moved = match self
                 .base
                 .as_ref()
                 .and_then(|base| base.habitat.default_tip.clone())
                 .filter(|tip| !history.on_default_chain(tip))
                 .zip(history.state.branches.get(branch).cloned())
-                .map(|(old, new)| observe::Rewrite {
+                .filter(|(old, new)| !history.is_ancestor(old, new))
+            {
+                Some((old, new)) => Some(observe::Rewrite {
+                    left: git
+                        .left_between(&old, &history, &mut on_progress)
+                        .map_err(git_fault)?,
                     old,
                     new,
-                    rewritten: None,
-                    fossils: Vec::new(),
-                });
+                }),
+                None => None,
+            };
             self.history = Some(history);
             return Ok(HistoryRead {
                 changed: true,
@@ -622,8 +677,7 @@ impl Live {
                     .map(|(old, new)| observe::Rewrite {
                         old,
                         new,
-                        rewritten: Some(u32::try_from(left_chain.len()).unwrap_or(u32::MAX)),
-                        fossils: Vec::new(),
+                        left: Some(left_chain.clone()),
                     })
             }
             _ => None,
@@ -815,27 +869,18 @@ fn cache_of(
 /// Creates the terrarium for the repository at `path`, or relinks the one with its seed, and
 /// makes it the active one.
 fn connect_repo(store: &mut Store, path: &Path, now: i64) -> Result<Terrarium, ConnectError> {
-    let path = normalized(&std::path::absolute(path).map_err(ConnectError::Path)?);
+    let path = lifecycle::absolute(path)?;
     let (default_branch, identity) = GitRepo::open(&path)?.default_identity()?;
     let seed = identity.seed;
-    let location = RepoLocation {
-        path: path.display().to_string(),
-        name: path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        default_branch,
-    };
+    let location = lifecycle::location(&path, default_branch);
     let id = if let Some(known) = store.terrarium_by_seed(&seed)? {
         store.activate(known.id, &location)?;
         known.id
     } else {
-        let mut install_salt = [0; 16];
-        getrandom::fill(&mut install_salt).map_err(|err| ConnectError::Salt(err.to_string()))?;
         store.create_terrarium(&NewTerrarium {
             seed,
             repo: location,
-            install_salt,
+            install_salt: lifecycle::new_salt()?,
             connected_at: now,
         })?
     };
@@ -843,22 +888,6 @@ fn connect_repo(store: &mut Store, path: &Path, now: i64) -> Result<Terrarium, C
     Ok(store
         .terrarium(id)?
         .ok_or(StoreError::NoSuchTerrarium(id))?)
-}
-
-/// `path` with its `.` and `..` resolved as text, so `--repo ..` names the folder it means.
-/// Canonicalizing would also resolve symlinks, and on Windows give `\\?\` paths.
-fn normalized(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            part => out.push(part),
-        }
-    }
-    out
 }
 
 /// The cached base state, when it was written under this `SIM_VERSION` for this terrarium's
@@ -980,17 +1009,6 @@ mod tests {
             assert!(Instant::now() < until, "{:?}", heard.lock().unwrap());
             thread::sleep(Duration::from_millis(10));
         }
-    }
-
-    #[test]
-    fn a_path_is_normalized_as_text() {
-        let base = std::path::absolute("moss").unwrap();
-        assert_eq!(normalized(&base.join("sub/..")), base);
-        assert_eq!(normalized(&base.join("./a/./b/../c")), base.join("a/c"));
-        assert_eq!(
-            normalized(&base.join("..")).file_name(),
-            base.parent().unwrap().file_name()
-        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-sim_version = 6
+sim_version = 7
 through = 20679
 samples = [124]
 samples[0].tick = 15
@@ -4847,7 +4847,7 @@ report.causes.complexity = Unknown
 report.causes.todo_density = Unknown
 habitat.terrain = 3921
 habitat.age = 20679
-state.basis.sim_version = 6
+state.basis.sim_version = 7
 state.basis.seed = f3be98b8b0df3790730bf573f2bef24fbddb4ceea669d7cfb3172bfe74f1ef09
 state.basis.grid = 1704704400
 state.basis.default_branch = "main"

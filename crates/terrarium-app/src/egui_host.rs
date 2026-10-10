@@ -29,6 +29,11 @@ use crate::{copy, pinning};
 /// The kinds of egui window, at most one of each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowKind {
+    /// Connecting a repository, while none is connected.
+    Connect,
+    Settings,
+    /// Dev builds only.
+    #[cfg(feature = "dev")]
     Debug,
 }
 
@@ -40,6 +45,9 @@ impl WindowKind {
 
     fn size(self) -> LogicalSize<f64> {
         match self {
+            WindowKind::Connect => LogicalSize::new(520.0, 400.0),
+            WindowKind::Settings => LogicalSize::new(520.0, 360.0),
+            #[cfg(feature = "dev")]
             WindowKind::Debug => LogicalSize::new(460.0, 760.0),
         }
     }
@@ -117,7 +125,7 @@ impl EguiHost {
             return Ok(());
         }
         let attributes = Window::default_attributes()
-            .with_title(copy::debug::window_title(kind))
+            .with_title(copy::egui_window_title(kind))
             .with_inner_size(kind.size())
             .with_min_inner_size(LogicalSize::new(320.0, 240.0))
             .with_active(true);
@@ -157,6 +165,18 @@ impl EguiHost {
 
     pub fn owns(&self, id: WindowId) -> bool {
         self.windows.iter().any(|w| w.window.id() == id)
+    }
+
+    pub fn is_open(&self, kind: WindowKind) -> bool {
+        self.windows.iter().any(|w| w.kind == kind)
+    }
+
+    /// The `kind` window, while it is open.
+    pub fn window(&self, kind: WindowKind) -> Option<&Window> {
+        self.windows
+            .iter()
+            .find(|w| w.kind == kind)
+            .map(|w| &*w.window)
     }
 
     pub fn is_empty(&self) -> bool {

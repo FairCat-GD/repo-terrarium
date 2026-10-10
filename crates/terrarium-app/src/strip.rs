@@ -1,14 +1,21 @@
 //! The strip: a borderless window along one edge of a monitor, below ordinary windows, showing
-//! the composed frame at an integer scale.
+//! the composed frame at an integer scale, and the windows beside it.
 //!
 //! The loop sleeps in `ControlFlow::Wait` and wakes only for OS events, for what other threads
 //! forward through the `EventLoopProxy` (hotkeys, menu choices, system notifications, probe
-//! answers and the engine's updates), and at three deadlines: a raise ending, the living strip's next change, which it
-//! never asks for sooner than a fifteenth of a second after the last frame (I-10), and the
-//! feed's next look at the clock, the idle time or `--demo`'s cycle. Nothing is drawn, and
-//! nothing asked for, while the strip is covered.
+//! answers, the engine's updates, a second launch's request, a folder picked and a lifecycle
+//! change done), and at four deadlines: a raise ending, the living strip's next change, which
+//! it never asks for sooner than a fifteenth of a second after the last frame (I-10), the feed's
+//! next look at the clock, the idle time or `--demo`'s cycle, and an open window's next paint.
+//! Nothing is drawn, and nothing asked for, while the strip is covered.
+//!
+//! On a run with a data directory, the strip shows only while a repository is connected. With
+//! none, the connect window opens instead, and closing it ends the app; connecting opens the
+//! strip, and disconnecting closes it and opens the connect window again.
 
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyEvent;
@@ -21,9 +28,10 @@ use terrarium_compose::scale::{SizeStep, StripScale};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
 use terrarium_compose::{preset, sample};
-use terrarium_engine::{Engine, Update};
+use terrarium_engine::{ConnectError, Engine, EngineConfig, Start, Update};
 use terrarium_platform::SystemEvent;
 use terrarium_platform::geometry::Edge;
+use terrarium_store::{DataDir, Terrarium};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::error::{EventLoopError, OsError};
@@ -33,24 +41,31 @@ use winit::window::{Window, WindowId};
 
 use crate::animate::Living;
 use crate::cli::ProbeKind;
+use crate::connect::ConnectForm;
 use crate::copy;
 #[cfg(feature = "dev")]
 use crate::debug::Readout;
 #[cfg(feature = "dev")]
 use crate::dev::Dev;
+use crate::egui_host::WindowKind;
 #[cfg(feature = "dev")]
 use crate::feed::Overrides;
 use crate::feed::{Feed, Feeder, Os};
 use crate::hotkey::{self, RaiseHotkey};
 use crate::hover::HoverTracker;
-use crate::live::{Changed, Connection, LiveView};
+use crate::instance::{Instance, RequestWatch};
+use crate::lifecycle::{self, Job, Outcome};
+use crate::live::{Changed, Launch, LiveView};
+use crate::login;
 use crate::menu::{self, StripMenu};
 use crate::monitor;
 use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
 use crate::present::{FrameGate, PresentError, Presenter, SoftbufferPresenter};
 use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
-use crate::probe::{Advance, Launch, Probe};
+use crate::probe::{Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
+use crate::settings::{RepoFacts, SettingsForm};
+use crate::shell::{Intent, Picking, Shell};
 
 /// Until settings exist, the strip uses the default edge and size.
 const EDGE: Edge = Edge::Bottom;
@@ -174,6 +189,36 @@ impl Scene {
         }
     }
 
+    /// Lays the living strip out anew by `salt` from `now`, showing what the connected
+    /// repository shows (re-seed).
+    fn reseed(&mut self, view: &LiveView, salt: InstallSalt, now: Instant) {
+        if let Scene::Living {
+            living,
+            feeder,
+            origin,
+        } = self
+        {
+            let at = Self::millis(*origin, now);
+            feeder.show(view.scene(), view.label(), at, &Os::read());
+            living.reseed(feeder.scene(), &feeder.overlay(), salt, at);
+        }
+    }
+
+    /// Whether line `index` of the connected repository's label has had its turn on the plate
+    /// by `now`; false while the strip shows another feed.
+    fn label_step_done(&self, index: usize, now: Instant) -> bool {
+        match self {
+            Scene::Living {
+                living,
+                feeder,
+                origin,
+            } if *feeder.feed() == Feed::Live => {
+                living.label_step_done(index, Self::millis(*origin, now))
+            }
+            _ => false,
+        }
+    }
+
     /// Shows `feed` with `overrides` from `now`, as the debug window chose.
     #[cfg(feature = "dev")]
     fn choose(&mut self, feed: Feed, overrides: Overrides, now: Instant) {
@@ -238,14 +283,20 @@ impl Scene {
 }
 
 /// What other threads send the event loop.
-#[derive(Debug)]
 pub enum UserEvent {
     HotKey(GlobalHotKeyEvent),
     Menu(MenuId),
     System(SystemEvent),
     ProbeLine(String),
     ProbeEnd,
-    Engine(Update),
+    /// An update from the engine of that generation.
+    Engine(u64, Update),
+    /// A second launch asked for the settings.
+    ShowSettings,
+    /// The folder picker closed, with the folder chosen, if one was.
+    Picked(Picking, Option<PathBuf>),
+    /// A lifecycle change of that generation is done.
+    Lifecycle(u64, Box<Outcome>),
 }
 
 /// Why the strip could not run. Its wording is in the copy module.
@@ -256,6 +307,11 @@ pub enum StripError {
     Attach(AttachError),
     Present(PresentError),
     NoDisplay,
+    /// Nothing could be connected: `--repo` named something that is not a repository, or the
+    /// store failed.
+    Connect(Option<PathBuf>, ConnectError),
+    /// No repository is connected and the connect window could not open.
+    NoConnectWindow,
 }
 
 impl From<EventLoopError> for StripError {
@@ -264,23 +320,28 @@ impl From<EventLoopError> for StripError {
     }
 }
 
-/// Runs the strip until it is quit. With a probe, it also records and reports; with a
-/// connection, it shows the repository and shuts its engine down on the way out.
-pub fn run(mode: &Mode, connection: Option<Connection>) -> Result<(), StripError> {
+/// Runs the strip until it is quit. With a probe, it also records and reports; with a data
+/// directory, it connects what `launch` names (or the repository connected last), shows it,
+/// and shuts its engine down on the way out.
+pub fn run(mode: &Mode, launch: Option<Launch>) -> Result<(), StripError> {
     let pinning_probe = matches!(mode, Mode::Probe(ProbeKind::Pinning));
     let mut builder = EventLoop::<UserEvent>::with_user_event();
     pinning::configure_event_loop(&mut builder, pinning_probe);
     let event_loop = builder.build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     // Both crates keep only the first handler they are given, so these come before any menu
-    // or hotkey exists. Each consumer gets its own proxy, made once.
+    // or hotkey exists.
     menu::forward_events(event_loop.create_proxy());
     hotkey::forward_events(event_loop.create_proxy());
     let probe = pinning_probe.then(|| Probe::start(event_loop.create_proxy()));
-    if let Some(connection) = &connection {
-        connection.relay.forward_to(event_loop.create_proxy());
-    }
-    let mut strip = Strip::new(event_loop.create_proxy(), probe, mode, connection);
+    // The engine starts once the loop exists, so its updates go straight to the loop; the
+    // strip waits only for connect's first answer, so the composer is built with the
+    // terrarium's own salt from its first frame.
+    let proxy = event_loop.create_proxy();
+    let repo = launch
+        .map(|launch| Repo::start(launch, &proxy))
+        .transpose()?;
+    let mut strip = Strip::new(proxy, probe, mode, repo);
     event_loop.run_app(&mut strip)?;
     match strip.failed {
         Some(err) => Err(err),
@@ -288,13 +349,96 @@ pub fn run(mode: &Mode, connection: Option<Connection>) -> Result<(), StripError
     }
 }
 
+/// A run with a data directory: the repository connected, or the wait for one.
+struct Repo {
+    data: DataDir,
+    _instance: Instance,
+    _requests: Option<RequestWatch>,
+    /// The engine running; none while nothing is connected or a change holds it.
+    engine: Option<Engine>,
+    /// The generation of the engine whose updates are shown.
+    generation: u64,
+    connected: Option<Connected>,
+    /// The connect window offers "Open at login".
+    first_run: bool,
+    /// The first run's "Open at login", applied once the connect it was asked with succeeds.
+    pending_login: Option<bool>,
+}
+
+/// The repository connected, and what the strip shows of it.
+struct Connected {
+    terrarium: Box<Terrarium>,
+    live: LiveView,
+}
+
+impl Repo {
+    /// Connects what `launch` names, and watches for a second launch's requests.
+    fn start(launch: Launch, proxy: &EventLoopProxy<UserEvent>) -> Result<Repo, StripError> {
+        let Launch {
+            data,
+            repo,
+            instance,
+        } = launch;
+        let config = EngineConfig::new(data.clone(), repo.clone());
+        let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy.clone(), 0))
+            .map_err(|err| StripError::Connect(repo, err))?;
+        let requests = proxy.clone();
+        let requests = match instance.watch(move || {
+            let _ = requests.send_event(UserEvent::ShowSettings);
+        }) {
+            Ok((watch, waiting)) => {
+                if waiting {
+                    let _ = proxy.send_event(UserEvent::ShowSettings);
+                }
+                Some(watch)
+            }
+            Err(err) => {
+                eprintln!("{}", copy::requests_unwatched(&err));
+                None
+            }
+        };
+        let (engine, connected) = match start {
+            Start::Connected { terrarium, scene } => (
+                Some(engine),
+                Some(Connected {
+                    live: LiveView::new(terrarium.repo.name.clone(), scene),
+                    terrarium,
+                }),
+            ),
+            Start::NotConnected => (None, None),
+        };
+        Ok(Repo {
+            first_run: lifecycle::first_run(&data),
+            data,
+            _instance: instance,
+            _requests: requests,
+            engine,
+            generation: 0,
+            connected,
+            pending_login: None,
+        })
+    }
+
+    /// The repository as the settings window shows it.
+    fn facts(&self) -> Option<RepoFacts> {
+        let connected = self.connected.as_ref()?;
+        let repo = &connected.terrarium.repo;
+        Some(RepoFacts {
+            name: repo.name.clone(),
+            path: repo.path.clone(),
+            default_branch: repo.default_branch.clone(),
+        })
+    }
+}
+
 struct Strip {
-    /// Given to the system observers when the window opens. On macOS every proxy is a run-loop
-    /// source, so none is kept once it is handed on.
-    proxy: Option<EventLoopProxy<UserEvent>>,
+    /// Cloned for each sender: the system observers, an engine's sink, a picker, a lifecycle
+    /// change.
+    proxy: EventLoopProxy<UserEvent>,
     probe: Option<Probe>,
     view: Option<View>,
-    scene: Scene,
+    /// What the strip shows; none while no repository is connected.
+    scene: Option<Scene>,
     /// The redraw on its way was asked for by the living strip's schedule, not by the OS: it
     /// is presented only if the pixels changed.
     scheduled: bool,
@@ -305,22 +449,26 @@ struct Strip {
     placement_pending: bool,
     idle_seen: bool,
     failed: Option<StripError>,
-    engine: Option<Engine>,
-    /// What the connected repository shows, from the engine's updates.
-    live: Option<LiveView>,
+    /// Made with the first strip window, and kept while the app runs.
+    menu: Option<StripMenu>,
+    hotkey: Option<RaiseHotkey>,
+    /// A run with a data directory.
+    repo: Option<Repo>,
+    /// The windows beside the strip.
+    shell: Shell,
+    reopen: Option<pinning::ReopenHook>,
     #[cfg(feature = "dev")]
     dev: Dev,
 }
 
-/// Everything that exists once the window does.
+/// Everything that exists while the strip's window does. Fields drop in order, so what holds
+/// the window lets go of it before the window itself goes.
 struct View {
-    window: Rc<Window>,
+    _observers: Observers,
     pinning: Pinning,
     presenter: SoftbufferPresenter,
-    menu: Option<StripMenu>,
-    hotkey: Option<RaiseHotkey>,
-    _observers: Observers,
     scale: StripScale,
+    window: Rc<Window>,
 }
 
 impl Strip {
@@ -328,16 +476,23 @@ impl Strip {
         proxy: EventLoopProxy<UserEvent>,
         probe: Option<Probe>,
         mode: &Mode,
-        connection: Option<Connection>,
+        repo: Option<Repo>,
     ) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
-        let scene = Scene::new(mode, connection.as_ref().map(|c| (&c.view, c.salt)));
-        let (engine, live) = match connection {
-            Some(connection) => (Some(connection.engine), Some(connection.view)),
-            None => (None, None),
+        let scene = match repo.as_ref().map(|repo| repo.connected.as_ref()) {
+            // A run with a data directory and nothing connected shows no strip.
+            Some(None) => None,
+            Some(Some(connected)) => Some(Scene::new(
+                mode,
+                Some((
+                    &connected.live,
+                    InstallSalt::new(connected.terrarium.install_salt),
+                )),
+            )),
+            None => Some(Scene::new(mode, None)),
         };
         Self {
-            proxy: Some(proxy),
+            proxy,
             probe,
             view: None,
             scene,
@@ -349,8 +504,11 @@ impl Strip {
             placement_pending: false,
             idle_seen: false,
             failed: None,
-            engine,
-            live,
+            menu: None,
+            hotkey: None,
+            repo,
+            shell: Shell::default(),
+            reopen: None,
             #[cfg(feature = "dev")]
             dev: Dev::new(matches!(mode, Mode::Probe(ProbeKind::Egui))),
         }
@@ -370,24 +528,25 @@ impl Strip {
         );
         let pinning = Pinning::attach(&window).map_err(StripError::Attach)?;
         let presenter = SoftbufferPresenter::new(&window).map_err(StripError::Present)?;
-        let menu = StripMenu::new()
-            .inspect_err(|err| eprintln!("{}", copy::menu_unavailable(err)))
-            .ok();
-        let hotkey = match RaiseHotkey::register() {
-            Ok(hotkey) => Some(hotkey),
-            Err(err) => {
-                eprintln!("{}", copy::hotkey_unavailable(&err));
-                self.record(ProbeEvent::HotkeyUnavailable {
-                    error: err.to_string(),
-                });
-                None
+        if self.menu.is_none() {
+            self.menu = StripMenu::new()
+                .inspect_err(|err| eprintln!("{}", copy::menu_unavailable(err)))
+                .ok();
+        }
+        if self.hotkey.is_none() {
+            match RaiseHotkey::register() {
+                Ok(hotkey) => self.hotkey = Some(hotkey),
+                Err(err) => {
+                    eprintln!("{}", copy::hotkey_unavailable(&err));
+                    self.record(ProbeEvent::HotkeyUnavailable {
+                        error: err.to_string(),
+                    });
+                }
             }
-        };
-        let proxy = self.proxy.take();
+        }
+        let proxy = self.proxy.clone();
         let observers = pinning.observe(move |event| {
-            if let Some(proxy) = &proxy {
-                let _ = proxy.send_event(UserEvent::System(event));
-            }
+            let _ = proxy.send_event(UserEvent::System(event));
         });
 
         let monitors = pinning.monitors(&window);
@@ -398,7 +557,7 @@ impl Strip {
             .then(|| monitors.iter().map(|m| m.info.clone()).collect());
         let monitor = choose(monitors).ok_or(StripError::NoDisplay)?;
         if let Some(probe) = &mut self.probe {
-            probe.launched(Launch {
+            probe.launched(ProbeLaunch {
                 os: pinning::os_version(),
                 separate_spaces: pinning::separate_spaces(),
                 monitors: reported.unwrap_or_default(),
@@ -406,12 +565,10 @@ impl Strip {
             });
         }
         let mut view = View {
-            window,
+            _observers: observers,
             pinning,
             presenter,
-            menu,
-            hotkey,
-            _observers: observers,
+            window,
             // Until the placement says otherwise: on Windows the reserved band can be narrower.
             scale: StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP),
         };
@@ -537,12 +694,15 @@ impl Strip {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                let fitted = self.scene.fit(view.scale.viewport(), now);
-                let changed = self.scene.advance(now) || fitted;
+                let Some(scene) = &mut self.scene else {
+                    return;
+                };
+                let fitted = scene.fit(view.scale.viewport(), now);
+                let changed = scene.advance(now) || fitted;
                 // The OS's own requests always present; the schedule's only on a change.
                 let wanted = changed || !std::mem::take(&mut self.scheduled);
                 if wanted && self.gate.should_present() {
-                    match view.presenter.present(self.scene.pixels(), &view.scale) {
+                    match view.presenter.present(scene.pixels(), &view.scale) {
                         Ok(()) => {
                             self.gate.presented();
                             #[cfg(feature = "dev")]
@@ -551,6 +711,7 @@ impl Strip {
                         Err(err) => eprintln!("{}", copy::present_failed(&err)),
                     }
                 }
+                self.once_shown(now);
             }
             WindowEvent::Resized(size) => {
                 view.window.request_redraw();
@@ -583,7 +744,7 @@ impl Strip {
             }
             WindowEvent::Occluded(occluded) => {
                 // Uncovered, the living strip catches up at once.
-                let living = matches!(self.scene, Scene::Living { .. });
+                let living = matches!(self.scene, Some(Scene::Living { .. }));
                 if self.gate.set_occluded(occluded) || (!occluded && living) {
                     view.window.request_redraw();
                 }
@@ -620,12 +781,283 @@ impl Strip {
                     activity,
                 });
                 if button == MouseButton::Right
-                    && let Some(menu) = &view.menu
+                    && let Some(menu) = &self.menu
                 {
                     view.pinning.show_menu(&view.window, menu.menu());
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The note the label shows once has had its turn on the plate: it goes.
+    fn once_shown(&mut self, now: Instant) {
+        let (Some(scene), Some(connected)) = (
+            &mut self.scene,
+            self.repo.as_mut().and_then(|repo| repo.connected.as_mut()),
+        ) else {
+            return;
+        };
+        if let Some(index) = connected.live.once_line()
+            && scene.label_step_done(index, now)
+            && connected.live.once_shown() != Changed::Nothing
+        {
+            scene.show(&connected.live, now);
+        }
+    }
+
+    /// Closes the strip's window: the edge it reserved is given back, and its pinning goes
+    /// before the window it holds (`View`'s field order).
+    fn close_view(&mut self) {
+        if let Some(view) = self.view.take() {
+            view.pinning.release();
+        }
+        self.scheduled = false;
+        self.raise = RaiseTimer::default();
+        self.hover = HoverTracker::default();
+        self.gate = FrameGate::default();
+        self.placement_pending = false;
+    }
+
+    /// Opens the strip's window for the scene now shown; a failure ends the app.
+    fn open_view(&mut self, event_loop: &ActiveEventLoop) {
+        if self.view.is_some() {
+            return;
+        }
+        match self.open(event_loop) {
+            Ok(view) => self.view = Some(view),
+            Err(err) => {
+                self.end_probe(EndReason::LaunchFailed);
+                self.failed = Some(err);
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// Shows the settings, or, with nothing connected, the connect window. Only a run with a
+    /// data directory has either.
+    fn show_settings(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(repo) = &self.repo else {
+            return;
+        };
+        if let Some(facts) = repo.facts() {
+            let missing = repo
+                .connected
+                .as_ref()
+                .is_some_and(|connected| connected.live.repo_missing());
+            let form = self
+                .shell
+                .settings
+                .get_or_insert_with(|| SettingsForm::new(facts.clone()));
+            form.set_repo(facts);
+            form.set_missing(missing);
+            self.shell.open(event_loop, WindowKind::Settings);
+            return;
+        }
+        let first_run = repo.first_run;
+        self.shell
+            .connect
+            .get_or_insert_with(|| ConnectForm::new(first_run));
+        if !self.shell.open(event_loop, WindowKind::Connect) {
+            self.failed = Some(StripError::NoConnectWindow);
+            event_loop.exit();
+        }
+    }
+
+    /// Carries out what the windows asked for.
+    fn carry_out(&mut self, intents: Vec<Intent>) {
+        for intent in intents {
+            match intent {
+                Intent::Pick(picking) => self.pick(picking),
+                Intent::Connect {
+                    path,
+                    open_at_login,
+                } => {
+                    if let Some(repo) = &mut self.repo {
+                        repo.pending_login = open_at_login;
+                    }
+                    self.change(Job::Connect {
+                        path,
+                        first_run: open_at_login,
+                    });
+                }
+                Intent::Relink(path) => self.change_connected(|id| Job::Relink { id, path }),
+                Intent::Reseed => self.change_connected(|id| Job::Reseed { id }),
+                Intent::Disconnect {
+                    delete_observations,
+                } => self.change_connected(|id| Job::Disconnect {
+                    id,
+                    delete_observations,
+                }),
+                Intent::Done => {
+                    self.shell.close(WindowKind::Connect);
+                    self.shell.connect = None;
+                }
+            }
+        }
+    }
+
+    /// The folder picker, parented to the window that asked: its answer comes back as
+    /// [`UserEvent::Picked`]. It is awaited off the loop, which keeps running meanwhile.
+    fn pick(&self, picking: Picking) {
+        let kind = match picking {
+            Picking::Repository => WindowKind::Connect,
+            Picking::Location => WindowKind::Settings,
+        };
+        let mut dialog = rfd::AsyncFileDialog::new();
+        if let Some(window) = self.shell.window(kind) {
+            dialog = dialog.set_parent(window);
+        }
+        let chosen = dialog.pick_folder();
+        let proxy = self.proxy.clone();
+        let _ = thread::Builder::new()
+            .name("terrarium-picker".into())
+            .spawn(move || {
+                let path = pollster::block_on(chosen).map(|handle| handle.path().to_path_buf());
+                let _ = proxy.send_event(UserEvent::Picked(picking, path));
+            });
+    }
+
+    /// Runs `job` for the connected terrarium.
+    fn change_connected(&mut self, job: impl FnOnce(terrarium_store::TerrariumId) -> Job) {
+        let Some(id) = self
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.connected.as_ref())
+            .map(|connected| connected.terrarium.id)
+        else {
+            return;
+        };
+        self.change(job(id));
+    }
+
+    /// Runs `job` off the loop with a new engine generation; updates from the engine it stops
+    /// are dropped from now on.
+    fn change(&mut self, job: Job) {
+        let Some(repo) = &mut self.repo else {
+            return;
+        };
+        repo.generation += 1;
+        lifecycle::spawn(
+            job,
+            repo.engine.take(),
+            repo.data.clone(),
+            self.proxy.clone(),
+            repo.generation,
+        );
+    }
+
+    /// A change is done.
+    fn changed(&mut self, event_loop: &ActiveEventLoop, outcome: Outcome) {
+        let now = Instant::now();
+        let Some(repo) = &mut self.repo else {
+            return;
+        };
+        match outcome {
+            Outcome::Connected {
+                engine,
+                terrarium,
+                scene,
+                report,
+            } => {
+                repo.engine = Some(engine);
+                repo.first_run = false;
+                if let Some(wanted) = repo.pending_login.take()
+                    && let Some(line) = login::first_run(&mut login::System, wanted)
+                {
+                    eprintln!("{line}");
+                }
+                let name = terrarium.repo.name.clone();
+                let live = LiveView::new(name.clone(), scene);
+                let salt = InstallSalt::new(terrarium.install_salt);
+                self.scene = Some(Scene::new(&Mode::Live(Feed::Live), Some((&live, salt))));
+                repo.connected = Some(Connected { terrarium, live });
+                if let Some(form) = &mut self.shell.connect {
+                    form.connected(name, report);
+                }
+                self.shell.redraw(WindowKind::Connect);
+                self.open_view(event_loop);
+            }
+            Outcome::NotConnected(err) => {
+                repo.pending_login = None;
+                if let Some(form) = &mut self.shell.connect {
+                    form.failed(copy::connect_problem(&err));
+                }
+                self.shell.redraw(WindowKind::Connect);
+            }
+            Outcome::Restarted { changed, started } => {
+                if let Some(connected) = &mut repo.connected {
+                    match started {
+                        Ok((engine, terrarium)) => {
+                            repo.engine = Some(engine);
+                            let reseeded =
+                                terrarium.install_salt != connected.terrarium.install_salt;
+                            connected.live.restarted(terrarium.repo.name.clone());
+                            if let Some(scene) = &mut self.scene {
+                                if reseeded {
+                                    let salt = InstallSalt::new(terrarium.install_salt);
+                                    scene.reseed(&connected.live, salt, now);
+                                } else {
+                                    scene.show(&connected.live, now);
+                                }
+                            }
+                            connected.terrarium = terrarium;
+                        }
+                        Err(err) => {
+                            eprintln!("{}", copy::connect_failed(None, &err));
+                            if connected.live.apply(Update::Halted) != Changed::Nothing
+                                && let Some(scene) = &mut self.scene
+                            {
+                                scene.show(&connected.live, now);
+                            }
+                        }
+                    }
+                }
+                let facts = repo.facts();
+                if let Some(form) = &mut self.shell.settings {
+                    if let Some(facts) = facts {
+                        form.set_repo(facts);
+                    }
+                    form.finished(changed.err().map(|err| copy::connect_problem(&err)));
+                }
+                self.shell.redraw(WindowKind::Settings);
+            }
+            Outcome::Disconnected => {
+                repo.connected = None;
+                repo.engine = None;
+                self.close_view();
+                self.scene = None;
+                self.shell.close(WindowKind::Settings);
+                self.shell.settings = None;
+                self.shell.connect = None;
+                self.show_settings(event_loop);
+            }
+        }
+    }
+
+    /// An update from the engine: shown if it is the current engine's.
+    fn engine_update(&mut self, generation: u64, update: Update) {
+        let Some(repo) = &mut self.repo else {
+            return;
+        };
+        let Some(connected) = repo
+            .connected
+            .as_mut()
+            .filter(|_| generation == repo.generation)
+        else {
+            return;
+        };
+        if connected.live.apply(update) != Changed::Nothing
+            && let Some(scene) = &mut self.scene
+        {
+            scene.show(&connected.live, Instant::now());
+        }
+        if let Some(form) = &mut self.shell.settings {
+            let missing = connected.live.repo_missing();
+            if form.is_missing() != missing {
+                form.set_missing(missing);
+                self.shell.redraw(WindowKind::Settings);
+            }
         }
     }
 }
@@ -639,16 +1071,22 @@ fn choose(mut monitors: Vec<Monitor>) -> Option<Monitor> {
 impl ApplicationHandler<UserEvent> for Strip {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         let now = Instant::now();
+        self.shell.woke(now);
         #[cfg(feature = "dev")]
         self.dev_woke(event_loop, now);
         #[cfg(not(feature = "dev"))]
         let _ = event_loop;
-        if !self.gate.occluded() {
-            self.scene.look(now, false);
+        let covered = self.gate.occluded();
+        if let Some(scene) = self.scene.as_mut().filter(|_| !covered) {
+            scene.look(now, false);
         }
         if matches!(cause, StartCause::ResumeTimeReached { .. })
-            && !self.gate.occluded()
-            && self.scene.frame_due().is_some_and(|due| due <= now)
+            && !covered
+            && self
+                .scene
+                .as_ref()
+                .and_then(Scene::frame_due)
+                .is_some_and(|due| due <= now)
             && let Some(view) = &self.view
         {
             self.scheduled = true;
@@ -667,23 +1105,31 @@ impl ApplicationHandler<UserEvent> for Strip {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.view.is_some() {
+        // Once the app has finished launching, so `AppKit`'s own handler does not replace it.
+        if self.repo.is_some() && self.reopen.is_none() {
+            let proxy = self.proxy.clone();
+            self.reopen = pinning::on_reopen(move || {
+                let _ = proxy.send_event(UserEvent::ShowSettings);
+            });
+        }
+        // A second launch's request may have opened the connect window already.
+        if self.view.is_some() || self.shell.is_open(WindowKind::Connect) {
             return;
         }
-        match self.open(event_loop) {
-            Ok(view) => self.view = Some(view),
-            Err(err) => {
-                self.end_probe(EndReason::LaunchFailed);
-                self.failed = Some(err);
-                event_loop.exit();
-            }
+        if self.scene.is_some() {
+            self.open_view(event_loop);
+        } else {
+            self.show_settings(event_loop);
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::HotKey(event) => self.with_view(|strip, view| {
-                if view.hotkey.as_ref().is_some_and(|h| h.is_pressed(event)) {
+            UserEvent::HotKey(event) => {
+                if !self.hotkey.as_ref().is_some_and(|h| h.is_pressed(event)) {
+                    return;
+                }
+                self.with_view(|strip, view| {
                     // A reserved edge stays topmost, so there is nothing to restore later.
                     if !pinning::EDGE_RESERVED {
                         strip.raise.press(Instant::now());
@@ -692,28 +1138,25 @@ impl ApplicationHandler<UserEvent> for Strip {
                     strip.record(ProbeEvent::Raised {
                         value: view.pinning.level(),
                     });
-                }
-            }),
+                });
+            }
             UserEvent::Menu(id) => {
-                let quit = self
-                    .view
-                    .as_ref()
-                    .and_then(|view| view.menu.as_ref())
-                    .is_some_and(|menu| menu.is_quit(&id));
-                if quit {
+                let Some(menu) = &self.menu else {
+                    return;
+                };
+                if menu.is_quit(&id) {
                     self.end_probe(EndReason::Quit);
                     event_loop.exit();
+                } else if menu.is_settings(&id) {
+                    self.show_settings(event_loop);
                 }
                 #[cfg(feature = "dev")]
-                if self
-                    .view
-                    .as_ref()
-                    .and_then(|view| view.menu.as_ref())
-                    .is_some_and(|menu| menu.is_debug(&id))
-                    && let Some((feed, overrides)) = self.scene.shown()
+                if self.menu.as_ref().is_some_and(|menu| menu.is_debug(&id))
+                    && let Some((feed, overrides)) = self.scene.as_ref().and_then(Scene::shown)
                 {
                     let feed = feed.clone();
-                    self.dev.open_debug(event_loop, &feed, overrides);
+                    self.dev
+                        .open_debug(&mut self.shell, event_loop, &feed, overrides);
                 }
             }
             UserEvent::System(event) => {
@@ -734,8 +1177,10 @@ impl ApplicationHandler<UserEvent> for Strip {
                 // monotonic clock stops while asleep: the feed takes the local time again, and
                 // the engine catches truth up.
                 if event == SystemEvent::Woke {
-                    self.scene.look(Instant::now(), true);
-                    if let Some(engine) = &self.engine {
+                    if let Some(scene) = &mut self.scene {
+                        scene.look(Instant::now(), true);
+                    }
+                    if let Some(engine) = self.repo.as_ref().and_then(|r| r.engine.as_ref()) {
                         engine.wake();
                     }
                 }
@@ -747,27 +1192,58 @@ impl ApplicationHandler<UserEvent> for Strip {
                 self.end_probe(EndReason::InputClosed);
                 event_loop.exit();
             }
-            UserEvent::Engine(update) => {
-                if let Some(live) = &mut self.live
-                    && live.apply(update) != Changed::Nothing
+            UserEvent::Engine(generation, update) => self.engine_update(generation, update),
+            UserEvent::ShowSettings => self.show_settings(event_loop),
+            UserEvent::Picked(picking, path) => match picking {
+                Picking::Repository => {
+                    if let Some(form) = &mut self.shell.connect {
+                        form.picked(path);
+                    }
+                    self.shell.redraw(WindowKind::Connect);
+                }
+                Picking::Location => {
+                    if let Some(form) = &mut self.shell.settings {
+                        form.located(path);
+                    }
+                    self.shell.redraw(WindowKind::Settings);
+                }
+            },
+            UserEvent::Lifecycle(generation, outcome) => {
+                // A change outrun by a later one has nothing left to show; its engine stops.
+                if self
+                    .repo
+                    .as_ref()
+                    .is_some_and(|repo| repo.generation == generation)
                 {
-                    self.scene.show(live, Instant::now());
+                    self.changed(event_loop, *outcome);
                 }
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        // Only the strip's own window quits the app when closed; other windows are egui's.
+        // Only the strip's own window quits the app when closed; the others are the shell's.
         if self
             .view
             .as_ref()
             .is_some_and(|view| view.window.id() == id)
         {
             self.with_view(|strip, view| strip.window_input(event_loop, view, event));
-        } else {
-            #[cfg(feature = "dev")]
-            self.dev_window_event(id, &event);
+            return;
+        }
+        if !self.shell.owns(id) {
+            return;
+        }
+        let intents = self.shell_window_event(id, &event);
+        self.carry_out(intents);
+        // With nothing connected, the connect window is all there is: closed, the app ends.
+        if self
+            .repo
+            .as_ref()
+            .is_some_and(|repo| repo.connected.is_none())
+            && !self.shell.is_open(WindowKind::Connect)
+        {
+            event_loop.exit();
         }
     }
 
@@ -785,14 +1261,15 @@ impl ApplicationHandler<UserEvent> for Strip {
         }
         // While covered, the living strip asks for nothing; it catches up when uncovered.
         let living = (!self.gate.occluded() && self.view.is_some())
-            .then(|| self.scene.due())
+            .then(|| self.scene.as_ref().and_then(Scene::due))
             .flatten();
-        // Open egui windows and the egui probe keep their own deadlines, covered or not.
+        // Open windows keep their own deadlines, covered or not, and so does the egui probe.
+        let windows = self.shell.deadline();
         #[cfg(feature = "dev")]
         let dev = self.dev.deadline();
         #[cfg(not(feature = "dev"))]
         let dev = None;
-        let deadline = [self.raise.deadline(), living, dev]
+        let deadline = [self.raise.deadline(), living, windows, dev]
             .into_iter()
             .flatten()
             .min();
@@ -804,7 +1281,7 @@ impl ApplicationHandler<UserEvent> for Strip {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.end_probe(EndReason::WindowClosed);
-        if let Some(engine) = self.engine.take() {
+        if let Some(engine) = self.repo.as_mut().and_then(|repo| repo.engine.take()) {
             engine.shutdown();
         }
         // winit only posts its window's destruction, which the ended loop never handles, so
@@ -815,47 +1292,70 @@ impl ApplicationHandler<UserEvent> for Strip {
     }
 }
 
-#[cfg(feature = "dev")]
 impl Strip {
-    /// The loop woke: egui windows due a repaint redraw, and the egui probe takes its step.
-    fn dev_woke(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
-        self.dev.woke(now);
-        if !self.dev.probe_due(now) {
-            return;
-        }
-        let Some((feed, overrides)) = self.scene.shown() else {
-            return;
-        };
-        let feed = feed.clone();
-        if self.dev.probe(event_loop, now, (&feed, overrides)) {
-            event_loop.exit();
-        }
+    /// Handles `event` for one of the shell's windows, and returns what they asked for.
+    #[cfg(not(feature = "dev"))]
+    fn shell_window_event(&mut self, id: WindowId, event: &WindowEvent) -> Vec<Intent> {
+        self.shell.window_event(id, event, &mut |_| {})
     }
 
-    fn dev_window_event(&mut self, id: WindowId, event: &WindowEvent) {
-        if !self.dev.owns(id) {
-            return;
-        }
+    /// Handles `event` for one of the shell's windows, the debug window among them, and
+    /// returns what they asked for.
+    #[cfg(feature = "dev")]
+    fn shell_window_event(&mut self, id: WindowId, event: &WindowEvent) -> Vec<Intent> {
         let now = Instant::now();
-        // Only a repaint shows the readout, and reading memory costs a call into the OS.
-        let readout = if matches!(event, WindowEvent::RedrawRequested) {
+        // Only the debug window's repaint shows the readout, and reading memory costs a call
+        // into the OS.
+        let debug = self
+            .shell
+            .window(WindowKind::Debug)
+            .is_some_and(|window| window.id() == id);
+        let readout = if debug && matches!(event, WindowEvent::RedrawRequested) {
             self.readout(now)
         } else {
             None
         };
-        if let Some((feed, overrides)) = self.dev.window_event(id, event, readout.as_ref()) {
-            self.scene.choose(feed, overrides, now);
+        let dev = &mut self.dev;
+        let intents = self
+            .shell
+            .window_event(id, event, &mut |ui| dev.draw(ui, readout.as_ref()));
+        if let Some((feed, overrides)) = self.dev.take_change()
+            && let Some(scene) = &mut self.scene
+        {
+            scene.choose(feed, overrides, now);
+        }
+        intents
+    }
+}
+
+#[cfg(feature = "dev")]
+impl Strip {
+    /// The loop woke: the egui probe takes its step.
+    fn dev_woke(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
+        self.dev.woke();
+        if !self.dev.probe_due(now) {
+            return;
+        }
+        let Some((feed, overrides)) = self.scene.as_ref().and_then(Scene::shown) else {
+            return;
+        };
+        let feed = feed.clone();
+        if self
+            .dev
+            .probe(&mut self.shell, event_loop, now, (&feed, overrides))
+        {
+            event_loop.exit();
         }
     }
 
     fn readout(&mut self, now: Instant) -> Option<Readout> {
         let frames = self.gate.count();
         let fps = self.dev.fps.per_second(now);
-        let Scene::Living {
+        let Some(Scene::Living {
             living,
             feeder,
             origin,
-        } = &self.scene
+        }) = &self.scene
         else {
             return None;
         };
