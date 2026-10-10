@@ -1,5 +1,5 @@
-//! The settings window, so far its repository section: where the repository is, locating it
-//! when it is not found there, a new terrarium, and disconnecting.
+//! The settings window's repository section: where the repository is, locating it when it is
+//! not found there, a new terrarium, and disconnecting.
 //!
 //! Locating is two steps, as connecting is: the picker fills in the folder, and relinking is a
 //! separate press. A new terrarium and a disconnect each ask for a confirmation first, which

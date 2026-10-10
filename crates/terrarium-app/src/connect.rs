@@ -109,8 +109,10 @@ impl ConnectForm {
             Page::Report { name, report } => {
                 ui.heading(words::connected(&name));
                 ui.add_space(8.0);
+                // Room is kept for "Done" below it, but never less than a line of the report.
+                let room = ui.available_height() - 40.0;
                 egui::ScrollArea::vertical()
-                    .max_height(ui.available_height() - 40.0)
+                    .max_height(room.max(ui.spacing().interact_size.y))
                     .show(ui, |ui| {
                         ui.add(egui::Label::new(egui::RichText::new(report).monospace()).wrap());
                     });

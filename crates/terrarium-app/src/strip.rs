@@ -56,7 +56,7 @@ use crate::hover::HoverTracker;
 use crate::instance::{Instance, RequestWatch};
 use crate::lifecycle::{self, Job, Outcome};
 use crate::live::{Changed, Launch, LiveView};
-use crate::login;
+use crate::login::{self, LoginItem};
 use crate::menu::{self, StripMenu};
 use crate::monitor;
 use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
@@ -365,6 +365,19 @@ struct Repo {
     pending_login: Option<bool>,
 }
 
+/// What a lifecycle change leaves the strip to do.
+#[derive(Debug, PartialEq, Eq)]
+enum Effect {
+    Nothing,
+    /// Connected: open the strip, laid out by this salt.
+    Open(InstallSalt),
+    /// The engine started again: show what the live view says, laid out anew by the salt
+    /// given (a re-seed).
+    Show(Option<InstallSalt>),
+    /// Disconnected: close the strip, and open the connect window.
+    Close,
+}
+
 /// The repository connected, and what the strip shows of it.
 struct Connected {
     terrarium: Box<Terrarium>,
@@ -417,6 +430,98 @@ impl Repo {
             connected,
             pending_login: None,
         })
+    }
+
+    /// Takes in a change of `generation` and its `outcome`: the engine it started, the
+    /// connected repository, the windows' forms, and on a first connect the login choice,
+    /// applied through `login`. Says what the strip is left to do. A change a later one
+    /// outran has nothing left to show: its engine stops on a thread of its own, so the loop
+    /// never waits for it.
+    fn changed(
+        &mut self,
+        generation: u64,
+        outcome: Outcome,
+        shell: &mut Shell,
+        login: &mut dyn LoginItem,
+    ) -> Effect {
+        if generation != self.generation {
+            thread::spawn(move || drop(outcome));
+            return Effect::Nothing;
+        }
+        match outcome {
+            Outcome::Connected {
+                engine,
+                terrarium,
+                scene,
+                report,
+            } => {
+                self.engine = Some(engine);
+                self.first_run = false;
+                if let Some(wanted) = self.pending_login.take()
+                    && let Some(line) = login::first_run(login, wanted)
+                {
+                    eprintln!("{line}");
+                }
+                let name = terrarium.repo.name.clone();
+                let salt = InstallSalt::new(terrarium.install_salt);
+                self.connected = Some(Connected {
+                    live: LiveView::new(name.clone(), scene),
+                    terrarium,
+                });
+                if let Some(form) = &mut shell.connect {
+                    form.connected(name, report);
+                }
+                shell.redraw(WindowKind::Connect);
+                Effect::Open(salt)
+            }
+            Outcome::NotConnected(err) => {
+                self.pending_login = None;
+                if let Some(form) = &mut shell.connect {
+                    form.failed(copy::connect_problem(&err));
+                }
+                shell.redraw(WindowKind::Connect);
+                Effect::Nothing
+            }
+            Outcome::Restarted { changed, started } => {
+                let mut effect = Effect::Nothing;
+                if let Some(connected) = &mut self.connected {
+                    match started {
+                        Ok((engine, terrarium)) => {
+                            self.engine = Some(engine);
+                            let reseeded = (terrarium.install_salt
+                                != connected.terrarium.install_salt)
+                                .then(|| InstallSalt::new(terrarium.install_salt));
+                            connected.live.restarted(terrarium.repo.name.clone());
+                            connected.terrarium = terrarium;
+                            effect = Effect::Show(reseeded);
+                        }
+                        Err(err) => {
+                            eprintln!("{}", copy::connect_failed(None, &err));
+                            if connected.live.apply(Update::Halted) != Changed::Nothing {
+                                effect = Effect::Show(None);
+                            }
+                        }
+                    }
+                }
+                let facts = self.facts();
+                if let Some(form) = &mut shell.settings {
+                    if let Some(facts) = facts {
+                        form.set_repo(facts);
+                    }
+                    form.finished(changed.err().map(|err| copy::connect_problem(&err)));
+                }
+                shell.redraw(WindowKind::Settings);
+                effect
+            }
+            Outcome::Disconnected => {
+                self.connected = None;
+                self.engine = None;
+                shell.close(WindowKind::Settings);
+                shell.settings = None;
+                shell.connect = None;
+                Effect::Close
+            }
+        }
     }
 
     /// The repository as the settings window shows it.
@@ -947,89 +1052,33 @@ impl Strip {
         );
     }
 
-    /// A change is done.
-    fn changed(&mut self, event_loop: &ActiveEventLoop, outcome: Outcome) {
+    /// A change of `generation` is done: the repository and the forms take it in, and the
+    /// strip does what that leaves it to do.
+    fn changed(&mut self, event_loop: &ActiveEventLoop, generation: u64, outcome: Outcome) {
         let now = Instant::now();
         let Some(repo) = &mut self.repo else {
             return;
         };
-        match outcome {
-            Outcome::Connected {
-                engine,
-                terrarium,
-                scene,
-                report,
-            } => {
-                repo.engine = Some(engine);
-                repo.first_run = false;
-                if let Some(wanted) = repo.pending_login.take()
-                    && let Some(line) = login::first_run(&mut login::System, wanted)
-                {
-                    eprintln!("{line}");
+        match repo.changed(generation, outcome, &mut self.shell, &mut login::System) {
+            Effect::Nothing => {}
+            Effect::Open(salt) => {
+                if let Some(connected) = &repo.connected {
+                    let live = Some((&connected.live, salt));
+                    self.scene = Some(Scene::new(&Mode::Live(Feed::Live), live));
                 }
-                let name = terrarium.repo.name.clone();
-                let live = LiveView::new(name.clone(), scene);
-                let salt = InstallSalt::new(terrarium.install_salt);
-                self.scene = Some(Scene::new(&Mode::Live(Feed::Live), Some((&live, salt))));
-                repo.connected = Some(Connected { terrarium, live });
-                if let Some(form) = &mut self.shell.connect {
-                    form.connected(name, report);
-                }
-                self.shell.redraw(WindowKind::Connect);
                 self.open_view(event_loop);
             }
-            Outcome::NotConnected(err) => {
-                repo.pending_login = None;
-                if let Some(form) = &mut self.shell.connect {
-                    form.failed(copy::connect_problem(&err));
-                }
-                self.shell.redraw(WindowKind::Connect);
-            }
-            Outcome::Restarted { changed, started } => {
-                if let Some(connected) = &mut repo.connected {
-                    match started {
-                        Ok((engine, terrarium)) => {
-                            repo.engine = Some(engine);
-                            let reseeded =
-                                terrarium.install_salt != connected.terrarium.install_salt;
-                            connected.live.restarted(terrarium.repo.name.clone());
-                            if let Some(scene) = &mut self.scene {
-                                if reseeded {
-                                    let salt = InstallSalt::new(terrarium.install_salt);
-                                    scene.reseed(&connected.live, salt, now);
-                                } else {
-                                    scene.show(&connected.live, now);
-                                }
-                            }
-                            connected.terrarium = terrarium;
-                        }
-                        Err(err) => {
-                            eprintln!("{}", copy::connect_failed(None, &err));
-                            if connected.live.apply(Update::Halted) != Changed::Nothing
-                                && let Some(scene) = &mut self.scene
-                            {
-                                scene.show(&connected.live, now);
-                            }
-                        }
+            Effect::Show(reseeded) => {
+                if let (Some(scene), Some(connected)) = (&mut self.scene, &repo.connected) {
+                    match reseeded {
+                        Some(salt) => scene.reseed(&connected.live, salt, now),
+                        None => scene.show(&connected.live, now),
                     }
                 }
-                let facts = repo.facts();
-                if let Some(form) = &mut self.shell.settings {
-                    if let Some(facts) = facts {
-                        form.set_repo(facts);
-                    }
-                    form.finished(changed.err().map(|err| copy::connect_problem(&err)));
-                }
-                self.shell.redraw(WindowKind::Settings);
             }
-            Outcome::Disconnected => {
-                repo.connected = None;
-                repo.engine = None;
+            Effect::Close => {
                 self.close_view();
                 self.scene = None;
-                self.shell.close(WindowKind::Settings);
-                self.shell.settings = None;
-                self.shell.connect = None;
                 self.show_settings(event_loop);
             }
         }
@@ -1209,14 +1258,7 @@ impl ApplicationHandler<UserEvent> for Strip {
                 }
             },
             UserEvent::Lifecycle(generation, outcome) => {
-                // A change outrun by a later one has nothing left to show; its engine stops.
-                if self
-                    .repo
-                    .as_ref()
-                    .is_some_and(|repo| repo.generation == generation)
-                {
-                    self.changed(event_loop, *outcome);
-                }
+                self.changed(event_loop, generation, *outcome);
             }
         }
     }
@@ -1371,5 +1413,212 @@ impl Strip {
             stage: feeder.stage(Scene::millis(*origin, now)),
             sim_day: feeder.sim_day(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use terrarium_platform::login::LoginError;
+    use terrarium_store::{RepoLocation, TerrariumId};
+    use terrarium_truth::RepoSeed;
+
+    use super::*;
+    use crate::instance::Claim;
+    use crate::shell::Intent;
+
+    /// A login item that records what it is asked.
+    #[derive(Default)]
+    struct Asked(Vec<bool>);
+
+    impl LoginItem for Asked {
+        fn set(&mut self, on: bool) -> Result<(), LoginError> {
+            self.0.push(on);
+            Ok(())
+        }
+    }
+
+    /// A run with a data directory in `dir` and nothing connected.
+    fn repo(dir: &Path) -> Repo {
+        let data = DataDir::at(dir.join("data"));
+        let Ok(Claim::First(instance)) = Instance::claim(&data) else {
+            panic!("the claim");
+        };
+        Repo {
+            data,
+            _instance: instance,
+            _requests: None,
+            engine: None,
+            generation: 1,
+            connected: None,
+            first_run: true,
+            pending_login: None,
+        }
+    }
+
+    /// An engine with nothing connected, which does nothing.
+    fn engine(dir: &Path) -> Engine {
+        let config = EngineConfig::new(DataDir::at(dir.join("engine")), None);
+        Engine::spawn(config, Box::new(|_| {})).unwrap().0
+    }
+
+    fn terrarium(salt: u8) -> Box<Terrarium> {
+        Box::new(Terrarium {
+            id: TerrariumId::new(1),
+            seed: RepoSeed::from_bytes([1; 32]),
+            repo: RepoLocation {
+                path: "/projects/moss".into(),
+                name: "moss".into(),
+                default_branch: "main".into(),
+            },
+            install_salt: [salt; 16],
+            connected_at: 0,
+            active: true,
+        })
+    }
+
+    fn connected(dir: &Path, repo: &mut Repo, shell: &mut Shell) {
+        let outcome = Outcome::Connected {
+            engine: engine(dir),
+            terrarium: terrarium(3),
+            scene: None,
+            report: "Found\n".into(),
+        };
+        repo.changed(1, outcome, shell, &mut Asked::default());
+    }
+
+    #[test]
+    fn a_connect_opens_the_strip_by_its_salt_shows_the_report_and_applies_the_login_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        shell.connect = Some(ConnectForm::new(true));
+        repo.pending_login = Some(true);
+        let mut asked = Asked::default();
+        let outcome = Outcome::Connected {
+            engine: engine(dir.path()),
+            terrarium: terrarium(3),
+            scene: None,
+            report: "Found\n".into(),
+        };
+        let effect = repo.changed(1, outcome, &mut shell, &mut asked);
+        assert_eq!(effect, Effect::Open(InstallSalt::new([3; 16])));
+        assert_eq!(asked.0, [true]);
+        assert!(!repo.first_run && repo.pending_login.is_none());
+        assert!(repo.engine.is_some());
+        assert_eq!(repo.facts().map(|facts| facts.name), Some("moss".into()));
+        // The window shows the report: "Done" means something now.
+        let form = shell.connect.as_mut().unwrap();
+        form.done();
+        assert_eq!(form.take_intent(), Some(Intent::Done));
+    }
+
+    #[test]
+    fn a_failed_connect_is_said_in_the_window_and_connects_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        let mut form = ConnectForm::new(true);
+        form.picked(Some("/plain".into()));
+        form.connect();
+        form.take_intent();
+        shell.connect = Some(form);
+        repo.pending_login = Some(true);
+        let mut asked = Asked::default();
+        let outcome = Outcome::NotConnected(ConnectError::OtherRepository);
+        assert_eq!(
+            repo.changed(1, outcome, &mut shell, &mut asked),
+            Effect::Nothing
+        );
+        assert!(asked.0.is_empty(), "nothing registered");
+        assert!(repo.connected.is_none() && repo.pending_login.is_none());
+        // No longer busy: another try can follow.
+        let form = shell.connect.as_mut().unwrap();
+        form.connect();
+        assert!(form.take_intent().is_some());
+    }
+
+    #[test]
+    fn a_restart_shows_the_live_view_and_lays_out_anew_only_on_a_new_salt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        connected(dir.path(), &mut repo, &mut shell);
+        let facts = repo.facts().unwrap();
+        let mut form = SettingsForm::new(facts);
+        form.ask_reseed();
+        form.reseed();
+        form.take_intent();
+        shell.settings = Some(form);
+        let restart = |salt: u8| Outcome::Restarted {
+            changed: Ok(()),
+            started: Ok((engine(dir.path()), terrarium(salt))),
+        };
+        let mut asked = Asked::default();
+        assert_eq!(
+            repo.changed(1, restart(3), &mut shell, &mut asked),
+            Effect::Show(None),
+            "relinked: the same salt"
+        );
+        assert_eq!(
+            repo.changed(1, restart(9), &mut shell, &mut asked),
+            Effect::Show(Some(InstallSalt::new([9; 16]))),
+            "re-seeded"
+        );
+        assert_eq!(
+            repo.connected.as_ref().map(|c| c.terrarium.install_salt),
+            Some([9; 16])
+        );
+        // The form is free again.
+        let form = shell.settings.as_mut().unwrap();
+        form.ask_reseed();
+        form.reseed();
+        assert_eq!(form.take_intent(), Some(Intent::Reseed));
+        // An engine that cannot start again leaves the strip halted.
+        let failed = Outcome::Restarted {
+            changed: Ok(()),
+            started: Err(ConnectError::Halted),
+        };
+        assert_eq!(
+            repo.changed(1, failed, &mut shell, &mut asked),
+            Effect::Show(None)
+        );
+        let live = &repo.connected.as_ref().unwrap().live;
+        assert_eq!(live.label().last().map(String::as_str), Some("halted"));
+    }
+
+    #[test]
+    fn a_disconnect_closes_the_strip_and_forgets_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        connected(dir.path(), &mut repo, &mut shell);
+        shell.settings = repo.facts().map(SettingsForm::new);
+        assert_eq!(
+            repo.changed(1, Outcome::Disconnected, &mut shell, &mut Asked::default()),
+            Effect::Close
+        );
+        assert!(repo.connected.is_none() && repo.engine.is_none());
+        assert!(shell.settings.is_none() && shell.connect.is_none());
+    }
+
+    #[test]
+    fn a_change_outrun_by_a_later_one_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        repo.generation = 2;
+        let outcome = Outcome::Connected {
+            engine: engine(dir.path()),
+            terrarium: terrarium(3),
+            scene: None,
+            report: String::new(),
+        };
+        assert_eq!(
+            repo.changed(1, outcome, &mut shell, &mut Asked::default()),
+            Effect::Nothing
+        );
+        assert!(repo.connected.is_none() && repo.engine.is_none());
     }
 }

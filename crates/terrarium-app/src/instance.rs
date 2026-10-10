@@ -10,7 +10,6 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use terrarium_store::DataDir;
@@ -25,7 +24,6 @@ pub enum Claim {
 /// The claim of the one app running. Dropping it lets another start.
 pub struct Instance {
     _lock: File,
-    claimed: SystemTime,
     requests: PathBuf,
     request: PathBuf,
 }
@@ -38,7 +36,8 @@ pub struct RequestWatch {
 impl Instance {
     /// Takes the lock in `data`, creating the folder and the file as needed. The file is never
     /// truncated: on Windows the lock covers the file, and a truncating open would fail
-    /// against it rather than find it held.
+    /// against it rather than find it held. A request already waiting was left by a launch that
+    /// found an earlier app running, and is cleared: every request from now on is this one's.
     pub fn claim(data: &DataDir) -> io::Result<Claim> {
         fs::create_dir_all(data.path())?;
         let lock = OpenOptions::new()
@@ -48,12 +47,15 @@ impl Instance {
             .truncate(false)
             .open(data.instance_lock())?;
         match lock.try_lock() {
-            Ok(()) => Ok(Claim::First(Instance {
-                _lock: lock,
-                claimed: SystemTime::now(),
-                requests: data.requests_dir(),
-                request: data.show_settings_request(),
-            })),
+            Ok(()) => {
+                let request = data.show_settings_request();
+                let _ = fs::remove_file(&request);
+                Ok(Claim::First(Instance {
+                    _lock: lock,
+                    requests: data.requests_dir(),
+                    request,
+                }))
+            }
             Err(TryLockError::WouldBlock) => Ok(Claim::Running),
             Err(TryLockError::Error(err)) => Err(err),
         }
@@ -61,33 +63,28 @@ impl Instance {
 
     /// Calls `on_request` for each request a later launch makes, from the watcher's thread.
     /// Also says whether one was already waiting once the watch began: made between the claim
-    /// and the watch, it is answered here, by the caller. A request older than the claim was
-    /// left by a launch that found an earlier app running, and is only cleared.
+    /// and the watch, it is answered here, by the caller.
     pub fn watch(
         &self,
         mut on_request: impl FnMut() + Send + 'static,
     ) -> notify::Result<(RequestWatch, bool)> {
         fs::create_dir_all(&self.requests)?;
         let request = self.request.clone();
-        let claimed = self.claimed;
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<_>| {
-            if event.is_ok() && take(&request, claimed) {
+            if event.is_ok() && take(&request) {
                 on_request();
             }
         })?;
         watcher.watch(&self.requests, RecursiveMode::NonRecursive)?;
-        let waiting = take(&self.request, self.claimed);
+        let waiting = take(&self.request);
         Ok((RequestWatch { _watcher: watcher }, waiting))
     }
 }
 
-/// Removes the request at `path`: true when there was one, made since `claimed`, and this call
-/// removed it, so exactly one caller answers it.
-fn take(path: &Path, claimed: SystemTime) -> bool {
-    let Ok(made) = fs::metadata(path).and_then(|meta| meta.modified()) else {
-        return false;
-    };
-    fs::remove_file(path).is_ok() && made >= claimed
+/// Removes the request at `path`: true when there was one and this call removed it, so exactly
+/// one caller answers it.
+fn take(path: &Path) -> bool {
+    fs::remove_file(path).is_ok()
 }
 
 /// Asks the app running on `data` to show its settings.
@@ -123,22 +120,24 @@ mod tests {
     #[test]
     fn a_request_reaches_the_running_app_and_one_left_from_before_it_does_not() {
         let (_dir, data) = data();
-        // Left by a launch that found an earlier app running.
+        // Left by a launch that found an earlier app running, dated whenever the clock said.
         ask_to_show(&data).unwrap();
-        let old = SystemTime::now() - Duration::from_secs(60);
         File::options()
             .write(true)
             .open(data.show_settings_request())
             .unwrap()
-            .set_modified(old)
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(3_600))
             .unwrap();
         let Claim::First(first) = Instance::claim(&data).unwrap() else {
             panic!("the first claim");
         };
+        assert!(
+            !data.show_settings_request().exists(),
+            "cleared at the claim"
+        );
         let (heard, hear) = mpsc::channel();
         let (watch, waiting) = first.watch(move || heard.send(()).unwrap()).unwrap();
         assert!(!waiting, "a stale request is no request");
-        assert!(!data.show_settings_request().exists(), "and is cleared");
         ask_to_show(&data).unwrap();
         hear.recv_timeout(Duration::from_secs(10))
             .expect("the request arrives");
@@ -147,12 +146,19 @@ mod tests {
     }
 
     #[test]
-    fn a_request_made_before_the_watch_began_is_answered_by_the_caller() {
+    fn a_request_made_before_the_watch_began_is_answered_by_the_caller_whatever_its_date() {
         let (_dir, data) = data();
         let Claim::First(first) = Instance::claim(&data).unwrap() else {
             panic!("the first claim");
         };
         ask_to_show(&data).unwrap();
+        // Made after the claim, though the clock was set back meanwhile.
+        File::options()
+            .write(true)
+            .open(data.show_settings_request())
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(3_600))
+            .unwrap();
         let (_watch, waiting) = first.watch(|| {}).unwrap();
         assert!(waiting);
         assert!(!data.show_settings_request().exists());

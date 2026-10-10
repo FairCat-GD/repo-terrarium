@@ -456,11 +456,13 @@ pub(crate) fn left_between(
         .take_while(|id| !chain.contains(&to_commit_id(*id)))
         .collect();
     ids.reverse();
+    let still_held: BTreeSet<&gix::ObjectId> =
+        ids.iter().filter(|id| known.contains_key(*id)).collect();
     let held: BTreeMap<gix::ObjectId, &CommitFacts> = history
         .commits
         .iter()
         .map(|c| (to_object_id(&c.id), c))
-        .filter(|(id, _)| known.contains_key(id) && ids.contains(id))
+        .filter(|(id, _)| still_held.contains(id))
         .collect();
     let mut differ = Differ::new(repo);
     let mut left = Vec::with_capacity(ids.len());

@@ -595,6 +595,41 @@ fn a_rewrite_made_while_closed_is_recorded_at_the_next_start() {
 }
 
 #[test]
+fn reading_back_a_move_made_while_closed_never_sends_the_history_s_percent_back() {
+    let mut fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.clock.advance(3 * HOUR);
+    refresh(&mut live, Cause::Hour, false);
+    drop(live);
+    fx.repo.reset("main", &fx.main[4]).unwrap();
+    fx.clock.advance(HOUR);
+    fx.commit_now();
+    let config = EngineConfig {
+        progress_after: Duration::ZERO,
+        ..fx.config(None)
+    };
+    let mut next = Live::connect(&config).unwrap().unwrap();
+    let mut heard = Vec::new();
+    let done = next.refresh(
+        Refresh {
+            cause: Cause::Connect,
+            reports: true,
+        },
+        &mut |percent| heard.push(percent),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(done.reach, Some(Reach::Found));
+    assert_eq!(
+        fx.rows(ObservationKind::RefRewrite).len(),
+        1,
+        "the move was read back"
+    );
+    assert!(!heard.is_empty());
+    assert!(heard.windows(2).all(|pair| pair[0] <= pair[1]), "{heard:?}");
+}
+
+#[test]
 fn a_fast_forward_made_while_closed_through_a_merge_records_nothing() {
     let mut fx = Fixture::new(12);
     let mut live = fx.connect();

@@ -43,7 +43,7 @@ use terrarium_store::{
     StoreError, StoredObservation, Terrarium, TerrariumId,
 };
 use terrarium_truth::climate::ClimateReport;
-use terrarium_truth::domain::{ObservationHead, merge_key};
+use terrarium_truth::domain::{LeftCommit, ObservationHead, merge_key};
 use terrarium_truth::{
     Basis, CommitId, Observation, Prepared, ReplayError, SIM_VERSION, SceneInput, SimState, Tick,
     observation_tick, project_showing,
@@ -246,6 +246,19 @@ fn git_fault(err: GitError) -> Fault {
         | GitError::UnsupportedObjectFormat => Fault::NotFound,
         GitError::Cancelled => Fault::Cancelled,
         GitError::Read(_) => Fault::Problem(Problem::Git(err)),
+    }
+}
+
+/// What a move made while nothing watched took off the chain, as read back: a read the
+/// repository cannot complete leaves it unknown, as when the commits are gone, rather than
+/// failing the refresh, which would fail the same way every time after. Only a stop ends it.
+fn read_back(
+    read: Result<Option<Vec<LeftCommit>>, GitError>,
+) -> Result<Option<Vec<LeftCommit>>, Fault> {
+    match read {
+        Ok(left) => Ok(left),
+        Err(GitError::Cancelled) => Err(Fault::Cancelled),
+        Err(_) => Ok(None),
     }
 }
 
@@ -647,13 +660,18 @@ impl Live {
                 .zip(history.state.branches.get(branch).cloned())
                 .filter(|(old, new)| !history.is_ancestor(old, new))
             {
-                Some((old, new)) => Some(observe::Rewrite {
-                    left: git
-                        .left_between(&old, &history, &mut on_progress)
-                        .map_err(git_fault)?,
-                    old,
-                    new,
-                }),
+                Some((old, new)) => {
+                    // Its own pace, not the history's: the read's percent is not shown again.
+                    let mut stop = |_: Progress| {
+                        if cancel.load(Ordering::Relaxed) {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    };
+                    let left = read_back(git.left_between(&old, &history, &mut stop))?;
+                    Some(observe::Rewrite { old, new, left })
+                }
                 None => None,
             };
             self.history = Some(history);
@@ -1009,6 +1027,26 @@ mod tests {
             assert!(Instant::now() < until, "{:?}", heard.lock().unwrap());
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_move_that_cannot_be_read_back_is_unknown_and_only_a_stop_ends_the_refresh() {
+        let left = vec![LeftCommit {
+            commit: CommitId::from_hex(&"a".repeat(40)).unwrap(),
+            time: 0,
+            deleted_dirs: Vec::new(),
+        }];
+        assert!(matches!(read_back(Ok(Some(left.clone()))), Ok(Some(l)) if l == left));
+        assert!(matches!(read_back(Ok(None)), Ok(None)));
+        assert!(matches!(
+            read_back(Err(GitError::Read("a tree is gone".into()))),
+            Ok(None)
+        ));
+        assert!(matches!(read_back(Err(GitError::NoCommits)), Ok(None)));
+        assert!(matches!(
+            read_back(Err(GitError::Cancelled)),
+            Err(Fault::Cancelled)
+        ));
     }
 
     #[test]

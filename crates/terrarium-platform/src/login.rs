@@ -2,7 +2,7 @@
 //!
 //! On macOS only an app bundle can be a login item. A binary run from a build folder, as
 //! `cargo run` runs it, is not one, so it is never registered; it says so, and nothing is
-//! touched. The installed app's registration is checked at packaging.
+//! touched. Only a packaged app exercises the registration itself.
 
 use std::fmt;
 
