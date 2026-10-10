@@ -5,10 +5,11 @@
 //! It reads no clock of its own; the strip passes the time in, so it can be driven in tests.
 
 use terrarium_compose::blend::blend;
-use terrarium_compose::catalog::{Art, Blend};
+use terrarium_compose::catalog::{Art, Blend, Catalog};
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite_into;
 use terrarium_compose::frame::{NATIVE_HEIGHT, NativeImage, Viewport};
+use terrarium_compose::panel::{Hover, Landmark};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::schedule::Pacer;
 use terrarium_compose::tween::durations::RESTYLE_MS;
@@ -123,6 +124,28 @@ impl Living {
     pub fn update(&mut self, scene: &SceneInput, overlay: &OverlayInput, now: Millis) {
         self.composer.update(scene, overlay, now);
         self.due = self.pacer.wake(self.next_change(now));
+    }
+
+    /// Moves only the hover layer toward `hover` from `now`; as with [`Living::update`], the
+    /// picture at `now` does not change.
+    pub fn hover(&mut self, hover: &Hover, now: Millis) {
+        self.composer.hover(hover, now);
+        self.due = self.pacer.wake(self.next_change(now));
+    }
+
+    /// The monument or fossil at `(x, y)` in the viewport at `now`, if any.
+    pub fn landmark_at(&self, x: i32, y: i32, now: Millis) -> Option<Landmark> {
+        self.composer.landmark_at(self.art, self.table, x, y, now)
+    }
+
+    /// The columns it composes: the viewport's width.
+    pub fn columns(&self) -> i32 {
+        i32::try_from(self.composer.viewport().width()).unwrap_or(i32::MAX)
+    }
+
+    /// The embedded art's catalog, which the hover layer is laid out from.
+    pub fn catalog(&self) -> &'static Catalog {
+        &self.art.catalog
     }
 
     /// The next moment the picture changes: the composer's next change, or a handover's next

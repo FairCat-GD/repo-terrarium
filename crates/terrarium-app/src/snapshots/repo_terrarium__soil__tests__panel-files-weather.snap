@@ -1,0 +1,6 @@
+---
+source: crates/terrarium-app/src/soil.rs
+expression: "export::png(width, NATIVE_HEIGHT, image.pixels())"
+extension: png
+snapshot_kind: binary
+---

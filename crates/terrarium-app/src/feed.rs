@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use terrarium_compose::clock::{DAY_MS, LocalClock};
 use terrarium_compose::composer::OverlayInput;
+use terrarium_compose::panel::Hover;
 use terrarium_compose::preset;
 use terrarium_compose::sky::LocalDate;
 use terrarium_compose::synthetic;
@@ -114,6 +115,8 @@ pub struct Feeder {
     /// The connected repository's latest scene and label lines, kept while the debug window's
     /// choice is shown instead.
     live: Option<(SceneInput, Vec<String>)>,
+    /// The soil panel and the hover label, shown with the connected repository only.
+    hover: Hover,
     /// The clock last given, and when: carried on from there if the OS cannot say.
     clock: LocalClock,
     clock_at: Millis,
@@ -153,6 +156,7 @@ impl Feeder {
             started: now,
             overrides: Overrides::default(),
             live,
+            hover: Hover::default(),
             scene,
             clock: os.clock.unwrap_or(LocalClock::noon(preset::DATE)),
             clock_at: now,
@@ -174,12 +178,28 @@ impl Feeder {
         &self.scene
     }
 
-    /// The overlay to show it with: the label, the local clock at the last look, and dim.
+    /// The overlay to show it with: the label, the local clock at the last look, dim, and the
+    /// hover layer while the connected repository is shown.
     pub fn overlay(&self) -> OverlayInput {
+        let hover = match self.feed {
+            Feed::Live => self.hover.clone(),
+            _ => Hover::default(),
+        };
         OverlayInput {
             dim: self.overrides.dim.unwrap_or(self.idle_dim),
+            hover,
             ..OverlayInput::new(self.label(), self.clock)
         }
+    }
+
+    /// The hover layer last given.
+    pub fn hover(&self) -> &Hover {
+        &self.hover
+    }
+
+    /// Takes the hover layer the pointer now has; the strip is then moved toward it.
+    pub fn set_hover(&mut self, hover: Hover) {
+        self.hover = hover;
     }
 
     /// The label's lines: the connected repository's while it is shown, the sample's otherwise.

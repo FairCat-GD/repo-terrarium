@@ -13,6 +13,7 @@ use terrarium_adapters::git::GitError;
 use terrarium_adapters::report::{
     Format, KNIP_MIN_MAJOR, KnipCounts, Outcome, Reading, Report as AdapterReport, Why,
 };
+use terrarium_compose::sky::LocalDate;
 use terrarium_engine::headless::HeadlessError;
 use terrarium_engine::{Branch, ConnectError, Problem};
 use terrarium_platform::login::LoginError;
@@ -22,7 +23,7 @@ use terrarium_truth::scene::Weather;
 use crate::cli::UsageError;
 use crate::discover::Reads;
 use crate::egui_host::{HostError, WindowKind};
-use crate::live::{LabelFacts, Once};
+use crate::live::{LabelFacts, Note, Once};
 use crate::pinning::AttachError;
 use crate::present::PresentError;
 use crate::strip::StripError;
@@ -81,9 +82,10 @@ pub fn usage_error(err: &UsageError) -> String {
     )
 }
 
-/// The strip's label on a connected repository: its name, `branch - weather`, and
-/// one note when one applies, the most pressing first. A detached `HEAD` is named by its commit.
-pub fn live_label(facts: &LabelFacts) -> Vec<String> {
+/// The strip's label on a connected repository: its name, `branch - weather`, and one note when
+/// one applies, the most pressing first (`Notes::showing`). A detached `HEAD` is named by its
+/// commit. `now` is the wall clock, in Unix seconds, against which a dormancy is dated.
+pub fn live_label(facts: &LabelFacts, now: i64) -> Vec<String> {
     let mut lines = vec![facts.repo_name.clone()];
     if let Some((branch, weather)) = &facts.branch {
         let branch = match branch {
@@ -92,24 +94,41 @@ pub fn live_label(facts: &LabelFacts) -> Vec<String> {
         };
         lines.push(format!("{branch} - {}", weather_word(*weather)));
     }
-    let note = &facts.note;
-    let note = if note.halted {
-        Some("halted".to_owned())
-    } else if note.repo_not_found {
-        Some("repo not found".to_owned())
-    } else if let Some(percent) = note.progress {
-        Some(format!("history {percent}%"))
-    } else {
-        note.once.first().map(|once| {
-            match once {
-                Once::SimUpdated => "sim updated",
-                Once::HistoryRewritten => "history rewritten",
-            }
-            .to_owned()
-        })
-    };
-    lines.extend(note);
+    lines.extend(facts.note.showing().map(|note| note_line(note, now)));
     lines
+}
+
+/// One note's line, at most 18 characters.
+fn note_line(note: Note, now: i64) -> String {
+    match note {
+        Note::Halted => "halted".to_owned(),
+        Note::RepoNotFound => "repo not found".to_owned(),
+        Note::Progress(percent) => format!("history {percent}%"),
+        Note::Tuning => "tuning".to_owned(),
+        Note::Once(Once::SimUpdated) => "sim updated".to_owned(),
+        Note::Once(Once::HistoryRewritten) => "history rewritten".to_owned(),
+        Note::Settling(1) => "settling 1 day".to_owned(),
+        Note::Settling(days) => format!("settling {days} days"),
+        Note::Dormant(since) => {
+            let (then, today) = (utc_date(since), utc_date(now));
+            let months = |date: LocalDate| i64::from(date.year) * 12 + i64::from(date.month);
+            // Within the last eleven months the month is enough; before that, the year.
+            if months(today) - months(then) <= 11 {
+                format!("dormant since {}", MONTHS[usize::from(then.month - 1)])
+            } else {
+                format!("dormant since {}", then.year)
+            }
+        }
+    }
+}
+
+const MONTHS: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
+
+/// The UTC calendar date of a moment in Unix seconds.
+fn utc_date(secs: i64) -> LocalDate {
+    LocalDate::from_days_since_epoch(secs.div_euclid(86_400))
 }
 
 /// The weather's word, on the label and in the debug window alike.
@@ -741,6 +760,103 @@ pub mod settings {
     }
 }
 
+/// The soil panel and the hover labels: the only place numbers and paths are shown. Every line
+/// states a fact.
+pub mod panel {
+    use terrarium_truth::Q16;
+
+    use super::utc_date;
+
+    pub const CLIMATE: &str = "climate";
+    pub const LIGHT: &str = "light";
+    pub const SOIL: &str = "soil";
+    pub const RAIN: &str = "rain";
+    pub const WIND: &str = "wind";
+    pub const WEATHER: &str = "weather";
+    pub const TERRAIN: &str = "terrain";
+    pub const AGE: &str = "age";
+    pub const DEAD_CODE: &str = "dead code";
+    pub const COMPLEXITY: &str = "complexity";
+    pub const TODO_DENSITY: &str = "todo density";
+    /// The titles of the pages of files.
+    pub const UNCOVERED_LINES: &str = "uncovered lines";
+    pub const FAILING_TESTS: &str = "failing tests";
+
+    pub const UNKNOWN: &str = "unknown";
+    pub const PASS: &str = "pass";
+    pub const FAIL: &str = "fail";
+
+    /// A page with nothing to list says why, in one line.
+    pub const NO_COVERAGE_REPORT: &str = "no coverage report found";
+    pub const COVERAGE_NOT_READ: &str = "no coverage read yet";
+    pub const NO_UNCOVERED_LINES: &str = "no uncovered lines";
+    pub const NO_TEST_REPORT: &str = "no test report found";
+    pub const TESTS_NOT_READ: &str = "no test run read yet";
+    pub const NO_FAILING_TESTS: &str = "no failing tests";
+    pub const FAILING_UNNAMED: &str = "the failing tests are not named";
+    pub const NOT_MEASURED: &str = "not measured yet";
+    pub const NO_FILES: &str = "no files named";
+
+    /// A reading's value to two decimals: `0.78`, or `1.20` for rain at a fifth over its usual
+    /// pace.
+    pub fn value(value: Q16) -> String {
+        let hundredths = (i64::from(value.raw()) * 100 + (1 << 15)).div_euclid(1 << 16);
+        let sign = if hundredths < 0 { "-" } else { "" };
+        let hundredths = hundredths.abs();
+        format!("{sign}{}.{:02}", hundredths / 100, hundredths % 100)
+    }
+
+    /// Lines of code: `912 lines`, `48k lines`, `1.2m lines`.
+    pub fn lines(lines: u64) -> String {
+        match lines {
+            1 => "1 line".to_owned(),
+            0..1000 => format!("{lines} lines"),
+            1000..1_000_000 => format!("{}k lines", lines / 1000),
+            _ => {
+                let tenths = lines / 100_000;
+                format!("{}.{}m lines", tenths / 10, tenths % 10)
+            }
+        }
+    }
+
+    /// How long since the first commit, `days` whole days: `12 days`, `8 months`, `3 years`.
+    pub fn age(days: i64) -> String {
+        let (n, unit) = match days.max(0) {
+            days @ 0..61 => (days, "day"),
+            days @ 61..730 => (days / 30, "month"),
+            days => (days / 365, "year"),
+        };
+        if n == 1 {
+            format!("1 {unit}")
+        } else {
+            format!("{n} {unit}s")
+        }
+    }
+
+    /// The reading taken on another branch than the default, shown beside light.
+    pub fn on_branch(branch: &str) -> String {
+        format!("on {branch}")
+    }
+
+    /// A file's weight: its uncovered lines, failing tests, unused items.
+    pub fn count(value: i64) -> String {
+        value.to_string()
+    }
+
+    /// The year a moment fell in, in UTC: a monument's label.
+    pub fn year(secs: i64) -> String {
+        utc_date(secs).year.to_string()
+    }
+
+    /// A fossil's label: the directory it was, and the year it was deleted.
+    pub fn fossil(path: Option<&str>, secs: i64) -> String {
+        match path {
+            Some(path) => format!("{path} - {}", year(secs)),
+            None => year(secs),
+        }
+    }
+}
+
 /// A second launch found the app running, and asked it to show its settings.
 pub fn shown_in_running() -> String {
     format!("{BINARY_NAME}: already running; its settings are shown")
@@ -1055,6 +1171,40 @@ mod tests {
             }
         }
         literals
+    }
+
+    #[test]
+    fn the_panel_s_values_read_plainly_at_their_edges() {
+        use terrarium_truth::Q16;
+        let value = |num, den| panel::value(Q16::from_ratio(num, den));
+        assert_eq!(value(0, 1), "0.00");
+        assert_eq!(value(1, 1), "1.00");
+        assert_eq!(value(78, 100), "0.78");
+        assert_eq!(value(6, 5), "1.20");
+        assert_eq!(value(1, 200), "0.01", "rounded to the nearest hundredth");
+        assert_eq!(value(-1, 4), "-0.25");
+        assert_eq!(panel::lines(0), "0 lines");
+        assert_eq!(panel::lines(1), "1 line");
+        assert_eq!(panel::lines(999), "999 lines");
+        assert_eq!(panel::lines(1000), "1k lines");
+        assert_eq!(panel::lines(48_210), "48k lines");
+        assert_eq!(panel::lines(999_999), "999k lines");
+        assert_eq!(panel::lines(1_000_000), "1.0m lines");
+        assert_eq!(panel::lines(1_250_000), "1.2m lines");
+        assert_eq!(panel::age(0), "0 days");
+        assert_eq!(panel::age(1), "1 day");
+        assert_eq!(panel::age(60), "60 days");
+        assert_eq!(panel::age(61), "2 months");
+        assert_eq!(panel::age(729), "24 months");
+        assert_eq!(panel::age(730), "2 years");
+        assert_eq!(panel::age(-5), "0 days", "a clock behind the root");
+        // 2023-04-03, 12:00 UTC.
+        assert_eq!(panel::year(1_680_523_200), "2023");
+        assert_eq!(
+            panel::fossil(Some("src/old"), 1_680_523_200),
+            "src/old - 2023"
+        );
+        assert_eq!(panel::fossil(None, 1_680_523_200), "2023");
     }
 
     #[test]

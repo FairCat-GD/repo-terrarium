@@ -343,6 +343,26 @@ impl Store {
         )?;
         rows.map(|row| row?.decode()).collect()
     }
+
+    /// The files that weighed in one of a terrarium's observations, heaviest first, as the
+    /// soil panel lists them; none for a row of another terrarium or no row at all.
+    pub fn contributors(
+        &self,
+        terrarium: TerrariumId,
+        id: ObservationId,
+    ) -> Result<Vec<Contributor>, StoreError> {
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT contributors FROM observations WHERE terrarium_id = ?1 AND id = ?2",
+                params![terrarium.get(), id.get()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        stored.map_or(Ok(Vec::new()), |json| {
+            serde_json::from_str(&json).map_err(|_| StoreError::Corrupt("contributors"))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -394,6 +414,24 @@ mod tests {
         assert_eq!(stored, expected);
         assert_eq!(stored_text(&fx, "source", ids[0]), "");
         assert_eq!(stored_text(&fx, "kind", ids[1]), "dead_code");
+    }
+
+    #[test]
+    fn a_row_s_contributors_are_read_back_for_its_own_terrarium_only() {
+        let mut fx = Fixture::new();
+        let ours = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
+        let theirs = fx.store.create_terrarium(&new_terrarium(2)).unwrap();
+        let with = record(ObservationKind::Coverage, 100);
+        assert!(!with.contributors.is_empty());
+        let mut without = record(ObservationKind::Coverage, 101);
+        without.contributors.clear();
+        let a = fx.store.append_observation(ours, &with).unwrap();
+        let b = fx.store.append_observation(ours, &without).unwrap();
+        assert_eq!(fx.store.contributors(ours, a).unwrap(), with.contributors);
+        assert_eq!(fx.store.contributors(ours, b).unwrap(), []);
+        assert_eq!(fx.store.contributors(theirs, a).unwrap(), []);
+        let missing = ObservationId::new(b.get() + 100);
+        assert_eq!(fx.store.contributors(ours, missing).unwrap(), []);
     }
 
     #[test]

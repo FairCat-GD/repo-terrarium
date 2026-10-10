@@ -353,6 +353,7 @@ mod tests {
 
     use super::*;
     use crate::clock::ManualClock;
+    use crate::details::Details;
     use crate::live::{Branch, News, RefreshStats, Replay};
     use crate::schedule::Cause;
 
@@ -375,6 +376,7 @@ mod tests {
                 snapshot: Some(Snapshot {
                     scene: terrarium_truth::project(&state),
                     report: state.report(),
+                    details: Details::default(),
                     branch: Branch::Named("main".into()),
                     notes: News::default(),
                     stats: RefreshStats {

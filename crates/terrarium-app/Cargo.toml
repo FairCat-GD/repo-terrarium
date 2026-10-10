@@ -42,6 +42,9 @@ dev = []
 
 [dev-dependencies]
 terrarium-adapters = { workspace = true, features = ["fixture"] }
+# The soil panel's pages as pictures, pinned as compose pins it.
+insta = { version = "=1.48.0", default-features = false }
+sha2.workspace = true
 
 [lints]
 workspace = true

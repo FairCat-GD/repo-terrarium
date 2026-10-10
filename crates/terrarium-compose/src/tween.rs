@@ -34,6 +34,14 @@ pub mod durations {
     pub const LABEL_CYCLE_MS: u32 = 20_000;
     /// The label's crossfade between lines, and between one set of lines and the next.
     pub const LABEL_FADE_MS: u32 = 1500;
+    /// The soil panel rising out of the soil band, or lowering into it.
+    pub const RISE_MS: u32 = 300;
+    /// A new page of the panel covering the one shown, then the old one falling.
+    pub const PAGE_MS: u32 = 300;
+    /// The panel's row pointer moving from one row to another.
+    pub const POINTER_MS: u32 = 150;
+    /// A hover label over a monument or a fossil fading in or out.
+    pub const TAG_MS: u32 = 300;
     /// Dim mode settling in, slowly, once the machine has been idle.
     pub const DIM_DOWN_MS: u32 = 10_000;
     /// Dim mode lifting when someone is back: quick, but still a fade.

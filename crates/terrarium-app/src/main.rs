@@ -36,6 +36,7 @@ mod replay;
 mod sandbox;
 mod settings;
 mod shell;
+mod soil;
 mod strip;
 
 use std::process::ExitCode;

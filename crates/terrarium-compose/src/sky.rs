@@ -42,6 +42,27 @@ impl LocalDate {
         let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
         era * 146_097 + day_of_era - 719_468
     }
+
+    /// The date `days` after 1970-01-01, the inverse of [`LocalDate::days_since_epoch`]
+    /// (Howard Hinnant's `civil_from_days`). The date of a UTC moment, as the soil panel and the
+    /// label name past moments.
+    pub fn from_days_since_epoch(days: i64) -> LocalDate {
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let day_of_era = z.rem_euclid(146_097);
+        let year_of_era =
+            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let mp = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = year_of_era + era * 400 + i64::from(month <= 2);
+        LocalDate {
+            year: i32::try_from(year).unwrap_or(i32::MAX),
+            month: u8::try_from(month).unwrap_or(1),
+            day: u8::try_from(day).unwrap_or(1),
+        }
+    }
 }
 
 /// The eight phases of the moon, each centred on its principal moment.
@@ -193,6 +214,29 @@ impl Drift {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn days_and_dates_round_trip() {
+        assert_eq!(
+            LocalDate::from_days_since_epoch(0),
+            LocalDate::new(1970, 1, 1)
+        );
+        assert_eq!(
+            LocalDate::from_days_since_epoch(19_730),
+            LocalDate::new(2024, 1, 8)
+        );
+        assert_eq!(
+            LocalDate::from_days_since_epoch(-1),
+            LocalDate::new(1969, 12, 31)
+        );
+        for days in (-800_000..800_000)
+            .step_by(997)
+            .chain([59, 60, 11_016, 11_017])
+        {
+            let date = LocalDate::from_days_since_epoch(days);
+            assert_eq!(date.days_since_epoch(), days, "{date:?}");
+        }
+    }
+
     use super::*;
     use crate::tween::Millis;
 

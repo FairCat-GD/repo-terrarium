@@ -108,6 +108,24 @@ pub fn fit(text: &str, limit: usize) -> String {
         .collect()
 }
 
+/// As [`fit`], keeping the end of the line rather than its start: a path keeps its file's name,
+/// and a longer one starts with `~`.
+pub fn fit_tail(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit {
+        return fit(text, limit);
+    }
+    let ascii = text
+        .chars()
+        .skip(count - limit.saturating_sub(1))
+        .map(|c| if c.is_ascii() { c } else { '?' });
+    (limit > 0)
+        .then_some('~')
+        .into_iter()
+        .chain(ascii)
+        .collect()
+}
+
 /// The main label: the stone plate with one line of body text in its text inset, in
 /// `soil.deep`.
 #[derive(Clone, Copy, Debug)]
@@ -180,6 +198,15 @@ mod tests {
             .find(|(_, glyph)| *glyph == id)
             .map(|(c, _)| *c)
             .expect("a glyph")
+    }
+
+    #[test]
+    fn a_path_keeps_its_end() {
+        assert_eq!(fit_tail("src/fern.rs", 11), "src/fern.rs");
+        assert_eq!(fit_tail("src/moss/fern.rs", 10), "~s/fern.rs");
+        assert_eq!(fit_tail("src/m\u{f6}ss.rs", 20), "src/m?ss.rs");
+        assert_eq!(fit_tail("src/fern.rs", 1), "~");
+        assert_eq!(fit_tail("src/fern.rs", 0), "");
     }
 
     #[test]

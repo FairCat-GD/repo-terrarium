@@ -15,7 +15,8 @@ use crate::domain::{Climate, Reading};
 use crate::fixed::{Q16, Q32};
 use crate::time::Tick;
 use crate::tuning::{
-    ACTIVITY_DIVISOR, ACTIVITY_RAIN_WEIGHT, ACTIVITY_WIND_WEIGHT, NEUTRAL, TREND_STEP, TREND_TICKS,
+    ACTIVITY_DIVISOR, ACTIVITY_RAIN_WEIGHT, ACTIVITY_WIND_WEIGHT, NEUTRAL, TERRAIN_TREND_PERCENT,
+    TREND_STEP, TREND_TICKS,
 };
 
 /// The climate as one day's close left it.
@@ -35,6 +36,8 @@ pub struct DailyClimate {
     pub wind: Q16,
     pub health: Q16,
     pub activity: Q16,
+    /// The default tip's text lines.
+    pub terrain: u64,
 }
 
 canonical_struct!(DailyClimate {
@@ -48,6 +51,7 @@ canonical_struct!(DailyClimate {
     wind,
     health,
     activity,
+    terrain,
 });
 
 /// Health is the lower of light and soil, an unknown one counting as neutral (I-3).
@@ -94,6 +98,7 @@ pub struct Trends {
     pub dead_code: Option<Trend>,
     pub complexity: Option<Trend>,
     pub todo_density: Option<Trend>,
+    pub terrain: Option<Trend>,
 }
 
 canonical_struct!(Trends {
@@ -105,6 +110,7 @@ canonical_struct!(Trends {
     dead_code,
     complexity,
     todo_density,
+    terrain,
 });
 
 impl Trends {
@@ -129,8 +135,26 @@ impl Trends {
             dead_code: between(|r| r.dead_code),
             complexity: between(|r| r.complexity),
             todo_density: between(|r| r.todo_density),
+            terrain: terrain_trend(newest.map(|r| r.terrain), older.map(|r| r.terrain)),
         }
     }
+}
+
+/// Terrain moves when the line count changed by at least [`TERRAIN_TREND_PERCENT`] of what it
+/// was; from no lines, any lines are a rise.
+fn terrain_trend(now: Option<u64>, before: Option<u64>) -> Option<Trend> {
+    let (now, before) = (now?, before?);
+    let percent = |lines: u64| u128::from(lines) * 100;
+    let step = u128::from(before) * u128::from(TERRAIN_TREND_PERCENT);
+    Some(if now == before {
+        Trend::Flat
+    } else if now > before && percent(now - before) >= step {
+        Trend::Up
+    } else if now < before && percent(before - now) >= step {
+        Trend::Down
+    } else {
+        Trend::Flat
+    })
 }
 
 fn trend(now: Option<Q16>, before: Option<Q16>) -> Option<Trend> {
@@ -196,6 +220,7 @@ mod tests {
             wind: Q16::ONE,
             health,
             activity: Q16::HALF,
+            terrain: 0,
         }
     }
 
@@ -252,5 +277,26 @@ mod tests {
             record(24 + 168, Some(base.saturating_sub(Q16::EPSILON)), base),
         ];
         assert_eq!(Trends::of(&small).light, Some(Trend::Flat));
+    }
+
+    #[test]
+    fn terrain_moves_by_two_percent_of_its_lines() {
+        let week = |before: u64, now: u64| {
+            let mut old = record(24, None, NEUTRAL);
+            old.terrain = before;
+            let mut new = record(24 + 168, None, NEUTRAL);
+            new.terrain = now;
+            Trends::of(&[old, new]).terrain
+        };
+        assert_eq!(week(1000, 1020), Some(Trend::Up));
+        assert_eq!(week(1000, 1019), Some(Trend::Flat));
+        assert_eq!(week(1000, 980), Some(Trend::Down));
+        assert_eq!(week(1000, 981), Some(Trend::Flat));
+        assert_eq!(week(0, 0), Some(Trend::Flat));
+        assert_eq!(week(0, 1), Some(Trend::Up));
+        assert_eq!(week(u64::MAX, 0), Some(Trend::Down));
+        assert_eq!(week(0, u64::MAX), Some(Trend::Up));
+        // Less than a week of records has no trend.
+        assert_eq!(Trends::of(&[record(24, None, NEUTRAL)]).terrain, None);
     }
 }

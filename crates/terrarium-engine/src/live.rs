@@ -50,6 +50,7 @@ use terrarium_truth::{
 };
 
 use crate::clock::{Clock, SystemClock};
+use crate::details::{self, Details, FileCache, Found, Sources};
 use crate::lifecycle::{self, stored_overrides};
 use crate::observe;
 use crate::schedule::DEBOUNCE;
@@ -161,6 +162,8 @@ pub struct RefreshStats {
 pub struct Snapshot {
     pub scene: SceneInput,
     pub report: ClimateReport,
+    /// What the soil panel and the hover labels say beside the report.
+    pub details: Details,
     pub branch: Branch,
     /// What happened that the label notes once; each is carried by one snapshot.
     pub notes: News,
@@ -274,6 +277,7 @@ struct Newest {
 struct Shown {
     scene: SceneInput,
     report: ClimateReport,
+    details: Details,
     branch: Branch,
 }
 
@@ -299,6 +303,10 @@ pub struct Live {
     history: Option<History>,
     observations: Vec<Observation>,
     newest: BTreeMap<Format, Newest>,
+    /// Which reports the last look at the worktree found.
+    found: Found,
+    /// The files behind the readings shown, by observation.
+    files: FileCache,
     /// The state before the open hour.
     base: Option<SimState>,
     /// The `next_tick` of the cached state last written.
@@ -378,6 +386,8 @@ impl Live {
             history: None,
             observations,
             newest,
+            found: Found::default(),
+            files: FileCache::default(),
             base,
             cached_tick,
             view: None,
@@ -495,8 +505,9 @@ impl Live {
         let root = git.workdir().map(Path::to_path_buf);
         let mut follow_up = None;
         if refresh.reports {
-            let (records, wait) = self.read_reports(root.as_deref(), &head);
+            let (records, wait, found) = self.read_reports(root.as_deref(), &head);
             follow_up = wait;
+            self.found = found;
             for (format, record) in records {
                 self.append(Some(format), record)?;
                 recorded = true;
@@ -520,10 +531,12 @@ impl Live {
         if let Err(err) = self.remember_seen() {
             problem.get_or_insert(err.into());
         }
+        let details = self.details(&head)?;
         let view = self.view.as_ref().ok_or(MISSING_VIEW)?;
         let shown = Shown {
             scene,
             report: view.live.report(),
+            details,
             branch: match head.branch {
                 Some(name) => Branch::Named(name),
                 None => Branch::Detached(head.commit),
@@ -557,6 +570,34 @@ impl Live {
         })
     }
 
+    /// What the panel and the hover labels say of the state shown, with HEAD at `head`.
+    fn details(&mut self, head: &ObservationHead) -> Result<Details, Fault> {
+        let Live {
+            store,
+            terrarium,
+            history,
+            observations,
+            found,
+            files,
+            view,
+            ..
+        } = self;
+        let view = view.as_ref().ok_or(MISSING_VIEW)?;
+        let history = history.as_ref().ok_or(MISSING_HISTORY)?;
+        let sources = Sources {
+            state: &view.live,
+            grid: history.grid,
+            commits: &history.commits,
+            observations,
+            head,
+            found: *found,
+        };
+        let terrarium = terrarium.id;
+        Ok(details::details(&sources, files, &mut |id| {
+            store.contributors(terrarium, ObservationId::new(id))
+        })?)
+    }
+
     /// The snapshot of `shown`, when the strip needs one: it shows something new, or the
     /// refresh read new history or recorded something. It carries the news held; a simulation
     /// note it carries is recorded as given for this version.
@@ -580,6 +621,7 @@ impl Live {
         Some(Snapshot {
             scene: shown.scene.clone(),
             report: shown.report.clone(),
+            details: shown.details.clone(),
             branch: shown.branch.clone(),
             notes,
             stats,
@@ -708,21 +750,26 @@ impl Live {
     }
 
     /// Reads the coverage report, the test report and the status file that have been still
-    /// long enough, and returns what is new among them, oldest file first, and when to look
-    /// again at the rest.
+    /// long enough, and returns what is new among them, oldest file first, when to look again
+    /// at the rest, and which reports the worktree has.
     fn read_reports(
         &self,
         root: Option<&Path>,
         head: &ObservationHead,
-    ) -> (Vec<(Format, ObservationRecord)>, Option<Duration>) {
+    ) -> (Vec<(Format, ObservationRecord)>, Option<Duration>, Found) {
         let mut wait: Option<Duration> = None;
+        let mut found = Found::default();
         let mut defer = |left: Duration| wait = Some(wait.map_or(left, |w| w.min(left)));
         let mut reports: Vec<Report> = Vec::new();
         // Reports live in the worktree; the status file lives in the data directory, so a bare
         // repository has one too.
         if let Some(root) = root {
-            let found = discovery::locate_reports(root, &self.overrides);
-            for located in [found.coverage.located(), found.test_report.located()]
+            let located = discovery::locate_reports(root, &self.overrides);
+            found = Found {
+                coverage: located.coverage.located().is_some(),
+                test_report: located.test_report.located().is_some(),
+            };
+            for located in [located.coverage.located(), located.test_report.located()]
                 .into_iter()
                 .flatten()
             {
@@ -755,6 +802,7 @@ impl Live {
                 .map(|(_, format, record)| (format, record))
                 .collect(),
             wait,
+            found,
         )
     }
 

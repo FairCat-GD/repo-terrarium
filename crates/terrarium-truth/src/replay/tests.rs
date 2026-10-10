@@ -111,7 +111,15 @@ fn a_stale_reading_keeps_its_value() {
             since_tick: Tick::new(5),
         }
     );
-    assert_eq!(fresh.daily, stale.daily);
+    // The merge's lines move the terrain, and nothing else the days record.
+    let without_terrain = |state: &SimState| -> Vec<DailyClimate> {
+        let mut daily = state.daily.clone();
+        for record in &mut daily {
+            record.terrain = 0;
+        }
+        daily
+    };
+    assert_eq!(without_terrain(&fresh), without_terrain(&stale));
     assert_eq!(fresh.timeline, stale.timeline);
 }
 
@@ -412,7 +420,7 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 7\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 8\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())

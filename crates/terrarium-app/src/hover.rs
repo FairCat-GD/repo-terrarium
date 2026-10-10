@@ -1,4 +1,5 @@
-//! The pointer over the strip, in native pixels.
+//! The pointer over the strip, in native pixels: the scene's, as the probe records it, and the
+//! viewport's, which the soil panel and the hover labels are hit-tested in.
 
 use serde::Serialize;
 use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
@@ -35,6 +36,25 @@ pub fn to_native(x: f64, y: f64, scale: &StripScale) -> NativePoint {
     } else {
         NativePoint::Padding
     }
+}
+
+/// A pixel of the viewport: the scene and the columns either side of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Maps a position in the window's physical pixels to the viewport, after the integer scale;
+/// `None` in the letterbox or outside the window.
+pub fn to_viewport(x: f64, y: f64, scale: &StripScale) -> Option<ViewportPoint> {
+    let (x, y) = (whole_pixel(x)?, whole_pixel(y)?);
+    let x = x.checked_sub(scale.image_x)? / scale.scale;
+    let y = y / scale.scale;
+    (x < scale.viewport().width() && y < NATIVE_HEIGHT).then(|| ViewportPoint {
+        x: x.cast_signed(),
+        y: y.cast_signed(),
+    })
 }
 
 /// The pixel a coordinate falls in, or `None` left of or above the window.
@@ -120,6 +140,22 @@ mod tests {
         assert_eq!(to_native(500.0, 296.0, &scale), NativePoint::Padding);
         assert_eq!(to_native(-0.5, 10.0, &scale), NativePoint::Padding);
         assert_eq!(to_native(500.0, f64::NAN, &scale), NativePoint::Padding);
+    }
+
+    #[test]
+    fn physical_pixels_map_to_the_viewport_beside_the_scene_too() {
+        let scale = scale();
+        let at = |x, y| to_viewport(x, y, &scale);
+        assert_eq!(at(0.0, 0.0), Some(ViewportPoint { x: 0, y: 0 }));
+        assert_eq!(at(3.9, 3.9), Some(ViewportPoint { x: 0, y: 0 }));
+        assert_eq!(at(4.0, 4.0), Some(ViewportPoint { x: 1, y: 1 }));
+        // The scene's first column is the viewport's 58th.
+        assert_eq!(at(232.0, 292.0), Some(ViewportPoint { x: 58, y: 73 }));
+        assert_eq!(at(3023.9, 295.9), Some(ViewportPoint { x: 755, y: 73 }));
+        assert_eq!(at(3024.0, 10.0), None);
+        assert_eq!(at(10.0, 296.0), None);
+        assert_eq!(at(-0.5, 10.0), None);
+        assert_eq!(at(f64::NAN, 10.0), None);
     }
 
     #[test]

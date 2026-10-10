@@ -23,6 +23,7 @@ use muda::MenuId;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NativeImage, Viewport};
+use terrarium_compose::panel::{self, Hover};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::scale::{SizeStep, StripScale};
 use terrarium_compose::tween::Millis;
@@ -52,10 +53,10 @@ use crate::egui_host::WindowKind;
 use crate::feed::Overrides;
 use crate::feed::{Feed, Feeder, Os};
 use crate::hotkey::{self, RaiseHotkey};
-use crate::hover::HoverTracker;
+use crate::hover::{self, HoverTracker, ViewportPoint};
 use crate::instance::{Instance, RequestWatch};
 use crate::lifecycle::{self, Job, Outcome};
-use crate::live::{Changed, Launch, LiveView};
+use crate::live::{self, Changed, Launch, LiveView};
 use crate::login::{self, LoginItem};
 use crate::menu::{self, StripMenu};
 use crate::monitor;
@@ -66,6 +67,7 @@ use crate::probe::{Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
 use crate::settings::{RepoFacts, SettingsForm};
 use crate::shell::{Intent, Picking, Shell};
+use crate::soil::{Hits, SoilPanel};
 
 /// Until settings exist, the strip uses the default edge and size.
 const EDGE: Edge = Edge::Bottom;
@@ -89,7 +91,19 @@ enum Scene {
         feeder: Box<Feeder>,
         /// The moment the composer's clock counts from.
         origin: Instant,
+        /// What the pointer has the soil panel and the hover labels do.
+        soil: SoilPanel,
     },
+}
+
+/// What the pointer did over the strip.
+#[derive(Clone, Copy, Debug)]
+enum Pointer {
+    /// Moved to a pixel of the viewport, or off its picture.
+    Moved(Option<ViewportPoint>),
+    /// The left button went down where it is.
+    Pressed,
+    Left,
 }
 
 impl Scene {
@@ -119,20 +133,77 @@ impl Scene {
             )),
             feeder,
             origin: Instant::now(),
+            soil: SoilPanel::default(),
         }
     }
 
-    /// Moves the composer toward what the connected repository now shows.
+    /// Moves the composer toward what the connected repository now shows, an open page of the
+    /// soil panel worded anew.
     fn show(&mut self, view: &LiveView, now: Instant) {
         if let Scene::Living {
             living,
             feeder,
             origin,
+            soil,
         } = self
         {
             let at = Self::millis(*origin, now);
             feeder.show(view.scene(), view.label(), at, &Os::read());
+            feeder.set_hover(Self::worded(living, soil, view));
             living.update(feeder.scene(), &feeder.overlay(), at);
+        }
+    }
+
+    /// The hover layer the soil panel has, worded from what the connected repository shows.
+    fn worded(living: &Living, soil: &SoilPanel, view: &LiveView) -> Hover {
+        soil.hover(
+            view.panel(),
+            live::wall_secs(),
+            living.catalog(),
+            living.columns(),
+        )
+    }
+
+    /// Moves the soil panel and the hover labels as the pointer has them, while the connected
+    /// repository is shown.
+    fn point(&mut self, pointer: Pointer, view: &LiveView, now: Instant) {
+        let Scene::Living {
+            living,
+            feeder,
+            origin,
+            soil,
+        } = self
+        else {
+            return;
+        };
+        if *feeder.feed() != Feed::Live {
+            return;
+        }
+        let at = Self::millis(*origin, now);
+        let drawn = feeder.hover().panel.as_ref().and_then(|shown| {
+            panel::layout(
+                living.catalog(),
+                &shown.page,
+                shown.anchor,
+                living.columns(),
+            )
+        });
+        let hits = |landmark| Hits {
+            panel: drawn.as_ref(),
+            landmark,
+        };
+        match pointer {
+            Pointer::Moved(point) => {
+                let landmark = point.and_then(|p| living.landmark_at(p.x, p.y, at));
+                soil.moved(point, &hits(landmark));
+            }
+            Pointer::Pressed => soil.pressed(&hits(None)),
+            Pointer::Left => soil.left(),
+        }
+        let hover = Self::worded(living, soil, view);
+        if hover != *feeder.hover() {
+            living.hover(&hover, at);
+            feeder.set_hover(hover);
         }
     }
 
@@ -171,10 +242,17 @@ impl Scene {
             living,
             feeder,
             origin,
+            soil,
         } = self
         {
             let at = Self::millis(*origin, now);
+            let dim = feeder.overlay().dim;
             if (force || feeder.due() <= at) && feeder.tick(at, &Os::read(), force) {
+                // Dim mode closes the panel, pinned or not, so nothing static stays (N-12).
+                if !dim && feeder.overlay().dim && soil.is_open() {
+                    soil.dimmed();
+                    feeder.set_hover(Hover::default());
+                }
                 living.update(feeder.scene(), &feeder.overlay(), at);
             }
         }
@@ -196,6 +274,7 @@ impl Scene {
             living,
             feeder,
             origin,
+            ..
         } = self
         {
             let at = Self::millis(*origin, now);
@@ -212,6 +291,7 @@ impl Scene {
                 living,
                 feeder,
                 origin,
+                ..
             } if *feeder.feed() == Feed::Live => {
                 living.label_step_done(index, Self::millis(*origin, now))
             }
@@ -226,9 +306,13 @@ impl Scene {
             living,
             feeder,
             origin,
+            soil,
         } = self
         {
             let at = Self::millis(*origin, now);
+            // Another feed has no panel; back on the repository, it starts closed.
+            *soil = SoilPanel::default();
+            feeder.set_hover(Hover::default());
             feeder.choose(feed, overrides, at, &Os::read());
             living.update(feeder.scene(), &feeder.overlay(), at);
         }
@@ -856,6 +940,18 @@ impl Strip {
                 self.record(ProbeEvent::Occluded { occluded });
             }
             WindowEvent::Focused(focused) => self.record(ProbeEvent::Focused { focused }),
+            pointer @ (WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }) => self.pointer_input(view, &pointer),
+            _ => {}
+        }
+    }
+
+    /// The pointer over the strip: the probe records it, the right button opens the menu, and
+    /// the soil panel and the hover labels follow it.
+    fn pointer_input(&mut self, view: &View, event: &WindowEvent) {
+        match *event {
             WindowEvent::CursorEntered { .. } => {
                 if self.hover.enter() {
                     let activity = self.activity();
@@ -867,12 +963,15 @@ impl Strip {
                     let activity = self.activity();
                     self.record(ProbeEvent::PointerLeft(activity));
                 }
+                self.pointer(Pointer::Left);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let point = self.hover.moved(position.x, position.y, &view.scale);
                 if let Some(probe) = &mut self.probe {
                     probe.moved(point, pinning::app_is_active());
                 }
+                let point = hover::to_viewport(position.x, position.y, &view.scale);
+                self.pointer(Pointer::Moved(point));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -890,9 +989,24 @@ impl Strip {
                 {
                     view.pinning.show_menu(&view.window, menu.menu());
                 }
+                if button == MouseButton::Left {
+                    self.pointer(Pointer::Pressed);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Moves the soil panel and the hover labels as the pointer has them over a connected
+    /// repository's strip.
+    fn pointer(&mut self, pointer: Pointer) {
+        let (Some(scene), Some(connected)) = (
+            &mut self.scene,
+            self.repo.as_ref().and_then(|repo| repo.connected.as_ref()),
+        ) else {
+            return;
+        };
+        scene.point(pointer, &connected.live, Instant::now());
     }
 
     /// The note the label shows once has had its turn on the plate: it goes.
@@ -1397,6 +1511,7 @@ impl Strip {
             living,
             feeder,
             origin,
+            ..
         }) = &self.scene
         else {
             return None;

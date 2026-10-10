@@ -91,6 +91,13 @@ pub enum Subject {
     Label,
     /// The faint reflection that crosses the glass now and then.
     Sweep,
+    /// A hover label, by its serial number, over the landmark at a spot.
+    Tag {
+        serial: u16,
+        spot: u8,
+    },
+    /// The soil panel.
+    Panel,
 }
 
 impl Subject {
@@ -128,7 +135,9 @@ impl Subject {
             | Subject::Leaf(_)
             | Subject::Light
             | Subject::Label
-            | Subject::Sweep => false,
+            | Subject::Sweep
+            | Subject::Tag { .. }
+            | Subject::Panel => false,
         }
     }
 

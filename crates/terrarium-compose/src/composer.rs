@@ -43,6 +43,7 @@ use crate::frame::{
 };
 use crate::motion::{Clock, DIM_EVERY, Eras, Shaken, Snapshot, motion_turn, turn, turn_start};
 use crate::order::{KeyedDraw, Place, Subject, merged};
+use crate::panel::{Hover, Landmark};
 use crate::place::{Bands, FillForm, Placement, WeedForm, assign_spots, place};
 use crate::plant::{self, shows_bloom, shows_glow, sways};
 use crate::resident::{self, Enter, Resident, Segment, TRANSITION_MS, TurnPlan, Way};
@@ -62,6 +63,7 @@ use crate::world::{self, Kind, LABEL_X, LABEL_Y, Scenery, WorldLayout};
 
 mod event;
 mod ground;
+mod hover;
 
 const SHOWN: u8 = u8::MAX;
 const HALF_RESTYLE: u32 = RESTYLE_MS / 2;
@@ -86,6 +88,8 @@ pub struct OverlayInput {
     pub day_night: DayNight,
     /// Whether the machine has gone without input past the dim timeout.
     pub dim: bool,
+    /// The soil panel and a hover label, as the pointer has them.
+    pub hover: Hover,
 }
 
 impl OverlayInput {
@@ -96,6 +100,7 @@ impl OverlayInput {
             clock,
             day_night: DayNight::default(),
             dim: false,
+            hover: Hover::default(),
         }
     }
 }
@@ -290,7 +295,9 @@ fn item(subject: Subject) -> u64 {
         | Subject::Light
         | Subject::Label
         | Subject::Soil
-        | Subject::Sweep => 0,
+        | Subject::Sweep
+        | Subject::Tag { .. }
+        | Subject::Panel => 0,
     }
 }
 
@@ -577,6 +584,8 @@ pub struct Composer {
     /// The spot of each fossil a sinkhole names, by the fossil, while a mark names it: a fossil
     /// a rewrite took leaves its hole where it lay.
     sunk: BTreeMap<u32, u8>,
+    /// The soil panel and the hover labels.
+    hover: hover::HoverLayer,
 }
 
 /// A resident as drawn: how visible it is, what it was when last in the scene, and, through
@@ -629,6 +638,7 @@ impl Composer {
             stage: ground::Stage::default(),
             fresh: BTreeMap::new(),
             sunk: BTreeMap::new(),
+            hover: hover::HoverLayer::default(),
         }
     }
 
@@ -706,6 +716,7 @@ impl Composer {
         }
         self.note_left(now);
         self.update_label(&overlay.label, now);
+        self.hover.set(&overlay.hover, now);
         self.update_clock(overlay, now);
         let residents = self.update_residents(input, now);
         let snapshot = self.snapshot(input, overlay, now, residents);
@@ -1163,6 +1174,98 @@ impl Composer {
         wanted
     }
 
+    /// Moves only the hover layer toward `hover` from `now`, as [`Composer::update`] does with
+    /// the rest: a pointer's move never touches the scene. The frame at `now` does not change.
+    pub fn hover(&mut self, hover: &Hover, now: Millis) {
+        self.hover.set(hover, now);
+    }
+
+    /// The monument or fossil standing at `(x, y)` in the viewport at `now`, if any: its newest
+    /// look's sprite, its whole box.
+    pub fn landmark_at(
+        &self,
+        art: &Art,
+        table: &ArtTable,
+        x: i32,
+        y: i32,
+        now: Millis,
+    ) -> Option<Landmark> {
+        self.landmarks(art, table, now)
+            .into_iter()
+            .rev()
+            .find(|placed| placed.standing && crate::panel::contains(placed.area, x, y))
+            .map(|placed| placed.landmark)
+    }
+
+    /// Each monument and fossil drawn at `now`: its spot, where its newest look lies in the
+    /// viewport, where its hover label stands, and how visible it is. A label stands at a
+    /// place every look of its landmark shares, so it never moves when one changes.
+    fn landmarks(&self, art: &Art, table: &ArtTable, now: Millis) -> Vec<hover::Placed> {
+        let catalog = &art.catalog;
+        let inset = self.viewport.inset();
+        // Over the tallest stone any age has.
+        let stone_top = MonumentAge::ALL
+            .iter()
+            .filter_map(|&age| table.monument(age).first())
+            .map(|&stone| Draw::anchored(catalog, stone, 0, PLANT_GROUND_Y).y)
+            .min()
+            .unwrap_or(PLANT_GROUND_Y);
+        // Over the middle of the widest fossil any form has.
+        let fossil_half = FossilForm::ALL
+            .iter()
+            .map(|&form| i32::from(catalog.sprite(table.fossil(form)).rect.w))
+            .max()
+            .unwrap_or(0)
+            / 2;
+        let mut out = Vec::new();
+        for (&subject, entry) in &self.entries {
+            let looks = &entry.parts[0];
+            let (Some(newest), Some(opacity)) = (
+                looks.last(),
+                looks.iter().map(|look| look.opacity.value(now)).max(),
+            ) else {
+                continue;
+            };
+            let Some(sprite) = newest.piece.sprite(table, self.salt, subject, 0) else {
+                continue;
+            };
+            let rect = catalog.sprite(sprite).rect;
+            let (landmark, spot, draw, top) = match subject {
+                Subject::Monument { id, spot } => {
+                    let x = self.world.monument(spot);
+                    let draw = Draw::anchored(catalog, sprite, x, PLANT_GROUND_Y);
+                    (Landmark::Monument(id), spot, draw, stone_top)
+                }
+                Subject::Fossil { id, spot } => {
+                    let (x, y) = (self.world.fossil(spot), FRAME_HEIGHT - i32::from(rect.h));
+                    let draw = Draw::new(catalog, sprite, x, y);
+                    (Landmark::Fossil(id), spot, draw, GROUND)
+                }
+                _ => continue,
+            };
+            let area = Area {
+                x: draw.x + inset,
+                y: draw.y,
+                w: i32::from(rect.w),
+                h: i32::from(rect.h),
+            };
+            let centre = match landmark {
+                Landmark::Monument(_) => self.world.monument(spot) + inset,
+                Landmark::Fossil(_) => self.world.fossil(spot) + inset + fossil_half,
+            };
+            out.push(hover::Placed {
+                landmark,
+                spot,
+                area,
+                centre,
+                top,
+                opacity,
+                standing: newest.opacity.target() == SHOWN,
+            });
+        }
+        out
+    }
+
     /// Whether line `index` of the label's lines showing at `now` has had its turn on the plate:
     /// the cycle has moved on from it at least once. A set of one line never moves on, and a
     /// new set starts its cycle again.
@@ -1299,6 +1402,7 @@ impl Composer {
         }
         next.take(self.motion_change(art, table, now));
         next.take(self.show_next(art, table, now));
+        next.take(self.hover.next_change(art, self.viewport_width(), now));
         next.0
     }
 
@@ -1364,7 +1468,7 @@ impl Composer {
             .chain([self.dim])
             .chain(self.residents.values().map(|shown| shown.opacity))
             .map(Tween::end)
-            .chain([self.residents_settle])
+            .chain([self.residents_settle, self.hover.end()])
             .chain(self.show_end())
             .max()
             .unwrap_or_default()
@@ -1444,6 +1548,14 @@ impl Composer {
         self.push_drifts(art, table, now, &mut keyed);
         self.push_residents(art, table, palette_mix, now, &mut keyed);
         self.push_ground(art, table, palette_mix, now, &mut keyed);
+        // Only a label needs to know where the landmarks stand.
+        let landmarks = if self.hover.has_tags() {
+            self.landmarks(art, table, now)
+        } else {
+            Vec::new()
+        };
+        self.hover
+            .push(art, &landmarks, self.viewport_width(), now, &mut keyed);
         // The scene stands in the middle of the viewport; everything else is laid out across
         // the viewport already.
         let inset = self.viewport.inset();
@@ -1657,6 +1769,8 @@ impl Composer {
             Subject::Fungus(i) => push(place, None, ground(self.world.fungus(i))),
             Subject::Scenery(_)
             | Subject::Label
+            | Subject::Tag { .. }
+            | Subject::Panel
             | Subject::Soil
             | Subject::Sweep
             | Subject::Resident { .. }
@@ -1965,11 +2079,13 @@ fn timing(subject: Subject, light_ms: u32) -> Timing {
         | Subject::Litter(_)
         | Subject::Fungus(_)
         | Subject::Mark { .. }
-        // Never entries: the label keeps its own looks, timed by `update_label`, the scenery
-        // never changes, the soil and the sweep move with the clock alone, residents keep
-        // their own looks, and an event's pieces are its choreography's. They are here only to
-        // keep the match whole.
+        // Never entries: the label and the hover layer keep their own looks, the scenery never
+        // changes, the soil and the sweep move with the clock alone, residents keep their own
+        // looks, and an event's pieces are its choreography's. They are here only to keep the
+        // match whole.
         | Subject::Label
+        | Subject::Tag { .. }
+        | Subject::Panel
         | Subject::Scenery(_)
         | Subject::Soil
         | Subject::Sweep
@@ -2528,6 +2644,60 @@ mod tests {
                 (i32::from(point.x), i32::from(point.y))
             );
         }
+    }
+
+    #[test]
+    fn a_landmark_is_found_where_it_is_drawn_and_nowhere_beside_it() {
+        let table = table();
+        let art = Art::embedded();
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.set_viewport(Viewport::new(700));
+        let mut input = preset::bare(PresentationState::Mature, Vec::new());
+        input.monuments = vec![terrarium_truth::scene::MonumentView {
+            id: 7,
+            age: MonumentAge::Young,
+            marks: 0,
+        }];
+        input.fossils = vec![terrarium_truth::scene::FossilView {
+            id: 9,
+            form: FossilForm::Bone,
+        }];
+        composer.update(&input, &overlay(&[]), Millis(0));
+        let now = composer.settled_at();
+        let drawn = |subject: Subject| -> Area {
+            let draw = of(&composer, &table, 0, now, subject)[0].draw;
+            let rect = art.catalog.sprite(draw.sprite).rect;
+            Area {
+                x: draw.x,
+                y: draw.y,
+                w: i32::from(rect.w),
+                h: i32::from(rect.h),
+            }
+        };
+        let stone = drawn(Subject::Monument {
+            id: 7,
+            spot: composer.monument_spots()[&7],
+        });
+        let fossil = drawn(Subject::Fossil {
+            id: 9,
+            spot: composer.fossil_spots()[&9],
+        });
+        let at = |composer: &Composer, x, y| composer.landmark_at(art, &table, x, y, now);
+        for (area, landmark) in [
+            (stone, Landmark::Monument(7)),
+            (fossil, Landmark::Fossil(9)),
+        ] {
+            let c = &composer;
+            assert_eq!(at(c, area.x, area.y), Some(landmark));
+            let corner = (area.x + area.w - 1, area.y + area.h - 1);
+            assert_eq!(at(c, corner.0, corner.1), Some(landmark));
+            assert_ne!(at(c, area.x - 1, area.y), Some(landmark));
+            assert_ne!(at(c, area.x + area.w, corner.1), Some(landmark));
+        }
+        // Leaving, it is no longer pointed at.
+        input.monuments.clear();
+        composer.update(&input, &overlay(&[]), now);
+        assert_eq!(at(&composer, stone.x, stone.y), None);
     }
 
     #[test]

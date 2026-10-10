@@ -5,6 +5,39 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-10
+
+The soil can be read: hovering it raises a panel with the terrarium's numbers, and the stones
+and fossils say when they came.
+
+### Added
+
+- **The soil panel.** Hovering the soil band raises a panel out of the soil, centred where the
+  pointer came in, and moving off it and the soil lowers it again. It lists light, soil, rain,
+  wind, weather, terrain and age, each with its value, which way it moved over the week, and a
+  mark when the reading is stale or unknown.
+  - A click pins the panel, so it stays when the pointer leaves; a click off it closes it.
+  - Light opens the files with the most uncovered lines, weather the files with failing tests,
+    and soil its three causes (dead code, complexity, TODO density), each of which opens its
+    files: the top 20, their paths cut at the start so the file's name shows. The title of a
+    lower page goes back up.
+  - A page with nothing to list says why: no coverage report found, no failing tests, and so
+    on.
+  - On a branch other than the default, light's page shows that branch's own coverage beside
+    the files, without applying it.
+  - Dim mode closes the panel, pinned or not.
+- **Hover labels.** A standing stone shows the year it was raised; a fossil shows the folder it
+  was and the year it was deleted.
+- **The label's notes** gain `settling N days` (the first two weeks of a repository's history)
+  and `dormant since <month>` (or the year, after eleven months). A note shown once, such as
+  `sim updated`, takes its turn before them.
+
+### Changed
+
+- **Terrain has a trend:** the panel shows whether the code grew or shrank by 2% or more over
+  the week. The simulation's version is 8: every terrarium replays once, and the label says
+  `sim updated`.
+
 ## [0.21.0] - 2026-10-10
 
 A repository is connected from a window, and the terrarium's life around it is in reach: open

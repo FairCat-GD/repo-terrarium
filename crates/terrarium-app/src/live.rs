@@ -2,18 +2,25 @@
 //! proxy, turned into the scene and the label.
 //!
 //! The label reads the repository's name, then `branch - weather`, then one note when one
-//! applies: `halted`, `repo not found` or the history read's progress; failing those, the
-//! simulation's update and a history rewrite, each until it has had its turn on the plate once.
-//! When the repository is missing or the engine halted, the scene freezes where it was: no new
-//! scene is shown until the repository is read again.
+//! applies: `halted`, `repo not found` or the history read's progress; failing those, `tuning`,
+//! then the simulation's update and a history rewrite, each until it has had its turn on the
+//! plate once; failing those, how many days the terrarium is still settling, or since when it
+//! has been dormant. A note shown once comes before those that last, so a dormancy of months
+//! never holds it back. When the repository is missing or the engine halted, the scene freezes
+//! where it was: no new scene is shown until the repository is read again.
+//!
+//! The view also keeps what the soil panel and the hover labels read: the climate report and
+//! the engine's details beside it.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use terrarium_compose::preset;
-use terrarium_engine::{Branch, Update};
+use terrarium_engine::{Branch, Details, Update};
 use terrarium_store::DataDir;
 use terrarium_truth::PresentationState;
+use terrarium_truth::climate::ClimateReport;
 use terrarium_truth::scene::{SceneInput, Weather};
 
 use crate::copy;
@@ -34,6 +41,15 @@ pub struct Launch {
 pub struct LiveView {
     scene: SceneInput,
     facts: LabelFacts,
+    /// What the soil panel reads, from the last snapshot.
+    panel: Option<PanelFacts>,
+}
+
+/// What the soil panel and the hover labels word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelFacts {
+    pub report: ClimateReport,
+    pub details: Details,
 }
 
 /// The facts the label words (`OverlayInput`).
@@ -51,8 +67,49 @@ pub struct Notes {
     pub halted: bool,
     pub repo_not_found: bool,
     pub progress: Option<u8>,
+    /// Truth runs on a dev build's tuning override; nothing sets it until the override exists.
+    pub tuning: bool,
     /// Notes shown once each, oldest first.
     pub once: Vec<Once>,
+    /// Days until rain and wind are read against the repository's own pace.
+    pub settling: Option<u32>,
+    /// When the terrarium went dormant, in Unix seconds, while it is.
+    pub dormant_since: Option<i64>,
+}
+
+/// The note the label shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Note {
+    Halted,
+    RepoNotFound,
+    Progress(u8),
+    Tuning,
+    Once(Once),
+    Settling(u32),
+    /// Dormant since that moment, in Unix seconds.
+    Dormant(i64),
+}
+
+impl Notes {
+    /// The note the label shows: the first that applies, the most pressing first, then those
+    /// shown once, then those that last.
+    pub fn showing(&self) -> Option<Note> {
+        if self.halted {
+            Some(Note::Halted)
+        } else if self.repo_not_found {
+            Some(Note::RepoNotFound)
+        } else if let Some(percent) = self.progress {
+            Some(Note::Progress(percent))
+        } else if self.tuning {
+            Some(Note::Tuning)
+        } else if let Some(&once) = self.once.first() {
+            Some(Note::Once(once))
+        } else if let Some(days) = self.settling {
+            Some(Note::Settling(days))
+        } else {
+            self.dormant_since.map(Note::Dormant)
+        }
+    }
 }
 
 /// A note the label shows once.
@@ -89,6 +146,7 @@ impl LiveView {
                 branch: None,
                 note: Notes::default(),
             },
+            panel: None,
         }
     }
 
@@ -96,12 +154,23 @@ impl LiveView {
         &self.scene
     }
 
+    /// The label's lines now.
     pub fn label(&self) -> Vec<String> {
-        copy::live_label(&self.facts)
+        self.label_at(wall_secs())
+    }
+
+    /// The label's lines with the wall clock at `now`, in Unix seconds.
+    pub fn label_at(&self, now: i64) -> Vec<String> {
+        copy::live_label(&self.facts, now)
+    }
+
+    /// What the soil panel reads, once a snapshot has said.
+    pub fn panel(&self) -> Option<&PanelFacts> {
+        self.panel.as_ref()
     }
 
     pub fn apply(&mut self, update: Update) -> Changed {
-        let before = self.facts.clone();
+        let before = (self.facts.clone(), self.panel.clone());
         let notes = &mut self.facts.note;
         match update {
             Update::Halted => notes.halted = true,
@@ -119,7 +188,13 @@ impl LiveView {
                         notes.once.push(once);
                     }
                 }
+                notes.settling = snapshot.report.settling_days_left;
+                notes.dormant_since = snapshot.details.dormant_since;
                 self.facts.branch = Some((snapshot.branch, snapshot.scene.weather));
+                self.panel = Some(PanelFacts {
+                    report: snapshot.report,
+                    details: snapshot.details,
+                });
                 if snapshot.scene != self.scene {
                     self.scene = snapshot.scene;
                     return Changed::Scene;
@@ -127,7 +202,7 @@ impl LiveView {
             }
             Update::Problem(problem) => eprintln!("{}", copy::engine_problem(&problem)),
         }
-        if self.facts == before {
+        if (&self.facts, &self.panel) == (&before.0, &before.1) {
             Changed::Nothing
         } else {
             Changed::Label
@@ -158,11 +233,7 @@ impl LiveView {
 
     /// The index in [`label`](Self::label) of the note shown once, while one shows.
     pub fn once_line(&self) -> Option<usize> {
-        let note = &self.facts.note;
-        let shows = !note.halted
-            && !note.repo_not_found
-            && note.progress.is_none()
-            && !note.once.is_empty();
+        let shows = matches!(self.facts.note.showing(), Some(Note::Once(_)));
         shows.then(|| self.label().len() - 1)
     }
 
@@ -174,6 +245,15 @@ impl LiveView {
         self.facts.note.once.remove(0);
         Changed::Label
     }
+}
+
+/// The wall clock in Unix seconds, for the label's dates.
+pub fn wall_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Runs the strip on the repository at `repo`, or, with none, on the one connected last; with
@@ -226,7 +306,6 @@ mod tests {
 
     use terrarium_engine::schedule::Cause;
     use terrarium_engine::{News, Problem, RefreshStats, Replay, Snapshot};
-    use terrarium_truth::climate::ClimateReport;
     use terrarium_truth::{Basis, CommitId, RepoSeed, SimState, TickGrid};
 
     use super::*;
@@ -247,13 +326,18 @@ mod tests {
             TickGrid::from_origin(0).unwrap(),
             "main",
         ));
-        let report: ClimateReport = state.report();
+        // Settled, unless a test says otherwise.
+        let report = ClimateReport {
+            settling_days_left: None,
+            ..state.report()
+        };
         Update::Snapshot(Box::new(Snapshot {
             scene: SceneInput {
                 weather,
                 ..terrarium_truth::project(&state)
             },
             report,
+            details: Details::default(),
             branch: Branch::Named("main".into()),
             notes,
             stats: RefreshStats {
@@ -350,6 +434,99 @@ mod tests {
         view.restarted("fern".into());
         assert_eq!(view.apply(snapshot(Weather::Storm, false)), Changed::Scene);
         assert_eq!(view.restarted("fern".into()), Changed::Nothing);
+    }
+
+    /// 2024-06-15, 12:00 UTC.
+    const JUNE: i64 = 1_718_452_800;
+    const DAY: i64 = 86_400;
+
+    fn noted(view: &mut LiveView, settling: Option<u32>, dormant_since: Option<i64>) {
+        let Update::Snapshot(mut snapshot) = snapshot(Weather::Clear, false) else {
+            unreachable!()
+        };
+        snapshot.report.settling_days_left = settling;
+        snapshot.details.dormant_since = dormant_since;
+        view.apply(Update::Snapshot(snapshot));
+    }
+
+    #[test]
+    fn a_settling_terrarium_counts_its_days_and_a_dormant_one_names_its_month_or_year() {
+        let mut view = LiveView::new("moss".into(), None);
+        noted(&mut view, Some(9), None);
+        assert_eq!(
+            view.label_at(JUNE),
+            ["moss", "main - clear", "settling 9 days"]
+        );
+        noted(&mut view, Some(1), None);
+        assert_eq!(view.label_at(JUNE).last().unwrap(), "settling 1 day");
+        noted(&mut view, None, Some(JUNE));
+        let at = |now: i64| view.label_at(now).last().cloned().unwrap();
+        assert_eq!(at(JUNE), "dormant since jun");
+        // Eleven months on, the month still says it; a year on, the year does.
+        assert_eq!(at(JUNE + 330 * DAY), "dormant since jun");
+        assert_eq!(at(JUNE + 366 * DAY), "dormant since 2024");
+        noted(&mut view, None, None);
+        assert_eq!(view.label_at(JUNE), ["moss", "main - clear"]);
+    }
+
+    #[test]
+    fn a_note_shown_once_comes_before_one_that_lasts() {
+        let mut view = LiveView::new("moss".into(), None);
+        noted(&mut view, None, Some(JUNE));
+        assert_eq!(view.once_line(), None);
+        let Update::Snapshot(mut news) = snapshot(Weather::Clear, true) else {
+            unreachable!()
+        };
+        news.details.dormant_since = Some(JUNE);
+        view.apply(Update::Snapshot(news));
+        assert_eq!(view.label_at(JUNE).last().unwrap(), "sim updated");
+        assert_eq!(view.once_line(), Some(2));
+        assert_eq!(view.once_shown(), Changed::Label);
+        assert_eq!(view.label_at(JUNE).last().unwrap(), "dormant since jun");
+        assert_eq!(view.once_line(), None);
+        // Tuning comes before both, and the pressing notes before it.
+        view.facts.note.tuning = true;
+        view.facts.note.once.push(Once::HistoryRewritten);
+        assert_eq!(view.label_at(JUNE).last().unwrap(), "tuning");
+        assert_eq!(view.once_line(), None);
+        view.apply(Update::Progress(5));
+        assert_eq!(view.label_at(JUNE).last().unwrap(), "history 5%");
+    }
+
+    #[test]
+    fn every_note_fits_the_plate() {
+        let mut notes = vec![
+            Note::Halted,
+            Note::RepoNotFound,
+            Note::Progress(100),
+            Note::Tuning,
+            Note::Once(Once::SimUpdated),
+            Note::Once(Once::HistoryRewritten),
+            Note::Settling(14),
+            Note::Settling(1),
+        ];
+        // Every month, and a year long ago and far ahead.
+        notes.extend((0..12).map(|month| Note::Dormant(JUNE + month * 31 * DAY)));
+        notes.extend([
+            Note::Dormant(-3_000_000_000),
+            Note::Dormant(250_000_000_000),
+        ]);
+        for note in notes {
+            let mut view = LiveView::new("moss".into(), None);
+            view.facts.note = Notes::default();
+            match note {
+                Note::Halted => view.facts.note.halted = true,
+                Note::RepoNotFound => view.facts.note.repo_not_found = true,
+                Note::Progress(percent) => view.facts.note.progress = Some(percent),
+                Note::Tuning => view.facts.note.tuning = true,
+                Note::Once(once) => view.facts.note.once.push(once),
+                Note::Settling(days) => view.facts.note.settling = Some(days),
+                Note::Dormant(since) => view.facts.note.dormant_since = Some(since),
+            }
+            assert_eq!(view.facts.note.showing(), Some(note));
+            let line = view.label_at(JUNE + 365 * DAY).pop().unwrap();
+            assert!(line.chars().count() <= 18, "{line:?} is too long");
+        }
     }
 
     #[test]

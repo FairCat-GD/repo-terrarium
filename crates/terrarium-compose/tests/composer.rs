@@ -29,13 +29,17 @@ use terrarium_compose::frame::{
 };
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::palette::Slot;
+use terrarium_compose::panel::{
+    Freshness, Hover, Landmark, Page, Panel, Row, Shape, Tag, Target, Trend,
+};
 use terrarium_compose::place::{CEILING, FLOOR};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::sky::{LocalDate, MoonPhase, moon_phase};
 use terrarium_compose::slots::{Band, PATTERN, band_cells, screen_third};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::tween::durations::{
-    APPEAR_MS, LABEL_CYCLE_MS, LABEL_FADE_MS, RESTYLE_MS, SHORTEST_MS, SKY_MS,
+    APPEAR_MS, LABEL_CYCLE_MS, LABEL_FADE_MS, POINTER_MS, RESTYLE_MS, RISE_MS, SHORTEST_MS, SKY_MS,
+    TAG_MS,
 };
 use terrarium_compose::variants::{ArtTable, art_key};
 use terrarium_compose::world::Scenery;
@@ -400,6 +404,92 @@ fn overlay(bits: u64) -> OverlayInput {
     }
 }
 
+const TITLES: [&str; 3] = ["climate", "soil", "a title longer than any page has"];
+const NAMES: [&str; 5] = [
+    "light",
+    "weather",
+    "src/moss/fern.rs",
+    "a/very/long/path/to/a/module/nested/deep/below/the/root.rs",
+    "",
+];
+const VALUES: [&str; 4] = ["0.78", "48k lines", "12", ""];
+const TRENDS: [Option<Trend>; 4] = [None, Some(Trend::Up), Some(Trend::Flat), Some(Trend::Down)];
+const FRESHNESS: [Option<Freshness>; 3] = [None, Some(Freshness::Stale), Some(Freshness::Unknown)];
+
+/// The hover layer as a pointer might leave it over `scene`: a panel or none, a page of up to
+/// 23 rows of either shape, anywhere along the strip, its pointer on a row or the title or
+/// nowhere; and a label over the scene's first monument or fossil, over one it lacks, or none.
+fn hover(bits: u64, scene: &SceneInput) -> Hover {
+    let panel = (field(bits, 0, 3) != 0).then(|| {
+        let shape = if field(bits, 2, 2) == 0 {
+            Shape::List
+        } else {
+            Shape::Files
+        };
+        let rows = (0..field(bits, 3, 24))
+            .map(|i| {
+                let at = |shift: u64| bits >> (8 + (i + shift) % 16);
+                Row {
+                    name: pick(&NAMES, at(0)).to_owned(),
+                    value: pick(&VALUES, at(1)).to_owned(),
+                    trend: pick(&TRENDS, at(2)),
+                    freshness: pick(&FRESHNESS, at(3)),
+                    opens: at(4) & 1 == 1,
+                }
+            })
+            .collect();
+        Panel {
+            page: Page {
+                title: pick(&TITLES, bits >> 20).to_owned(),
+                back: (bits >> 22) & 1 == 1,
+                shape,
+                rows,
+            },
+            anchor: i32::try_from(field(bits, 24, 880)).unwrap() - 20,
+            pointer: match field(bits, 34, 4) {
+                0 => None,
+                1 => Some(Target::Title),
+                _ => Some(Target::Row(usize::try_from(field(bits, 36, 9)).unwrap())),
+            },
+        }
+    });
+    let tag = match field(bits, 46, 5) {
+        0 => scene.monuments.first().map(|m| Tag {
+            landmark: Landmark::Monument(m.id),
+            text: "2023".to_owned(),
+        }),
+        1 => scene.fossils.first().map(|f| Tag {
+            landmark: Landmark::Fossil(f.id),
+            text: "src/old - 2021".to_owned(),
+        }),
+        2 => Some(Tag {
+            landmark: Landmark::Monument(u32::MAX),
+            text: "1999".to_owned(),
+        }),
+        _ => None,
+    };
+    Hover { panel, tag }
+}
+
+/// The hover layer after `before`: most often anew, but now and then the same page with its
+/// pointer moved, as a pointer passing over the rows has it.
+fn hover_after(bits: u64, scene: &SceneInput, before: &Hover) -> Hover {
+    match &before.panel {
+        Some(panel) if field(bits, 51, 3) == 0 => Hover {
+            panel: Some(Panel {
+                pointer: match field(bits, 54, 3) {
+                    0 => None,
+                    1 => Some(Target::Title),
+                    _ => Some(Target::Row(usize::try_from(field(bits, 57, 4)).unwrap())),
+                },
+                ..panel.clone()
+            }),
+            tag: before.tag.clone(),
+        },
+        _ => hover(bits, scene),
+    }
+}
+
 /// A valid scene of 0 to 40 plants, dressed, with its overlay.
 fn scene() -> impl Strategy<Value = (SceneInput, OverlayInput)> {
     (
@@ -421,13 +511,14 @@ fn scene() -> impl Strategy<Value = (SceneInput, OverlayInput)> {
 /// and perhaps new label lines or a new date.
 #[derive(Clone, Debug)]
 enum Next {
-    Fresh(SceneInput, OverlayInput),
+    Fresh(Box<(SceneInput, OverlayInput)>),
     Edited {
         edits: Vec<u32>,
         added: Vec<u64>,
         state: Option<u8>,
         world: u64,
         overlay: Option<u64>,
+        hover: Option<u64>,
         event: u64,
     },
     Same,
@@ -435,21 +526,23 @@ enum Next {
 
 fn next() -> impl Strategy<Value = Next> {
     prop_oneof![
-        2 => scene().prop_map(|(scene, overlay)| Next::Fresh(scene, overlay)),
+        2 => scene().prop_map(|both| Next::Fresh(Box::new(both))),
         5 => (
             prop::collection::vec(any::<u32>(), 40),
             prop::collection::vec(any::<u64>(), 0..6),
             any::<Option<u8>>(),
             any::<u64>(),
             prop::option::weighted(0.3, any::<u64>()),
+            prop::option::weighted(0.5, any::<u64>()),
             any::<u64>(),
         )
-            .prop_map(|(edits, added, state, world, overlay, event)| Next::Edited {
+            .prop_map(|(edits, added, state, world, overlay, hover, event)| Next::Edited {
                 edits,
                 added,
                 state,
                 world,
                 overlay,
+                hover,
                 event,
             }),
         1 => Just(Next::Same),
@@ -460,7 +553,7 @@ impl Next {
     fn after(&self, before: &(SceneInput, OverlayInput)) -> (SceneInput, OverlayInput) {
         let (scene, overlay_before) = before;
         match self {
-            Next::Fresh(scene, overlay) => (scene.clone(), overlay.clone()),
+            Next::Fresh(both) => (**both).clone(),
             Next::Same => before.clone(),
             Next::Edited {
                 edits,
@@ -468,6 +561,7 @@ impl Next {
                 state,
                 world,
                 overlay: new_overlay,
+                hover: new_hover,
                 event,
             } => {
                 // Each edit keeps the plant (most often), drops it, or changes its state, stage,
@@ -529,7 +623,11 @@ impl Next {
                     _ => {}
                 }
                 nudge(&mut next, *world);
-                let overlay = new_overlay.map_or_else(|| overlay_before.clone(), overlay);
+                let mut overlay = new_overlay.map_or_else(|| overlay_before.clone(), overlay);
+                overlay.hover = new_hover.map_or_else(
+                    || overlay_before.hover.clone(),
+                    |bits| hover_after(bits, &next, &overlay_before.hover),
+                );
                 (next, overlay)
             }
         }
@@ -773,7 +871,8 @@ fn check_subset(draws: &[KeyedDraw], scenes: &[&SceneInput]) -> Result<(), TestC
 
 /// Constraint 4 on the draws: the composer never brings a colour the art does not. Each draw
 /// keeps its sprite's blend, is never more opaque than its sprite, and only glyphs are tinted,
-/// in the label's ink; the frame is dimmed only in dim mode, to 40% of every colour.
+/// in the label's or the panel's ink; the frame is dimmed only in dim mode, to 40% of every
+/// colour.
 fn check_palette_discipline(frame: &Frame, dim: bool) -> Result<(), TestCaseError> {
     prop_assert_eq!(frame.dim, if dim { 153 } else { 0 });
     for draw in &frame.draws {
@@ -782,8 +881,15 @@ fn check_palette_discipline(frame: &Frame, dim: bool) -> Result<(), TestCaseErro
         prop_assert!(draw.opacity <= sprite.opacity, "{} brightened", &sprite.id);
         if draw.tint.is_some() {
             prop_assert_eq!(sprite.keys.part.as_deref(), Some("glyph"));
-            prop_assert_eq!(draw.tint, Some(Slot::SOIL_DEEP));
-            prop_assert_eq!(draw.layer, Layer::Label);
+            // The stone label's ink, or the light ink on the dark panel and plate.
+            prop_assert!(
+                (draw.tint, draw.layer) == (Some(Slot::SOIL_DEEP), Layer::Label)
+                    || (draw.tint, draw.layer) == (Some(Slot::STONE_LIGHT), Layer::SoilPanel),
+                "{} inked {:?} on {:?}",
+                &sprite.id,
+                draw.tint,
+                draw.layer
+            );
         }
     }
     Ok(())
@@ -1064,13 +1170,27 @@ fn check_residents_settled(day: &[KeyedDraw], input: &SceneInput) -> Result<(), 
 }
 
 /// The fastest a draw of `subject` may change: the light crossfades over the art's own time,
-/// and a label line can crossfade while its whole set does, which doubles its pace.
+/// a label line can crossfade while its whole set does, which doubles its pace, and the hover
+/// layer's draws move at the product of their own fade and their page's or landmark's.
 fn fastest_ms(subject: Subject) -> u64 {
     match subject {
         Subject::Light => u64::from(table().world().light_ms),
         Subject::Label => u64::from(LABEL_FADE_MS) / 2,
+        // The pointer fades on a page that may itself be fading, and a label with its landmark:
+        // each is drawn at the product of two tweens, the faster at its own pace.
+        Subject::Panel => u64::from(POINTER_MS) * 2 / 3,
+        Subject::Tag { .. } => u64::from(TAG_MS) * 9 / 10,
         _ => u64::from(SHORTEST_MS),
     }
+}
+
+/// The frame's bottom row, and the most the panel may move in `elapsed`: the whole strip's
+/// height over its rise, at smoothstep's steepest, and a row for rounding.
+const FRAME_BOTTOM: i32 = NATIVE_HEIGHT.cast_signed();
+
+fn rise_bound(elapsed: u64) -> i32 {
+    let rows = u64::from(NATIVE_HEIGHT);
+    i32::try_from(rows * 3 * elapsed / (2 * u64::from(RISE_MS)) + 1).unwrap_or(i32::MAX)
 }
 
 /// The fastest a cloud drifts: a pixel in this many milliseconds.
@@ -1387,6 +1507,13 @@ fn check_continuity(
         if drifting && (a.is_none() || b.is_none()) && at_edge(drawn.x, width) {
             continue;
         }
+        // The panel rises out of the frame's bottom edge and lowers into it.
+        if key.0 == Subject::Panel
+            && (a.is_none() || b.is_none())
+            && drawn.y + rise_bound(elapsed) >= FRAME_BOTTOM
+        {
+            continue;
+        }
         let bound = opacity_bound((key.0, key.1), drawn, elapsed, &scorched);
         let opacity = |draw: Option<&Draw>| u64::from(draw.map_or(0, |d| d.opacity));
         prop_assert!(
@@ -1475,7 +1602,11 @@ fn opacity_bound(
     // Smoothstep's steepest slope is 1.5 times the average. A label line, and a look a scorch
     // hides, is drawn at the product of two tweens, each rounded, so both may round a step in
     // the same millisecond.
-    let rounding = if veiled || subject == Subject::Label {
+    let rounding = if veiled
+        || matches!(
+            subject,
+            Subject::Label | Subject::Panel | Subject::Tag { .. }
+        ) {
         2
     } else {
         1
@@ -1484,8 +1615,25 @@ fn opacity_bound(
 }
 
 /// A draw at two moments holds its sprite, row and layer, and its column but for a drift,
-/// which carries it forward along its path, wrapping out of sight, no further than its pace.
+/// which carries it forward along its path, wrapping out of sight, no further than its pace;
+/// the panel moves up or down no faster than it rises.
 fn check_place(subject: Subject, a: &Draw, b: &Draw, elapsed: u64) -> Result<(), TestCaseError> {
+    if subject == Subject::Panel {
+        prop_assert_eq!(
+            (a.sprite, a.x, a.layer),
+            (b.sprite, b.x, b.layer),
+            "{:?} changed",
+            subject
+        );
+        prop_assert!(
+            (b.y - a.y).abs() <= rise_bound(elapsed),
+            "{:?} rose from {} to {}",
+            subject,
+            a.y,
+            b.y
+        );
+        return Ok(());
+    }
     prop_assert_eq!(
         (a.sprite, a.y, a.layer),
         (b.sprite, b.y, b.layer),
@@ -1541,7 +1689,9 @@ fn check_residents_continuity(
         looks
     };
     let (old, new) = (looks(before), looks(after));
-    let fade = 255 * 3 * elapsed / (2 * RESIDENT_FADE_MS) + 1;
+    // A pose crossfading on a resident that is itself fading is drawn at the product of two
+    // tweens, each rounded, so both may round a step in the same millisecond.
+    let fade = 255 * 3 * elapsed / (2 * RESIDENT_FADE_MS) + 2;
     let reach = i32::try_from((elapsed / SHORTEST_FRAME_MS + 1) * MOST_ROOT_DELTA + 1).unwrap();
     for subject in old.keys().chain(new.keys()) {
         let [a, b] = [old.get(subject), new.get(subject)];
@@ -1716,6 +1866,11 @@ fn moments(update: Millis, until: Millis, raised: &[Millis], cued: &[Millis]) ->
     let mut moments: Vec<Millis> = [
         0,
         1,
+        // Inside the hover layer's rise, page cover and pointer fade.
+        37,
+        75,
+        150,
+        225,
         300,
         600,
         750,

@@ -57,6 +57,8 @@ pub const DAILY_RECORDS: usize = 15;
 /// 0.02 is flat.
 pub const TREND_TICKS: u32 = 7 * 24;
 pub const TREND_STEP: Q16 = Q16::from_ratio(2, 100);
+/// Terrain's trend: a change of less than this percent of its lines over the week is flat.
+pub const TERRAIN_TREND_PERCENT: u64 = 2;
 
 /// Days in the dormant state at which condensation reaches levels 1, 2 and 3.
 pub const CONDENSATION_DAYS: [u32; 3] = [0, 30, 90];

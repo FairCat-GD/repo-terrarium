@@ -1277,3 +1277,143 @@ fn a_recorded_rewrite_is_noted_by_one_snapshot() {
     fx.commit_now();
     assert!(!shown(&mut live, Cause::Watch, true).notes.history_rewritten);
 }
+
+#[test]
+fn the_details_date_the_root_the_stones_the_fossils_and_a_dormancy() {
+    // A first commit, another a year and five days on, then a month of quiet.
+    let dir = tempfile::tempdir().unwrap();
+    let mut repo = FixtureRepo::init(&dir.path().join("repo")).unwrap();
+    commit(&mut repo, "main", 0);
+    repo.commit(
+        "main",
+        Stamp::at(FIRST + 370 * DAY),
+        "plant",
+        &[Edit::write("src/old/roots.rs", &"root\n".repeat(600))],
+    )
+    .unwrap();
+    let cleared = repo
+        .commit(
+            "main",
+            Stamp::at(FIRST + 371 * DAY),
+            "clear",
+            &[Edit::Remove("src/old/roots.rs".into())],
+        )
+        .unwrap();
+    let main = vec![repo.tip("main")];
+    let fx = Fixture {
+        dir,
+        repo,
+        main,
+        clock: ManualClock::at(FIRST + 371 * DAY + 2 * HOUR),
+    };
+    let mut live = fx.connect();
+    let first = shown(&mut live, Cause::Connect, true);
+    let details = &first.details;
+    assert_eq!(details.root, Some(FIRST));
+    assert!(details.terrain > 0);
+    assert_eq!(details.dormant_since, None);
+    let [stone] = details.monuments.as_slice() else {
+        panic!("one stone: {:?}", details.monuments)
+    };
+    // Raised at the first close a full year after the root.
+    assert!(
+        (FIRST + 365 * DAY..FIRST + 367 * DAY).contains(&stone.at),
+        "{stone:?}"
+    );
+    assert_eq!(first.scene.monuments[0].id, stone.id);
+    let [fossil] = details.fossils.as_slice() else {
+        panic!("one fossil: {:?}", details.fossils)
+    };
+    assert_eq!(fossil.path.as_deref(), Some("src/old"));
+    assert_eq!(fossil.at, FIRST + 371 * DAY);
+    assert_eq!(first.scene.fossils[0].id, fossil.id);
+    assert!(details.fossils.iter().all(|f| f.id == fossil_id(&cleared)));
+    // Thirty days without a commit, and the terrarium goes dormant.
+    fx.clock.advance(45 * DAY);
+    let quiet = shown(&mut live, Cause::Hour, false);
+    let since = quiet.details.dormant_since.expect("dormant");
+    assert!(
+        (FIRST + 401 * DAY..FIRST + 416 * DAY).contains(&since),
+        "{since}"
+    );
+    // An hour later nothing it says has moved, so nothing is sent.
+    fx.clock.advance(HOUR);
+    assert!(refresh(&mut live, Cause::Hour, false).snapshot.is_none());
+}
+
+#[test]
+fn light_s_files_are_those_of_the_report_it_reads() {
+    let mut fx = Fixture::new(3);
+    let mut live = fx.connect();
+    fx.report("coverage/lcov.info", LCOV);
+    let recorded = shown(&mut live, Cause::Connect, true);
+    assert!(recorded.details.found.coverage);
+    assert!(!recorded.details.found.test_report);
+    // Light takes the report at the next close, and its files with it.
+    assert_eq!(recorded.details.files.light, []);
+    fx.clock.advance(DAY);
+    let read = shown(&mut live, Cause::Hour, false);
+    let one = vec![terrarium_store::Contributor {
+        path: "src/fern_0.rs".into(),
+        value: 1,
+    }];
+    assert_eq!(read.details.files.light, one);
+    // A newer report waits for the close that takes it, files and all.
+    fx.commit_now();
+    fx.report("coverage/lcov.info", LCOV_LOWER);
+    let newer = shown(&mut live, Cause::Watch, true);
+    assert_eq!(newer.details.files.light, one);
+    fx.clock.advance(DAY);
+    let taken = shown(&mut live, Cause::Hour, false);
+    assert_eq!(taken.details.files.light[0].value, 2);
+}
+
+#[test]
+fn a_branch_s_own_coverage_is_shown_beside_light_and_only_there() {
+    let mut fx = Fixture::new(3);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.repo.branch("feature/moss", "main").unwrap();
+    commit(&mut fx.repo, "feature/moss", 3 * DAY);
+    fx.repo.set_head("feature/moss").unwrap();
+    fx.report("coverage/lcov.info", LCOV);
+    let on_branch = shown(&mut live, Cause::Watch, true);
+    let reading = on_branch
+        .details
+        .branch_reading
+        .expect("the branch's reading");
+    assert_eq!(reading.branch, "feature/moss");
+    assert_eq!(reading.value, Some(terrarium_truth::Q16::from_ratio(3, 4)));
+    // Never applied to light.
+    assert_eq!(
+        on_branch.report.climate.light,
+        terrarium_truth::Reading::Unknown
+    );
+    assert_eq!(on_branch.details.files.light, []);
+    fx.repo.set_head("main").unwrap();
+    let back = shown(&mut live, Cause::Watch, true);
+    assert_eq!(back.details.branch_reading, None);
+}
+
+#[test]
+fn weather_s_files_are_the_failing_tests_of_the_run_in_effect() {
+    let mut fx = Fixture::new(3);
+    let mut live = fx.connect();
+    fx.report(
+        "junit.xml",
+        r#"<testsuite><testcase name="grows" file="src/fern_0.rs"><failure/></testcase><testcase name="roots" file="src/fern_0.rs"><failure/></testcase><testcase name="leaves" file="src/fern_1.rs"/></testsuite>"#,
+    );
+    let failing = shown(&mut live, Cause::Connect, true);
+    assert!(failing.details.found.test_report);
+    assert_eq!(
+        failing.details.files.weather,
+        [terrarium_store::Contributor {
+            path: "src/fern_0.rs".into(),
+            value: 2,
+        }]
+    );
+    fx.commit_now();
+    fx.report("junit.xml", JUNIT);
+    let passing = shown(&mut live, Cause::Watch, true);
+    assert_eq!(passing.details.files.weather, []);
+}

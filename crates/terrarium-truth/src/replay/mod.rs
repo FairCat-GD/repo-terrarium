@@ -833,6 +833,7 @@ impl SimState {
             wind: wind.to_q16(),
             health: climate::health(light, soil),
             activity: climate::activity(rain, wind),
+            terrain: self.habitat.terrain_lines(),
         });
         keep_newest(&mut self.daily, DAILY_RECORDS);
     }

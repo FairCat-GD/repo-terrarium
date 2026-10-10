@@ -14,6 +14,7 @@ pub mod motion;
 pub mod nine_slice;
 pub mod order;
 pub mod palette;
+pub mod panel;
 pub mod place;
 pub mod plant;
 pub mod preset;
