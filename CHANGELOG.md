@@ -25,9 +25,9 @@ and fossils say when they came.
     on.
   - On a branch other than the default, light's page shows that branch's own coverage beside
     the files, without applying it.
-  - Dim mode closes the panel, pinned or not.
-- **Hover labels.** A standing stone shows the year it was raised; a fossil shows the folder it
-  was and the year it was deleted.
+  - Dim mode closes the panel, pinned or not, and any hover label.
+- **Hover labels.** A standing stone shows the year it was raised, on a plate over the stone;
+  a fossil shows the folder it was and the year it was deleted.
 - **The label's notes** gain `settling N days` (the first two weeks of a repository's history)
   and `dormant since <month>` (or the year, after eleven months). A note shown once, such as
   `sim updated`, takes its turn before them.

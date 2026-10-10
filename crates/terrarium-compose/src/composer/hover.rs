@@ -52,13 +52,14 @@ struct TagLook {
     opacity: Tween,
 }
 
-/// A landmark as drawn: its spot, where its sprite lies in the viewport, the column its label
-/// centres on and the row the label stands over, how visible it is, and whether it is on its
-/// way in or standing rather than leaving.
+/// One look of a landmark as drawn: its spot and its look's place among the landmark's looks,
+/// where its sprite lies in the viewport, the column its label centres on and the row the label
+/// stands over, how visible it is, and whether it is the newest look, standing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Placed {
     pub landmark: Landmark,
     pub spot: u8,
+    pub look: u16,
     pub area: Area,
     pub centre: i32,
     pub top: i32,
@@ -188,6 +189,9 @@ impl HoverLayer {
         now: Millis,
         out: &mut Vec<KeyedDraw>,
     ) {
+        if self.pages.is_empty() && self.tags.is_empty() {
+            return;
+        }
         let Some(panel_art) = PanelArt::new(&art.catalog) else {
             return;
         };
@@ -198,7 +202,7 @@ impl HoverLayer {
             }
             out.push(KeyedDraw::at(place, (0, stack), Draw { opacity, ..draw }));
         };
-        // A label over each place its landmark is drawn, fading with it.
+        // A label over each look of its landmark, fading with it.
         for look in &self.tags {
             let value = look.opacity.value(now);
             for placed in landmarks.iter().filter(|p| p.landmark == look.tag.landmark) {
@@ -216,7 +220,7 @@ impl HoverLayer {
                 };
                 for (item, draw) in (0_u16..).zip(draws) {
                     let part = u8::from(draw.tint.is_some());
-                    let place = Place::new(subject, part, 0).item(item);
+                    let place = Place::new(subject, part, placed.look).item(item);
                     push(place, i32::from(part), draw, scale(value, placed.opacity));
                 }
             }

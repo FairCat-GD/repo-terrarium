@@ -186,10 +186,15 @@ impl Feeder {
             _ => Hover::default(),
         };
         OverlayInput {
-            dim: self.overrides.dim.unwrap_or(self.idle_dim),
+            dim: self.dim(),
             hover,
             ..OverlayInput::new(self.label(), self.clock)
         }
+    }
+
+    /// Whether the strip is dimmed.
+    pub fn dim(&self) -> bool {
+        self.overrides.dim.unwrap_or(self.idle_dim)
     }
 
     /// The hover layer last given.

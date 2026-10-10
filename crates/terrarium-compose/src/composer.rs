@@ -1197,71 +1197,57 @@ impl Composer {
             .map(|placed| placed.landmark)
     }
 
-    /// Each monument and fossil drawn at `now`: its spot, where its newest look lies in the
-    /// viewport, where its hover label stands, and how visible it is. A label stands at a
-    /// place every look of its landmark shares, so it never moves when one changes.
+    /// Each look of each monument and fossil at `now`: its spot, where its sprite lies in the
+    /// viewport, where a hover label over it stands, and how visible it is. A label is drawn
+    /// over each look and fades with it, so when a stone changes age its label crossfades with
+    /// it rather than moving.
     fn landmarks(&self, art: &Art, table: &ArtTable, now: Millis) -> Vec<hover::Placed> {
         let catalog = &art.catalog;
         let inset = self.viewport.inset();
-        // Over the tallest stone any age has.
-        let stone_top = MonumentAge::ALL
-            .iter()
-            .filter_map(|&age| table.monument(age).first())
-            .map(|&stone| Draw::anchored(catalog, stone, 0, PLANT_GROUND_Y).y)
-            .min()
-            .unwrap_or(PLANT_GROUND_Y);
-        // Over the middle of the widest fossil any form has.
-        let fossil_half = FossilForm::ALL
-            .iter()
-            .map(|&form| i32::from(catalog.sprite(table.fossil(form)).rect.w))
-            .max()
-            .unwrap_or(0)
-            / 2;
         let mut out = Vec::new();
         for (&subject, entry) in &self.entries {
-            let looks = &entry.parts[0];
-            let (Some(newest), Some(opacity)) = (
-                looks.last(),
-                looks.iter().map(|look| look.opacity.value(now)).max(),
-            ) else {
-                continue;
-            };
-            let Some(sprite) = newest.piece.sprite(table, self.salt, subject, 0) else {
-                continue;
-            };
-            let rect = catalog.sprite(sprite).rect;
-            let (landmark, spot, draw, top) = match subject {
-                Subject::Monument { id, spot } => {
-                    let x = self.world.monument(spot);
-                    let draw = Draw::anchored(catalog, sprite, x, PLANT_GROUND_Y);
-                    (Landmark::Monument(id), spot, draw, stone_top)
-                }
-                Subject::Fossil { id, spot } => {
-                    let (x, y) = (self.world.fossil(spot), FRAME_HEIGHT - i32::from(rect.h));
-                    let draw = Draw::new(catalog, sprite, x, y);
-                    (Landmark::Fossil(id), spot, draw, GROUND)
-                }
+            let (landmark, spot) = match subject {
+                Subject::Monument { id, spot } => (Landmark::Monument(id), spot),
+                Subject::Fossil { id, spot } => (Landmark::Fossil(id), spot),
                 _ => continue,
             };
-            let area = Area {
-                x: draw.x + inset,
-                y: draw.y,
-                w: i32::from(rect.w),
-                h: i32::from(rect.h),
-            };
-            let centre = match landmark {
-                Landmark::Monument(_) => self.world.monument(spot) + inset,
-                Landmark::Fossil(_) => self.world.fossil(spot) + inset + fossil_half,
-            };
-            out.push(hover::Placed {
-                landmark,
-                spot,
-                area,
-                centre,
-                top,
-                opacity,
-                standing: newest.opacity.target() == SHOWN,
-            });
+            let looks = &entry.parts[0];
+            for (index, look) in (0_u16..).zip(looks) {
+                let Some(sprite) = look.piece.sprite(table, self.salt, subject, 0) else {
+                    continue;
+                };
+                let rect = catalog.sprite(sprite).rect;
+                let draw = match landmark {
+                    Landmark::Monument(_) => {
+                        Draw::anchored(catalog, sprite, self.world.monument(spot), PLANT_GROUND_Y)
+                    }
+                    Landmark::Fossil(_) => {
+                        let y = FRAME_HEIGHT - i32::from(rect.h);
+                        Draw::new(catalog, sprite, self.world.fossil(spot), y)
+                    }
+                };
+                let area = Area {
+                    x: draw.x + inset,
+                    y: draw.y,
+                    w: i32::from(rect.w),
+                    h: i32::from(rect.h),
+                };
+                let (centre, top) = match landmark {
+                    Landmark::Monument(_) => (self.world.monument(spot) + inset, area.y),
+                    Landmark::Fossil(_) => (area.x + area.w / 2, GROUND),
+                };
+                let newest = usize::from(index) + 1 == looks.len();
+                out.push(hover::Placed {
+                    landmark,
+                    spot,
+                    look: index,
+                    area,
+                    centre,
+                    top,
+                    opacity: look.opacity.value(now),
+                    standing: newest && look.opacity.target() == SHOWN,
+                });
+            }
         }
         out
     }

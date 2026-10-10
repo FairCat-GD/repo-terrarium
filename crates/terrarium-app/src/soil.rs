@@ -204,11 +204,6 @@ impl SoilPanel {
         self.close();
     }
 
-    /// Whether the panel is up, pinned or not.
-    pub fn is_open(&self) -> bool {
-        self.open != Open::Closed
-    }
-
     /// The hover layer to draw: the panel's page worded from `facts` with the wall clock at
     /// `now` (Unix seconds), in a viewport `columns` wide, its pointer on the row under the
     /// pointer if that row opens something; or the label of the landmark under it.
@@ -885,7 +880,7 @@ mod tests {
     fn nothing_shows_before_the_engine_has_said() {
         let mut soil = SoilPanel::default();
         soil.moved(Some(ViewportPoint { x: 300, y: 70 }), &Hits::default());
-        assert!(soil.is_open());
+        assert_eq!(soil.open, Open::Hover);
         assert_eq!(soil.hover(None, NOW, catalog(), 756), Hover::default());
     }
 

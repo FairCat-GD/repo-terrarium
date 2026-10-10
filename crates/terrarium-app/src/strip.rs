@@ -148,9 +148,20 @@ impl Scene {
         } = self
         {
             let at = Self::millis(*origin, now);
+            let dim = feeder.dim();
             feeder.show(view.scene(), view.label(), at, &Os::read());
             feeder.set_hover(Self::worded(living, soil, view));
+            Self::dimmed(feeder, soil, dim);
             living.update(feeder.scene(), &feeder.overlay(), at);
+        }
+    }
+
+    /// Dim mode closes the panel, pinned or not, and any hover label, so nothing static stays
+    /// on the screen (N-12): when the feed, dim before as `was`, has just dimmed.
+    fn dimmed(feeder: &mut Feeder, soil: &mut SoilPanel, was: bool) {
+        if !was && feeder.dim() {
+            soil.dimmed();
+            feeder.set_hover(Hover::default());
         }
     }
 
@@ -246,13 +257,9 @@ impl Scene {
         } = self
         {
             let at = Self::millis(*origin, now);
-            let dim = feeder.overlay().dim;
+            let dim = feeder.dim();
             if (force || feeder.due() <= at) && feeder.tick(at, &Os::read(), force) {
-                // Dim mode closes the panel, pinned or not, so nothing static stays (N-12).
-                if !dim && feeder.overlay().dim && soil.is_open() {
-                    soil.dimmed();
-                    feeder.set_hover(Hover::default());
-                }
+                Self::dimmed(feeder, soil, dim);
                 living.update(feeder.scene(), &feeder.overlay(), at);
             }
         }
@@ -1735,5 +1742,119 @@ mod tests {
             Effect::Nothing
         );
         assert!(repo.connected.is_none() && repo.engine.is_none());
+    }
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use std::time::Duration as Wait;
+
+    use terrarium_engine::schedule::Cause;
+    use terrarium_engine::{Branch, Details, News, RefreshStats, Replay, Snapshot};
+    use terrarium_truth::{Basis, RepoSeed, SimState, TickGrid};
+
+    use super::*;
+
+    /// A connected repository's view after one snapshot.
+    fn view() -> LiveView {
+        let state = SimState::new(Basis::new(
+            RepoSeed::from_bytes([1; 32]),
+            TickGrid::from_origin(0).unwrap(),
+            "main",
+        ));
+        let mut view = LiveView::new("moss".into(), None);
+        view.apply(Update::Snapshot(Box::new(Snapshot {
+            scene: terrarium_truth::project(&state),
+            report: state.report(),
+            details: Details::default(),
+            branch: Branch::Named("main".into()),
+            notes: News::default(),
+            stats: RefreshStats {
+                cause: Cause::Connect,
+                replay: Replay::Full,
+                working: true,
+                adapters_to_snapshot: Wait::ZERO,
+            },
+        })));
+        view
+    }
+
+    fn shown(scene: &Scene) -> (&Feeder, &Living) {
+        let Scene::Living { feeder, living, .. } = scene else {
+            panic!("a living scene");
+        };
+        (feeder, living)
+    }
+
+    #[cfg(feature = "dev")]
+    #[test]
+    fn dim_mode_closes_a_pinned_panel() {
+        let view = view();
+        let mut scene = Scene::new(&Mode::Live(Feed::Live), Some((&view, preset::SALT)));
+        let now = Instant::now();
+        scene.point(
+            Pointer::Moved(Some(ViewportPoint { x: 300, y: 70 })),
+            &view,
+            now,
+        );
+        scene.point(Pointer::Pressed, &view, now);
+        let Scene::Living { feeder, soil, .. } = &mut scene else {
+            panic!("a living scene");
+        };
+        assert!(feeder.hover().panel.is_some());
+        // Dimmed or not as the test says, whatever this machine's own idle time.
+        let dim = |on| Overrides {
+            dim: Some(on),
+            ..Overrides::default()
+        };
+        feeder.choose(Feed::Live, dim(false), Millis(1000), &Os::read());
+        let was = feeder.dim();
+        Scene::dimmed(feeder, soil, was);
+        assert!(feeder.hover().panel.is_some(), "not dimmed, it stays");
+        feeder.choose(Feed::Live, dim(true), Millis(2000), &Os::read());
+        Scene::dimmed(feeder, soil, was);
+        assert_eq!(feeder.hover(), &Hover::default());
+        // Closed, it shows nothing however the pointer last was.
+        let catalog = &Art::embedded().catalog;
+        assert_eq!(soil.hover(view.panel(), 0, catalog, 640), Hover::default());
+    }
+
+    #[test]
+    fn the_pointer_raises_the_panel_it_hit_tests_and_the_strip_composes_it() {
+        let view = view();
+        let mut scene = Scene::new(&Mode::Live(Feed::Live), Some((&view, preset::SALT)));
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let point = |x, y| Pointer::Moved(Some(ViewportPoint { x, y }));
+        scene.point(point(300, 70), &view, at(10));
+        let panel = shown(&scene).0.hover().panel.clone().expect("raised");
+        assert_eq!(panel.page.title, copy::panel::CLIMATE);
+        assert_eq!(shown(&scene).0.overlay().hover.panel, Some(panel.clone()));
+        // The strip has a frame to make while it rises.
+        assert!(shown(&scene).1.due().is_some());
+        // Its rows are hit where they are drawn: the light row opens a page, and a click
+        // there shows it.
+        let (feeder, living) = shown(&scene);
+        let drawn = panel::layout(
+            living.catalog(),
+            &panel.page,
+            panel.anchor,
+            living.columns(),
+        )
+        .expect("a layout");
+        assert_eq!(feeder.hover().panel.as_ref().unwrap().anchor, 300);
+        let light = drawn.rows[0];
+        scene.point(point(light.x + 1, light.y + 2), &view, at(400));
+        let pointed = shown(&scene).0.hover().panel.clone().unwrap();
+        assert_eq!(pointed.pointer, Some(panel::Target::Row(0)));
+        scene.point(Pointer::Pressed, &view, at(500));
+        let opened = shown(&scene).0.hover().panel.clone().unwrap();
+        assert_eq!(opened.page.title, copy::panel::UNCOVERED_LINES);
+        // Pinned, it stays when the pointer leaves; a click off it closes it.
+        scene.point(Pointer::Left, &view, at(600));
+        assert!(shown(&scene).0.hover().panel.is_some());
+        scene.point(point(300, 10), &view, at(700));
+        scene.point(Pointer::Pressed, &view, at(800));
+        assert_eq!(shown(&scene).0.hover(), &Hover::default());
     }
 }

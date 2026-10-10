@@ -152,16 +152,16 @@ pub(crate) fn details(
         complexity: read_files(complexity)?,
         todo_density: read_files(todo_density)?,
     };
-    let fossil_commits: BTreeMap<_, _> = sources
-        .commits
+    // Only a fossil's commit is looked for, and only while there are fossils.
+    let fossils = &state.landmarks.fossils;
+    let commits = if fossils.is_empty() {
+        &[][..]
+    } else {
+        sources.commits
+    };
+    let fossil_commits: BTreeMap<_, _> = commits
         .iter()
-        .filter(|commit| {
-            state
-                .landmarks
-                .fossils
-                .iter()
-                .any(|f| f.commit == commit.id)
-        })
+        .filter(|commit| fossils.iter().any(|f| f.commit == commit.id))
         .map(|commit| (&commit.id, commit))
         .collect();
     Ok(Details {
