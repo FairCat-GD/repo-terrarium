@@ -46,7 +46,7 @@ impl WindowKind {
     fn size(self) -> LogicalSize<f64> {
         match self {
             WindowKind::Connect => LogicalSize::new(520.0, 400.0),
-            WindowKind::Settings => LogicalSize::new(520.0, 360.0),
+            WindowKind::Settings => LogicalSize::new(600.0, 480.0),
             #[cfg(feature = "dev")]
             WindowKind::Debug => LogicalSize::new(460.0, 760.0),
         }

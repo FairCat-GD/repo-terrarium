@@ -5,7 +5,8 @@
 use std::fmt::{Display, Write as _};
 use std::path::Path;
 
-use super::{BINARY_NAME, VERSION};
+use super::{BINARY_NAME, VERSION, hotkey};
+use crate::hotkey::{Platform, Which};
 use crate::hover::NativePoint;
 use crate::pinning::{AppBarPlaced, LevelMode, OsSnapshot, PxRect};
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
@@ -16,6 +17,18 @@ use crate::probe::script::{Phase, Step};
 const END_OF_INPUT: &str = "Ctrl-Z then Enter";
 #[cfg(not(windows))]
 const END_OF_INPUT: &str = "Control-D";
+
+/// Where a step's text names the raise hotkey's keys.
+const RAISE: &str = "{raise}";
+
+/// A step's text as the tester reads it, the raise hotkey's keys named where it says
+/// [`RAISE`], so they are always those the strip registers.
+pub fn with_hotkey(text: &str) -> String {
+    text.replace(
+        RAISE,
+        &hotkey(Which::Raise.default_binding(), Platform::THIS),
+    )
+}
 
 /// One step of the probe's walk-through.
 pub struct StepText {
@@ -97,7 +110,7 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
     },
     StepText {
         key: "hotkey",
-        text: "Press Control-Option-T. The strip should come above your windows for 10 seconds, \
+        text: "Press {raise}. The strip should come above your windows for 10 seconds, \
                then go back below them. Note whether any app lost focus.",
     },
     StepText {
@@ -180,7 +193,7 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
     },
     StepText {
         key: "hotkey",
-        text: "Press Ctrl+Alt+T. The strip is already above other windows, so nothing should \
+        text: "Press {raise}. The strip is already above other windows, so nothing should \
                change. Note whether any app lost focus.",
     },
     StepText {

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use terrarium_adapters::discovery::{self, Overrides};
+use terrarium_adapters::discovery;
 use terrarium_adapters::git::{Change, GitError, GitRepo, History, Progress, RewriteReason};
 use terrarium_adapters::local_tests;
 use terrarium_adapters::report::{Format, Report};
@@ -51,7 +51,7 @@ use terrarium_truth::{
 
 use crate::clock::{Clock, SystemClock};
 use crate::details::{self, Details, FileCache, Found, Sources};
-use crate::lifecycle::{self, stored_overrides};
+use crate::lifecycle::{self, AdapterSettings, stored_adapters};
 use crate::observe;
 use crate::schedule::DEBOUNCE;
 use crate::schedule::{Cause, Reach, Refresh};
@@ -292,7 +292,8 @@ pub struct Live {
     terrarium: Terrarium,
     clock: Arc<dyn Clock>,
     progress_after: Duration,
-    overrides: Overrides,
+    /// What the settings say of each adapter, as of the last refresh asked for.
+    adapters: AdapterSettings,
     patterns: Vec<String>,
     status_dir: PathBuf,
     status_file: PathBuf,
@@ -356,7 +357,7 @@ impl Live {
             sim_updated: last.is_some_and(|last| last != current),
             history_rewritten: false,
         };
-        let overrides = stored_overrides(&store)?;
+        let adapters = stored_adapters(&store)?;
         let status_dir = config.data.local_tests_dir();
         std::fs::create_dir_all(&status_dir).map_err(StoreError::Io)?;
         let stored = store.observations(terrarium.id, None)?;
@@ -374,12 +375,12 @@ impl Live {
         let remembered = Remembered::read(&store)?;
         Ok(Some(Live {
             status_file: config.data.local_tests(&terrarium.seed),
-            patterns: discovery::report_patterns(&overrides),
+            patterns: discovery::report_patterns(&adapters.overrides, adapters.enabled),
             store,
             terrarium,
             clock: Arc::clone(&config.clock),
             progress_after: config.progress_after,
-            overrides,
+            adapters,
             status_dir,
             news,
             verified,
@@ -471,6 +472,11 @@ impl Live {
         progress: &mut dyn FnMut(u8),
         cancel: &AtomicBool,
     ) -> Result<Done, Fault> {
+        // A refresh asked for follows a change of the settings: the reports are read, and the
+        // watch made, as they now say.
+        if refresh.cause == Cause::Request {
+            self.reload_adapters()?;
+        }
         let path = PathBuf::from(&self.terrarium.repo.path);
         let git = GitRepo::open(&path).map_err(git_fault)?;
         let branch = self.terrarium.repo.default_branch.clone();
@@ -568,6 +574,16 @@ impl Live {
             follow_up,
             problem,
         })
+    }
+
+    /// Takes the adapters' settings in again.
+    fn reload_adapters(&mut self) -> Result<(), StoreError> {
+        let adapters = stored_adapters(&self.store)?;
+        if adapters != self.adapters {
+            self.patterns = discovery::report_patterns(&adapters.overrides, adapters.enabled);
+            self.adapters = adapters;
+        }
+        Ok(())
     }
 
     /// What the panel and the hover labels say of the state shown, with HEAD at `head`.
@@ -758,20 +774,25 @@ impl Live {
         head: &ObservationHead,
     ) -> (Vec<(Format, ObservationRecord)>, Option<Duration>, Found) {
         let mut wait: Option<Duration> = None;
-        let mut found = Found::default();
+        let enabled = self.adapters.enabled;
+        let mut found = Found {
+            enabled,
+            ..Found::default()
+        };
         let mut defer = |left: Duration| wait = Some(wait.map_or(left, |w| w.min(left)));
         let mut reports: Vec<Report> = Vec::new();
         // Reports live in the worktree; the status file lives in the data directory, so a bare
-        // repository has one too.
+        // repository has one too. An adapter the settings have off reads nothing.
         if let Some(root) = root {
-            let located = discovery::locate_reports(root, &self.overrides);
-            found = Found {
-                coverage: located.coverage.located().is_some(),
-                test_report: located.test_report.located().is_some(),
-            };
-            for located in [located.coverage.located(), located.test_report.located()]
-                .into_iter()
-                .flatten()
+            let located = discovery::locate_reports(root, &self.adapters.overrides);
+            found.coverage = located.coverage.located().is_some();
+            found.test_report = located.test_report.located().is_some();
+            for located in [
+                located.coverage.located().filter(|_| enabled.coverage),
+                located.test_report.located().filter(|_| enabled.weather),
+            ]
+            .into_iter()
+            .flatten()
             {
                 match unsettled(located.files.iter().map(|file| root.join(file))) {
                     Some(left) => defer(left),
@@ -779,7 +800,7 @@ impl Live {
                 }
             }
         }
-        if self.status_file.is_file() {
+        if enabled.weather && self.status_file.is_file() {
             match unsettled([self.status_file.clone()].into_iter()) {
                 Some(left) => defer(left),
                 None => reports.push(local_tests::read(&self.status_file)),

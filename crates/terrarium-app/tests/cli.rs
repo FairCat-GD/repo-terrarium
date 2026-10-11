@@ -198,6 +198,9 @@ mod discover {
     use std::fs;
 
     use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp};
+    use terrarium_engine::{EngineConfig, Live};
+    use terrarium_store::identifiers::SETTING_COVERAGE_REPORT_PATH;
+    use terrarium_store::{DataDir, Store};
 
     use super::repo_terrarium;
 
@@ -264,6 +267,61 @@ mod discover {
         assert!(not_a_repo.stdout.is_empty());
         let missing = repo_terrarium(&["discover"]);
         assert_eq!(missing.status.code(), Some(2));
+    }
+
+    fn repo_with_report(path: &std::path::Path) {
+        let mut repo = FixtureRepo::init(path).unwrap();
+        repo.commit(
+            "main",
+            Stamp::at(1_704_704_400),
+            "seed",
+            &[Edit::write(
+                &format!("src/{}.rs", path.file_name().unwrap().to_str().unwrap()),
+                "fn fern() {}\n",
+            )],
+        )
+        .unwrap();
+        fs::create_dir_all(path.join("out")).unwrap();
+        fs::write(
+            path.join("out/cov.info"),
+            "SF:a.rs\nDA:1,1\nend_of_record\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discover_reads_the_connected_repository_s_report_paths_and_makes_no_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let (moss, fern) = (dir.path().join("moss"), dir.path().join("fern"));
+        repo_with_report(&moss);
+        repo_with_report(&fern);
+        let data = dir.path().join("data");
+        let discover = |repo: &std::path::Path| {
+            let out =
+                super::repo_terrarium_in(dir.path(), &data, &["discover", repo.to_str().unwrap()]);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert!(!discover(&moss).contains("out/cov.info"));
+        assert!(
+            !data.join("terrarium.sqlite3").exists(),
+            "discover made a database"
+        );
+        // Connected, with the report's path in its settings.
+        let config = EngineConfig::new(DataDir::at(&data), Some(moss.clone()));
+        drop(Live::connect(&config).unwrap().expect("connected"));
+        Store::open(&DataDir::at(&data))
+            .unwrap()
+            .set_setting(SETTING_COVERAGE_REPORT_PATH, "out/cov.info")
+            .unwrap();
+        let text = discover(&moss);
+        assert!(text.contains("  coverage report   out/cov.info"), "{text}");
+        // Another repository is not the connected one: its usual places are read.
+        assert!(!discover(&fern).contains("out/cov.info"));
     }
 }
 

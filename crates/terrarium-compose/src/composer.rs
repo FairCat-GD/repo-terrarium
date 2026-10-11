@@ -88,18 +88,23 @@ pub struct OverlayInput {
     pub day_night: DayNight,
     /// Whether the machine has gone without input past the dim timeout.
     pub dim: bool,
+    /// Whether the scene stands still: from the update that pauses it until the one that does
+    /// not, nothing in it moves, while the label, dim mode and the hover layer go on.
+    pub paused: bool,
     /// The soil panel and a hover label, as the pointer has them.
     pub hover: Hover,
 }
 
 impl OverlayInput {
-    /// The label's lines at a local time, with the default day and night and no dimming.
+    /// The label's lines at a local time, with the default day and night, no dimming, and the
+    /// scene running.
     pub fn new(label: Vec<String>, clock: LocalClock) -> OverlayInput {
         OverlayInput {
             label,
             clock,
             day_night: DayNight::default(),
             dim: false,
+            paused: false,
             hover: Hover::default(),
         }
     }
@@ -586,6 +591,47 @@ pub struct Composer {
     sunk: BTreeMap<u32, u8>,
     /// The soil panel and the hover labels.
     hover: hover::HoverLayer,
+    /// Where the scene's clock stands against the composer's.
+    pause: Pause,
+}
+
+/// The scene's own clock: the composer's, less every moment a pause has held it, and standing
+/// still through a pause. The label, dim mode and the hover layer keep the composer's clock;
+/// everything else is the scene's, so a resume carries on from the very picture the pause held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Pause {
+    /// When the pause in progress began, on the composer's clock.
+    since: Option<Millis>,
+    /// How long the pauses before it held the scene.
+    held: u64,
+}
+
+impl Pause {
+    /// Pauses at `now`, or resumes then.
+    fn set(&mut self, paused: bool, now: Millis) {
+        match (paused, self.since) {
+            (true, None) => self.since = Some(now),
+            (false, Some(since)) => {
+                self.held = self.held.saturating_add(now.0.saturating_sub(since.0));
+                self.since = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// The scene's moment at the composer's `now`.
+    fn scene(self, now: Millis) -> Millis {
+        let at = self.since.map_or(now, |since| since.min(now));
+        Millis(at.0.saturating_sub(self.held))
+    }
+
+    /// The composer's moment at the scene's `scene`, while the scene runs; a paused scene
+    /// reaches no moment.
+    fn real(self, scene: Millis) -> Option<Millis> {
+        self.since
+            .is_none()
+            .then(|| Millis(scene.0.saturating_add(self.held)))
+    }
 }
 
 /// A resident as drawn: how visible it is, what it was when last in the scene, and, through
@@ -639,6 +685,7 @@ impl Composer {
             fresh: BTreeMap::new(),
             sunk: BTreeMap::new(),
             hover: hover::HoverLayer::default(),
+            pause: Pause::default(),
         }
     }
 
@@ -666,8 +713,11 @@ impl Composer {
     }
 
     /// Moves the depiction toward `input` and `overlay` from `now`. The frame at `now` does
-    /// not change.
+    /// not change. While the overlay pauses the scene, its changes wait for the resume.
     pub fn update(&mut self, input: &SceneInput, overlay: &OverlayInput, now: Millis) {
+        self.pause.set(overlay.paused, now);
+        let real = now;
+        let now = self.pause.scene(real);
         for entry in self.entries.values_mut() {
             entry.prune(now);
         }
@@ -715,8 +765,8 @@ impl Composer {
             entry.show(pieces, starts, rise, timing.change);
         }
         self.note_left(now);
-        self.update_label(&overlay.label, now);
-        self.hover.set(&overlay.hover, now);
+        self.update_label(&overlay.label, real);
+        self.hover.set(&overlay.hover, real);
         self.update_clock(overlay, now);
         let residents = self.update_residents(input, now);
         let snapshot = self.snapshot(input, overlay, now, residents);
@@ -737,7 +787,7 @@ impl Composer {
         let dim = if overlay.dim { DIM } else { 0 };
         if self.dim.target() != dim {
             let ms = if overlay.dim { DIM_DOWN_MS } else { DIM_UP_MS };
-            self.dim = Tween::new(self.dim.value(now), dim, now, ms);
+            self.dim = Tween::new(self.dim.value(real), dim, real, ms);
         }
     }
 
@@ -1037,7 +1087,7 @@ impl Composer {
     /// somewhere other than it stands, it eases over rather than jumping: after a sleep, a
     /// change of time zone or the first update.
     fn update_clock(&mut self, overlay: &OverlayInput, now: Millis) {
-        let before = self.palette_mix(now);
+        let before = self.mix_at(now);
         self.clock = Some((overlay.clock, now));
         self.day_night = overlay.day_night;
         let after = self.clock_mix(now);
@@ -1058,8 +1108,14 @@ impl Composer {
         self.ms_of_day(now).map_or(0, |ms| self.day_night.mix(ms))
     }
 
-    /// The palette mix at `now`, 0 by day and 255 by night.
+    /// The palette mix at `now`, 0 by day and 255 by night. It is the scene's, and a pause
+    /// holds it.
     pub fn palette_mix(&self, now: Millis) -> u8 {
+        self.mix_at(self.pause.scene(now))
+    }
+
+    /// The palette mix at the scene's moment `now`.
+    fn mix_at(&self, now: Millis) -> u8 {
         let by_clock = self.clock_mix(now);
         match self.mix_fix {
             Some(fix) => mix(fix.from, by_clock, fix.weight.value(now)),
@@ -1190,15 +1246,15 @@ impl Composer {
         y: i32,
         now: Millis,
     ) -> Option<Landmark> {
-        self.landmarks(art, table, now)
+        self.landmarks(art, table, self.pause.scene(now))
             .into_iter()
             .rev()
             .find(|placed| placed.standing && crate::panel::contains(placed.area, x, y))
             .map(|placed| placed.landmark)
     }
 
-    /// Each look of each monument and fossil at `now`: its spot, where its sprite lies in the
-    /// viewport, where a hover label over it stands, and how visible it is. A label is drawn
+    /// Each look of each monument and fossil at the scene's moment `now`: its spot, where its
+    /// sprite lies in the viewport, where a hover label over it stands, and how visible it is. A label is drawn
     /// over each look and fades with it, so when a stone changes age its label crossfades with
     /// it rather than moving.
     fn landmarks(&self, art: &Art, table: &ArtTable, now: Millis) -> Vec<hover::Placed> {
@@ -1304,8 +1360,25 @@ impl Composer {
 
     /// The first moment after `now` at which the frame may change, or `None` if nothing will
     /// until the next update. Every source of change answers here; the frame is the same at
-    /// every moment before it (I-10).
+    /// every moment before it (I-10). A paused scene changes nothing, so then only the label,
+    /// dim mode and the hover layer answer.
     pub fn next_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
+        let mut next = Earliest::default();
+        for look in &self.label {
+            next.take(look.opacity.next_step(now));
+            if look.opacity.value(now) > 0 || look.opacity.target() == SHOWN {
+                next.take(look.next_change(now));
+            }
+        }
+        next.take(self.dim.next_step(now));
+        next.take(self.hover.next_change(art, self.viewport_width(), now));
+        let scene = self.scene_change(art, table, self.pause.scene(now));
+        next.take(scene.and_then(|scene| self.pause.real(scene)));
+        next.0
+    }
+
+    /// The scene's first moment after its `now` at which it may change.
+    fn scene_change(&self, art: &Art, table: &ArtTable, now: Millis) -> Option<Millis> {
         let mut next = Earliest::default();
         // While the storm front crosses, a step of the sky that its cut hides before and after
         // changes nothing; the front's own steps look again.
@@ -1370,25 +1443,17 @@ impl Composer {
             self.sweep_width,
             self.viewport_width(),
         )));
-        for look in &self.label {
-            next.take(look.opacity.next_step(now));
-            if look.opacity.value(now) > 0 || look.opacity.target() == SHOWN {
-                next.take(look.next_change(now));
-            }
-        }
         if let Some(fix) = self.mix_fix {
             next.take(fix.weight.next_step(now));
         }
         if let Some(ms) = self.ms_of_day(now) {
             next.take(self.day_night.next_change(ms).map(|ahead| now.plus(ahead)));
         }
-        next.take(self.dim.next_step(now));
         for shown in self.residents.values() {
             next.take(shown.opacity.next_step(now));
         }
         next.take(self.motion_change(art, table, now));
         next.take(self.show_next(art, table, now));
-        next.take(self.hover.next_change(art, self.viewport_width(), now));
         next.0
     }
 
@@ -1435,7 +1500,7 @@ impl Composer {
     fn residents_change_at(&self, art: &Art, table: &ArtTable, at: Millis) -> bool {
         let residents = |now: Millis| {
             let mut out = Vec::new();
-            self.push_residents(art, table, self.palette_mix(now), now, &mut out);
+            self.push_residents(art, table, self.mix_at(now), now, &mut out);
             out
         };
         residents(Millis(at.0.saturating_sub(1))) != residents(at)
@@ -1443,26 +1508,39 @@ impl Composer {
 
     /// When the last tween ends, and the changes of rest an update brought are over. From
     /// then on only motion moves until the next update: drift, the label's cycle, sway and the
-    /// residents' turns.
+    /// residents' turns. While the scene is paused, its own changes wait for the resume, so
+    /// only the label's, dim mode's and the hover layer's count.
     pub fn settled_at(&self) -> Millis {
-        self.entries
+        let overlay = self
+            .label
+            .iter()
+            .map(|look| look.opacity)
+            .chain([self.dim])
+            .map(Tween::end)
+            .chain([self.hover.end()])
+            .max()
+            .unwrap_or_default();
+        let scene = self
+            .entries
             .values()
             .flat_map(Entry::looks)
             .map(|look| look.opacity)
-            .chain(self.label.iter().map(|look| look.opacity))
             .chain(self.mix_fix.map(|fix| fix.weight))
-            .chain([self.dim])
             .chain(self.residents.values().map(|shown| shown.opacity))
             .map(Tween::end)
-            .chain([self.residents_settle, self.hover.end()])
+            .chain([self.residents_settle])
             .chain(self.show_end())
             .max()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.pause
+            .real(scene)
+            .map_or(overlay, |scene| scene.max(overlay))
     }
 
     /// Every visible look at `now`, as depicted states in subject order. The label's text,
     /// which reads no salt, is not among them.
     pub fn depicted(&self, now: Millis) -> Vec<Depicted> {
+        let now = self.pause.scene(now);
         let mut depicted = Vec::new();
         for (&(id, spot), shown) in &self.residents {
             let opacity = shown.opacity.value(now);
@@ -1508,6 +1586,8 @@ impl Composer {
         palette_mix: u8,
         now: Millis,
     ) -> Vec<KeyedDraw> {
+        let real = now;
+        let now = self.pause.scene(real);
         let mut keyed = Vec::new();
         // While a wipe crosses, which of the sky's draws are behind it.
         let crossing = self.crossing(now).is_some();
@@ -1530,7 +1610,7 @@ impl Composer {
                 }
             }
         }
-        self.push_label(art, now, &mut keyed);
+        self.push_label(art, real, &mut keyed);
         self.push_drifts(art, table, now, &mut keyed);
         self.push_residents(art, table, palette_mix, now, &mut keyed);
         self.push_ground(art, table, palette_mix, now, &mut keyed);
@@ -1541,7 +1621,7 @@ impl Composer {
             Vec::new()
         };
         self.hover
-            .push(art, &landmarks, self.viewport_width(), now, &mut keyed);
+            .push(art, &landmarks, self.viewport_width(), real, &mut keyed);
         // The scene stands in the middle of the viewport; everything else is laid out across
         // the viewport already.
         let inset = self.viewport.inset();

@@ -7,10 +7,12 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use terrarium_adapters::discovery::Overrides;
+use serde::de::DeserializeOwned;
+use terrarium_adapters::discovery::{Enabled, Overrides};
 use terrarium_adapters::git::{GitError, GitRepo};
 use terrarium_store::identifiers::{
-    SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE,
+    SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_ENABLED,
+    SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE, SETTING_WEATHER_ENABLED,
     SETTING_WEATHER_REPORT_PATH,
 };
 use terrarium_store::{
@@ -87,12 +89,35 @@ pub fn disconnect(
     Ok(())
 }
 
-/// The report paths configured per adapter.
-pub fn stored_overrides(store: &Store) -> Result<Overrides, StoreError> {
-    Ok(Overrides {
-        coverage: store.setting(SETTING_COVERAGE_REPORT_PATH)?,
-        dead_code: store.setting(SETTING_DEAD_CODE_REPORT_PATH)?,
-        weather: store.setting(SETTING_WEATHER_REPORT_PATH)?,
+/// What the settings say of each adapter: the report path configured for it, if any, and
+/// whether it is on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdapterSettings {
+    pub overrides: Overrides,
+    pub enabled: Enabled,
+}
+
+/// The adapters' settings. A value this version cannot read counts as never set, so a setting
+/// written by hand never stops the terrarium from connecting.
+pub fn stored_adapters(store: &Store) -> Result<AdapterSettings, StoreError> {
+    fn read<T: DeserializeOwned>(store: &Store, key: &str) -> Result<Option<T>, StoreError> {
+        match store.setting(key) {
+            Err(StoreError::Json(_)) => Ok(None),
+            read => read,
+        }
+    }
+    let on = |key| -> Result<bool, StoreError> { Ok(read(store, key)?.unwrap_or(true)) };
+    Ok(AdapterSettings {
+        overrides: Overrides {
+            coverage: read(store, SETTING_COVERAGE_REPORT_PATH)?,
+            dead_code: read(store, SETTING_DEAD_CODE_REPORT_PATH)?,
+            weather: read(store, SETTING_WEATHER_REPORT_PATH)?,
+        },
+        enabled: Enabled {
+            coverage: on(SETTING_COVERAGE_ENABLED)?,
+            dead_code: on(SETTING_DEAD_CODE_ENABLED)?,
+            weather: on(SETTING_WEATHER_ENABLED)?,
+        },
     })
 }
 

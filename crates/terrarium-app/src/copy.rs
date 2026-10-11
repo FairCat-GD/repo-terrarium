@@ -17,12 +17,14 @@ use terrarium_compose::sky::LocalDate;
 use terrarium_engine::headless::HeadlessError;
 use terrarium_engine::{Branch, ConnectError, Problem};
 use terrarium_platform::login::LoginError;
-use terrarium_truth::ReplayError;
 use terrarium_truth::scene::Weather;
+use terrarium_truth::{ReplayError, SIM_VERSION};
 
 use crate::cli::UsageError;
+use crate::crash::Crash;
 use crate::discover::Reads;
 use crate::egui_host::{HostError, WindowKind};
+use crate::hotkey::{Binding, Platform, key_name};
 use crate::live::{LabelFacts, Note, Once};
 use crate::pinning::AttachError;
 use crate::present::PresentError;
@@ -573,7 +575,7 @@ enum Hint {
 fn hint_text(hint: Hint, runner: Option<Runner>) -> String {
     match hint {
         Hint::Coverage => format!(
-            "lcov is read from {}; Cobertura XML from {}.",
+            "lcov is read from {}; Cobertura XML from {}. Of several there, the newest is read.",
             either(LCOV_PATHS),
             either(COBERTURA_PATHS)
         ),
@@ -691,6 +693,61 @@ pub fn menu_settings() -> &'static str {
     "Settings"
 }
 
+pub fn menu_time_lapse() -> &'static str {
+    "Time-lapse"
+}
+
+pub fn menu_pause() -> &'static str {
+    "Pause"
+}
+
+pub fn menu_resume() -> &'static str {
+    "Resume"
+}
+
+/// The label's one line while the scene is paused.
+pub fn label_paused() -> &'static str {
+    "paused"
+}
+
+/// A hotkey's keys as the platform's keyboards name them: Control-Option-T on a Mac, in
+/// Apple's order, and Ctrl+Alt+T on Windows.
+pub fn hotkey(binding: Binding, platform: Platform) -> String {
+    let mods = binding.mods;
+    let names = settings::modifier_names(platform);
+    let mut parts: Vec<&str> = [mods.control, mods.option, mods.shift, mods.command]
+        .into_iter()
+        .zip(names)
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| name)
+        .collect();
+    parts.push(key_name(binding.key));
+    let between = match platform {
+        Platform::Mac => "-",
+        Platform::Windows => "+",
+    };
+    parts.join(between)
+}
+
+/// A crash log's report: what ran, where it failed and how it got there.
+pub fn crash_report(crash: &Crash) -> String {
+    format!(
+        "{BINARY_NAME} {VERSION} crash report\n\
+         simulation version: {}\n\
+         system: {} {}\n\
+         thread: {}\n\
+         at: {}\n\
+         message: {}\n\n\
+         backtrace:\n{}\n",
+        SIM_VERSION.0,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        crash.thread,
+        crash.location,
+        crash.message,
+        crash.backtrace
+    )
+}
 /// An egui window's title.
 pub fn egui_window_title(kind: WindowKind) -> String {
     match kind {
@@ -726,9 +783,22 @@ pub mod connect {
     }
 }
 
-/// The settings window's repository section.
+/// The settings window: its tabs, and in each what is set and what it does.
 pub mod settings {
+    use std::fmt::Display;
+
+    use terrarium_platform::login::{LoginError, LoginStatus};
+
+    use super::{PRODUCT_NAME, VERSION};
+    use crate::hotkey::{Platform, Refusal};
+    use crate::prefs::AdapterKind;
+
     pub const REPOSITORY: &str = "Repository";
+    pub const STRIP: &str = "Strip";
+    pub const ADAPTERS: &str = "Adapters";
+    pub const HOTKEYS: &str = "Hotkeys";
+    pub const TIME: &str = "Time";
+    pub const GENERAL: &str = "General";
     pub const NAME: &str = "Name";
     pub const FOLDER: &str = "Folder";
     pub const DEFAULT_BRANCH: &str = "Default branch";
@@ -757,6 +827,151 @@ pub mod settings {
             "Disconnecting stops showing {name}. Its git history replays whenever it is \
              connected again."
         )
+    }
+
+    /// A change that could not be kept.
+    pub fn not_saved(err: &impl Display) -> String {
+        format!("The setting could not be saved: {err}")
+    }
+
+    // The strip.
+    pub const MONITOR: &str = "Display";
+    pub const AUTOMATIC: &str = "Automatic";
+    pub const AUTOMATIC_FACT: &str =
+        "Automatic puts the strip on a display other than the main one, when there is one.";
+    pub const MISSING_MONITOR: &str = "The display chosen earlier, not connected now";
+    pub const EDGE: &str = "Edge";
+    pub const BOTTOM: &str = "Bottom";
+    pub const TOP: &str = "Top";
+    pub const SIZE: &str = "Size";
+    pub const LARGEST: &str = "Largest that fits";
+    pub const ONE_SMALLER: &str = "One step smaller";
+
+    /// A display in the list: its name and size, and whether it is the main one.
+    pub fn monitor(name: &str, width: u32, height: u32, primary: bool) -> String {
+        let main = if primary { ", main" } else { "" };
+        format!("{name} ({width}×{height}{main})")
+    }
+
+    /// The strip's scale on the display shown.
+    pub fn scale(scale: u32) -> String {
+        format!("{scale}×")
+    }
+
+    // The adapters.
+    pub const ADAPTERS_FACT: &str = "These apply to the connected repository. A report path \
+        is relative to its folder; with none set, the places listed in the report are read.";
+    pub const READ: &str = "Read";
+    pub const REPORT_PATH: &str = "Report path";
+    pub const NO_PATH: &str = "the usual places";
+    pub const APPLY: &str = "Apply";
+    pub const CLEAR: &str = "Clear";
+    pub const OUTSIDE: &str = "That path is not inside the repository.";
+    pub const LOOKING: &str = "Looking at the repository…";
+    pub const KNIP_RUN: &str = "Run Knip from this repository";
+    pub const KNIP_LATER: &str = "Running Knip comes with a later version.";
+    pub const CI: &str = "GitHub Actions";
+    pub const CI_REPOSITORY: &str = "Repository";
+    pub const CI_TOKEN: &str = "Access token";
+    pub const CI_LATER: &str = "Weather from GitHub Actions comes with a later version.";
+
+    pub fn adapter(kind: AdapterKind) -> &'static str {
+        match kind {
+            AdapterKind::Coverage => "Coverage report",
+            AdapterKind::Tests => "Test results",
+            AdapterKind::DeadCode => "Dead-code report (Knip)",
+        }
+    }
+
+    // The hotkeys.
+    pub const RAISE: &str = "Raise the strip";
+    pub const TIME_LAPSE: &str = "Open the time-lapse";
+    pub const KEY: &str = "Key";
+    pub const DEFAULT: &str = "Default";
+    pub const TIME_LAPSE_LATER: &str = "The time-lapse opens from its hotkey with a later version.";
+
+    /// The modifiers' names, as the platform's keyboards print them, in Apple's order.
+    pub fn modifier_names(platform: Platform) -> [&'static str; 4] {
+        match platform {
+            Platform::Mac => ["Control", "Option", "Shift", "Command"],
+            Platform::Windows => ["Ctrl", "Alt", "Shift", "Win"],
+        }
+    }
+
+    pub fn now_set(keys: &str) -> String {
+        format!("Now: {keys}")
+    }
+
+    pub fn refusal(refusal: Refusal, platform: Platform) -> &'static str {
+        match (refusal, platform) {
+            (Refusal::TooFewModifiers, _) => "A hotkey takes two modifier keys or more.",
+            (Refusal::OptionShift, Platform::Mac) => {
+                "macOS refuses hotkeys of Option and Shift alone."
+            }
+            (Refusal::OptionShift, Platform::Windows) => {
+                "Alt and Shift alone type characters on many keyboards."
+            }
+            (Refusal::Taken, _) => "The other hotkey has these keys.",
+        }
+    }
+
+    pub fn not_registered(err: &impl Display) -> String {
+        format!("These keys could not be registered: {err}")
+    }
+
+    // Day, night and dim mode.
+    pub const DAY_STARTS: &str = "Day begins";
+    pub const NIGHT_STARTS: &str = "Night begins";
+    pub const SAME_TIMES: &str = "Day and night begin at different times.";
+    pub const CROSSFADE_FACT: &str = "The sky crosses from one to the other over 45 minutes.";
+    pub const DIM_AFTER: &str = "Dim after";
+    pub const DIM_FACT: &str = "With no input anywhere on this computer for that long, the \
+        strip dims and its motion slows.";
+
+    /// An hour or a minute, as a clock shows it.
+    pub fn two_digits(value: u16) -> String {
+        format!("{value:02}")
+    }
+
+    pub fn minutes(minutes: u32) -> String {
+        format!("{minutes} minutes")
+    }
+
+    // General.
+    pub const OPEN_AT_LOGIN: &str = "Open at login";
+    pub const CRASH_LOG: &str = "Write a crash log";
+
+    /// What opening at login waits on, when the OS says it does not apply yet.
+    pub fn login_status(status: LoginStatus) -> Option<&'static str> {
+        match status {
+            LoginStatus::RequiresApproval => {
+                Some("Waiting for approval in System Settings, under Login Items.")
+            }
+            LoginStatus::Unavailable => {
+                Some("Open at login applies to the installed app; this build is not one.")
+            }
+            LoginStatus::Enabled | LoginStatus::Disabled => None,
+        }
+    }
+
+    pub fn login_problem(err: &LoginError) -> String {
+        match err {
+            LoginError::NotBundled => {
+                "Open at login applies to the installed app; this build is not one.".to_owned()
+            }
+            LoginError::Os(reason) => format!("Open at login could not be set: {reason}"),
+        }
+    }
+
+    pub fn crash_log_fact(folder: &str) -> String {
+        format!(
+            "A crash writes a report into {folder}, to attach to an issue. Nothing is sent \
+             anywhere."
+        )
+    }
+
+    pub fn version() -> String {
+        format!("{PRODUCT_NAME} {VERSION}")
     }
 }
 
@@ -795,6 +1010,8 @@ pub mod panel {
     pub const NO_FAILING_TESTS: &str = "no failing tests";
     pub const FAILING_UNNAMED: &str = "the failing tests are not named";
     pub const NOT_MEASURED: &str = "not measured yet";
+    pub const COVERAGE_OFF: &str = "coverage is off in settings";
+    pub const TESTS_OFF: &str = "tests are off in settings";
     pub const NO_FILES: &str = "no files named";
 
     /// A reading's value to two decimals: `0.78`, or `1.20` for rain at a fifth over its usual
@@ -901,8 +1118,11 @@ pub fn menu_unavailable(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the right-click menu is unavailable: {err}")
 }
 
-pub fn hotkey_unavailable(err: &impl Display) -> String {
-    format!("{BINARY_NAME}: the raise hotkey Ctrl+Alt+T could not be registered: {err}")
+pub fn hotkey_unavailable(binding: Binding, err: &impl Display) -> String {
+    format!(
+        "{BINARY_NAME}: the raise hotkey {} could not be registered: {err}",
+        hotkey(binding, Platform::THIS)
+    )
 }
 
 pub fn present_failed(err: &impl Display) -> String {
@@ -1494,7 +1714,7 @@ mod tests {
             assert!(connect.contains(
                 "  coverage report   lcov is read from coverage/lcov.info, lcov.info or \
                  coverage.lcov; Cobertura XML from coverage/cobertura-coverage.xml, coverage.xml \
-                 or cobertura.xml.\n"
+                 or cobertura.xml. Of several there, the newest is read.\n"
             ));
             assert!(connect.contains(
                 "  test report       jest-junit writes JUnit XML to junit.xml as one of Jest's \

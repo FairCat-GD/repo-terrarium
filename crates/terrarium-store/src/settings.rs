@@ -56,6 +56,13 @@ impl Store {
         Ok(())
     }
 
+    /// Removes the setting, so it reads as never set.
+    pub fn clear_setting(&mut self, key: &str) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
     pub fn install_value(&self, key: InstallKey) -> Result<Option<String>, StoreError> {
         Ok(self
             .conn
@@ -122,6 +129,20 @@ mod tests {
             fx.store.setting::<u32>("strip.edge"),
             Err(StoreError::Json(_))
         ));
+    }
+
+    #[test]
+    fn a_cleared_setting_reads_as_never_set_and_others_stay() {
+        let mut fx = Fixture::new();
+        fx.store.set_setting("strip.monitor", "display-1").unwrap();
+        fx.store.set_setting("strip.edge", "top").unwrap();
+        fx.store.clear_setting("strip.monitor").unwrap();
+        fx.store.clear_setting("hotkeys.raise").unwrap();
+        assert_eq!(fx.store.setting::<String>("strip.monitor").unwrap(), None);
+        assert_eq!(
+            fx.store.setting::<String>("strip.edge").unwrap().as_deref(),
+            Some("top")
+        );
     }
 
     #[test]

@@ -395,6 +395,8 @@ fn overlay(bits: u64) -> OverlayInput {
     );
     OverlayInput {
         dim: field(bits, 40, 5) == 0,
+        // A quarter of overlays pause the scene, so a history pauses, resumes, or stays paused.
+        paused: field(bits, 50, 4) == 0,
         ..OverlayInput::new(
             (0..lines)
                 .map(|i| pick(&LINES, bits >> (2 + 3 * i)).to_owned())
@@ -1854,11 +1856,18 @@ const CUES: [u64; 54] = [
     44_487, 44_488, 44_489, 50_000, 60_000, 64_000,
 ];
 
-/// Moments worth looking at after an update: its tween boundaries and either side of them,
-/// the label's cycle steps from any label set raised at `raised`, and the turns of the
-/// choreography each update at `cued` that carried an event may have begun, which plays on
-/// through the updates after it.
-fn moments(update: Millis, until: Millis, raised: &[Millis], cued: &[Millis]) -> Vec<Millis> {
+/// Moments worth looking at after an update: its tween boundaries and either side of them, the
+/// label's cycle steps from any label set raised at `raised`, and the turns of the choreography
+/// each update at the scene's moment `cued` that carried an event may have begun, which plays
+/// on through the updates after it. The scene's clock stands `held` behind the composer's, as
+/// pauses left it: its turns and choreographies fall that much later.
+fn moments(
+    update: Millis,
+    until: Millis,
+    raised: &[Millis],
+    cued: &[Millis],
+    held: u64,
+) -> Vec<Millis> {
     let half = RESTYLE_MS / 2;
     // Quarter steps keep the plants' continuity bound near 96 of 255, so a cut mid-tween
     // shows; tenths of the light's crossfade do the same for it; the boundaries and their
@@ -1891,17 +1900,17 @@ fn moments(update: Millis, until: Millis, raised: &[Millis], cued: &[Millis]) ->
     .map(|ms| update.plus(ms))
     .collect();
     // Through the start of the first turn the update moves in, where changes of rest play.
-    let moving = (update.0 / TURN_MS + 1) * TURN_MS;
+    let moving = (update.0.saturating_sub(held) / TURN_MS + 1) * TURN_MS + held;
     for offset in (0..=7000).step_by(500).chain([1, 20_000]) {
         moments.push(Millis(moving + offset));
     }
     for &cue in cued {
         // On a first update the choreography waits for the fade-in.
         for after in [0, u64::from(SKY_MS)] {
-            moments.extend(CUES.iter().map(|&ms| Millis(cue.0 + after + ms)));
+            moments.extend(CUES.iter().map(|&ms| Millis(cue.0 + held + after + ms)));
         }
         // Residents an earthquake sends into hiding come out a turn later.
-        let after = (cue.0 / TURN_MS + 2) * TURN_MS;
+        let after = (cue.0 / TURN_MS + 2) * TURN_MS + held;
         moments.extend((0..=7000).step_by(500).map(|offset| Millis(after + offset)));
     }
     let cycle = u64::from(LABEL_CYCLE_MS);
@@ -1919,11 +1928,40 @@ fn moments(update: Millis, until: Millis, raised: &[Millis], cued: &[Millis]) ->
     moments
 }
 
-/// The times of the updates through the `last` whose scenes carried an event.
-fn cued(history: &History, times: &[Millis; 3], last: usize) -> Vec<Millis> {
+/// The scene's clock through a history played at `times`, as the composer keeps it: how far
+/// pauses have held it behind by each update, and the scene's moment at each update.
+struct SceneClock {
+    held: [u64; 3],
+    at: [Millis; 3],
+}
+
+fn scene_clock(history: &History, times: &[Millis; 3]) -> SceneClock {
+    let mut since: Option<Millis> = None;
+    let mut held = 0;
+    let mut clock = SceneClock {
+        held: [0; 3],
+        at: [Millis(0); 3],
+    };
+    for (i, ((_, overlay), &now)) in history.scenes.iter().zip(times).enumerate() {
+        match (overlay.paused, since) {
+            (true, None) => since = Some(now),
+            (false, Some(start)) => {
+                held += now.0 - start.0;
+                since = None;
+            }
+            _ => {}
+        }
+        clock.held[i] = held;
+        clock.at[i] = Millis(since.unwrap_or(now).0 - held);
+    }
+    clock
+}
+
+/// The scene's moments of the updates through the `last` whose scenes carried an event.
+fn cued(history: &History, clock: &SceneClock, last: usize) -> Vec<Millis> {
     (0..=last)
         .filter(|&i| history.scenes[i].0.event.is_some())
-        .map(|i| times[i])
+        .map(|i| clock.at[i])
         .collect()
 }
 
@@ -1937,8 +1975,11 @@ fn play(composer: &mut Composer, history: &History) -> Result<[Millis; 3], TestC
             now = match history.gaps[i - 1] {
                 After::Ms(ms) => now.plus(ms),
                 After::Settled => {
+                    // A paused scene settles only once it runs again.
                     let (scene, overlay) = &history.scenes[i - 1];
-                    check_settled(composer, scene, overlay)?;
+                    if !overlay.paused {
+                        check_settled(composer, scene, overlay)?;
+                    }
                     composer.settled_at().max(now)
                 }
             };
@@ -1971,11 +2012,14 @@ proptest! {
         let mut composer = Composer::new(table(), salt);
         let times = play(&mut composer, &history)?;
         let (last, overlay) = &history.scenes[2];
-        check_settled(&composer, last, overlay)?;
+        if !overlay.paused {
+            check_settled(&composer, last, overlay)?;
+        }
 
         // Replay, stopping at the moments around each update, for continuity and the subset,
         // by day or by night as the salt falls.
         let mix = if salt.bytes()[0] % 2 == 0 { 0 } else { 255 };
+        let clock = scene_clock(&history, &times);
         let mut replay = Composer::new(table(), salt);
         let mut raised = Vec::new();
         for (i, (scene, overlay)) in history.scenes.iter().enumerate() {
@@ -1985,9 +2029,9 @@ proptest! {
             }
             let until = times.get(i + 1).copied().unwrap_or_else(|| replay.settled_at().plus(1));
             let showing: Vec<&SceneInput> = history.scenes[..=i].iter().map(|(s, _)| s).collect();
-            let cued = cued(&history, &times, i);
+            let cued = cued(&history, &clock, i);
             let mut previous: Option<(Millis, Vec<KeyedDraw>)> = None;
-            for moment in moments(times[i], until, &raised, &cued) {
+            for moment in moments(times[i], until, &raised, &cued, clock.held[i]) {
                 let draws = drawn(&replay, mix, moment);
                 check_subset(&draws, &showing)?;
                 check_one_show(&draws)?;
@@ -2014,8 +2058,12 @@ proptest! {
         prop_assert_eq!(one.monument_spots(), two.monument_spots());
         prop_assert_eq!(one.fossil_spots(), two.fossil_spots());
         let end = one.settled_at().max(two.settled_at());
-        let cued = cued(&history, &times, 2);
-        for moment in moments(times[2], end.plus(1), &[], &cued).into_iter().chain([end]) {
+        let clock = scene_clock(&history, &times);
+        let cued = cued(&history, &clock, 2);
+        for moment in moments(times[2], end.plus(1), &[], &cued, clock.held[2])
+            .into_iter()
+            .chain([end])
+        {
             prop_assert_eq!(one.depicted(moment), two.depicted(moment));
         }
     }
@@ -2071,6 +2119,11 @@ proptest! {
             // From the update, mid-tween, once settled and past a step of the label's cycle,
             // walk the changes the composer names, checking each span.
             let settled = composer.settled_at().max(now);
+            // A paused scene with a label of one line, once its overlay settles, asks for no
+            // frame at all (I-10's zero frames while static).
+            if overlay.paused && overlay.label.len() <= 1 {
+                prop_assert_eq!(composer.next_change(art(), table(), settled), None);
+            }
             // And into the first turn this scene moves in, where gusts and walks begin.
             let moving = Millis((now.0 / TURN_MS + 1) * TURN_MS);
             let starts = [
@@ -2113,6 +2166,108 @@ proptest! {
                     }
                     moment = next;
                 }
+            }
+        }
+    }
+}
+
+/// The history with every overlay running: the pause test pauses it itself.
+fn running(mut history: History) -> History {
+    for (_, overlay) in &mut history.scenes {
+        overlay.paused = false;
+    }
+    history
+}
+
+/// What the scene draws at `now`: everything but the label, the hover labels and the soil
+/// panel, which keep the composer's own clock through a pause.
+fn scene_draws(composer: &Composer, mix: u8, now: Millis) -> Vec<Draw> {
+    composer
+        .draws(art(), table(), mix, now)
+        .into_iter()
+        .filter(|keyed| {
+            !matches!(
+                keyed.key.subject,
+                Subject::Label | Subject::Tag { .. } | Subject::Panel
+            )
+        })
+        .map(|keyed| keyed.draw)
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(config(300))]
+
+    /// A pause holds the scene as it stood, palette included, however long it lasts; once
+    /// resumed, the scene carries on from there exactly as a twin never paused does, every
+    /// moment of the twin's coming `pause` later.
+    #[test]
+    fn a_pause_holds_the_scene_and_a_resume_carries_on_from_it(
+        history in history(),
+        salt in salt(),
+        into in after(),
+        pause in prop::sample::select(vec![1_u64, 2_250, 37_000, 3_600_000]),
+    ) {
+        let history = running(history);
+        let mix = if salt.bytes()[0] % 2 == 0 { 0 } else { 255 };
+        let mut twin = Composer::new(table(), salt);
+        let mut paused = Composer::new(table(), salt);
+        let (first, overlay) = &history.scenes[0];
+        let start = Millis(500);
+        twin.update(first, overlay, start);
+        paused.update(first, overlay, start);
+        let at = match into {
+            After::Ms(ms) => start.plus(ms),
+            After::Settled => twin.settled_at().max(start),
+        };
+        // The twin takes the pause's update and the resume's at the same moment.
+        twin.update(first, overlay, at);
+        twin.update(first, overlay, at);
+        let pausing = OverlayInput {
+            paused: true,
+            ..overlay.clone()
+        };
+        paused.update(first, &pausing, at);
+        let resumed = Millis(at.0 + pause);
+        let mut held = vec![at, Millis(at.0 + 1), Millis(at.0 + pause / 2), resumed];
+        held.dedup();
+        for moment in held {
+            prop_assert_eq!(paused.depicted(moment), twin.depicted(at));
+            prop_assert_eq!(paused.palette_mix(moment), twin.palette_mix(at));
+            prop_assert_eq!(scene_draws(&paused, mix, moment), scene_draws(&twin, mix, at));
+        }
+        paused.update(first, overlay, resumed);
+        let mut times = vec![at];
+        let mut cued = Vec::new();
+        if first.event.is_some() {
+            cued.push(start);
+        }
+        for (i, (scene, overlay)) in history.scenes.iter().enumerate().skip(1) {
+            let last = times[times.len() - 1];
+            let now = match history.gaps[i - 1] {
+                After::Ms(ms) => last.plus(ms),
+                After::Settled => twin.settled_at().max(last),
+            };
+            twin.update(scene, overlay, now);
+            paused.update(scene, overlay, Millis(now.0 + pause));
+            if scene.event.is_some() {
+                cued.push(now);
+            }
+            times.push(now);
+        }
+        let end = twin.settled_at().max(times[times.len() - 1]).plus(1);
+        for (i, &update) in times.iter().enumerate() {
+            let until = times.get(i + 1).copied().unwrap_or(end);
+            for moment in moments(update, until, &[], &cued, 0).into_iter().chain([end]) {
+                let later = Millis(moment.0 + pause);
+                prop_assert_eq!(paused.depicted(later), twin.depicted(moment), "at {:?}", moment);
+                prop_assert_eq!(paused.palette_mix(later), twin.palette_mix(moment));
+                prop_assert_eq!(
+                    scene_draws(&paused, mix, later),
+                    scene_draws(&twin, mix, moment),
+                    "at {:?}",
+                    moment
+                );
             }
         }
     }
@@ -2170,8 +2325,11 @@ fn motion_at(draws: &[KeyedDraw]) -> (usize, usize, usize) {
 proptest! {
     #![proptest_config(config(300))]
 
+    /// A paused scene moves nothing, and the pause property shows a resumed one moves as one
+    /// never paused, so the budget is checked on running histories.
     #[test]
     fn the_motion_budget_holds(history in history(), salt in salt()) {
+        let history = running(history);
         let mut composer = Composer::new(table(), salt);
         let times = play(&mut composer, &history)?;
         // Then everyone livened: as much travel as the scene's residents could want, by day

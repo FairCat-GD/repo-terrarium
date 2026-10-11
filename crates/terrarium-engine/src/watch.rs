@@ -293,7 +293,10 @@ mod tests {
     }
 
     fn set(layout: &Layout) -> WatchSet {
-        let patterns = discovery::report_patterns(&discovery::Overrides::default());
+        let patterns = discovery::report_patterns(
+            &discovery::Overrides::default(),
+            discovery::Enabled::default(),
+        );
         WatchSet::new(&Places {
             git_dir: &layout.git,
             common_dir: &layout.git,

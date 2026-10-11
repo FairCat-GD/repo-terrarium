@@ -4,9 +4,9 @@ The `repo-terrarium` binary.
 
 ## Owns
 
-- The winit `ApplicationHandler` and the strip window (`strip`): borderless, along the bottom
-  edge of the chosen monitor, below ordinary windows, and never in the Dock or the app
-  switcher.
+- The winit `ApplicationHandler` and the strip window (`strip`): borderless, along the edge of
+  the monitor the settings name, below ordinary windows, and never in the Dock or the app
+  switcher. A pause stands the scene still while truth keeps time.
 - The monitor choice (`monitor`): the setting, else a non-primary monitor, else the primary.
 - The living strip (`animate`): a scene through the composer, composed only when the composer
   says the picture changes and at most 15 times a second.
@@ -14,13 +14,16 @@ The `repo-terrarium` binary.
   connected last, its updates applied to the scene and the label, and the label's words,
   among them the notes shown once.
 - What it shows (`feed`): the live scene or `--demo`'s cycle (`demo`), always on the local
-  clock, taken again every hour and after a wake, and dimmed after 30 minutes without input
-  (`idle`).
+  clock, taken again every hour and after a wake, with day and night when the settings say, and
+  dimmed after the settings' while without input (`idle`); held as it stood while paused.
+- The settings (`prefs`): every setting typed, loaded with a default for anything absent or
+  unreadable, and saved by a thread of its own. The opt-in crash log (`crash`).
 - The windows beside the strip (`shell`), on one egui host (`egui_host`) made with the first
   window and dropped with the last, painted only when egui asks (`repaint`): the connect window
-  (`connect`), open while no repository is connected, and the settings window's repository
-  section (`settings`). Their forms are tested models whose presses come back as intents; the
-  folder picker is the first of two steps.
+  (`connect`), open while no repository is connected, and the settings window (`settings`), a
+  tab each for the repository, the strip, the adapters, the hotkeys, the time and the rest.
+  Their forms are tested models whose presses come back as intents; the folder picker is the
+  first of two steps.
 - The terrarium's lifecycle (`lifecycle`): connecting from the window, relinking, re-seeding
   and disconnecting, each on a thread of its own that stops the engine, changes the store and
   starts a new engine, whose generation tags its updates.
@@ -29,8 +32,8 @@ The `repo-terrarium` binary.
 - The `Presenter` that puts composed pixels on screen (`present`), with softbuffer as the first
   backend. It presents on resize, re-placement and the OS's expose requests, and when the
   living strip's pixels change; a still strip draws no frames.
-- Hover in native pixels (`hover`), the raise hotkey and its timer (`hotkey`, `raise`), and the
-  right-click menu (`menu`).
+- Hover in native pixels (`hover`), the hotkeys, their bindings and the raise's timer
+  (`hotkey`, `raise`), and the right-click menu (`menu`).
 - The OS half of the strip (`pinning`): the level, placement and system events, through
   `terrarium-platform`. On macOS the strip is a desktop-level window; on Windows it is an
   `AppBar` on a reserved edge, sized to the band Windows grants.

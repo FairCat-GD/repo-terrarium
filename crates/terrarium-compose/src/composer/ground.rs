@@ -958,7 +958,7 @@ impl Composer {
     fn drawn(&self, art: &Art, sprite: SpriteId, value: u8, now: Millis) -> u8 {
         let lit = Lit {
             value,
-            palette_mix: self.palette_mix(now),
+            palette_mix: self.mix_at(now),
         };
         lit.apply(art, Draw::new(&art.catalog, sprite, 0, 0))
             .map_or(0, |draw| draw.opacity)

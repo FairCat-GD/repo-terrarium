@@ -398,6 +398,8 @@ fn files(source: Source, facts: &PanelFacts) -> Page {
             &files.light,
             if known(&report.climate.light) {
                 words::NO_UNCOVERED_LINES
+            } else if !found.enabled.coverage {
+                words::COVERAGE_OFF
             } else if found.coverage {
                 words::COVERAGE_NOT_READ
             } else {
@@ -410,6 +412,7 @@ fn files(source: Source, facts: &PanelFacts) -> Page {
             match report.climate.weather.state {
                 Reading::Known { value, .. } if value >= Q16::HALF => words::NO_FAILING_TESTS,
                 Reading::Known { .. } => words::FAILING_UNNAMED,
+                Reading::Unknown if !found.enabled.weather => words::TESTS_OFF,
                 Reading::Unknown if found.test_report => words::TESTS_NOT_READ,
                 Reading::Unknown => words::NO_TEST_REPORT,
             },
@@ -471,6 +474,7 @@ mod tests {
     use std::fmt::Write as _;
 
     use sha2::{Digest, Sha256};
+    use terrarium_adapters::discovery::Enabled;
     use terrarium_compose::catalog::Art;
     use terrarium_compose::clock::LocalClock;
     use terrarium_compose::composer::{Composer, OverlayInput};
@@ -581,6 +585,7 @@ mod tests {
             found: Found {
                 coverage: true,
                 test_report: true,
+                enabled: Enabled::default(),
             },
         };
         PanelFacts { report, details }
@@ -967,6 +972,7 @@ mod tests {
         found.details.found = Found {
             coverage: true,
             test_report: true,
+            enabled: Enabled::default(),
         };
         assert_eq!(
             lines(Level::Files(Source::Light), &found),
@@ -975,6 +981,21 @@ mod tests {
         assert_eq!(
             lines(Level::Files(Source::Weather), &found),
             [words::TESTS_NOT_READ]
+        );
+        // Found, but off in the settings: the page says so, whether or not a report is there.
+        let mut off = found.clone();
+        off.details.found.enabled = Enabled {
+            coverage: false,
+            dead_code: true,
+            weather: false,
+        };
+        assert_eq!(
+            lines(Level::Files(Source::Light), &off),
+            [words::COVERAGE_OFF]
+        );
+        assert_eq!(
+            lines(Level::Files(Source::Weather), &off),
+            [words::TESTS_OFF]
         );
         let mut read = facts();
         read.details.files = terrarium_engine::Files::default();

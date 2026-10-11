@@ -1,12 +1,9 @@
-//! The settings window's repository section: where the repository is, locating it when it is
-//! not found there, a new terrarium, and disconnecting.
+//! The repository tab: where the repository is, locating it when it is not found there, a new
+//! terrarium, and disconnecting.
 //!
 //! Locating is two steps, as connecting is: the picker fills in the folder, and relinking is a
 //! separate press. A new terrarium and a disconnect each ask for a confirmation first, which
 //! says plainly what they do; nothing changes before it is given.
-//!
-//! The form is a model the window only draws; what a press asks for is an [`Intent`] the strip
-//! carries out.
 
 use std::path::PathBuf;
 
@@ -21,7 +18,7 @@ pub struct RepoFacts {
     pub default_branch: String,
 }
 
-pub struct SettingsForm {
+pub struct RepoSection {
     repo: RepoFacts,
     /// The repository is not where it was connected from.
     missing: bool,
@@ -43,9 +40,9 @@ enum Page {
     ConfirmDisconnect,
 }
 
-impl SettingsForm {
-    pub fn new(repo: RepoFacts) -> SettingsForm {
-        SettingsForm {
+impl RepoSection {
+    pub fn new(repo: RepoFacts) -> RepoSection {
+        RepoSection {
             repo,
             missing: false,
             page: Page::Repository,
@@ -159,8 +156,6 @@ impl SettingsForm {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading(words::REPOSITORY);
-        ui.add_space(8.0);
         egui::Grid::new("repository")
             .num_columns(2)
             .spacing([12.0, 4.0])
@@ -286,8 +281,8 @@ impl SettingsForm {
 mod tests {
     use super::*;
 
-    fn form() -> SettingsForm {
-        SettingsForm::new(RepoFacts {
+    fn form() -> RepoSection {
+        RepoSection::new(RepoFacts {
             name: "moss".into(),
             path: "/projects/moss".into(),
             default_branch: "main".into(),

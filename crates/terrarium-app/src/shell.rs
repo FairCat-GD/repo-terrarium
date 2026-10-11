@@ -14,6 +14,7 @@ use winit::window::{Window, WindowId};
 
 use crate::connect::ConnectForm;
 use crate::egui_host::{EguiHost, WindowKind};
+use crate::prefs::Pref;
 use crate::settings::SettingsForm;
 use crate::{copy, pinning};
 
@@ -44,6 +45,8 @@ pub enum Intent {
     Disconnect { delete_observations: bool },
     /// The connect window's report is read.
     Done,
+    /// A setting changed in the settings window: applied at once, then saved.
+    Set(Pref),
 }
 
 #[derive(Default)]
@@ -151,7 +154,12 @@ impl Shell {
             .as_mut()
             .and_then(ConnectForm::take_intent)
             .into_iter()
-            .chain(self.settings.as_mut().and_then(SettingsForm::take_intent))
+            .chain(
+                self.settings
+                    .as_mut()
+                    .map(SettingsForm::take_intents)
+                    .unwrap_or_default(),
+            )
             .collect()
     }
 

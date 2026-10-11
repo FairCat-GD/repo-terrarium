@@ -4,10 +4,12 @@
 //! It looks only where the fixed lists below say, plus a configured path per adapter, and
 //! never walks the repository. A `*` matches within one path segment. Every path is relative to
 //! the repository root, and a configured one that is absolute or climbs out of it is refused.
-//! Nothing is run, and nothing is written.
+//! Where several fixed paths hold a report, the one written last is read. Nothing is run, and
+//! nothing is written.
 
 use std::fs;
 use std::path::Path;
+use std::time::SystemTime;
 
 use serde_json::Value;
 
@@ -15,7 +17,8 @@ use crate::git::GitError;
 use crate::report::{Format, MAX_FILES, installed_knip, read_bounded};
 
 /// lcov first, then Cobertura, each in the order tools write them: Jest, Vitest, c8 and nyc;
-/// cargo-llvm-cov and tarpaulin; coverage.py.
+/// cargo-llvm-cov and tarpaulin; coverage.py. The order settles only reports written at the
+/// same moment; otherwise the newest is read.
 pub const LCOV_PATHS: &[&str] = &["coverage/lcov.info", "lcov.info", "coverage.lcov"];
 /// istanbul; coverage.py and pytest-cov; tarpaulin and cargo-llvm-cov.
 pub const COBERTURA_PATHS: &[&str] = &[
@@ -152,6 +155,26 @@ pub struct Overrides {
     pub weather: Option<String>,
 }
 
+/// Which adapters read their reports (`adapters.<kind>.enabled`): each is on until the settings
+/// turn it off. One that is off is still discovered; it is neither read nor watched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Enabled {
+    pub coverage: bool,
+    pub dead_code: bool,
+    /// Test results: a `JUnit` report and the `record-tests` status file.
+    pub weather: bool,
+}
+
+impl Default for Enabled {
+    fn default() -> Self {
+        Enabled {
+            coverage: true,
+            dead_code: true,
+            weather: true,
+        }
+    }
+}
+
 /// Report files that were found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Located {
@@ -212,7 +235,7 @@ pub fn discover(
     } = locate_reports(root, overrides);
     let dead_code = match &overrides.dead_code {
         Some(path) => configured(root, path, Format::Knip),
-        None => first_of(root, &[(Format::Knip, &[KNIP_REPORT_PATH])]),
+        None => newest_of(root, &[(Format::Knip, &[KNIP_REPORT_PATH])]),
     };
     let package = package_keys(root);
     let knip_config = KNIP_CONFIG_PATHS
@@ -255,7 +278,7 @@ pub struct Reports {
 pub fn locate_reports(root: &Path, overrides: &Overrides) -> Reports {
     let coverage = match &overrides.coverage {
         Some(path) => configured(root, path, coverage_format(path)),
-        None => first_of(
+        None => newest_of(
             root,
             &[
                 (Format::Lcov, LCOV_PATHS),
@@ -265,7 +288,7 @@ pub fn locate_reports(root: &Path, overrides: &Overrides) -> Reports {
     };
     let test_report = match &overrides.weather {
         Some(path) => configured(root, path, Format::JUnit),
-        None => first_of(root, &[(Format::JUnit, JUNIT_PATHS)]),
+        None => newest_of(root, &[(Format::JUnit, JUNIT_PATHS)]),
     };
     Reports {
         coverage,
@@ -275,10 +298,11 @@ pub fn locate_reports(root: &Path, overrides: &Overrides) -> Reports {
 
 /// Every path a coverage or test report may be found at, a configured one replacing its fixed
 /// list, as `/`-separated patterns relative to the root: what a watcher watches for. A refused
-/// configured path is left out.
-pub fn report_patterns(overrides: &Overrides) -> Vec<String> {
+/// configured path is left out, and so is every path of an adapter that is off.
+pub fn report_patterns(overrides: &Overrides, enabled: Enabled) -> Vec<String> {
     let mut patterns = Vec::new();
-    let mut add = |configured: &Option<String>, fixed: &[&[&str]]| match configured {
+    let mut add = |on: bool, configured: &Option<String>, fixed: &[&[&str]]| match configured {
+        _ if !on => {}
         Some(path) => patterns.extend(crate::report::relative_parts(path).map(|p| p.join("/"))),
         None => patterns.extend(
             fixed
@@ -287,9 +311,19 @@ pub fn report_patterns(overrides: &Overrides) -> Vec<String> {
                 .map(|p| (*p).to_owned()),
         ),
     };
-    add(&overrides.coverage, &[LCOV_PATHS, COBERTURA_PATHS]);
-    add(&overrides.weather, &[JUNIT_PATHS]);
+    add(
+        enabled.coverage,
+        &overrides.coverage,
+        &[LCOV_PATHS, COBERTURA_PATHS],
+    );
+    add(enabled.weather, &overrides.weather, &[JUNIT_PATHS]);
     patterns
+}
+
+/// A configured report path as discovery reads it: relative to the root and `/`-separated;
+/// `None` when it is refused, being absolute or climbing out of the repository.
+pub fn configured_path(path: &str) -> Option<String> {
+    crate::report::relative_parts(path).map(|parts| parts.join("/"))
 }
 
 /// Whether the `/`-separated path `relative` is one `pattern` matches, `*` matching within one
@@ -318,21 +352,40 @@ fn coverage_format(path: &str) -> Format {
     }
 }
 
-/// The first fixed path that matches anything, with everything it matches.
-fn first_of(root: &Path, lists: &[(Format, &[&str])]) -> Search {
+/// Of the fixed paths that match anything, the one whose newest file was written last, with
+/// everything it matches: a fresh report is read wherever the tools left it, and a stale one
+/// elsewhere is passed over. A path matching many files (one report per test class) counts as
+/// new as its newest. Equal times go by the lists' order, and a file whose time cannot be read
+/// counts as the oldest.
+fn newest_of(root: &Path, lists: &[(Format, &[&str])]) -> Search {
+    let mut newest: Option<(Option<SystemTime>, Located)> = None;
     for (format, patterns) in lists {
         for pattern in *patterns {
             let files = expand(root, pattern);
-            if !files.is_empty() {
-                return Search::Found(Located {
-                    format: *format,
-                    pattern: (*pattern).to_owned(),
-                    files,
-                });
+            if files.is_empty() {
+                continue;
+            }
+            let written = files
+                .iter()
+                .filter_map(|file| {
+                    fs::metadata(root.join(file))
+                        .and_then(|m| m.modified())
+                        .ok()
+                })
+                .max();
+            if newest.as_ref().is_none_or(|(time, _)| written > *time) {
+                newest = Some((
+                    written,
+                    Located {
+                        format: *format,
+                        pattern: (*pattern).to_owned(),
+                        files,
+                    },
+                ));
             }
         }
     }
-    Search::NotFound
+    newest.map_or(Search::NotFound, |(_, located)| Search::Found(located))
 }
 
 fn configured(root: &Path, path: &str, format: Format) -> Search {
@@ -496,8 +549,21 @@ mod tests {
             let full = repo.path().join(path);
             fs::create_dir_all(full.parent().unwrap()).unwrap();
             fs::write(full, text).unwrap();
+            // Written at one moment, so only a test that dates a file sets which is newest.
+            stamp(&repo, path, 0);
         }
         (dir, repo)
+    }
+
+    /// Dates the file at `path` `seconds` after a fixed moment.
+    fn stamp(repo: &FixtureRepo, path: &str, seconds: u64) {
+        let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000 + seconds);
+        fs::File::options()
+            .write(true)
+            .open(repo.path().join(path))
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
     }
 
     #[test]
@@ -573,7 +639,7 @@ mod tests {
                 pattern: "coverage/lcov.info".into(),
                 files: vec!["coverage/lcov.info".into()],
             }),
-            "lcov comes before Cobertura"
+            "written at one moment, lcov comes before Cobertura"
         );
         assert_eq!(
             found.test_report,
@@ -708,19 +774,106 @@ mod tests {
     }
 
     #[test]
-    fn report_patterns_follow_the_overrides() {
-        let fixed = report_patterns(&Overrides::default());
+    fn the_newest_report_is_read_wherever_the_tools_left_it() {
+        let (_dir, repo) = repo_with(&[
+            ("coverage/lcov.info", "SF:a.ts\nDA:1,1\nend_of_record\n"),
+            ("lcov.info", "SF:a.ts\nDA:1,0\nend_of_record\n"),
+            ("coverage.xml", "<coverage/>"),
+            ("junit.xml", "<testsuite/>"),
+            ("target/surefire-reports/TEST-a.xml", "<testsuite/>"),
+            ("target/surefire-reports/TEST-b.xml", "<testsuite/>"),
+        ]);
+        let coverage = |repo: &FixtureRepo, overrides: &Overrides| {
+            locate_reports(repo.path(), overrides)
+                .coverage
+                .located()
+                .map(|located| (located.format, located.files.clone()))
+        };
+        stamp(&repo, "lcov.info", 60);
+        assert_eq!(
+            coverage(&repo, &Overrides::default()),
+            Some((Format::Lcov, vec!["lcov.info".to_owned()])),
+            "a fresher lcov.info is read over coverage/lcov.info"
+        );
+        stamp(&repo, "coverage.xml", 120);
+        assert_eq!(
+            coverage(&repo, &Overrides::default()),
+            Some((Format::Cobertura, vec!["coverage.xml".to_owned()])),
+            "a fresher Cobertura report is read over an older lcov"
+        );
+        // A configured path is read whatever the dates.
+        let configured = Overrides {
+            coverage: Some("coverage/lcov.info".into()),
+            ..Overrides::default()
+        };
+        assert_eq!(
+            coverage(&repo, &configured),
+            Some((Format::Lcov, vec!["coverage/lcov.info".to_owned()]))
+        );
+        // A report of many files is as new as its newest, and is read whole.
+        stamp(&repo, "junit.xml", 200);
+        stamp(&repo, "target/surefire-reports/TEST-b.xml", 300);
+        let tests = locate_reports(repo.path(), &Overrides::default()).test_report;
+        assert_eq!(
+            tests.located().map(|located| located.files.clone()),
+            Some(vec![
+                "target/surefire-reports/TEST-a.xml".to_owned(),
+                "target/surefire-reports/TEST-b.xml".to_owned(),
+            ])
+        );
+        // Discovery says the same.
+        let found = discover_in(repo.path(), &Overrides::default(), None);
+        assert_eq!(found.test_report, tests);
+    }
+
+    #[test]
+    fn report_patterns_follow_the_overrides_and_leave_out_what_is_off() {
+        let all = Enabled::default();
+        let fixed = report_patterns(&Overrides::default(), all);
         assert_eq!(
             fixed.len(),
             LCOV_PATHS.len() + COBERTURA_PATHS.len() + JUNIT_PATHS.len()
         );
         assert!(fixed.iter().any(|p| p == "target/nextest/*/junit.xml"));
-        let configured = report_patterns(&Overrides {
-            coverage: Some("./out/cov.info".into()),
-            weather: Some("../outside.xml".into()),
-            dead_code: None,
-        });
+        let configured = report_patterns(
+            &Overrides {
+                coverage: Some("./out/cov.info".into()),
+                weather: Some("../outside.xml".into()),
+                dead_code: None,
+            },
+            all,
+        );
         assert_eq!(configured, ["out/cov.info"]);
+        assert_eq!(
+            configured_path("./out/cov.info").as_deref(),
+            Some("out/cov.info")
+        );
+        assert_eq!(
+            configured_path("out\\junit.xml").as_deref(),
+            Some("out/junit.xml")
+        );
+        for refused in ["../outside.xml", "/abs/lcov.info", "C:\\lcov.info", "", "."] {
+            assert_eq!(configured_path(refused), None, "{refused}");
+        }
+        let no_coverage = report_patterns(
+            &Overrides::default(),
+            Enabled {
+                coverage: false,
+                ..all
+            },
+        );
+        assert_eq!(no_coverage, JUNIT_PATHS);
+        let no_tests = report_patterns(
+            &Overrides {
+                coverage: Some("out/cov.info".into()),
+                ..Overrides::default()
+            },
+            Enabled {
+                weather: false,
+                ..all
+            },
+        );
+        assert_eq!(no_tests, ["out/cov.info"]);
     }
 
     #[test]

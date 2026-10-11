@@ -80,7 +80,8 @@ impl Living {
     /// A new terrarium for the same repository (re-seed): from `now` the strip shows `scene`
     /// and `overlay` laid out by the new `salt`, and the picture as it stood dissolves into it
     /// over a restyle's time, rather than cutting (I-15). The new layout stands whole from the
-    /// start, as if it had always been there, and replays no event the old one played.
+    /// start, as if it had always been there, and replays no event the old one played. A
+    /// paused strip dissolves into the new layout standing still.
     pub fn reseed(
         &mut self,
         scene: &SceneInput,
@@ -99,12 +100,18 @@ impl Living {
             composer
         };
         // How long its arrivals take, found on a copy: the new composer's first update is
-        // dated back by as much, so it stands settled now.
+        // dated back by as much, so it stands settled now. It settles running; a pause takes
+        // hold only at `now`.
+        let running = OverlayInput {
+            paused: false,
+            ..overlay.clone()
+        };
         let mut probe = fresh();
-        probe.update(&quiet, overlay, Millis(0));
+        probe.update(&quiet, &running, Millis(0));
         let settling = probe.settled_at().0;
         let mut composer = fresh();
-        composer.update(&quiet, overlay, Millis(now.0.saturating_sub(settling)));
+        composer.update(&quiet, &running, Millis(now.0.saturating_sub(settling)));
+        composer.update(&quiet, overlay, now);
         self.scenery = composer.scenery(self.art, self.table);
         self.composer = composer;
         self.handover = Some(Handover {
@@ -379,6 +386,79 @@ mod tests {
         assert_ne!(&alone, &before, "a new layout");
         let mid = mid.expect("a frame mid-way");
         assert!(mid != before && mid != alone, "mid-way, a blend of the two");
+    }
+
+    #[test]
+    fn a_paused_strip_asks_for_no_frame_once_its_label_has_crossed() {
+        let mut living = thriving_at(LocalClock::noon(preset::DATE));
+        let scene = preset::scene("thriving").unwrap();
+        let overlay = |line: &str, paused| OverlayInput {
+            paused,
+            ..OverlayInput::new(vec![line.to_owned()], LocalClock::noon(preset::DATE))
+        };
+        // A pause and a resume first, so the scene's clock stands behind the strip's.
+        living.update(&scene, &overlay(copy::label_paused(), true), Millis(30_000));
+        living.update(
+            &scene,
+            &overlay(copy::sample_label(), false),
+            Millis(60_000),
+        );
+        let now = Millis(90_000);
+        living.advance(now);
+        living.update(&scene, &overlay(copy::label_paused(), true), now);
+        assert!(!living.advance(now), "the pause cut the picture");
+        // The label crosses to its one line, then nothing moves.
+        let mut last = now;
+        while let Some(due) = living.due() {
+            assert!(due.0 < now.0 + 60_000, "still asking at {due:?}");
+            living.advance(due);
+            last = due;
+        }
+        let held = living.image().clone();
+        assert!(last > now);
+        assert!(
+            !living.advance(Millis(now.0 + 600_000)),
+            "ten minutes on, nothing changed"
+        );
+        assert_eq!(living.image(), &held);
+    }
+
+    #[test]
+    fn a_reseed_while_paused_dissolves_into_the_new_layout_standing_still() {
+        let mut living = thriving_at(LocalClock::noon(preset::DATE));
+        let now = Millis(120_000);
+        let paused = OverlayInput {
+            paused: true,
+            ..OverlayInput::new(
+                vec![copy::label_paused().to_owned()],
+                LocalClock::noon(preset::DATE),
+            )
+        };
+        let scene = preset::scene("thriving").unwrap();
+        living.update(&scene, &paused, now);
+        living.advance(now);
+        let salt = InstallSalt::new([7; 16]);
+        living.reseed(&scene, &paused, salt, now);
+        assert!(!living.advance(now), "the re-seed cut the picture");
+        // Once the old picture has dissolved, the new layout stands whole and still.
+        let end = now.plus(RESTYLE_MS);
+        living.advance(end);
+        assert!(living.handover.is_none());
+        let settled = living.image().clone();
+        let mut whole = Composer::new(living.table, salt);
+        whole.set_viewport(living.composer.viewport());
+        let running = OverlayInput {
+            paused: false,
+            ..paused.clone()
+        };
+        whole.update(&scene, &running, Millis(0));
+        assert_eq!(
+            living.composer.depicted(end),
+            whole.depicted(whole.settled_at()),
+            "the new layout stands whole"
+        );
+        assert!(!living.advance(Millis(end.0 + 300_000)), "it stands still");
+        assert_eq!(living.image(), &settled);
     }
 
     #[test]

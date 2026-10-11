@@ -5,6 +5,47 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-11
+
+Everything the settings promised is in them, and the strip can be paused.
+
+### Added
+
+- **Settings has six tabs:**
+  - **Repository** works as before.
+  - **Strip** chooses the display the strip lies on (or leaves the choice to it), the top or
+    the bottom edge, and the largest scale that fits or one step smaller, each showing its
+    scale. A display chosen and then disconnected is kept: the strip comes back to it when it
+    returns.
+  - **Adapters** shows what the repository has and how each missing report connects. Each of
+    the coverage report, the test results and the dead-code report can be turned off, and can
+    be read from a path of its own inside the repository. A change is read at once. Running
+    Knip and the GitHub Actions weather are shown, off, until a later version brings them.
+  - **Hotkeys** sets the keys that raise the strip and that will open the time-lapse: two
+    modifiers or more, at least one of them Control or Command. Keys macOS refuses, or that
+    the other hotkey has, are refused with the reason.
+  - **Time** sets when day and night begin, to the quarter hour, and how long without input
+    before the strip dims, from 5 to 120 minutes.
+  - **General** turns opening at login and a crash log on or off, and shows the version.
+- **Pause** (right-click the strip): the plants, residents, sky and events stand still while
+  the repository's history keeps counting, and the label reads `paused`. The soil panel and
+  the hover labels still work, naming what the still picture shows. Resume brings the picture
+  to the present with its usual tweens. Dim mode still dims a paused strip. A launch always
+  starts running.
+- **A crash log,** off unless turned on in General. A crash then leaves a report in the app's
+  own data folder, the newest ten kept, to attach to an issue. Nothing is sent anywhere.
+- **The right-click menu** reads Settings, Time-lapse (off until the time-lapse window
+  exists), Pause or Resume, and Quit.
+
+### Changed
+
+- **Of several coverage or test reports in the usual places, the newest is read.** Before, a
+  stale `coverage/lcov.info` was read over a fresh `lcov.info`.
+- **`discover`** reads the connected repository with the report paths its settings hold, and
+  never makes a data folder that is not there.
+- **A turned-off adapter's page in the soil panel** says it is off in settings, rather than
+  that no report was found.
+
 ## [0.22.0] - 2026-10-10
 
 The soil can be read: hovering it raises a panel with the terrarium's numbers, and the stones

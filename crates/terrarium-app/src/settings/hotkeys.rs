@@ -1,0 +1,182 @@
+//! The hotkeys tab (`hotkeys.*`): the keys that raise the strip and open the time-lapse. Keys
+//! are chosen with the modifiers' boxes and a list, never by pressing them: a registered hotkey
+//! never reaches this window, so it could not be pressed again here.
+//!
+//! A binding the rules refuse is said at once; one the OS refuses comes back from the strip,
+//! and the keys before stay.
+
+use global_hotkey::hotkey::Code;
+
+use crate::copy::{self, settings as words};
+use crate::hotkey::{Binding, KEYS, Platform, Which};
+use crate::prefs::{Pref, Prefs};
+
+pub struct HotkeysSection {
+    /// The bindings the strip runs on, and the ones being chosen.
+    current: [Binding; 2],
+    chosen: [Binding; 2],
+    /// Why a binding was not taken.
+    refused: [Option<String>; 2],
+    platform: Platform,
+}
+
+const fn index(which: Which) -> usize {
+    match which {
+        Which::Raise => 0,
+        Which::TimeLapse => 1,
+    }
+}
+
+impl HotkeysSection {
+    pub fn new(prefs: &Prefs) -> HotkeysSection {
+        let current = [prefs.raise, prefs.timelapse];
+        HotkeysSection {
+            current,
+            chosen: current,
+            refused: [None, None],
+            platform: Platform::THIS,
+        }
+    }
+
+    /// Shows the bindings the strip runs on; a choice not applied goes.
+    pub fn set_prefs(&mut self, prefs: &Prefs) {
+        self.current = [prefs.raise, prefs.timelapse];
+        self.chosen = self.current;
+    }
+
+    pub fn choose(&mut self, which: Which, binding: Binding) {
+        self.chosen[index(which)] = binding;
+    }
+
+    /// The binding chosen for `which`, if the rules let it be offered to the OS.
+    pub fn apply(&mut self, which: Which) -> Option<Pref> {
+        let binding = self.chosen[index(which)];
+        let other = self.current[index(which.other())];
+        if let Err(refusal) = binding.check(other) {
+            self.refused[index(which)] = Some(words::refusal(refusal, self.platform).to_owned());
+            return None;
+        }
+        self.refused[index(which)] = None;
+        (binding != self.current[index(which)]).then_some(Pref::Hotkey(which, binding))
+    }
+
+    /// Back to `which`'s own keys.
+    pub fn reset(&mut self, which: Which) -> Option<Pref> {
+        self.choose(which, which.default_binding());
+        self.apply(which)
+    }
+
+    /// The OS refused the keys chosen for `which`, for `why`.
+    pub fn refused(&mut self, which: Which, why: String) {
+        self.chosen[index(which)] = self.current[index(which)];
+        self.refused[index(which)] = Some(why);
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, changes: &mut Vec<Pref>) {
+        let names = words::modifier_names(self.platform);
+        for which in Which::ALL {
+            let i = index(which);
+            ui.strong(match which {
+                Which::Raise => words::RAISE,
+                Which::TimeLapse => words::TIME_LAPSE,
+            });
+            ui.label(words::now_set(&copy::hotkey(
+                self.current[i],
+                self.platform,
+            )));
+            let mut binding = self.chosen[i];
+            ui.horizontal_wrapped(|ui| {
+                let mods = &mut binding.mods;
+                for (flag, name) in [
+                    &mut mods.control,
+                    &mut mods.option,
+                    &mut mods.shift,
+                    &mut mods.command,
+                ]
+                .into_iter()
+                .zip(names)
+                {
+                    ui.checkbox(flag, name);
+                }
+                ui.label(words::KEY);
+                egui::ComboBox::from_id_salt(("key", i))
+                    .selected_text(crate::hotkey::key_name(binding.key))
+                    .width(70.0)
+                    .show_ui(ui, |ui| {
+                        for (code, name) in KEYS {
+                            ui.selectable_value::<Code>(&mut binding.key, code, name);
+                        }
+                    });
+            });
+            self.choose(which, binding);
+            ui.horizontal(|ui| {
+                if ui.button(words::APPLY).clicked() {
+                    changes.extend(self.apply(which));
+                }
+                if ui.button(words::DEFAULT).clicked() {
+                    changes.extend(self.reset(which));
+                }
+            });
+            if let Some(why) = &self.refused[i] {
+                ui.label(why);
+            }
+            if which == Which::TimeLapse {
+                ui.label(words::TIME_LAPSE_LATER);
+            }
+            ui.add_space(8.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hotkey::Refusal;
+
+    fn binding(text: &str) -> Binding {
+        Binding::parse(text).unwrap()
+    }
+
+    #[test]
+    fn a_binding_is_applied_only_within_the_rules_and_when_it_changes() {
+        let mut section = HotkeysSection::new(&Prefs::default());
+        assert_eq!(section.apply(Which::Raise), None, "unchanged");
+        section.choose(Which::Raise, binding("alt+shift+R"));
+        assert_eq!(section.apply(Which::Raise), None);
+        assert_eq!(
+            section.refused[0].as_deref(),
+            Some(words::refusal(Refusal::OptionShift, Platform::THIS))
+        );
+        // The time-lapse's keys are taken.
+        section.choose(Which::Raise, binding("ctrl+alt+H"));
+        assert_eq!(section.apply(Which::Raise), None);
+        assert_eq!(
+            section.refused[0].as_deref(),
+            Some(words::refusal(Refusal::Taken, Platform::THIS))
+        );
+        section.choose(Which::Raise, binding("ctrl+shift+R"));
+        assert_eq!(
+            section.apply(Which::Raise),
+            Some(Pref::Hotkey(Which::Raise, binding("ctrl+shift+R")))
+        );
+        assert_eq!(section.refused[0], None);
+    }
+
+    #[test]
+    fn an_os_refusal_keeps_the_keys_before_and_a_reset_brings_back_the_default() {
+        let prefs = Prefs {
+            raise: binding("ctrl+shift+R"),
+            ..Prefs::default()
+        };
+        let mut section = HotkeysSection::new(&prefs);
+        section.choose(Which::Raise, binding("ctrl+super+Space"));
+        section.refused(Which::Raise, "These keys could not be registered.".into());
+        assert_eq!(section.chosen[0], binding("ctrl+shift+R"));
+        assert!(section.refused[0].is_some());
+        assert_eq!(
+            section.reset(Which::Raise),
+            Some(Pref::Hotkey(Which::Raise, Which::Raise.default_binding()))
+        );
+        assert_eq!(section.reset(Which::TimeLapse), None, "already its own");
+    }
+}

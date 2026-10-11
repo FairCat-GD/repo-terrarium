@@ -559,7 +559,7 @@ impl Composer {
         let mut draws = Vec::new();
         let lit = Lit {
             value,
-            palette_mix: self.palette_mix(at),
+            palette_mix: self.mix_at(at),
         };
         self.push(art, table, place, look.piece, lit, at, &mut draws);
         let width = self.viewport_width();

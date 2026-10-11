@@ -21,7 +21,7 @@ pub struct Step {
     pub id: String,
     pub phase: Phase,
     pub level: LevelMode,
-    pub text: &'static str,
+    pub text: String,
 }
 
 pub fn pinning() -> Vec<Step> {
@@ -29,7 +29,7 @@ pub fn pinning() -> Vec<Step> {
         id: format!("{prefix}{}", item.key),
         phase,
         level,
-        text: item.text,
+        text: copy::with_hotkey(item.text),
     };
     let mut steps = vec![step("", Phase::Launch, DEFAULT_LEVEL, &copy::PROBE_LAUNCH)];
     #[cfg(target_os = "macos")]
@@ -56,6 +56,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::hotkey::{Platform, Which};
 
     #[test]
     fn step_ids_are_unique_and_every_step_has_text() {
@@ -63,6 +64,22 @@ mod tests {
         let ids: BTreeSet<&str> = steps.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids.len(), steps.len());
         assert!(steps.iter().all(|s| !s.text.trim().is_empty()));
+    }
+
+    #[test]
+    fn the_hotkey_step_names_the_keys_the_strip_registers() {
+        let steps = pinning();
+        let keys = copy::hotkey(Which::Raise.default_binding(), Platform::THIS);
+        let hotkey = steps
+            .iter()
+            .find(|s| s.id == "c.hotkey")
+            .expect("a hotkey step");
+        assert!(
+            hotkey.text.contains(&format!("Press {keys}.")),
+            "{}",
+            hotkey.text
+        );
+        assert!(steps.iter().all(|s| !s.text.contains('{')));
     }
 
     #[cfg(target_os = "macos")]
@@ -73,7 +90,7 @@ mod tests {
             steps
                 .iter()
                 .filter(|s| s.phase == phase)
-                .map(|s| (&s.id[2..], s.text, s.level))
+                .map(|s| (&s.id[2..], s.text.as_str(), s.level))
                 .collect::<Vec<_>>()
         };
         let (a, b) = (items(Phase::A), items(Phase::B));

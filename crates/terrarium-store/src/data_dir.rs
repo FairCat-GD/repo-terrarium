@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 use terrarium_truth::RepoSeed;
 
 use crate::identifiers::{
-    BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE, INSTANCE_LOCK_FILE, LOCAL_TESTS_DIR, REQUESTS_DIR,
-    SHOW_SETTINGS_REQUEST,
+    BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE, INSTANCE_LOCK_FILE, LOCAL_TESTS_DIR, LOGS_DIR,
+    REQUESTS_DIR, SHOW_SETTINGS_REQUEST,
 };
 
 /// A data directory: the database, the local test results, the running app's lock and the
-/// requests a second launch leaves it, and later the logs.
+/// requests a second launch leaves it, and the opt-in crash log's reports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataDir(PathBuf);
 
@@ -80,6 +80,11 @@ impl DataDir {
     pub fn local_tests(&self, seed: &RepoSeed) -> PathBuf {
         self.local_tests_dir()
             .join(format!("{}.json", seed.to_hex()))
+    }
+
+    /// Where the opt-in crash log writes its reports.
+    pub fn logs_dir(&self) -> PathBuf {
+        self.0.join(LOGS_DIR)
     }
 
     /// The file the running app holds its lock on.

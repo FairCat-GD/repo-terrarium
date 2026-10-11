@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use terrarium_adapters::discovery::Enabled;
 use terrarium_store::{Contributor, StoreError};
 use terrarium_truth::climate::readings::Latest;
 use terrarium_truth::domain::ObservationHead;
@@ -69,11 +70,12 @@ pub struct BranchReading {
     pub value: Option<Q16>,
 }
 
-/// Which reports the worktree has.
+/// Which reports the worktree has, and which adapters the settings have on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub coverage: bool,
     pub test_report: bool,
+    pub enabled: Enabled,
 }
 
 /// What the details are read from.

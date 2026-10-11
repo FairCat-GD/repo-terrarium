@@ -5,6 +5,7 @@ mod animate;
 mod cli;
 mod connect;
 mod copy;
+mod crash;
 #[cfg(feature = "dev")]
 mod debug;
 mod demo;
@@ -26,6 +27,7 @@ mod menu;
 mod monitor;
 mod output;
 mod pinning;
+mod prefs;
 mod present;
 mod probe;
 mod raise;

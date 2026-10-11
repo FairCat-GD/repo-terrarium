@@ -1,13 +1,15 @@
 //! What the living strip shows, and when it looks again: a connected repository's terrarium as
-//! the engine sends it, or `--demo`'s cycle; always on the local clock and dimmed after a while
-//! without input. Dev builds add the debug window's choices, the thriving sample among them.
+//! the engine sends it, or `--demo`'s cycle; always on the local clock, with day and night when
+//! the settings say, and dimmed after the settings' while without input. A pause holds the
+//! scene as it stood while the feed goes on taking what the engine sends. Dev builds add the
+//! debug window's choices, the thriving sample among them.
 //!
 //! The feeder is pure: the strip reads the OS (`Os::read`) and passes it in with the time, so
 //! it is driven the same way in tests.
 
 use std::time::Duration;
 
-use terrarium_compose::clock::{DAY_MS, LocalClock};
+use terrarium_compose::clock::{DAY_MS, DayNight, LocalClock};
 use terrarium_compose::composer::OverlayInput;
 use terrarium_compose::panel::Hover;
 use terrarium_compose::preset;
@@ -32,6 +34,8 @@ const DEMO_EVERY_MS: u32 = 60_000;
 /// How often the debug window's simulation steps while it runs.
 #[cfg(feature = "dev")]
 const SIM_STEP_MS: u32 = 1000;
+/// How long without input before the strip dims, until the settings say: the default.
+pub const DIM_AFTER: Duration = Duration::from_mins(30);
 
 /// What the strip shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -120,7 +124,11 @@ pub struct Feeder {
     /// The clock last given, and when: carried on from there if the OS cannot say.
     clock: LocalClock,
     clock_at: Millis,
+    day_night: DayNight,
+    dim_after: Duration,
     idle_dim: bool,
+    /// The scene stands still, as it was when paused; the label says so.
+    paused: bool,
     /// When the feed next asks for its scene, takes the clock, and checks the idle time.
     scene_due: Millis,
     clock_due: Millis,
@@ -160,7 +168,10 @@ impl Feeder {
             scene,
             clock: os.clock.unwrap_or(LocalClock::noon(preset::DATE)),
             clock_at: now,
+            day_night: DayNight::default(),
+            dim_after: DIM_AFTER,
             idle_dim: false,
+            paused: false,
             scene_due: now,
             clock_due: now,
             idle_due: now,
@@ -178,18 +189,39 @@ impl Feeder {
         &self.scene
     }
 
-    /// The overlay to show it with: the label, the local clock at the last look, dim, and the
-    /// hover layer while the connected repository is shown.
+    /// The overlay to show it with: the label, the local clock at the last look, day and night,
+    /// dim, the pause, and the hover layer while the connected repository is shown.
     pub fn overlay(&self) -> OverlayInput {
         let hover = match self.feed {
             Feed::Live => self.hover.clone(),
             _ => Hover::default(),
         };
         OverlayInput {
+            day_night: self.day_night,
             dim: self.dim(),
+            paused: self.paused,
             hover,
             ..OverlayInput::new(self.label(), self.clock)
         }
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Pauses the scene at `now`, or resumes it then with what the feed now shows, the local
+    /// clock taken afresh.
+    pub fn set_paused(&mut self, paused: bool, now: Millis, os: &Os) {
+        self.paused = paused;
+        self.tick(now, os, true);
+    }
+
+    /// Takes the settings' day and night and dim timeout from `now`, looking at the idle time
+    /// again at once.
+    pub fn set_times(&mut self, day_night: DayNight, dim_after: Duration, now: Millis, os: &Os) {
+        self.day_night = day_night;
+        self.dim_after = dim_after;
+        self.tick(now, os, true);
     }
 
     /// Whether the strip is dimmed.
@@ -207,8 +239,12 @@ impl Feeder {
         self.hover = hover;
     }
 
-    /// The label's lines: the connected repository's while it is shown, the sample's otherwise.
+    /// The label's lines: `paused` alone while the scene stands still; the connected
+    /// repository's while it is shown; the sample's otherwise.
     fn label(&self) -> Vec<String> {
+        if self.paused {
+            return vec![copy::label_paused().to_owned()];
+        }
         match (&self.feed, &self.live) {
             (Feed::Live, Some((_, label))) => label.clone(),
             _ => vec![copy::sample_label().to_owned()],
@@ -216,7 +252,8 @@ impl Feeder {
     }
 
     /// Takes the engine's latest `scene` and `label` at `now`; the strip is then updated with
-    /// `scene()` and `overlay()`. While the debug window's choice is shown, it keeps the scene.
+    /// `scene()` and `overlay()`. While the debug window's choice is shown, or the scene is
+    /// paused, it keeps the scene, and shows the latest when that ends.
     pub fn show(&mut self, scene: &SceneInput, label: Vec<String>, now: Millis, os: &Os) {
         self.live = Some((scene.clone(), label));
         self.tick(now, os, true);
@@ -244,16 +281,18 @@ impl Feeder {
         let stepped = false;
         let mut changed = force;
         if force || now >= self.idle_due {
-            let (dim, look_again) = idle::check(os.idle);
+            let (dim, look_again) = idle::check(os.idle, self.dim_after);
             self.idle_due = now.plus(u32::try_from(look_again.as_millis()).unwrap_or(u32::MAX));
             changed |= dim != self.idle_dim;
             self.idle_dim = dim;
         }
         if force || stepped || now >= self.scene_due {
             self.scene_due = now.plus(self.scene_every());
-            let scene = self.scene_at(now);
-            changed |= scene != self.scene;
-            self.scene = scene;
+            if !self.paused {
+                let scene = self.scene_at(now);
+                changed |= scene != self.scene;
+                self.scene = scene;
+            }
         }
         changed |= now >= self.clock_due;
         if changed {
@@ -266,13 +305,14 @@ impl Feeder {
         changed
     }
 
-    /// Shows `feed` with the debug window's `overrides` from `now`; the strip updates at once.
-    /// Choosing the demo again starts its cycle again.
+    /// Shows `feed` with the debug window's `overrides` from `now`; the strip updates at once,
+    /// and a pause ends, so the choice shows. Choosing the demo again starts its cycle again.
     #[cfg(feature = "dev")]
     pub fn choose(&mut self, feed: Feed, overrides: Overrides, now: Millis, os: &Os) {
         if feed == Feed::Demo && self.feed != Feed::Demo {
             self.started = now;
         }
+        self.paused = false;
         self.feed = feed;
         self.overrides = overrides;
         self.tick(now, os, true);
@@ -493,6 +533,53 @@ mod tests {
         feeder.choose(Feed::Live, Overrides::default(), Millis(3), &os(3, 0));
         assert_eq!(feeder.scene(), &start);
         assert_eq!(feeder.overlay().label, later);
+    }
+
+    #[test]
+    fn a_pause_holds_the_scene_and_says_so_and_a_resume_shows_the_latest() {
+        let start = preset::bare(terrarium_truth::PresentationState::Mature, Vec::new());
+        let label = vec!["moss".to_owned(), "main - clear".to_owned()];
+        let mut feeder = Feeder::live(start.clone(), label, Millis(0), &os(0, 0));
+        feeder.set_paused(true, Millis(1_000), &os(1_000, 0));
+        let overlay = feeder.overlay();
+        assert!(overlay.paused);
+        assert_eq!(overlay.label, [copy::label_paused()]);
+        // What the engine sends meanwhile is kept, not shown.
+        let thriving = preset::scene("thriving").unwrap();
+        let later = vec!["moss".to_owned(), "main - storm".to_owned()];
+        feeder.show(&thriving, later.clone(), Millis(2_000), &os(2_000, 0));
+        assert_eq!(feeder.scene(), &start);
+        feeder.tick(Millis(3_600_000), &os(3_600_000, 0), false);
+        assert_eq!(feeder.scene(), &start);
+        // Dim mode still comes.
+        assert!(feeder.tick(Millis(3_700_000), &os(3_700_000, 31), true));
+        assert!(feeder.overlay().dim && feeder.overlay().paused);
+        // Resumed, the latest scene and label, at the clock of the resume.
+        feeder.set_paused(false, Millis(4_000_000), &os(4_000_005, 0));
+        let overlay = feeder.overlay();
+        assert!(!overlay.paused);
+        assert_eq!(feeder.scene(), &thriving);
+        assert_eq!(overlay.label, later);
+        assert_eq!(overlay.clock, LocalClock::new(DATE, 4_000_005));
+    }
+
+    #[test]
+    fn the_settings_day_and_night_and_dim_timeout_reach_the_overlay() {
+        let mut feeder = Feeder::new(Feed::Thriving, Millis(0), &os(0, 6));
+        assert_eq!(feeder.overlay().day_night, DayNight::default());
+        assert!(!feeder.overlay().dim);
+        let day_night = DayNight {
+            day_starts: 6 * 3_600_000,
+            night_starts: 21 * 3_600_000,
+        };
+        feeder.set_times(day_night, Duration::from_mins(5), Millis(1), &os(1, 6));
+        assert_eq!(feeder.overlay().day_night, day_night);
+        assert!(
+            feeder.overlay().dim,
+            "six idle minutes are past a five-minute timeout"
+        );
+        feeder.set_times(day_night, Duration::from_mins(120), Millis(2), &os(2, 6));
+        assert!(!feeder.overlay().dim);
     }
 
     #[test]

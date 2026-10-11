@@ -21,7 +21,10 @@ use terrarium_engine::schedule::{Cause, Reach, Refresh};
 use terrarium_engine::{
     Branch, ConnectError, EngineConfig, Live, ManualClock, Replay, Snapshot, Start, lifecycle,
 };
-use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
+use terrarium_store::identifiers::{
+    SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH, SETTING_REPO_ACTIVE,
+    SETTING_WEATHER_ENABLED,
+};
 use terrarium_store::raw::RefRewriteRaw;
 use terrarium_store::{DataDir, InstallKey, SimCache, Store, StoredObservation};
 use terrarium_truth::landmarks::fossil_id;
@@ -296,6 +299,67 @@ fn a_report_is_recorded_once_and_again_only_when_it_changes() {
     assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
     refresh(&mut live, Cause::Watch, true);
     assert_eq!(fx.rows(ObservationKind::Coverage).len(), 2);
+}
+
+/// Whether the refresh's watch set watches the worktree's folder `dir`.
+fn watches(fx: &Fixture, live: &Live, dir: &str) -> bool {
+    let dir = fs::canonicalize(fx.repo_path().join(dir)).unwrap();
+    live.watch_set()
+        .expect("a watch set")
+        .dirs
+        .contains_key(&dir)
+}
+
+#[test]
+fn a_refresh_asked_for_takes_a_new_report_path_in_and_watches_it() {
+    let fx = Fixture::new(12);
+    let mut live = fx.connect();
+    shown(&mut live, Cause::Connect, true);
+    fx.report("out/cov.info", LCOV);
+    refresh(&mut live, Cause::Watch, true);
+    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert!(!watches(&fx, &live, "out"));
+
+    fx.store()
+        .set_setting(SETTING_COVERAGE_REPORT_PATH, "out/cov.info")
+        .unwrap();
+    // Only a refresh asked for reads the settings again.
+    refresh(&mut live, Cause::Watch, true);
+    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    let asked = shown(&mut live, Cause::Request, true);
+    assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
+    assert!(asked.details.found.coverage);
+    assert!(watches(&fx, &live, "out"));
+}
+
+#[test]
+fn an_adapter_turned_off_is_neither_read_nor_watched_until_it_is_on_again() {
+    let fx = Fixture::new(12);
+    {
+        let mut store = fx.store();
+        store.set_setting(SETTING_COVERAGE_ENABLED, &false).unwrap();
+        store.set_setting(SETTING_WEATHER_ENABLED, &false).unwrap();
+    }
+    fx.report("coverage/lcov.info", LCOV);
+    fx.report("junit.xml", JUNIT);
+    let mut live = fx.connect();
+    let first = shown(&mut live, Cause::Connect, true);
+    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert!(fx.rows(ObservationKind::Weather).is_empty());
+    // Still found, so the panel can say it is there but off.
+    let found = first.details.found;
+    assert!(found.coverage && found.test_report);
+    assert!(!found.enabled.coverage && !found.enabled.weather);
+    assert!(!watches(&fx, &live, "coverage"));
+
+    fx.store()
+        .set_setting(SETTING_COVERAGE_ENABLED, &true)
+        .unwrap();
+    let again = shown(&mut live, Cause::Request, true);
+    assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
+    assert!(fx.rows(ObservationKind::Weather).is_empty());
+    assert!(again.details.found.enabled.coverage);
+    assert!(watches(&fx, &live, "coverage"));
 }
 
 #[test]

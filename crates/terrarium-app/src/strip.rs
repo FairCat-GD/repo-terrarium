@@ -31,8 +31,8 @@ use terrarium_compose::variants::ArtTable;
 use terrarium_compose::{preset, sample};
 use terrarium_engine::{ConnectError, Engine, EngineConfig, Start, Update};
 use terrarium_platform::SystemEvent;
-use terrarium_platform::geometry::Edge;
-use terrarium_store::{DataDir, Terrarium};
+use terrarium_store::identifiers::BUNDLE_ID;
+use terrarium_store::{DataDir, Store, Terrarium};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::error::{EventLoopError, OsError};
@@ -52,26 +52,24 @@ use crate::egui_host::WindowKind;
 #[cfg(feature = "dev")]
 use crate::feed::Overrides;
 use crate::feed::{Feed, Feeder, Os};
-use crate::hotkey::{self, RaiseHotkey};
+use crate::hotkey::{self, Hotkeys, Which};
 use crate::hover::{self, HoverTracker, ViewportPoint};
 use crate::instance::{Instance, RequestWatch};
 use crate::lifecycle::{self, Job, Outcome};
-use crate::live::{self, Changed, Launch, LiveView};
+use crate::live::{self, Changed, Launch, LiveView, PanelFacts};
 use crate::login::{self, LoginItem};
-use crate::menu::{self, StripMenu};
-use crate::monitor;
+use crate::menu::{self, Choice, StripMenu};
+use crate::monitor::{self, MonitorId};
 use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
+use crate::prefs::{Pref, Prefs, Saved, Writer};
 use crate::present::{FrameGate, PresentError, Presenter, SoftbufferPresenter};
 use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
 use crate::probe::{Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
-use crate::settings::{RepoFacts, SettingsForm};
+use crate::settings::{MonitorChoice, RepoFacts, SettingsForm};
 use crate::shell::{Intent, Picking, Shell};
 use crate::soil::{Hits, SoilPanel};
-
-/// Until settings exist, the strip uses the default edge and size.
-const EDGE: Edge = Edge::Bottom;
-const SIZE_STEP: SizeStep = SizeStep::Full;
+use crate::{crash, discover};
 
 /// What the strip runs as.
 pub enum Mode {
@@ -93,7 +91,17 @@ enum Scene {
         origin: Instant,
         /// What the pointer has the soil panel and the hover labels do.
         soil: SoilPanel,
+        /// While paused, what the panel and the hover labels word, held with the scene.
+        held: Option<Box<Held>>,
     },
+}
+
+/// The facts a paused strip words, as they were when it paused, so what it names is what it
+/// shows.
+struct Held {
+    facts: Option<PanelFacts>,
+    /// The wall clock then, in Unix seconds.
+    wall: i64,
 }
 
 /// What the pointer did over the strip.
@@ -107,8 +115,9 @@ enum Pointer {
 }
 
 impl Scene {
-    /// The scene for `mode`; a connected repository's starts from `live`, laid out by its salt.
-    fn new(mode: &Mode, live: Option<(&LiveView, InstallSalt)>) -> Scene {
+    /// The scene for `mode`; a connected repository's starts from `live`, laid out by its salt;
+    /// day, night and dim mode as `prefs` say.
+    fn new(mode: &Mode, live: Option<(&LiveView, InstallSalt)>, prefs: &Prefs) -> Scene {
         let feed = match mode {
             Mode::Live(feed) => feed.clone(),
             #[cfg(feature = "dev")]
@@ -123,7 +132,8 @@ impl Scene {
             ),
             None => (Feeder::new(feed, Millis(0), &os), preset::SALT),
         };
-        let feeder = Box::new(feeder);
+        let mut feeder = Box::new(feeder);
+        feeder.set_times(prefs.day_night(), prefs.dim_after(), Millis(0), &os);
         Scene::Living {
             living: Box::new(Living::new(
                 feeder.scene(),
@@ -134,6 +144,7 @@ impl Scene {
             feeder,
             origin: Instant::now(),
             soil: SoilPanel::default(),
+            held: None,
         }
     }
 
@@ -145,12 +156,13 @@ impl Scene {
             feeder,
             origin,
             soil,
+            held,
         } = self
         {
             let at = Self::millis(*origin, now);
             let dim = feeder.dim();
             feeder.show(view.scene(), view.label(), at, &Os::read());
-            feeder.set_hover(Self::worded(living, soil, view));
+            feeder.set_hover(Self::worded(living, soil, held.as_deref(), view));
             Self::dimmed(feeder, soil, dim);
             living.update(feeder.scene(), &feeder.overlay(), at);
         }
@@ -165,14 +177,66 @@ impl Scene {
         }
     }
 
-    /// The hover layer the soil panel has, worded from what the connected repository shows.
-    fn worded(living: &Living, soil: &SoilPanel, view: &LiveView) -> Hover {
-        soil.hover(
-            view.panel(),
-            live::wall_secs(),
-            living.catalog(),
-            living.columns(),
-        )
+    /// The hover layer the soil panel has, worded from what the connected repository shows,
+    /// or from what it showed when the strip paused.
+    fn worded(living: &Living, soil: &SoilPanel, held: Option<&Held>, view: &LiveView) -> Hover {
+        let (facts, wall) = match held {
+            Some(held) => (held.facts.as_ref(), held.wall),
+            None => (view.panel(), live::wall_secs()),
+        };
+        soil.hover(facts, wall, living.catalog(), living.columns())
+    }
+
+    /// Whether the scene is paused; `None` for one that cannot be.
+    fn paused(&self) -> Option<bool> {
+        match self {
+            Scene::Living { feeder, .. } => Some(feeder.paused()),
+            Scene::Still { .. } => None,
+        }
+    }
+
+    /// Pauses the scene at `now`, holding what the connected repository `view` shows for the
+    /// panel, or resumes it then, from what the feed and `view` now show.
+    fn set_paused(&mut self, paused: bool, view: Option<&LiveView>, now: Instant) {
+        if let Scene::Living {
+            living,
+            feeder,
+            origin,
+            soil,
+            held,
+        } = self
+        {
+            let at = Self::millis(*origin, now);
+            *held = paused.then(|| {
+                Box::new(Held {
+                    facts: view.and_then(LiveView::panel).cloned(),
+                    wall: live::wall_secs(),
+                })
+            });
+            feeder.set_paused(paused, at, &Os::read());
+            if let Some(view) = view.filter(|_| *feeder.feed() == Feed::Live) {
+                feeder.set_hover(Self::worded(living, soil, held.as_deref(), view));
+            }
+            living.update(feeder.scene(), &feeder.overlay(), at);
+        }
+    }
+
+    /// Day, night and dim mode as `prefs` now say, from `now`.
+    fn set_times(&mut self, prefs: &Prefs, now: Instant) {
+        if let Scene::Living {
+            living,
+            feeder,
+            origin,
+            soil,
+            ..
+        } = self
+        {
+            let at = Self::millis(*origin, now);
+            let dim = feeder.dim();
+            feeder.set_times(prefs.day_night(), prefs.dim_after(), at, &Os::read());
+            Self::dimmed(feeder, soil, dim);
+            living.update(feeder.scene(), &feeder.overlay(), at);
+        }
     }
 
     /// Moves the soil panel and the hover labels as the pointer has them, while the connected
@@ -183,6 +247,7 @@ impl Scene {
             feeder,
             origin,
             soil,
+            held,
         } = self
         else {
             return;
@@ -211,7 +276,7 @@ impl Scene {
             Pointer::Pressed => soil.pressed(&hits(None)),
             Pointer::Left => soil.left(),
         }
-        let hover = Self::worded(living, soil, view);
+        let hover = Self::worded(living, soil, held.as_deref(), view);
         if hover != *feeder.hover() {
             living.hover(&hover, at);
             feeder.set_hover(hover);
@@ -254,6 +319,7 @@ impl Scene {
             feeder,
             origin,
             soil,
+            ..
         } = self
         {
             let at = Self::millis(*origin, now);
@@ -314,11 +380,14 @@ impl Scene {
             feeder,
             origin,
             soil,
+            held,
         } = self
         {
             let at = Self::millis(*origin, now);
-            // Another feed has no panel; back on the repository, it starts closed.
+            // Another feed has no panel; back on the repository, it starts closed. A choice
+            // ends a pause, so it shows.
             *soil = SoilPanel::default();
+            *held = None;
             feeder.set_hover(Hover::default());
             feeder.choose(feed, overrides, at, &Os::read());
             living.update(feeder.scene(), &feeder.overlay(), at);
@@ -388,6 +457,10 @@ pub enum UserEvent {
     Picked(Picking, Option<PathBuf>),
     /// A lifecycle change of that generation is done.
     Lifecycle(u64, Box<Outcome>),
+    /// The settings' writer saved a change, or asked the OS about opening at login.
+    Saved(Saved),
+    /// The discovery report for the settings window.
+    Discovered(String),
 }
 
 /// Why the strip could not run. Its wording is in the copy module.
@@ -429,10 +502,15 @@ pub fn run(mode: &Mode, launch: Option<Launch>) -> Result<(), StripError> {
     // strip waits only for connect's first answer, so the composer is built with the
     // terrarium's own salt from its first frame.
     let proxy = event_loop.create_proxy();
-    let repo = launch
-        .map(|launch| Repo::start(launch, &proxy))
-        .transpose()?;
-    let mut strip = Strip::new(proxy, probe, mode, repo);
+    let (repo, prefs) = match launch {
+        Some(launch) => {
+            let (repo, prefs) = Repo::start(launch, &proxy)?;
+            (Some(repo), prefs)
+        }
+        // Without a data directory nothing is stored: the strip runs on the defaults.
+        None => (None, Prefs::default()),
+    };
+    let mut strip = Strip::new(proxy, probe, mode, repo, prefs);
     event_loop.run_app(&mut strip)?;
     match strip.failed {
         Some(err) => Err(err),
@@ -454,6 +532,8 @@ struct Repo {
     first_run: bool,
     /// The first run's "Open at login", applied once the connect it was asked with succeeds.
     pending_login: Option<bool>,
+    /// Saves the settings changed, off the loop.
+    writer: Writer,
 }
 
 /// What a lifecycle change leaves the strip to do.
@@ -476,13 +556,34 @@ struct Connected {
 }
 
 impl Repo {
-    /// Connects what `launch` names, and watches for a second launch's requests.
-    fn start(launch: Launch, proxy: &EventLoopProxy<UserEvent>) -> Result<Repo, StripError> {
+    /// Connects what `launch` names, and watches for a second launch's requests; with the
+    /// settings the strip starts on.
+    fn start(
+        launch: Launch,
+        proxy: &EventLoopProxy<UserEvent>,
+    ) -> Result<(Repo, Prefs), StripError> {
         let Launch {
             data,
             repo,
             instance,
         } = launch;
+        // The settings, and the crash log they may ask for, before anything else can fail.
+        let prefs = Store::open(&data)
+            .map(|store| Prefs::load(&store))
+            .unwrap_or_default();
+        crash::install(data.logs_dir(), prefs.crash_log);
+        if prefs.crash_log {
+            let _ = crash::prune(&data.logs_dir(), crash::KEEP);
+        }
+        let saved = proxy.clone();
+        let writer = Writer::start(
+            data.clone(),
+            Box::new(login::System),
+            || terrarium_platform::login::status(BUNDLE_ID),
+            Box::new(move |answer| {
+                let _ = saved.send_event(UserEvent::Saved(answer));
+            }),
+        );
         let config = EngineConfig::new(data.clone(), repo.clone());
         let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy.clone(), 0))
             .map_err(|err| StripError::Connect(repo, err))?;
@@ -511,7 +612,7 @@ impl Repo {
             ),
             Start::NotConnected => (None, None),
         };
-        Ok(Repo {
+        let repo = Repo {
             first_run: lifecycle::first_run(&data),
             data,
             _instance: instance,
@@ -520,7 +621,9 @@ impl Repo {
             generation: 0,
             connected,
             pending_login: None,
-        })
+            writer,
+        };
+        Ok((repo, prefs))
     }
 
     /// Takes in a change of `generation` and its `outcome`: the engine it started, the
@@ -647,7 +750,9 @@ struct Strip {
     failed: Option<StripError>,
     /// Made with the first strip window, and kept while the app runs.
     menu: Option<StripMenu>,
-    hotkey: Option<RaiseHotkey>,
+    hotkeys: Option<Hotkeys>,
+    /// The settings the strip runs on.
+    prefs: Prefs,
     /// A run with a data directory.
     repo: Option<Repo>,
     /// The windows beside the strip.
@@ -673,6 +778,7 @@ impl Strip {
         probe: Option<Probe>,
         mode: &Mode,
         repo: Option<Repo>,
+        prefs: Prefs,
     ) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
         let scene = match repo.as_ref().map(|repo| repo.connected.as_ref()) {
@@ -684,8 +790,9 @@ impl Strip {
                     &connected.live,
                     InstallSalt::new(connected.terrarium.install_salt),
                 )),
+                &prefs,
             )),
-            None => Some(Scene::new(mode, None)),
+            None => Some(Scene::new(mode, None, &prefs)),
         };
         Self {
             proxy,
@@ -701,7 +808,8 @@ impl Strip {
             idle_seen: false,
             failed: None,
             menu: None,
-            hotkey: None,
+            hotkeys: None,
+            prefs,
             repo,
             shell: Shell::default(),
             reopen: None,
@@ -729,11 +837,16 @@ impl Strip {
                 .inspect_err(|err| eprintln!("{}", copy::menu_unavailable(err)))
                 .ok();
         }
-        if self.hotkey.is_none() {
-            match RaiseHotkey::register() {
-                Ok(hotkey) => self.hotkey = Some(hotkey),
+        self.sync_menu();
+        if self.hotkeys.is_none() {
+            let raise = self.prefs.raise;
+            match Hotkeys::new().and_then(|mut hotkeys| {
+                hotkeys.bind_raise(raise)?;
+                Ok(hotkeys)
+            }) {
+                Ok(hotkeys) => self.hotkeys = Some(hotkeys),
                 Err(err) => {
-                    eprintln!("{}", copy::hotkey_unavailable(&err));
+                    eprintln!("{}", copy::hotkey_unavailable(raise, &err));
                     self.record(ProbeEvent::HotkeyUnavailable {
                         error: err.to_string(),
                     });
@@ -751,7 +864,7 @@ impl Strip {
             .probe
             .is_some()
             .then(|| monitors.iter().map(|m| m.info.clone()).collect());
-        let monitor = choose(monitors).ok_or(StripError::NoDisplay)?;
+        let monitor = choose(monitors, self.prefs.monitor.as_ref()).ok_or(StripError::NoDisplay)?;
         if let Some(probe) = &mut self.probe {
             probe.launched(ProbeLaunch {
                 os: pinning::os_version(),
@@ -766,7 +879,10 @@ impl Strip {
             presenter,
             window,
             // Until the placement says otherwise: on Windows the reserved band can be narrower.
-            scale: StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP),
+            scale: StripScale::for_physical_width(
+                monitor.info.physical_width,
+                self.prefs.size_step,
+            ),
         };
         self.place(&mut view, &monitor);
         self.apply_level(&view);
@@ -792,8 +908,8 @@ impl Strip {
 
     /// Moves the strip onto `monitor`, and takes the scale the placement gives.
     fn place(&mut self, view: &mut View, monitor: &Monitor) {
-        let Some((scale, frame)) = view.pinning.place(&view.window, monitor, SIZE_STEP, EDGE)
-        else {
+        let (step, edge) = (self.prefs.size_step, self.prefs.edge);
+        let Some((scale, frame)) = view.pinning.place(&view.window, monitor, step, edge) else {
             return;
         };
         view.scale = scale;
@@ -804,13 +920,45 @@ impl Strip {
         });
     }
 
-    /// Chooses the monitor again and moves the strip there, after a display change, a wake or
-    /// a moved taskbar.
+    /// Chooses the monitor again and moves the strip there, after a display change, a wake, a
+    /// moved taskbar or a change of the settings.
     fn replace(&mut self, view: &mut View) {
-        if let Some(monitor) = choose(view.pinning.monitors(&view.window)) {
+        let monitors = view.pinning.monitors(&view.window);
+        self.show_monitors(&monitors);
+        if let Some(monitor) = choose(monitors, self.prefs.monitor.as_ref()) {
             self.place(view, &monitor);
             view.window.request_redraw();
         }
+    }
+
+    /// The displays connected, as the settings window lists them, with the strip's scales on
+    /// the one it is on.
+    fn show_monitors(&mut self, monitors: &[Monitor]) {
+        let Some(form) = &mut self.shell.settings else {
+            return;
+        };
+        let choices = monitors
+            .iter()
+            .map(|monitor| {
+                let info = &monitor.info;
+                MonitorChoice {
+                    id: info.id.clone(),
+                    label: copy::settings::monitor(
+                        &info.name,
+                        info.physical_width,
+                        info.physical_height,
+                        info.primary,
+                    ),
+                }
+            })
+            .collect();
+        let scales = monitor::choose(monitors, self.prefs.monitor.as_ref()).map(|index| {
+            let width = monitors[index].info.physical_width;
+            [SizeStep::Full, SizeStep::OneSmaller]
+                .map(|step| StripScale::for_physical_width(width, step).scale)
+        });
+        form.set_monitors(choices, scales);
+        self.shell.redraw(WindowKind::Settings);
     }
 
     /// What the OS says about the strip now (Windows), recorded only while a probe report is
@@ -925,8 +1073,15 @@ impl Strip {
                 let scale = if pinning::EDGE_RESERVED {
                     Some(view.scale)
                 } else {
-                    choose(view.pinning.monitors(&view.window)).map(|monitor| {
-                        StripScale::for_physical_width(monitor.info.physical_width, SIZE_STEP)
+                    choose(
+                        view.pinning.monitors(&view.window),
+                        self.prefs.monitor.as_ref(),
+                    )
+                    .map(|monitor| {
+                        StripScale::for_physical_width(
+                            monitor.info.physical_width,
+                            self.prefs.size_step,
+                        )
                     })
                 };
                 if let Some(scale) = scale {
@@ -1071,13 +1226,22 @@ impl Strip {
                 .connected
                 .as_ref()
                 .is_some_and(|connected| connected.live.repo_missing());
+            let logs = repo.data.logs_dir().display().to_string();
+            let prefs = &self.prefs;
             let form = self
                 .shell
                 .settings
-                .get_or_insert_with(|| SettingsForm::new(facts.clone()));
+                .get_or_insert_with(|| SettingsForm::new(facts.clone(), prefs, logs));
             form.set_repo(facts);
             form.set_missing(missing);
+            form.set_prefs(prefs);
+            repo.writer.ask_login_status();
             self.shell.open(event_loop, WindowKind::Settings);
+            self.with_view(|strip, view| {
+                let monitors = view.pinning.monitors(&view.window);
+                strip.show_monitors(&monitors);
+            });
+            self.discover();
             return;
         }
         let first_run = repo.first_run;
@@ -1119,7 +1283,128 @@ impl Strip {
                     self.shell.close(WindowKind::Connect);
                     self.shell.connect = None;
                 }
+                Intent::Set(pref) => self.set(pref),
             }
+        }
+    }
+
+    /// Applies a setting changed in the settings window at once, then has it saved. A raise
+    /// hotkey the OS refuses changes nothing.
+    fn set(&mut self, pref: Pref) {
+        if let Pref::Hotkey(Which::Raise, binding) = pref
+            && let Some(hotkeys) = &mut self.hotkeys
+            && let Err(err) = hotkeys.bind_raise(binding)
+        {
+            if let Some(form) = &mut self.shell.settings {
+                form.hotkey_refused(Which::Raise, copy::settings::not_registered(&err));
+            }
+            self.shell.redraw(WindowKind::Settings);
+            return;
+        }
+        self.prefs.apply(&pref);
+        match pref {
+            Pref::Monitor(_) | Pref::Edge(_) | Pref::SizeStep(_) => self.placement_pending = true,
+            Pref::DayStarts(_) | Pref::NightStarts(_) | Pref::DimAfter(_) => {
+                if let Some(scene) = &mut self.scene {
+                    scene.set_times(&self.prefs, Instant::now());
+                }
+            }
+            Pref::CrashLog(on) => {
+                crash::set_enabled(on);
+                if let (true, Some(repo)) = (on, &self.repo) {
+                    let _ = crash::prune(&repo.data.logs_dir(), crash::KEEP);
+                }
+            }
+            _ => {}
+        }
+        if let Some(form) = &mut self.shell.settings {
+            form.set_prefs(&self.prefs);
+        }
+        self.shell.redraw(WindowKind::Settings);
+        if let Some(repo) = &self.repo {
+            repo.writer.save(pref);
+        }
+    }
+
+    /// The writer's answer: a setting saved, or why not, and what the OS says of opening at
+    /// login. A saved adapter setting is taken in by the engine, and the report made again.
+    fn saved(&mut self, saved: Saved) {
+        match saved {
+            Saved::Pref {
+                pref,
+                problem,
+                login,
+            } => {
+                if pref.is_adapter() && problem.is_none() {
+                    if let Some(engine) = self.repo.as_ref().and_then(|repo| repo.engine.as_ref()) {
+                        engine.refresh();
+                    }
+                    self.discover();
+                }
+                if matches!(pref, Pref::OpenAtLogin(_))
+                    && let Some(repo) = &self.repo
+                {
+                    repo.writer.ask_login_status();
+                }
+                if let Some(form) = &mut self.shell.settings {
+                    form.saved(
+                        &pref,
+                        problem.map(|problem| copy::settings::not_saved(&problem)),
+                        login.map(|err| copy::settings::login_problem(&err)),
+                    );
+                }
+            }
+            Saved::LoginStatus(status) => {
+                if let Some(form) = &mut self.shell.settings {
+                    form.set_login_status(status);
+                }
+            }
+        }
+        self.shell.redraw(WindowKind::Settings);
+    }
+
+    /// Makes the settings window's discovery report again, off the loop.
+    fn discover(&mut self) {
+        let (Some(form), Some(repo)) = (&mut self.shell.settings, &self.repo) else {
+            return;
+        };
+        let Some(connected) = &repo.connected else {
+            return;
+        };
+        form.set_report(None);
+        let data = repo.data.clone();
+        let terrarium = connected.terrarium.clone();
+        let proxy = self.proxy.clone();
+        let _ = thread::Builder::new()
+            .name("terrarium-discovery".into())
+            .spawn(move || {
+                // Discovery reads files the repository holds: whatever it meets, the window
+                // gets an answer.
+                let report = std::panic::catch_unwind(|| discover::for_settings(&data, &terrarium))
+                    .unwrap_or_else(|_| copy::report_unavailable().to_owned());
+                let _ = proxy.send_event(UserEvent::Discovered(report));
+            });
+    }
+
+    /// Pauses the strip, or resumes it.
+    fn toggle_pause(&mut self) {
+        let view = self
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.connected.as_ref())
+            .map(|connected| &connected.live);
+        if let Some(scene) = &mut self.scene
+            && let Some(paused) = scene.paused()
+        {
+            scene.set_paused(!paused, view, Instant::now());
+        }
+        self.sync_menu();
+    }
+
+    /// The menu's pause item, as the scene now is.
+    fn sync_menu(&self) {
+        if let Some(menu) = &self.menu {
+            menu.sync(self.scene.as_ref().and_then(Scene::paused));
         }
     }
 
@@ -1180,14 +1465,20 @@ impl Strip {
         let Some(repo) = &mut self.repo else {
             return;
         };
+        let first_login = repo.pending_login;
         match repo.changed(generation, outcome, &mut self.shell, &mut login::System) {
             Effect::Nothing => {}
             Effect::Open(salt) => {
+                // The first run's choice is the setting now.
+                if let Some(on) = first_login {
+                    self.prefs.open_at_login = on;
+                }
                 if let Some(connected) = &repo.connected {
                     let live = Some((&connected.live, salt));
-                    self.scene = Some(Scene::new(&Mode::Live(Feed::Live), live));
+                    self.scene = Some(Scene::new(&Mode::Live(Feed::Live), live, &self.prefs));
                 }
                 self.open_view(event_loop);
+                self.sync_menu();
             }
             Effect::Show(reseeded) => {
                 if let (Some(scene), Some(connected)) = (&mut self.scene, &repo.connected) {
@@ -1200,6 +1491,7 @@ impl Strip {
             Effect::Close => {
                 self.close_view();
                 self.scene = None;
+                self.sync_menu();
                 self.show_settings(event_loop);
             }
         }
@@ -1232,9 +1524,9 @@ impl Strip {
     }
 }
 
-/// The monitor the strip belongs on.
-fn choose(mut monitors: Vec<Monitor>) -> Option<Monitor> {
-    let index = monitor::choose(&monitors, None)?;
+/// The monitor the strip belongs on: `preferred` when it is connected.
+fn choose(mut monitors: Vec<Monitor>, preferred: Option<&MonitorId>) -> Option<Monitor> {
+    let index = monitor::choose(&monitors, preferred)?;
     Some(monitors.swap_remove(index))
 }
 
@@ -1296,7 +1588,7 @@ impl ApplicationHandler<UserEvent> for Strip {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::HotKey(event) => {
-                if !self.hotkey.as_ref().is_some_and(|h| h.is_pressed(event)) {
+                if !self.hotkeys.as_ref().is_some_and(|h| h.is_raise(event)) {
                     return;
                 }
                 self.with_view(|strip, view| {
@@ -1310,25 +1602,23 @@ impl ApplicationHandler<UserEvent> for Strip {
                     });
                 });
             }
-            UserEvent::Menu(id) => {
-                let Some(menu) = &self.menu else {
-                    return;
-                };
-                if menu.is_quit(&id) {
+            UserEvent::Menu(id) => match self.menu.as_ref().and_then(|menu| menu.choice(&id)) {
+                Some(Choice::Quit) => {
                     self.end_probe(EndReason::Quit);
                     event_loop.exit();
-                } else if menu.is_settings(&id) {
-                    self.show_settings(event_loop);
                 }
+                Some(Choice::Settings) => self.show_settings(event_loop),
+                Some(Choice::Pause) => self.toggle_pause(),
                 #[cfg(feature = "dev")]
-                if self.menu.as_ref().is_some_and(|menu| menu.is_debug(&id))
-                    && let Some((feed, overrides)) = self.scene.as_ref().and_then(Scene::shown)
-                {
-                    let feed = feed.clone();
-                    self.dev
-                        .open_debug(&mut self.shell, event_loop, &feed, overrides);
+                Some(Choice::Debug) => {
+                    if let Some((feed, overrides)) = self.scene.as_ref().and_then(Scene::shown) {
+                        let feed = feed.clone();
+                        self.dev
+                            .open_debug(&mut self.shell, event_loop, &feed, overrides);
+                    }
                 }
-            }
+                None => {}
+            },
             UserEvent::System(event) => {
                 self.record(ProbeEvent::System {
                     what: format!("{event:?}"),
@@ -1380,6 +1670,13 @@ impl ApplicationHandler<UserEvent> for Strip {
             },
             UserEvent::Lifecycle(generation, outcome) => {
                 self.changed(event_loop, generation, *outcome);
+            }
+            UserEvent::Saved(saved) => self.saved(saved),
+            UserEvent::Discovered(report) => {
+                if let Some(form) = &mut self.shell.settings {
+                    form.set_report(Some(report));
+                }
+                self.shell.redraw(WindowKind::Settings);
             }
         }
     }
@@ -1486,6 +1783,7 @@ impl Strip {
             && let Some(scene) = &mut self.scene
         {
             scene.choose(feed, overrides, now);
+            self.sync_menu();
         }
         intents
     }
@@ -1567,6 +1865,12 @@ mod tests {
         let Ok(Claim::First(instance)) = Instance::claim(&data) else {
             panic!("the claim");
         };
+        let writer = Writer::start(
+            data.clone(),
+            Box::new(Asked::default()),
+            || terrarium_platform::login::LoginStatus::Unavailable,
+            Box::new(|_| {}),
+        );
         Repo {
             data,
             _instance: instance,
@@ -1576,6 +1880,7 @@ mod tests {
             connected: None,
             first_run: true,
             pending_login: None,
+            writer,
         }
     }
 
@@ -1668,10 +1973,10 @@ mod tests {
         let mut shell = Shell::default();
         connected(dir.path(), &mut repo, &mut shell);
         let facts = repo.facts().unwrap();
-        let mut form = SettingsForm::new(facts);
-        form.ask_reseed();
-        form.reseed();
-        form.take_intent();
+        let mut form = SettingsForm::new(facts, &Prefs::default(), String::new());
+        form.repo().ask_reseed();
+        form.repo().reseed();
+        form.take_intents();
         shell.settings = Some(form);
         let restart = |salt: u8| Outcome::Restarted {
             changed: Ok(()),
@@ -1694,9 +1999,9 @@ mod tests {
         );
         // The form is free again.
         let form = shell.settings.as_mut().unwrap();
-        form.ask_reseed();
-        form.reseed();
-        assert_eq!(form.take_intent(), Some(Intent::Reseed));
+        form.repo().ask_reseed();
+        form.repo().reseed();
+        assert_eq!(form.take_intents(), [Intent::Reseed]);
         // An engine that cannot start again leaves the strip halted.
         let failed = Outcome::Restarted {
             changed: Ok(()),
@@ -1716,7 +2021,9 @@ mod tests {
         let mut repo = repo(dir.path());
         let mut shell = Shell::default();
         connected(dir.path(), &mut repo, &mut shell);
-        shell.settings = repo.facts().map(SettingsForm::new);
+        shell.settings = repo
+            .facts()
+            .map(|facts| SettingsForm::new(facts, &Prefs::default(), String::new()));
         assert_eq!(
             repo.changed(1, Outcome::Disconnected, &mut shell, &mut Asked::default()),
             Effect::Close
@@ -1790,7 +2097,11 @@ mod pointer_tests {
     #[test]
     fn dim_mode_closes_a_pinned_panel() {
         let view = view();
-        let mut scene = Scene::new(&Mode::Live(Feed::Live), Some((&view, preset::SALT)));
+        let mut scene = Scene::new(
+            &Mode::Live(Feed::Live),
+            Some((&view, preset::SALT)),
+            &Prefs::default(),
+        );
         let now = Instant::now();
         scene.point(
             Pointer::Moved(Some(ViewportPoint { x: 300, y: 70 })),
@@ -1822,7 +2133,11 @@ mod pointer_tests {
     #[test]
     fn the_pointer_raises_the_panel_it_hit_tests_and_the_strip_composes_it() {
         let view = view();
-        let mut scene = Scene::new(&Mode::Live(Feed::Live), Some((&view, preset::SALT)));
+        let mut scene = Scene::new(
+            &Mode::Live(Feed::Live),
+            Some((&view, preset::SALT)),
+            &Prefs::default(),
+        );
         let start = Instant::now();
         let at = |ms: u64| start + Duration::from_millis(ms);
         let point = |x, y| Pointer::Moved(Some(ViewportPoint { x, y }));
