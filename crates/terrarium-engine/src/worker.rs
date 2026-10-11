@@ -162,8 +162,8 @@ impl Engine {
         let _ = self.tx.send(Message::Wake);
     }
 
-    /// Takes the adapters' settings in again and refreshes everything at once: what the strip
-    /// asks for once a changed setting has been saved.
+    /// Refreshes everything at once, the reports and the adapters' settings among them: what
+    /// the strip asks for once a changed setting has been saved.
     pub fn refresh(&self) {
         let _ = self.tx.send(Message::Refresh);
     }

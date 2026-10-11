@@ -459,8 +459,8 @@ pub enum UserEvent {
     Lifecycle(u64, Box<Outcome>),
     /// The settings' writer saved a change, or asked the OS about opening at login.
     Saved(Saved),
-    /// The discovery report for the settings window.
-    Discovered(String),
+    /// The discovery report for the settings window, of that generation.
+    Discovered(u64, String),
 }
 
 /// Why the strip could not run. Its wording is in the copy module.
@@ -753,6 +753,8 @@ struct Strip {
     hotkeys: Option<Hotkeys>,
     /// The settings the strip runs on.
     prefs: Prefs,
+    /// The generation of the settings window's discovery report: only the latest is shown.
+    discovery: u64,
     /// A run with a data directory.
     repo: Option<Repo>,
     /// The windows beside the strip.
@@ -810,6 +812,7 @@ impl Strip {
             menu: None,
             hotkeys: None,
             prefs,
+            discovery: 0,
             repo,
             shell: Shell::default(),
             reopen: None,
@@ -1289,11 +1292,11 @@ impl Strip {
     }
 
     /// Applies a setting changed in the settings window at once, then has it saved. A raise
-    /// hotkey the OS refuses changes nothing.
+    /// hotkey the OS refuses changes nothing, and neither does one with no hotkeys to register
+    /// it with.
     fn set(&mut self, pref: Pref) {
         if let Pref::Hotkey(Which::Raise, binding) = pref
-            && let Some(hotkeys) = &mut self.hotkeys
-            && let Err(err) = hotkeys.bind_raise(binding)
+            && let Err(err) = self.bind_raise(binding)
         {
             if let Some(form) = &mut self.shell.settings {
                 form.hotkey_refused(Which::Raise, copy::settings::not_registered(&err));
@@ -1324,6 +1327,18 @@ impl Strip {
         if let Some(repo) = &self.repo {
             repo.writer.save(pref);
         }
+    }
+
+    /// Registers `binding` to raise the strip, making the hotkeys first if they could not be
+    /// made at the start.
+    fn bind_raise(&mut self, binding: hotkey::Binding) -> Result<(), global_hotkey::Error> {
+        if let Some(hotkeys) = &mut self.hotkeys {
+            return hotkeys.bind_raise(binding);
+        }
+        let mut hotkeys = Hotkeys::new()?;
+        hotkeys.bind_raise(binding)?;
+        self.hotkeys = Some(hotkeys);
+        Ok(())
     }
 
     /// The writer's answer: a setting saved, or why not, and what the OS says of opening at
@@ -1372,6 +1387,8 @@ impl Strip {
             return;
         };
         form.set_report(None);
+        self.discovery += 1;
+        let generation = self.discovery;
         let data = repo.data.clone();
         let terrarium = connected.terrarium.clone();
         let proxy = self.proxy.clone();
@@ -1382,7 +1399,7 @@ impl Strip {
                 // gets an answer.
                 let report = std::panic::catch_unwind(|| discover::for_settings(&data, &terrarium))
                     .unwrap_or_else(|_| copy::report_unavailable().to_owned());
-                let _ = proxy.send_event(UserEvent::Discovered(report));
+                let _ = proxy.send_event(UserEvent::Discovered(generation, report));
             });
     }
 
@@ -1672,7 +1689,11 @@ impl ApplicationHandler<UserEvent> for Strip {
                 self.changed(event_loop, generation, *outcome);
             }
             UserEvent::Saved(saved) => self.saved(saved),
-            UserEvent::Discovered(report) => {
+            UserEvent::Discovered(generation, report) => {
+                // A report a later one outran says what was so before the latest change.
+                if generation != self.discovery {
+                    return;
+                }
                 if let Some(form) = &mut self.shell.settings {
                     form.set_report(Some(report));
                 }

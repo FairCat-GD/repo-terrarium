@@ -472,9 +472,10 @@ impl Live {
         progress: &mut dyn FnMut(u8),
         cancel: &AtomicBool,
     ) -> Result<Done, Fault> {
-        // A refresh asked for follows a change of the settings: the reports are read, and the
-        // watch made, as they now say.
-        if refresh.cause == Cause::Request {
+        // Every refresh that reads the reports reads the adapters' settings first, so a change
+        // is taken in whichever refresh comes next: the one asked for, or a retry or a watch
+        // batch that the scheduler ran in its place.
+        if refresh.reports {
             self.reload_adapters()?;
         }
         let path = PathBuf::from(&self.terrarium.repo.path);

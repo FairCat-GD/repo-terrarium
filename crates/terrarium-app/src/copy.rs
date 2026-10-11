@@ -29,6 +29,7 @@ use crate::live::{LabelFacts, Note, Once};
 use crate::pinning::AttachError;
 use crate::present::PresentError;
 use crate::strip::StripError;
+use global_hotkey::hotkey::Code;
 
 mod probe;
 pub use probe::*;
@@ -721,12 +722,21 @@ pub fn hotkey(binding: Binding, platform: Platform) -> String {
         .filter(|(on, _)| *on)
         .map(|(_, name)| name)
         .collect();
-    parts.push(key_name(binding.key));
+    let key = key_word(binding.key);
+    parts.push(&key);
     let between = match platform {
         Platform::Mac => "-",
         Platform::Windows => "+",
     };
     parts.join(between)
+}
+
+/// A key as the words name it: the space bar by its name, any other by its own legend.
+pub fn key_word(key: Code) -> String {
+    match key {
+        Code::Space => "Space".to_owned(),
+        key => key_name(key).to_owned(),
+    }
 }
 
 /// A crash log's report: what ran, where it failed and how it got there.
@@ -853,9 +863,12 @@ pub mod settings {
         format!("{name} ({width}×{height}{main})")
     }
 
-    /// The strip's scale on the display shown.
-    pub fn scale(scale: u32) -> String {
-        format!("{scale}×")
+    /// A size's choice, with the strip's scale at it on the display shown, when known.
+    pub fn size(label: &str, scale: Option<u32>) -> String {
+        match scale {
+            Some(scale) => format!("{label} ({scale}×)"),
+            None => label.to_owned(),
+        }
     }
 
     // The adapters.
@@ -1425,6 +1438,29 @@ mod tests {
             "src/old - 2023"
         );
         assert_eq!(panel::fossil(None, 1_680_523_200), "2023");
+    }
+
+    #[test]
+    fn a_hotkey_is_worded_as_each_platform_names_its_keys() {
+        use crate::hotkey::Which;
+
+        let raise = Which::Raise.default_binding();
+        assert_eq!(hotkey(raise, Platform::Mac), "Control-Option-T");
+        assert_eq!(hotkey(raise, Platform::Windows), "Ctrl+Alt+T");
+        let every = Binding::parse("ctrl+alt+shift+super+Space").unwrap();
+        assert_eq!(
+            hotkey(every, Platform::Mac),
+            "Control-Option-Shift-Command-Space"
+        );
+        assert_eq!(hotkey(every, Platform::Windows), "Ctrl+Alt+Shift+Win+Space");
+        assert_eq!(
+            settings::size(settings::LARGEST, Some(4)),
+            "Largest that fits (4×)"
+        );
+        assert_eq!(
+            settings::size(settings::ONE_SMALLER, None),
+            "One step smaller"
+        );
     }
 
     #[test]

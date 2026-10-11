@@ -24,7 +24,7 @@ use terrarium_compose::tween::Millis;
 use terrarium_platform::clock::LocalNow;
 use terrarium_truth::scene::SceneInput;
 
-use crate::{copy, demo, idle};
+use crate::{copy, demo, idle, prefs};
 
 /// How often the strip takes the local clock again, though nothing else changed: the
 /// composer carries the time on by itself, and this bounds how far it can drift.
@@ -34,8 +34,6 @@ const DEMO_EVERY_MS: u32 = 60_000;
 /// How often the debug window's simulation steps while it runs.
 #[cfg(feature = "dev")]
 const SIM_STEP_MS: u32 = 1000;
-/// How long without input before the strip dims, until the settings say: the default.
-pub const DIM_AFTER: Duration = Duration::from_mins(30);
 
 /// What the strip shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -169,7 +167,8 @@ impl Feeder {
             clock: os.clock.unwrap_or(LocalClock::noon(preset::DATE)),
             clock_at: now,
             day_night: DayNight::default(),
-            dim_after: DIM_AFTER,
+            // Until the settings say otherwise: the default.
+            dim_after: prefs::dim_after(prefs::DIM_DEFAULT),
             idle_dim: false,
             paused: false,
             scene_due: now,

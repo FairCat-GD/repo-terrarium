@@ -120,21 +120,17 @@ impl StripSection {
         ui.add_space(8.0);
         ui.label(words::SIZE);
         let mut step = self.size_step;
-        let scale = |i: usize| {
-            self.scales
-                .map(|scales| format!(" ({})", words::scale(scales[i])))
-                .unwrap_or_default()
-        };
+        let scale = |i: usize| self.scales.map(|scales| scales[i]);
         ui.horizontal(|ui| {
             ui.radio_value(
                 &mut step,
                 SizeStep::Full,
-                format!("{}{}", words::LARGEST, scale(0)),
+                words::size(words::LARGEST, scale(0)),
             );
             ui.radio_value(
                 &mut step,
                 SizeStep::OneSmaller,
-                format!("{}{}", words::ONE_SMALLER, scale(1)),
+                words::size(words::ONE_SMALLER, scale(1)),
             );
         });
         changes.extend(self.choose_size(step));

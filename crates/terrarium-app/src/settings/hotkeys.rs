@@ -38,10 +38,17 @@ impl HotkeysSection {
         }
     }
 
-    /// Shows the bindings the strip runs on; a choice not applied goes.
+    /// Shows the bindings the strip runs on. A hotkey whose binding changed shows the new one;
+    /// keys chosen for the other and not applied yet stay.
     pub fn set_prefs(&mut self, prefs: &Prefs) {
-        self.current = [prefs.raise, prefs.timelapse];
-        self.chosen = self.current;
+        let current = [prefs.raise, prefs.timelapse];
+        for (chosen, (now, before)) in self.chosen.iter_mut().zip(current.iter().zip(self.current))
+        {
+            if *now != before {
+                *chosen = *now;
+            }
+        }
+        self.current = current;
     }
 
     pub fn choose(&mut self, which: Which, binding: Binding) {
@@ -100,11 +107,15 @@ impl HotkeysSection {
                 }
                 ui.label(words::KEY);
                 egui::ComboBox::from_id_salt(("key", i))
-                    .selected_text(crate::hotkey::key_name(binding.key))
+                    .selected_text(copy::key_word(binding.key))
                     .width(70.0)
                     .show_ui(ui, |ui| {
-                        for (code, name) in KEYS {
-                            ui.selectable_value::<Code>(&mut binding.key, code, name);
+                        for (code, _) in KEYS {
+                            ui.selectable_value::<Code>(
+                                &mut binding.key,
+                                code,
+                                copy::key_word(code),
+                            );
                         }
                     });
             });
@@ -178,5 +189,20 @@ mod tests {
             Some(Pref::Hotkey(Which::Raise, Which::Raise.default_binding()))
         );
         assert_eq!(section.reset(Which::TimeLapse), None, "already its own");
+    }
+
+    #[test]
+    fn keys_chosen_and_not_applied_stay_while_the_other_hotkey_changes() {
+        let mut section = HotkeysSection::new(&Prefs::default());
+        section.choose(Which::Raise, binding("ctrl+shift+R"));
+        let prefs = Prefs {
+            timelapse: binding("ctrl+super+L"),
+            ..Prefs::default()
+        };
+        section.set_prefs(&prefs);
+        assert_eq!(
+            section.chosen,
+            [binding("ctrl+shift+R"), binding("ctrl+super+L")]
+        );
     }
 }

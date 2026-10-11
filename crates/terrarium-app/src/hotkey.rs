@@ -98,8 +98,8 @@ pub struct Binding {
     pub key: Code,
 }
 
-/// The keys a binding may end in, each with its name: the letters, the digits, F1 to F12 and
-/// the space bar. The one table the stored form, the settings' list and the words all read.
+/// The keys a binding may end in, each with its name in the stored form: the letters, the
+/// digits, F1 to F12 and the space bar. The words name them through `copy::key_word`.
 pub const KEYS: [(Code, &str); 49] = [
     (Code::KeyA, "A"),
     (Code::KeyB, "B"),
@@ -213,15 +213,21 @@ impl Binding {
 
     /// Whether this binding can be offered to the OS beside `other`, the other hotkey's.
     pub fn check(self, other: Binding) -> Result<(), Refusal> {
+        self.allowed()?;
+        if self == other {
+            return Err(Refusal::Taken);
+        }
+        Ok(())
+    }
+
+    /// Whether this binding keeps the rules whatever the other hotkey is.
+    pub fn allowed(self) -> Result<(), Refusal> {
         let mods = self.mods;
         if mods.count() < 2 {
             return Err(Refusal::TooFewModifiers);
         }
         if !mods.control && !mods.command {
             return Err(Refusal::OptionShift);
-        }
-        if self == other {
-            return Err(Refusal::Taken);
         }
         Ok(())
     }

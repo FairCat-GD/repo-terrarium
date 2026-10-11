@@ -311,7 +311,7 @@ fn watches(fx: &Fixture, live: &Live, dir: &str) -> bool {
 }
 
 #[test]
-fn a_refresh_asked_for_takes_a_new_report_path_in_and_watches_it() {
+fn a_refresh_reading_the_reports_takes_a_new_report_path_in_and_watches_it() {
     let fx = Fixture::new(12);
     let mut live = fx.connect();
     shown(&mut live, Cause::Connect, true);
@@ -323,10 +323,11 @@ fn a_refresh_asked_for_takes_a_new_report_path_in_and_watches_it() {
     fx.store()
         .set_setting(SETTING_COVERAGE_REPORT_PATH, "out/cov.info")
         .unwrap();
-    // Only a refresh asked for reads the settings again.
-    refresh(&mut live, Cause::Watch, true);
+    // A refresh that reads no reports leaves the settings for the next that does, whatever
+    // its cause.
+    refresh(&mut live, Cause::Hour, false);
     assert!(fx.rows(ObservationKind::Coverage).is_empty());
-    let asked = shown(&mut live, Cause::Request, true);
+    let asked = shown(&mut live, Cause::Retry, true);
     assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
     assert!(asked.details.found.coverage);
     assert!(watches(&fx, &live, "out"));

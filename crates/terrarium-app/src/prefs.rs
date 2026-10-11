@@ -37,6 +37,11 @@ pub const DIM_MIN: u32 = 5;
 pub const DIM_MAX: u32 = 120;
 pub const DIM_STEP: u32 = 5;
 const MINUTES_PER_DAY: u16 = 24 * 60;
+
+/// The dim timeout of `minutes`.
+pub fn dim_after(minutes: u32) -> Duration {
+    Duration::from_secs(u64::from(minutes) * 60)
+}
 const MS_PER_MINUTE: u32 = 60_000;
 
 /// A time of day to the minute, stored as `"HH:MM"`.
@@ -225,11 +230,15 @@ impl Prefs {
             Some(-1) => SizeStep::OneSmaller,
             _ => SizeStep::Full,
         };
-        let raise = text(SETTING_HOTKEYS_RAISE)
-            .and_then(|text| Binding::parse(&text))
-            .unwrap_or(defaults.raise);
-        let timelapse = text(SETTING_HOTKEYS_TIMELAPSE)
-            .and_then(|text| Binding::parse(&text))
+        // A binding the settings window would refuse, a bare key above all, is never
+        // registered: it would take that key from every app.
+        let binding = |key: &str| {
+            text(key)
+                .and_then(|text| Binding::parse(&text))
+                .filter(|binding| binding.allowed().is_ok())
+        };
+        let raise = binding(SETTING_HOTKEYS_RAISE).unwrap_or(defaults.raise);
+        let timelapse = binding(SETTING_HOTKEYS_TIMELAPSE)
             .filter(|binding| *binding != raise)
             .unwrap_or(defaults.timelapse);
         let day = text(SETTING_DAYNIGHT_DAY_START).and_then(|t| TimeOfDay::parse(&t));
@@ -272,7 +281,7 @@ impl Prefs {
 
     /// How long without input before the strip dims.
     pub fn dim_after(&self) -> Duration {
-        Duration::from_secs(u64::from(self.dim_after_minutes) * 60)
+        dim_after(self.dim_after_minutes)
     }
 
     /// Takes `pref` into the model.
@@ -562,6 +571,17 @@ mod tests {
             .set_setting(SETTING_DIM_AFTER_MINUTES, &(DIM_MAX + 1))
             .unwrap();
         assert_eq!(Prefs::load(store), Prefs::default());
+        // Bindings the rules refuse are never loaded: a bare key, Option and Shift alone.
+        for refused in ["T", "shift+T", "alt+shift+T", "super+T"] {
+            store.set_setting(SETTING_HOTKEYS_RAISE, refused).unwrap();
+            store
+                .set_setting(SETTING_HOTKEYS_TIMELAPSE, refused)
+                .unwrap();
+            let prefs = Prefs::load(store);
+            assert_eq!(prefs.raise, Prefs::default().raise, "{refused}");
+            assert_eq!(prefs.timelapse, Prefs::default().timelapse, "{refused}");
+        }
+        store.clear_setting(SETTING_HOTKEYS_TIMELAPSE).unwrap();
         // Two equal hotkeys: the raise keeps its own.
         store
             .set_setting(SETTING_HOTKEYS_RAISE, "ctrl+alt+H")

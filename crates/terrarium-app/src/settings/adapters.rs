@@ -42,15 +42,18 @@ impl AdaptersSection {
         section
     }
 
-    /// Shows the settings the strip runs on; what was typed and not applied goes.
+    /// Shows the settings the strip runs on. A report whose path changed shows the new one;
+    /// a path typed for another and not applied yet stays.
     pub fn set_settings(&mut self, settings: &AdapterSettings) {
         self.enabled = settings.enabled;
-        self.applied.clone_from(&settings.overrides);
         for kind in AdapterKind::ALL {
-            kind.path(&self.applied)
-                .unwrap_or_default()
-                .clone_into(&mut self.typed[index(kind)]);
+            let path = kind.path(&settings.overrides);
+            if kind.path(&self.applied) != path {
+                path.unwrap_or_default()
+                    .clone_into(&mut self.typed[index(kind)]);
+            }
         }
+        self.applied.clone_from(&settings.overrides);
     }
 
     pub fn set_report(&mut self, report: Option<String>) {
@@ -189,5 +192,17 @@ mod tests {
         );
         // Nothing set and nothing typed: nothing to clear.
         assert_eq!(section.clear_path(AdapterKind::DeadCode), None);
+    }
+
+    #[test]
+    fn a_path_typed_and_not_applied_stays_while_another_setting_changes() {
+        let mut section = section();
+        section.typed[0] = "out/lcov.info".into();
+        let mut settings = AdapterSettings::default();
+        settings.enabled.weather = false;
+        settings.overrides.dead_code = Some("out/knip.json".into());
+        section.set_settings(&settings);
+        assert_eq!(section.typed[0], "out/lcov.info");
+        assert_eq!(section.typed[2], "out/knip.json");
     }
 }
