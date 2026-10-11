@@ -54,6 +54,9 @@ struct Ready {
     night: bool,
     scale: u32,
     player: Player,
+    /// A film is asked for and not yet made: what plays is another range's, so nothing is
+    /// written until it comes.
+    pending: bool,
     /// What the last export or film said.
     status: Option<String>,
     /// An export is being written.
@@ -111,6 +114,7 @@ impl TimeLapseForm {
             night: false,
             scale: 1,
             player: Player::new(self.salt),
+            pending: true,
             status: None,
             writing: false,
         }));
@@ -121,9 +125,16 @@ impl TimeLapseForm {
         })
     }
 
-    /// The film asked for last is ready.
+    /// The film asked for last is ready; one asked before a change of Day or Night takes the
+    /// look chosen since.
     pub fn filmed(&mut self, film: Arc<Film>, now: Instant) {
         if let Phase::Ready(ready) = &mut self.phase {
+            ready.pending = false;
+            let film = if film.night == ready.night {
+                film
+            } else {
+                Arc::new(film.reclocked(ready.night))
+            };
             ready.player.set_film(film, now);
         }
     }
@@ -131,7 +142,10 @@ impl TimeLapseForm {
     /// A film could not be made: said, and with none playing yet, all the window says.
     pub fn film_failed(&mut self, why: String) {
         match &mut self.phase {
-            Phase::Ready(ready) if ready.player.film().is_some() => ready.status = Some(why),
+            Phase::Ready(ready) if ready.player.film().is_some() => {
+                ready.pending = false;
+                ready.status = Some(why);
+            }
             _ => self.failed(why),
         }
     }
@@ -154,9 +168,14 @@ impl TimeLapseForm {
         }
     }
 
-    /// The save dialog answered: a path chosen writes the export there.
+    /// The save dialog answered: a path chosen writes the export there, if there is still
+    /// something to write.
     pub fn picked(&mut self, export: Export, path: Option<PathBuf>) {
-        if let (Phase::Ready(ready), Some(path)) = (&mut self.phase, path) {
+        let writable = match export {
+            Export::Gif => self.gif().is_some(),
+            Export::Postcard => self.postcard().is_some(),
+        };
+        if let (Phase::Ready(ready), Some(path), true) = (&mut self.phase, path, writable) {
             ready.writing = true;
             ready.status = None;
             self.intents.push(Intent::Write { export, path });
@@ -173,21 +192,26 @@ impl TimeLapseForm {
         }
     }
 
-    /// The film to write as a GIF, and its scale.
+    /// The film to write as a GIF, and its scale: none while another is on its way.
     pub fn gif(&self) -> Option<(Arc<Film>, u32)> {
-        let Phase::Ready(ready) = &self.phase else {
-            return None;
-        };
+        let ready = self.settled()?;
         Some((Arc::clone(ready.player.film()?), ready.scale))
     }
 
-    /// The shot shown, to write as a postcard, and its scale.
+    /// The shot shown, to write as a postcard, and its scale: none while another film is on
+    /// its way.
     pub fn postcard(&self) -> Option<(Shot, u32)> {
-        let Phase::Ready(ready) = &self.phase else {
-            return None;
-        };
+        let ready = self.settled()?;
         let film = ready.player.film()?;
         Some((film.shot(ready.player.frame()).clone(), ready.scale))
+    }
+
+    /// The window, ready and playing the film asked for last.
+    fn settled(&self) -> Option<&Ready> {
+        match &self.phase {
+            Phase::Ready(ready) if !ready.pending => Some(ready),
+            _ => None,
+        }
     }
 
     pub fn take_intents(&mut self) -> Vec<Intent> {
@@ -209,6 +233,7 @@ impl TimeLapseForm {
         ready.to = to;
         if released && (from, to) != ready.asked {
             ready.asked = (from, to);
+            ready.pending = true;
             self.intents.push(Intent::Film {
                 from,
                 to,
@@ -217,14 +242,18 @@ impl TimeLapseForm {
         }
     }
 
-    fn set_night(&mut self, night: bool) {
+    /// Takes Day or Night: the film playing is drawn at the other hour, with no replay, and
+    /// one still on its way takes it when it comes.
+    fn set_night(&mut self, night: bool, now: Instant) {
         let Phase::Ready(ready) = &mut self.phase else {
             return;
         };
         if night != ready.night {
             ready.night = night;
-            let (from, to) = ready.asked;
-            self.intents.push(Intent::Film { from, to, night });
+            if let Some(film) = ready.player.film() {
+                let film = Arc::new(film.reclocked(night));
+                ready.player.set_film(film, now);
+            }
         }
     }
 
@@ -255,7 +284,7 @@ impl TimeLapseForm {
         if let Some((moved_from, released)) = asked.moved {
             self.range(asked.from, asked.to, moved_from, released);
         }
-        self.set_night(asked.night);
+        self.set_night(asked.night, now);
         if let Some(export) = asked.picked {
             self.intents.push(Intent::Pick(Picking::Save(export)));
         }
@@ -335,7 +364,7 @@ impl Ready {
                     }
                 });
         });
-        let writable = film.is_some() && !self.writing;
+        let writable = film.is_some() && !self.writing && !self.pending;
         ui.horizontal(|ui| {
             for (export, word) in [
                 (Export::Gif, words::SAVE_GIF),
@@ -421,6 +450,7 @@ mod tests {
             sampling: Sampling::new(0, days - 1, FRAMES),
             prime: None,
             shots,
+            night: false,
         })
     }
 
@@ -462,8 +492,8 @@ mod tests {
         form.range(3, 1, false, true);
         form.range(1, 1, false, true);
         form.range(2, 1, true, true);
-        form.set_night(true);
-        form.set_night(true);
+        // Night asks for nothing: the film playing is drawn again at midnight.
+        form.set_night(true, Instant::now());
         let asked: Vec<(usize, usize, bool)> = form
             .take_intents()
             .into_iter()
@@ -474,13 +504,7 @@ mod tests {
             .collect();
         assert_eq!(
             asked,
-            [
-                (2, 3, false),
-                (3, 3, false),
-                (1, 1, false),
-                (2, 2, false),
-                (2, 2, true)
-            ]
+            [(2, 3, false), (3, 3, false), (1, 1, false), (2, 2, false),]
         );
     }
 
@@ -489,6 +513,8 @@ mod tests {
         let mut form = form();
         form.read(&[DAY_ONE, DAY_ONE + 1]);
         assert!(form.gif().is_none(), "nothing to write before a film");
+        form.picked(Export::Gif, Some(PathBuf::from("early.gif")));
+        assert!(form.take_intents().is_empty(), "nor anything asked to");
         let now = Instant::now();
         form.filmed(film(2), now);
         pass(&mut form);
@@ -524,5 +550,36 @@ mod tests {
         // A film that fails once one plays is said beside it.
         form.film_failed("no".to_owned());
         assert!(matches!(&form.phase, Phase::Ready(_)));
+    }
+
+    #[test]
+    fn nothing_is_written_while_another_film_is_on_its_way_and_night_redraws_the_one_playing() {
+        let mut form = form();
+        form.read(&[DAY_ONE, DAY_ONE + 1, DAY_ONE + 2]);
+        let now = Instant::now();
+        form.filmed(film(3), now);
+        assert!(form.gif().is_some());
+        form.range(1, 2, true, true);
+        assert!(form.gif().is_none() && form.postcard().is_none());
+        form.picked(Export::Postcard, Some(PathBuf::from("fern.png")));
+        assert!(
+            form.take_intents()
+                .iter()
+                .all(|i| !matches!(i, Intent::Write { .. }))
+        );
+        // Night chosen while the new film is made: the one playing and the one to come are
+        // both drawn at midnight.
+        form.set_night(true, now);
+        let night = |form: &TimeLapseForm| {
+            let Phase::Ready(ready) = &form.phase else {
+                unreachable!()
+            };
+            ready.player.film().unwrap().night
+        };
+        assert!(night(&form));
+        form.filmed(film(2), now);
+        assert!(night(&form));
+        let (gif, _) = form.gif().unwrap();
+        assert!(gif.shots.iter().all(|shot| shot.clock.ms_of_day == 0));
     }
 }

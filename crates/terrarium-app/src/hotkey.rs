@@ -286,6 +286,11 @@ impl Hotkeys {
         Ok(())
     }
 
+    /// Whether `which` holds keys.
+    pub fn is_bound(&self, which: Which) -> bool {
+        self.bound.get(which).is_some()
+    }
+
     /// The hotkey a press is for, if it is a press of one.
     pub fn which(&self, event: GlobalHotKeyEvent) -> Option<Which> {
         self.bound.which(event)

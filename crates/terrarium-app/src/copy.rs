@@ -215,6 +215,22 @@ pub fn engine_problem(problem: &Problem) -> String {
     format!("{BINARY_NAME}: {problem}")
 }
 
+/// Why a replay of `history` could not run, as a clause.
+fn replay_problem(err: &ReplayError, history: &str) -> String {
+    match err {
+        ReplayError::CommitsOutOfOrder { commit } => {
+            format!("{history} came out of order at commit {}", commit.as_str())
+        }
+        ReplayError::DuplicateObservation { recorded_at, kind } => format!(
+            "two {} observations share the time {recorded_at}, source and commit",
+            kind.as_column()
+        ),
+        ReplayError::BasisChanged | ReplayError::NeedsFullReplay => {
+            "the replay could not continue from its own state".to_owned()
+        }
+    }
+}
+
 /// Why a headless replay printed nothing.
 pub fn replay_failed(repo: &Path, err: &HeadlessError) -> String {
     let repo = repo.display();
@@ -222,17 +238,7 @@ pub fn replay_failed(repo: &Path, err: &HeadlessError) -> String {
         HeadlessError::Git(err) => format!("{repo} could not be read as a git repository: {err}"),
         HeadlessError::Store(err) => format!("the temporary store failed: {err}"),
         HeadlessError::Import(err) => format!("the observations could not be imported: {err}"),
-        HeadlessError::Replay(ReplayError::CommitsOutOfOrder { commit }) => format!(
-            "the history of {repo} came out of order at commit {}",
-            commit.as_str()
-        ),
-        HeadlessError::Replay(ReplayError::DuplicateObservation { recorded_at, kind }) => format!(
-            "two {} observations share the time {recorded_at}, source and commit",
-            kind.as_column()
-        ),
-        HeadlessError::Replay(ReplayError::BasisChanged | ReplayError::NeedsFullReplay) => {
-            "the replay could not continue from its own state".to_owned()
-        }
+        HeadlessError::Replay(err) => replay_problem(err, &format!("the history of {repo}")),
         HeadlessError::BeforeHistory => {
             format!("the time asked for is outside the history of {repo}")
         }
@@ -1228,7 +1234,10 @@ pub mod timelapse {
     }
 
     pub fn replay_failed(err: &ReplayError) -> String {
-        format!("The replay could not run: {err:?}")
+        format!(
+            "The replay could not run: {}",
+            super::replay_problem(err, "the history")
+        )
     }
 
     /// A day in the label: its date, or, in a time-lapse longer than its days can be read
@@ -1566,6 +1575,24 @@ mod tests {
             "src/old - 2023"
         );
         assert_eq!(panel::fossil(None, 1_680_523_200), "2023");
+    }
+
+    #[test]
+    fn a_time_lapse_s_replay_failure_is_worded_and_never_a_debug_dump() {
+        assert_eq!(
+            timelapse::replay_failed(&ReplayError::BasisChanged),
+            "The replay could not run: the replay could not continue from its own state"
+        );
+        let out_of_order = timelapse::replay_failed(&ReplayError::CommitsOutOfOrder {
+            commit: terrarium_truth::CommitId::from_hex(&"ab".repeat(20)).unwrap(),
+        });
+        assert_eq!(
+            out_of_order,
+            format!(
+                "The replay could not run: the history came out of order at commit {}",
+                "ab".repeat(20)
+            )
+        );
     }
 
     #[test]

@@ -1467,14 +1467,19 @@ impl Strip {
     }
 
     /// Registers `binding` for `which`, making the hotkeys first if they could not be made at
-    /// the start, and then registering the other hotkey's keys too.
+    /// the start; the other hotkey's keys are registered too if they are not yet.
     fn bind(&mut self, which: Which, binding: hotkey::Binding) -> Result<(), global_hotkey::Error> {
+        let other = self.prefs.binding(which.other());
         if let Some(hotkeys) = &mut self.hotkeys {
-            return hotkeys.bind(which, binding);
+            hotkeys.bind(which, binding)?;
+            // The other's keys may be free now: the ones this hotkey just let go of.
+            if !hotkeys.is_bound(which.other()) {
+                let _ = hotkeys.bind(which.other(), other);
+            }
+            return Ok(());
         }
         let mut hotkeys = Hotkeys::new()?;
         hotkeys.bind(which, binding)?;
-        let other = self.prefs.binding(which.other());
         if let Err(err) = hotkeys.bind(which.other(), other) {
             self.hotkey_unavailable(which.other(), other, &err);
         }

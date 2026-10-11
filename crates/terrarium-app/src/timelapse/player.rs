@@ -169,9 +169,8 @@ impl Player {
 
     fn advance_clock(&mut self, now: Instant) {
         if let Some(moved) = self.moved.replace(now) {
-            self.clock = self.clock.plus(
-                u32::try_from(millis(now.saturating_duration_since(moved))).unwrap_or(u32::MAX),
-            );
+            let elapsed = millis(now.saturating_duration_since(moved));
+            self.clock = Millis(self.clock.0.saturating_add(elapsed));
         }
     }
 
@@ -214,6 +213,7 @@ mod tests {
             sampling: Sampling::new(0, shots.len() - 1, FRAMES),
             prime: None,
             shots,
+            night: false,
         })
     }
 
@@ -269,17 +269,13 @@ mod tests {
         }
         assert!(player.image().unwrap().1 > before);
         // The same days by night: taken by the same stage, so it changes in.
-        let night = Arc::new(Film {
-            shots: film(&["thriving", "dead"])
+        let night = Arc::new(film(&["thriving", "dead"]).reclocked(true));
+        assert!(
+            night
                 .shots
                 .iter()
-                .map(|shot| Shot {
-                    clock: LocalClock::midnight(preset::DATE),
-                    ..shot.clone()
-                })
-                .collect(),
-            ..(*film(&["thriving", "dead"])).clone()
-        });
+                .all(|shot| shot.clock == LocalClock::midnight(preset::DATE))
+        );
         player.set_film(night, at(start, ms));
         assert_eq!(player.frame(), LAST);
         assert!(player.next_in().is_some());

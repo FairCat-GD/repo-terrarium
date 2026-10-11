@@ -38,6 +38,8 @@ pub struct Film {
     pub sampling: Sampling,
     pub prime: Option<Shot>,
     pub shots: Vec<Shot>,
+    /// Drawn at midnight rather than noon.
+    pub night: bool,
 }
 
 impl Film {
@@ -79,7 +81,27 @@ impl Film {
             sampling,
             prime,
             shots,
+            night,
         })
+    }
+
+    /// The same days at the other hour: noon by day, midnight by night.
+    #[must_use]
+    pub fn reclocked(&self, night: bool) -> Film {
+        let clock = |shot: &Shot| Shot {
+            clock: if night {
+                LocalClock::midnight(shot.clock.date)
+            } else {
+                LocalClock::noon(shot.clock.date)
+            },
+            ..shot.clone()
+        };
+        Film {
+            sampling: self.sampling.clone(),
+            prime: self.prime.as_ref().map(clock),
+            shots: self.shots.iter().map(clock).collect(),
+            night,
+        }
     }
 
     /// The shot frame `frame` shows.

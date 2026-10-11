@@ -163,10 +163,7 @@ impl Stage {
     /// Moves to the shot `showing` of `shots` at `now`, unless it already stands there.
     pub fn show(&mut self, shots: &[Shot], showing: usize, now: Millis) {
         if showing != self.showing {
-            let shot = &shots[showing];
-            self.composer
-                .update(&shot.scene, &shot.overlay(&shot.label), now);
-            self.showing = showing;
+            self.take(shots, showing, now);
         }
     }
 
