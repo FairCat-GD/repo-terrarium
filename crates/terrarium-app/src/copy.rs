@@ -24,7 +24,7 @@ use crate::cli::UsageError;
 use crate::crash::Crash;
 use crate::discover::Reads;
 use crate::egui_host::{HostError, WindowKind};
-use crate::hotkey::{Binding, Platform, key_name};
+use crate::hotkey::{Binding, Platform, Which, key_name};
 use crate::live::{LabelFacts, Note, Once};
 use crate::pinning::AttachError;
 use crate::present::PresentError;
@@ -65,7 +65,13 @@ pub fn usage_error(err: &UsageError) -> String {
         UsageError::MissingReplayRepo => "replay needs a repository path".to_owned(),
         UsageError::MissingDiscoverRepo => "discover needs a repository path".to_owned(),
         UsageError::MissingCommand => "record-tests runs the command that follows --".to_owned(),
-        UsageError::MissingDump => "replay prints its result only with --dump".to_owned(),
+        UsageError::MissingOutput => "replay writes one result: --dump, or --gif <file>".to_owned(),
+        UsageError::GifOnly(flag) => format!("{flag} goes with --gif"),
+        UsageError::BadScale(value) => format!(
+            "'{}' is not a scale from 1 to {}",
+            value.to_string_lossy(),
+            crate::cli::MAX_SCALE
+        ),
         UsageError::MissingValue(flag) => format!("{flag} needs a value"),
         UsageError::BadTime(value) => format!(
             "'{}' is not a time in whole Unix seconds",
@@ -78,10 +84,12 @@ pub fn usage_error(err: &UsageError) -> String {
         .collect();
     format!(
         "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--repo <path> | --version | --demo | \
-         {} | --probe-readme]\n       {BINARY_NAME} replay <path> --dump [--observations \
-         <file>] [--at <unix-seconds>]\n       {BINARY_NAME} discover <path>\n       \
+         {} | --probe-readme]\n       {BINARY_NAME} replay <path> (--dump | --gif <file> \
+         [--night] [--scale <1-{max}>]) [--observations <file>] [--at <unix-seconds>]\n       \
+         {BINARY_NAME} discover <path>\n       \
          {BINARY_NAME} record-tests -- <command> [<argument>...]",
-        probes.join(" | ")
+        probes.join(" | "),
+        max = crate::cli::MAX_SCALE,
     )
 }
 
@@ -242,6 +250,20 @@ pub fn replay_store_unavailable(err: &impl Display) -> String {
 
 pub fn replay_write_failed(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the dump could not be written: {err}")
+}
+
+pub fn replay_no_day(repo: &Path) -> String {
+    format!(
+        "{BINARY_NAME}: no day of the history of {} has ended yet",
+        repo.display()
+    )
+}
+
+pub fn replay_gif_failed(path: &Path, err: &impl Display) -> String {
+    format!(
+        "{BINARY_NAME}: the GIF could not be written to {}: {err}",
+        path.display()
+    )
 }
 
 pub fn discover_failed(repo: &Path, err: &GitError) -> String {
@@ -763,6 +785,7 @@ pub fn egui_window_title(kind: WindowKind) -> String {
     match kind {
         WindowKind::Connect => PRODUCT_NAME.to_owned(),
         WindowKind::Settings => format!("{PRODUCT_NAME}: settings"),
+        WindowKind::TimeLapse => format!("{PRODUCT_NAME}: time-lapse"),
         #[cfg(feature = "dev")]
         WindowKind::Debug => format!("{PRODUCT_NAME} {VERSION}: debug"),
     }
@@ -901,7 +924,6 @@ pub mod settings {
     pub const TIME_LAPSE: &str = "Open the time-lapse";
     pub const KEY: &str = "Key";
     pub const DEFAULT: &str = "Default";
-    pub const TIME_LAPSE_LATER: &str = "The time-lapse opens from its hotkey with a later version.";
 
     /// The modifiers' names, as the platform's keyboards print them, in Apple's order.
     pub fn modifier_names(platform: Platform) -> [&'static str; 4] {
@@ -1131,9 +1153,13 @@ pub fn menu_unavailable(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the right-click menu is unavailable: {err}")
 }
 
-pub fn hotkey_unavailable(binding: Binding, err: &impl Display) -> String {
+pub fn hotkey_unavailable(which: Which, binding: Binding, err: &impl Display) -> String {
+    let name = match which {
+        Which::Raise => "raise",
+        Which::TimeLapse => "time-lapse",
+    };
     format!(
-        "{BINARY_NAME}: the raise hotkey {} could not be registered: {err}",
+        "{BINARY_NAME}: the {name} hotkey {} could not be registered: {err}",
         hotkey(binding, Platform::THIS)
     )
 }
@@ -1152,6 +1178,108 @@ pub fn edge_not_reserved() -> String {
 #[cfg(feature = "dev")]
 pub fn menu_debug() -> &'static str {
     "Debug window"
+}
+
+/// The time-lapse window's words, and the date its label shows.
+pub mod timelapse {
+    use std::fmt::Display;
+    use std::path::Path;
+
+    use terrarium_compose::sky::LocalDate;
+    use terrarium_engine::timelapse::LapseError;
+    use terrarium_truth::ReplayError;
+
+    use super::MONTHS;
+
+    pub const FROM: &str = "From";
+    pub const TO: &str = "To";
+    pub const PLAY: &str = "Play";
+    pub const STOP: &str = "Stop";
+    pub const BY_DAY: &str = "By day";
+    pub const BY_NIGHT: &str = "By night";
+    pub const SCALE: &str = "Scale";
+    pub const SAVE_GIF: &str = "Save GIF…";
+    pub const SAVE_POSTCARD: &str = "Save postcard…";
+    pub const GIF: &str = "GIF";
+    pub const PNG: &str = "PNG";
+    pub const PREPARING: &str = "Preparing the days";
+    pub const NO_DAY_YET: &str = "No day of this history has ended yet.";
+    pub const ANOTHER_REPOSITORY: &str =
+        "The folder holds another repository than this terrarium's.";
+    pub const OUTSIDE_HISTORY: &str = "This moment is outside the repository's history.";
+    pub const HALTED: &str = "The time-lapse stopped on an error.";
+
+    /// The history being read, and how far.
+    pub fn reading(percent: Option<u8>) -> String {
+        match percent {
+            Some(percent) => format!("Reading the history: {percent}%"),
+            None => "Reading the history".to_owned(),
+        }
+    }
+
+    /// Why the history could not be read; nothing, when its window closed first.
+    pub fn failed(err: &LapseError) -> String {
+        match err {
+            LapseError::NotThisRepository => ANOTHER_REPOSITORY.to_owned(),
+            LapseError::BeforeHistory => OUTSIDE_HISTORY.to_owned(),
+            LapseError::Git(err) => format!("The history could not be read: {err}"),
+            LapseError::Store(err) => format!("The observations could not be read: {err}"),
+        }
+    }
+
+    pub fn replay_failed(err: &ReplayError) -> String {
+        format!("The replay could not run: {err:?}")
+    }
+
+    /// A day in the label: its date, or, in a time-lapse longer than its days can be read
+    /// in, its month.
+    pub fn date(date: LocalDate, by_day: bool) -> String {
+        let month = MONTHS[usize::from(date.month - 1)];
+        if by_day {
+            format!("{} {month} {}", date.day, date.year)
+        } else {
+            format!("{month} {}", date.year)
+        }
+    }
+
+    /// A day as the window's sliders name it.
+    pub fn day(date: LocalDate) -> String {
+        self::date(date, true)
+    }
+
+    pub fn scale(k: u32) -> String {
+        format!("{k}×")
+    }
+
+    pub fn writing(percent: u8) -> String {
+        format!("Writing the GIF: {percent}%")
+    }
+
+    pub fn saved(path: &Path) -> String {
+        format!(
+            "Saved {}",
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+        )
+    }
+
+    pub fn not_saved(err: &impl Display) -> String {
+        format!("Not saved: {err}")
+    }
+
+    /// The GIF's name, as the save dialog offers it.
+    pub fn gif_name(repo: &str) -> String {
+        format!("{repo}-time-lapse.gif")
+    }
+
+    /// The postcard's name, as the save dialog offers it.
+    pub fn postcard_name(repo: &str, date: LocalDate) -> String {
+        format!(
+            "{repo}-{:04}-{:02}-{:02}.png",
+            date.year, date.month, date.day
+        )
+    }
 }
 
 /// The words of the debug window and the egui memory probe (dev builds only).
@@ -1442,8 +1570,6 @@ mod tests {
 
     #[test]
     fn a_hotkey_is_worded_as_each_platform_names_its_keys() {
-        use crate::hotkey::Which;
-
         let raise = Which::Raise.default_binding();
         assert_eq!(hotkey(raise, Platform::Mac), "Control-Option-T");
         assert_eq!(hotkey(raise, Platform::Windows), "Ctrl+Alt+T");

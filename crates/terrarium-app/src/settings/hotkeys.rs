@@ -131,9 +131,6 @@ impl HotkeysSection {
             if let Some(why) = &self.refused[i] {
                 ui.label(why);
             }
-            if which == Which::TimeLapse {
-                ui.label(words::TIME_LAPSE_LATER);
-            }
             ui.add_space(8.0);
         }
     }

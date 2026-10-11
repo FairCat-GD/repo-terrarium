@@ -38,6 +38,10 @@ The `repo-terrarium` binary.
   `terrarium-platform`. On macOS the strip is a desktop-level window; on Windows it is an
   `AppBar` on a reserved edge, sized to the band Windows grants.
 - `--probe pinning` (`probe`): the strip with a recorder, a guided checklist and a report.
+- The time-lapse window (`timelapse`): the repository's history replayed by a replay and a
+  composer of its own, played in 30 seconds over a range of days, by day or by night, and
+  written as a GIF or a postcard PNG. Its reading, replaying and writing run on threads of
+  their own; the live strip's engine and composer are never touched.
 - In dev builds (`--features dev`): the debug window (`debug`), with its simulation of the real
   sim over a history its sliders make (`sandbox`), and `--probe egui` (`egui_probe`).
 
@@ -69,7 +73,8 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
 - `repo-terrarium --repo <path>` connects the repository at `<path>` (creating its terrarium,
   or relinking the one with its seed) and runs the strip on it.
 - `repo-terrarium` runs the strip on the repository connected last, or opens the connect
-  window when none is. Right-click the strip for **Settings** or **Quit**. Launched again
+  window when none is. Right-click the strip for **Settings**, **Time-lapse**, **Pause** or
+  **Quit**; the time-lapse hotkey (Control-Option-H by default) opens the time-lapse too. Launched again
   while it runs, it shows the running app's settings and ends; with `--repo`, it connects
   nothing and says so.
 - `repo-terrarium --demo` runs the strip through the named looks, a quarter of an hour each.
@@ -78,6 +83,9 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
   pipeline and prints truth's canonical dump (`replay`). `--observations <file>` imports an
   export into its store first, and `--at <unix-seconds>` replays to that moment instead of
   now. Its store lives in a temporary directory, so it never opens the data directory.
+  `--gif <file>` writes the whole history's time-lapse instead, as the window does, with
+  `--night` by night and `--scale <n>` (1 to 8) times the scene's size; the same command
+  always writes the same bytes. `cargo xtask hero` writes the fixture arc's this way.
 - `repo-terrarium discover <path>` prints what the repository has for each report adapter,
   what each report found reads as, and how the missing ones connect (`discover`).
 - `repo-terrarium record-tests -- <command>` runs a test command in the current repository and

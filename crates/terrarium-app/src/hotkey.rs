@@ -252,12 +252,11 @@ impl Platform {
     };
 }
 
-/// The registered hotkeys: the raise's, from the start; the time-lapse's once there is a window
-/// for it to open, since a registered key that does nothing would still be taken from every
-/// other app. Dropping it unregisters them.
+/// The registered hotkeys, each bound on its own, so one the OS refuses never costs the other.
+/// Dropping it unregisters them.
 pub struct Hotkeys {
     manager: GlobalHotKeyManager,
-    raise: Option<HotKey>,
+    bound: Bound,
 }
 
 impl Hotkeys {
@@ -265,27 +264,65 @@ impl Hotkeys {
     pub fn new() -> Result<Hotkeys, global_hotkey::Error> {
         Ok(Hotkeys {
             manager: GlobalHotKeyManager::new()?,
-            raise: None,
+            bound: Bound::default(),
         })
     }
 
-    /// Registers `binding` to raise the strip. The new key is taken before the old one is let
-    /// go, so a refusal leaves the raise as it was.
-    pub fn bind_raise(&mut self, binding: Binding) -> Result<(), global_hotkey::Error> {
+    /// Registers `binding` for `which`. The new key is taken before the old one is let go, so
+    /// a refusal leaves the hotkey as it was. Keys the other hotkey holds are refused: they
+    /// stay its own.
+    pub fn bind(&mut self, which: Which, binding: Binding) -> Result<(), global_hotkey::Error> {
         let hotkey = binding.hotkey();
-        if self.raise == Some(hotkey) {
+        if self.bound.get(which) == Some(hotkey) {
             return Ok(());
         }
+        if self.bound.get(which.other()) == Some(hotkey) {
+            return Err(global_hotkey::Error::AlreadyRegistered(hotkey));
+        }
         self.manager.register(hotkey)?;
-        if let Some(old) = self.raise.replace(hotkey) {
+        if let Some(old) = self.bound.slot(which).replace(hotkey) {
             let _ = self.manager.unregister(old);
         }
         Ok(())
     }
 
-    pub fn is_raise(&self, event: GlobalHotKeyEvent) -> bool {
-        self.raise.is_some_and(|raise| event.id == raise.id())
-            && event.state == HotKeyState::Pressed
+    /// The hotkey a press is for, if it is a press of one.
+    pub fn which(&self, event: GlobalHotKeyEvent) -> Option<Which> {
+        self.bound.which(event)
+    }
+}
+
+/// Which keys each hotkey holds: how a press is told apart, without the OS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Bound {
+    raise: Option<HotKey>,
+    timelapse: Option<HotKey>,
+}
+
+impl Bound {
+    fn get(self, which: Which) -> Option<HotKey> {
+        match which {
+            Which::Raise => self.raise,
+            Which::TimeLapse => self.timelapse,
+        }
+    }
+
+    fn slot(&mut self, which: Which) -> &mut Option<HotKey> {
+        match which {
+            Which::Raise => &mut self.raise,
+            Which::TimeLapse => &mut self.timelapse,
+        }
+    }
+
+    /// The hotkey whose keys were pressed, the raise first; a release is no press.
+    fn which(self, event: GlobalHotKeyEvent) -> Option<Which> {
+        if event.state != HotKeyState::Pressed {
+            return None;
+        }
+        Which::ALL.into_iter().find(|&which| {
+            self.get(which)
+                .is_some_and(|hotkey| hotkey.id() == event.id)
+        })
     }
 }
 
@@ -367,5 +404,35 @@ mod tests {
             Which::Raise.default_binding().hotkey(),
             HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT)
         );
+    }
+
+    #[test]
+    fn a_press_is_told_apart_by_its_keys_and_a_release_is_none() {
+        let raise = Which::Raise.default_binding().hotkey();
+        let timelapse = Which::TimeLapse.default_binding().hotkey();
+        let event = |hotkey: HotKey, state| GlobalHotKeyEvent {
+            id: hotkey.id(),
+            state,
+        };
+        let bound = Bound {
+            raise: Some(raise),
+            timelapse: Some(timelapse),
+        };
+        assert_eq!(
+            bound.which(event(raise, HotKeyState::Pressed)),
+            Some(Which::Raise)
+        );
+        assert_eq!(
+            bound.which(event(timelapse, HotKeyState::Pressed)),
+            Some(Which::TimeLapse)
+        );
+        assert_eq!(bound.which(event(timelapse, HotKeyState::Released)), None);
+        let other = binding("ctrl+super+F1").hotkey();
+        assert_eq!(bound.which(event(other, HotKeyState::Pressed)), None);
+        let unbound = Bound {
+            timelapse: None,
+            ..bound
+        };
+        assert_eq!(unbound.which(event(timelapse, HotKeyState::Pressed)), None);
     }
 }

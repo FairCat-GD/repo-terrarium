@@ -10,6 +10,7 @@ pub mod observe;
 pub mod schedule;
 pub mod showing;
 mod shown;
+pub mod timelapse;
 pub mod watch;
 pub mod worker;
 

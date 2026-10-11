@@ -1,8 +1,8 @@
 # xtask
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
-The tasks are `verify`, `arc`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `probe-zip`
-and `render`.
+The tasks are `verify`, `arc`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `hero`,
+`probe-zip` and `render`.
 
 ## `verify`
 
@@ -101,6 +101,19 @@ timeline, on the first day of each run of days an event plays on the ground, and
 
 It fails unless the frames show all six presentation states. It is not part of `verify`; the
 arc's six states are `terrarium-engine`'s own test.
+
+## `hero`
+
+`cargo xtask hero` writes the fixture arc's whole history as the time-lapse the app writes, the
+launch GIF, into `target/hero/`, replacing what an earlier run left. It builds the arc in a
+temporary directory and runs `repo-terrarium replay --gif` on it, since the date on the label is
+the app's copy:
+
+- `hero-day.gif` and `hero-night.gif`: 450 frames at 2×, 30 seconds, repeating;
+- `SHA256SUMS`: both files' hashes. The same build writes the same bytes.
+
+The gate's own GIF golden, two months of the arc at 1×, is a test in the app
+(`timelapse::tests`).
 
 ## `gallery`
 

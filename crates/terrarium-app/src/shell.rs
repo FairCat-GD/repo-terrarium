@@ -1,6 +1,7 @@
-//! The windows the app opens beside the strip: the connect window, the settings window, and in
-//! dev builds the debug window. They share one egui host, which exists only while one of them
-//! is open; when the last closes, the app the person was in gets the keyboard back.
+//! The windows the app opens beside the strip: the connect window, the settings
+//! window, the time-lapse window, and in dev builds the debug window. They share one egui host, which exists only
+//! while one of them is open; when the last closes, the app the person was in gets the
+//! keyboard back.
 //!
 //! The windows' forms are models; what their presses ask for comes back as [`Intent`]s, which
 //! the strip carries out, so nothing is ever opened or changed from inside a window's drawing.
@@ -16,21 +17,33 @@ use crate::connect::ConnectForm;
 use crate::egui_host::{EguiHost, WindowKind};
 use crate::prefs::Pref;
 use crate::settings::SettingsForm;
+use crate::timelapse::form::TimeLapseForm;
 use crate::{copy, pinning};
 
-/// What a folder is picked for.
+/// What a dialog picks a path for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Picking {
     /// The repository to connect.
     Repository,
     /// Where the connected repository now is.
     Location,
+    /// Where a time-lapse export is saved.
+    Save(Export),
+}
+
+/// What the time-lapse window writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Export {
+    /// The range played, as a GIF.
+    Gif,
+    /// The day shown, as a PNG.
+    Postcard,
 }
 
 /// What a window's press asks the strip for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
-    /// The folder picker, the first of two steps.
+    /// A dialog that picks a path, the first of two steps.
     Pick(Picking),
     /// Connect the folder picked; the first run's "Open at login" with it.
     Connect {
@@ -47,6 +60,10 @@ pub enum Intent {
     Done,
     /// A setting changed in the settings window: applied at once, then saved.
     Set(Pref),
+    /// The time-lapse of the days `from..=to`, by day or by night.
+    Film { from: usize, to: usize, night: bool },
+    /// Write a time-lapse export to the path picked.
+    Write { export: Export, path: PathBuf },
 }
 
 #[derive(Default)]
@@ -57,6 +74,8 @@ pub struct Shell {
     previous: Option<pinning::PreviousApp>,
     pub connect: Option<ConnectForm>,
     pub settings: Option<SettingsForm>,
+    /// Only while its window is open, with the film it plays.
+    pub timelapse: Option<TimeLapseForm>,
 }
 
 impl Shell {
@@ -128,6 +147,7 @@ impl Shell {
             host,
             connect,
             settings,
+            timelapse,
             ..
         } = self;
         let Some(host) = host.as_mut() else {
@@ -141,6 +161,11 @@ impl Shell {
             }
             WindowKind::Settings => {
                 if let Some(form) = settings.as_mut() {
+                    form.ui(ui);
+                }
+            }
+            WindowKind::TimeLapse => {
+                if let Some(form) = timelapse.as_mut() {
                     form.ui(ui);
                 }
             }
@@ -158,6 +183,12 @@ impl Shell {
                 self.settings
                     .as_mut()
                     .map(SettingsForm::take_intents)
+                    .unwrap_or_default(),
+            )
+            .chain(
+                self.timelapse
+                    .as_mut()
+                    .map(TimeLapseForm::take_intents)
                     .unwrap_or_default(),
             )
             .collect()

@@ -13,7 +13,9 @@
 //! none, the connect window opens instead, and closing it ends the app; connecting opens the
 //! strip, and disconnecting closes it and opens the connect window again.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -67,9 +69,11 @@ use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
 use crate::probe::{Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
 use crate::settings::{MonitorChoice, RepoFacts, SettingsForm};
-use crate::shell::{Intent, Picking, Shell};
+use crate::shell::{Export, Intent, Picking, Shell};
 use crate::soil::{Hits, SoilPanel};
-use crate::{crash, discover};
+use crate::timelapse::form::TimeLapseForm;
+use crate::timelapse::job::{Msg, Session};
+use crate::{crash, discover, now_secs};
 
 /// What the strip runs as.
 pub enum Mode {
@@ -461,6 +465,8 @@ pub enum UserEvent {
     Saved(Saved),
     /// The discovery report for the settings window, of that generation.
     Discovered(u64, String),
+    /// What a job of the time-lapse window of that generation says.
+    TimeLapse(u64, Msg),
 }
 
 /// Why the strip could not run. Its wording is in the copy module.
@@ -759,6 +765,10 @@ struct Strip {
     repo: Option<Repo>,
     /// The windows beside the strip.
     shell: Shell,
+    /// The time-lapse window's work, while it is open.
+    timelapse: Option<Session>,
+    /// The generation of the latest time-lapse window: only its jobs are heard.
+    lapses: u64,
     reopen: Option<pinning::ReopenHook>,
     #[cfg(feature = "dev")]
     dev: Dev,
@@ -815,6 +825,8 @@ impl Strip {
             discovery: 0,
             repo,
             shell: Shell::default(),
+            timelapse: None,
+            lapses: 0,
             reopen: None,
             #[cfg(feature = "dev")]
             dev: Dev::new(matches!(mode, Mode::Probe(ProbeKind::Egui))),
@@ -842,17 +854,20 @@ impl Strip {
         }
         self.sync_menu();
         if self.hotkeys.is_none() {
-            let raise = self.prefs.raise;
-            match Hotkeys::new().and_then(|mut hotkeys| {
-                hotkeys.bind_raise(raise)?;
-                Ok(hotkeys)
-            }) {
-                Ok(hotkeys) => self.hotkeys = Some(hotkeys),
+            match Hotkeys::new() {
+                Ok(mut hotkeys) => {
+                    for which in Which::ALL {
+                        let binding = self.prefs.binding(which);
+                        if let Err(err) = hotkeys.bind(which, binding) {
+                            self.hotkey_unavailable(which, binding, &err);
+                        }
+                    }
+                    self.hotkeys = Some(hotkeys);
+                }
                 Err(err) => {
-                    eprintln!("{}", copy::hotkey_unavailable(raise, &err));
-                    self.record(ProbeEvent::HotkeyUnavailable {
-                        error: err.to_string(),
-                    });
+                    for which in Which::ALL {
+                        self.hotkey_unavailable(which, self.prefs.binding(which), &err);
+                    }
                 }
             }
         }
@@ -1257,6 +1272,123 @@ impl Strip {
         }
     }
 
+    /// Shows the time-lapse of the connected repository, reading its history again, or brings
+    /// the open window forward.
+    fn show_timelapse(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((data, terrarium)) = self.repo.as_ref().and_then(|repo| {
+            let connected = repo.connected.as_ref()?;
+            Some((repo.data.clone(), connected.terrarium.as_ref().clone()))
+        }) else {
+            return;
+        };
+        if self.timelapse.is_some() && self.shell.is_open(WindowKind::TimeLapse) {
+            self.shell.open(event_loop, WindowKind::TimeLapse);
+            return;
+        }
+        self.lapses += 1;
+        let strip_scale = self.view.as_ref().map_or(1, |view| view.scale.scale);
+        self.shell.timelapse = Some(TimeLapseForm::new(
+            terrarium.repo.name.clone(),
+            InstallSalt::new(terrarium.install_salt),
+            strip_scale,
+        ));
+        self.timelapse = Some(Session::start(
+            self.lapses,
+            &self.proxy,
+            data,
+            terrarium,
+            now_secs(),
+        ));
+        if !self.shell.open(event_loop, WindowKind::TimeLapse) {
+            self.close_timelapse();
+        }
+    }
+
+    /// Closes the time-lapse window, stopping its work; its film goes with it.
+    fn close_timelapse(&mut self) {
+        self.timelapse = None;
+        self.shell.timelapse = None;
+        if self.shell.is_open(WindowKind::TimeLapse) {
+            self.shell.close(WindowKind::TimeLapse);
+        }
+    }
+
+    /// A dialog answered: the window that asked takes the path picked, if one was.
+    fn picked(&mut self, picking: Picking, path: Option<PathBuf>) {
+        match picking {
+            Picking::Repository => {
+                if let Some(form) = &mut self.shell.connect {
+                    form.picked(path);
+                }
+                self.shell.redraw(WindowKind::Connect);
+            }
+            Picking::Location => {
+                if let Some(form) = &mut self.shell.settings {
+                    form.located(path);
+                }
+                self.shell.redraw(WindowKind::Settings);
+            }
+            Picking::Save(export) => {
+                if let Some(form) = &mut self.shell.timelapse {
+                    form.picked(export, path);
+                    let intents = form.take_intents();
+                    self.carry_out(intents);
+                }
+                self.shell.redraw(WindowKind::TimeLapse);
+            }
+        }
+    }
+
+    /// What a time-lapse job said, if it is the open window's.
+    fn time_lapse_said(&mut self, generation: u64, msg: Msg) {
+        let (Some(session), Some(form)) = (&mut self.timelapse, &mut self.shell.timelapse) else {
+            return;
+        };
+        if session.generation != generation {
+            return;
+        }
+        match msg {
+            Msg::Reading(percent) => form.reading(percent),
+            Msg::Read(Ok(lapse)) => {
+                session.read(lapse);
+                if let Some(Intent::Film { from, to, night }) = form.read(&session.days()) {
+                    session.film(from, to, night);
+                }
+            }
+            Msg::Read(Err(why)) => form.failed(why),
+            Msg::Filmed { asked, film } => {
+                if session.is_latest(asked) {
+                    match film {
+                        Ok(film) => form.filmed(film, Instant::now()),
+                        Err(why) => form.film_failed(why),
+                    }
+                }
+            }
+            Msg::Writing(percent) => form.writing(percent),
+            Msg::Written(written) => form.written(written),
+        }
+        self.shell.redraw(WindowKind::TimeLapse);
+    }
+
+    /// Writes the time-lapse window's `export` to `path`.
+    fn write(&mut self, export: Export, path: PathBuf) {
+        let (Some(session), Some(form)) = (&self.timelapse, &self.shell.timelapse) else {
+            return;
+        };
+        match export {
+            Export::Gif => {
+                if let Some((film, scale)) = form.gif() {
+                    session.write_gif(film, scale, path);
+                }
+            }
+            Export::Postcard => {
+                if let Some((shot, scale)) = form.postcard() {
+                    session.write_postcard(shot, scale, path);
+                }
+            }
+        }
+    }
+
     /// Carries out what the windows asked for.
     fn carry_out(&mut self, intents: Vec<Intent>) {
         for intent in intents {
@@ -1287,19 +1419,24 @@ impl Strip {
                     self.shell.connect = None;
                 }
                 Intent::Set(pref) => self.set(pref),
+                Intent::Film { from, to, night } => {
+                    if let Some(session) = &mut self.timelapse {
+                        session.film(from, to, night);
+                    }
+                }
+                Intent::Write { export, path } => self.write(export, path),
             }
         }
     }
 
-    /// Applies a setting changed in the settings window at once, then has it saved. A raise
-    /// hotkey the OS refuses changes nothing, and neither does one with no hotkeys to register
-    /// it with.
+    /// Applies a setting changed in the settings window at once, then has it saved. A hotkey
+    /// the OS refuses changes nothing, and neither does one with no hotkeys to register it with.
     fn set(&mut self, pref: Pref) {
-        if let Pref::Hotkey(Which::Raise, binding) = pref
-            && let Err(err) = self.bind_raise(binding)
+        if let Pref::Hotkey(which, binding) = pref
+            && let Err(err) = self.bind(which, binding)
         {
             if let Some(form) = &mut self.shell.settings {
-                form.hotkey_refused(Which::Raise, copy::settings::not_registered(&err));
+                form.hotkey_refused(which, copy::settings::not_registered(&err));
             }
             self.shell.redraw(WindowKind::Settings);
             return;
@@ -1329,16 +1466,35 @@ impl Strip {
         }
     }
 
-    /// Registers `binding` to raise the strip, making the hotkeys first if they could not be
-    /// made at the start.
-    fn bind_raise(&mut self, binding: hotkey::Binding) -> Result<(), global_hotkey::Error> {
+    /// Registers `binding` for `which`, making the hotkeys first if they could not be made at
+    /// the start, and then registering the other hotkey's keys too.
+    fn bind(&mut self, which: Which, binding: hotkey::Binding) -> Result<(), global_hotkey::Error> {
         if let Some(hotkeys) = &mut self.hotkeys {
-            return hotkeys.bind_raise(binding);
+            return hotkeys.bind(which, binding);
         }
         let mut hotkeys = Hotkeys::new()?;
-        hotkeys.bind_raise(binding)?;
+        hotkeys.bind(which, binding)?;
+        let other = self.prefs.binding(which.other());
+        if let Err(err) = hotkeys.bind(which.other(), other) {
+            self.hotkey_unavailable(which.other(), other, &err);
+        }
         self.hotkeys = Some(hotkeys);
         Ok(())
+    }
+
+    /// Says a hotkey could not be registered; the probe hears of the raise's.
+    fn hotkey_unavailable(
+        &mut self,
+        which: Which,
+        binding: hotkey::Binding,
+        err: &global_hotkey::Error,
+    ) {
+        eprintln!("{}", copy::hotkey_unavailable(which, binding, err));
+        if which == Which::Raise {
+            self.record(ProbeEvent::HotkeyUnavailable {
+                error: err.to_string(),
+            });
+        }
     }
 
     /// The writer's answer: a setting saved, or why not, and what the OS says of opening at
@@ -1421,7 +1577,11 @@ impl Strip {
     /// The menu's pause item, as the scene now is.
     fn sync_menu(&self) {
         if let Some(menu) = &self.menu {
-            menu.sync(self.scene.as_ref().and_then(Scene::paused));
+            let connected = self
+                .repo
+                .as_ref()
+                .is_some_and(|repo| repo.connected.is_some());
+            menu.sync(self.scene.as_ref().and_then(Scene::paused), connected);
         }
     }
 
@@ -1431,12 +1591,30 @@ impl Strip {
         let kind = match picking {
             Picking::Repository => WindowKind::Connect,
             Picking::Location => WindowKind::Settings,
+            Picking::Save(_) => WindowKind::TimeLapse,
         };
         let mut dialog = rfd::AsyncFileDialog::new();
         if let Some(window) = self.shell.window(kind) {
             dialog = dialog.set_parent(window);
         }
-        let chosen = dialog.pick_folder();
+        let chosen: Pin<Box<dyn Future<Output = Option<rfd::FileHandle>> + Send>> = match picking {
+            Picking::Repository | Picking::Location => Box::pin(dialog.pick_folder()),
+            Picking::Save(export) => {
+                let Some(form) = &self.shell.timelapse else {
+                    return;
+                };
+                let (filter, extension) = match export {
+                    Export::Gif => (copy::timelapse::GIF, "gif"),
+                    Export::Postcard => (copy::timelapse::PNG, "png"),
+                };
+                Box::pin(
+                    dialog
+                        .set_file_name(form.file_name(export))
+                        .add_filter(filter, &[extension])
+                        .save_file(),
+                )
+            }
+        };
         let proxy = self.proxy.clone();
         let _ = thread::Builder::new()
             .name("terrarium-picker".into())
@@ -1498,6 +1676,11 @@ impl Strip {
                 self.sync_menu();
             }
             Effect::Show(reseeded) => {
+                // A relinked or re-seeded terrarium's time-lapse is another's.
+                self.close_timelapse();
+                let Some(repo) = &self.repo else {
+                    return;
+                };
                 if let (Some(scene), Some(connected)) = (&mut self.scene, &repo.connected) {
                     match reseeded {
                         Some(salt) => scene.reseed(&connected.live, salt, now),
@@ -1506,6 +1689,7 @@ impl Strip {
                 }
             }
             Effect::Close => {
+                self.close_timelapse();
                 self.close_view();
                 self.scene = None;
                 self.sync_menu();
@@ -1604,27 +1788,29 @@ impl ApplicationHandler<UserEvent> for Strip {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::HotKey(event) => {
-                if !self.hotkeys.as_ref().is_some_and(|h| h.is_raise(event)) {
-                    return;
-                }
-                self.with_view(|strip, view| {
-                    // A reserved edge stays topmost, so there is nothing to restore later.
-                    if !pinning::EDGE_RESERVED {
-                        strip.raise.press(Instant::now());
-                    }
-                    view.pinning.raise(&view.window);
-                    strip.record(ProbeEvent::Raised {
-                        value: view.pinning.level(),
+            UserEvent::HotKey(event) => match self.hotkeys.as_ref().and_then(|h| h.which(event)) {
+                Some(Which::Raise) => {
+                    self.with_view(|strip, view| {
+                        // A reserved edge stays topmost, so there is nothing to restore later.
+                        if !pinning::EDGE_RESERVED {
+                            strip.raise.press(Instant::now());
+                        }
+                        view.pinning.raise(&view.window);
+                        strip.record(ProbeEvent::Raised {
+                            value: view.pinning.level(),
+                        });
                     });
-                });
-            }
+                }
+                Some(Which::TimeLapse) => self.show_timelapse(event_loop),
+                None => {}
+            },
             UserEvent::Menu(id) => match self.menu.as_ref().and_then(|menu| menu.choice(&id)) {
                 Some(Choice::Quit) => {
                     self.end_probe(EndReason::Quit);
                     event_loop.exit();
                 }
                 Some(Choice::Settings) => self.show_settings(event_loop),
+                Some(Choice::TimeLapse) => self.show_timelapse(event_loop),
                 Some(Choice::Pause) => self.toggle_pause(),
                 #[cfg(feature = "dev")]
                 Some(Choice::Debug) => {
@@ -1671,20 +1857,7 @@ impl ApplicationHandler<UserEvent> for Strip {
             }
             UserEvent::Engine(generation, update) => self.engine_update(generation, update),
             UserEvent::ShowSettings => self.show_settings(event_loop),
-            UserEvent::Picked(picking, path) => match picking {
-                Picking::Repository => {
-                    if let Some(form) = &mut self.shell.connect {
-                        form.picked(path);
-                    }
-                    self.shell.redraw(WindowKind::Connect);
-                }
-                Picking::Location => {
-                    if let Some(form) = &mut self.shell.settings {
-                        form.located(path);
-                    }
-                    self.shell.redraw(WindowKind::Settings);
-                }
-            },
+            UserEvent::Picked(picking, path) => self.picked(picking, path),
             UserEvent::Lifecycle(generation, outcome) => {
                 self.changed(event_loop, generation, *outcome);
             }
@@ -1699,6 +1872,7 @@ impl ApplicationHandler<UserEvent> for Strip {
                 }
                 self.shell.redraw(WindowKind::Settings);
             }
+            UserEvent::TimeLapse(generation, msg) => self.time_lapse_said(generation, msg),
         }
     }
 
@@ -1717,6 +1891,10 @@ impl ApplicationHandler<UserEvent> for Strip {
         }
         let intents = self.shell_window_event(id, &event);
         self.carry_out(intents);
+        // A closed time-lapse window's work stops, and its film goes with it.
+        if self.timelapse.is_some() && !self.shell.is_open(WindowKind::TimeLapse) {
+            self.close_timelapse();
+        }
         // With nothing connected, the connect window is all there is: closed, the app ends.
         if self
             .repo

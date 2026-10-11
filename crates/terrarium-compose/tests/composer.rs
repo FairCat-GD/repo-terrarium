@@ -22,7 +22,7 @@ use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 use terrarium_compose::catalog::{Art, Blend, Flags, Layer};
 use terrarium_compose::clock::LocalClock;
-use terrarium_compose::composer::{Composer, OverlayInput};
+use terrarium_compose::composer::{Composer, OverlayInput, TIME_LAPSE_PACE};
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{
     Draw, Frame, NATIVE_HEIGHT, NATIVE_WIDTH, PLANT_GROUND_Y, Rgba, Viewport,
@@ -2658,4 +2658,73 @@ fn the_histories_play_every_event() {
             "tmp.ground.sinkhole."
         ])
     );
+}
+
+/// `overlay` as a time-lapse's, or as the composer's at its own pace: running and undimmed,
+/// with no label and no hover layer, which keep the composer's clock.
+fn lapsed(overlay: &OverlayInput, time_lapse: bool) -> OverlayInput {
+    OverlayInput {
+        label: Vec::new(),
+        dim: false,
+        paused: false,
+        time_lapse,
+        hover: Hover::default(),
+        ..overlay.clone()
+    }
+}
+
+proptest! {
+    #![proptest_config(config(150))]
+
+    /// A time-lapse's composer is the composer on a clock eight times as fast: at every moment
+    /// it draws, mixes the palette, names its next change and settles as the composer does at
+    /// the scene's moment, so each constraint the composer holds on its own clock holds on the
+    /// time-lapse's.
+    #[test]
+    fn a_time_lapse_is_the_composer_at_its_pace(history in history(), salt in salt()) {
+        let pace = u64::from(TIME_LAPSE_PACE);
+        let start = Millis(500);
+        let scaled = |now: Millis| Millis(start.0 + (now.0 - start.0) * pace);
+        let unscaled = |scene: Millis| Millis(start.0 + (scene.0 - start.0).div_ceil(pace));
+        let mix = if salt.bytes()[0] % 2 == 0 { 0 } else { 255 };
+        let mut fast = Composer::new(table(), salt);
+        let mut slow = Composer::new(table(), salt);
+        let mut now = start;
+        for (i, (scene, overlay)) in history.scenes.iter().enumerate() {
+            if i > 0 {
+                now = match history.gaps[i - 1] {
+                    After::Ms(ms) => now.plus(ms),
+                    After::Settled => fast.settled_at().max(now),
+                };
+            }
+            fast.update(scene, &lapsed(overlay, true), now);
+            slow.update(scene, &lapsed(overlay, false), scaled(now));
+            // The moments the fast one names, then a spread of others.
+            let mut moments = vec![now];
+            let mut at = now;
+            for _ in 0..24 {
+                match fast.next_change(art(), table(), at) {
+                    Some(next) => {
+                        moments.push(next);
+                        at = next;
+                    }
+                    None => break,
+                }
+            }
+            moments.extend([1, 7, 9, 63, 187, 250, 499, 750, 1500, 3001, 6000].map(|ms| now.plus(ms)));
+            for moment in moments {
+                prop_assert_eq!(
+                    drawn(&fast, mix, moment),
+                    drawn(&slow, mix, scaled(moment)),
+                    "at {:?}", moment
+                );
+                prop_assert_eq!(fast.palette_mix(moment), slow.palette_mix(scaled(moment)));
+                prop_assert_eq!(
+                    fast.next_change(art(), table(), moment),
+                    slow.next_change(art(), table(), scaled(moment)).map(unscaled)
+                );
+            }
+        }
+        prop_assert_eq!(fast.settled_at(), unscaled(slow.settled_at()));
+    }
 }

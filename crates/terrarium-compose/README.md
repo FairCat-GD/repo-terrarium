@@ -51,7 +51,12 @@ Depiction: from `SceneInput` to pixels.
   reflection sweep (`drift`).
 - The frame scheduler: `Composer::next_change` names the next moment the picture may change,
   and `schedule::Pacer` keeps every composition to 15 a second.
-- GIF encoding, still to come.
+- The time-lapse (`timelapse`): which day each of its 450 frames shows, a composer of its own
+  whose scene runs at the time-lapse's pace (`OverlayInput.time_lapse`, 8× the clock it is
+  given, so events play in miniature), and the frames on the GIF's 7, 7 and 6 hundredths.
+- The time-lapse's GIF (`export::gif`): each frame the rectangle that changed, with an exact
+  palette up to 256 colours and a median cut past that, no dithering, the same bytes for the
+  same frames.
 
 ## The embedded art
 

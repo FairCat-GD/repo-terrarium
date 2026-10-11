@@ -1,7 +1,9 @@
 //! Pictures written to files: the one PNG encoder for exports, `cargo xtask render` and the
-//! snapshot tests.
+//! snapshot tests, and the time-lapse's GIF ([`gif`]).
 
 use crate::frame::Rgba;
+
+pub mod gif;
 
 /// `pixels` (row-major, `width × height`) as an 8-bit RGB PNG. Every composed pixel is
 /// opaque, so alpha is dropped. Compression and filtering are fixed, so the same pixels

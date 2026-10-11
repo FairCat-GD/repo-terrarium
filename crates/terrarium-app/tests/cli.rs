@@ -192,6 +192,60 @@ mod replay {
         assert!(out.stdout.is_empty());
         assert!(String::from_utf8(out.stderr).unwrap().contains("--dump"));
     }
+
+    #[test]
+    fn replay_writes_the_whole_history_as_a_time_lapse_gif_and_nothing_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        small_repo(&repo);
+        let gif = dir.path().join("fern.gif");
+        let at = (FIRST + 30 * DAY).to_string();
+        let run = |extra: &[&str]| {
+            let mut args = vec!["replay", repo.to_str().unwrap(), "--at", &at];
+            args.extend_from_slice(extra);
+            repo_terrarium(&args)
+        };
+        let out = run(&["--gif", gif.to_str().unwrap(), "--scale", "2", "--night"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        let bytes = std::fs::read(&gif).unwrap();
+        let mut decoder = gif::DecodeOptions::new()
+            .read_info(bytes.as_slice())
+            .unwrap();
+        assert_eq!((decoder.width(), decoder.height()), (1280, 148));
+        assert_eq!(decoder.repeat(), gif::Repeat::Infinite);
+        let mut delays = Vec::new();
+        while let Some(frame) = decoder.read_next_frame().unwrap() {
+            delays.push(frame.delay);
+        }
+        assert_eq!(delays.len(), 450);
+        assert_eq!(delays[..4], [7, 7, 6, 7]);
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        // The same command writes the same bytes.
+        run(&["--gif", gif.to_str().unwrap(), "--scale", "2", "--night"]);
+        assert_eq!(std::fs::read(&gif).unwrap(), bytes);
+        // Before the first day ends there is nothing to play.
+        let early = (FIRST + 3600).to_string();
+        let out = repo_terrarium(&[
+            "replay",
+            repo.to_str().unwrap(),
+            "--at",
+            &early,
+            "--gif",
+            gif.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8(out.stderr).unwrap().contains("no day"));
+        assert_eq!(std::fs::read(&gif).unwrap(), bytes);
+    }
 }
 
 mod discover {

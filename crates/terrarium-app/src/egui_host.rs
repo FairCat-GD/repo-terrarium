@@ -32,6 +32,7 @@ pub enum WindowKind {
     /// Connecting a repository, while none is connected.
     Connect,
     Settings,
+    TimeLapse,
     /// Dev builds only.
     #[cfg(feature = "dev")]
     Debug,
@@ -47,6 +48,8 @@ impl WindowKind {
         match self {
             WindowKind::Connect => LogicalSize::new(520.0, 400.0),
             WindowKind::Settings => LogicalSize::new(600.0, 480.0),
+            // Room for the scene at 2× on a 2× display, and at 1× on a 1× one.
+            WindowKind::TimeLapse => LogicalSize::new(700.0, 300.0),
             #[cfg(feature = "dev")]
             WindowKind::Debug => LogicalSize::new(460.0, 760.0),
         }

@@ -40,6 +40,7 @@ mod settings;
 mod shell;
 mod soil;
 mod strip;
+mod timelapse;
 
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};

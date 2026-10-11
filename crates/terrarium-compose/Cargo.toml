@@ -13,6 +13,7 @@ terrarium-truth.workspace = true
 serde.workspace = true
 postcard.workspace = true
 png.workspace = true
+gif.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

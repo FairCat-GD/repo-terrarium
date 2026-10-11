@@ -19,7 +19,7 @@ pub enum Command {
     /// `cargo xtask probe-zip` puts in the zip beside the exe.
     ProbeReadme,
     /// `replay <path> --dump`: replay a repository with no window and print truth's canonical
-    /// dump.
+    /// dump; `--gif <file>`: write its whole history as a time-lapse instead.
     Replay(ReplayArgs),
     /// `discover <path>`: print what the repository has for each adapter.
     Discover(PathBuf),
@@ -41,7 +41,25 @@ pub struct ReplayArgs {
     pub observations: Option<PathBuf>,
     /// `--at <unix-seconds>`: the moment to replay through; now when absent.
     pub at: Option<i64>,
+    pub output: ReplayOutput,
 }
+
+/// What a replay writes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReplayOutput {
+    /// `--dump`: truth's canonical dump, on stdout.
+    Dump,
+    /// `--gif <file>`: the whole history as a time-lapse, `--night` by night and `--scale <n>`
+    /// times the scene's size.
+    Gif {
+        path: PathBuf,
+        night: bool,
+        scale: u32,
+    },
+}
+
+/// The largest scale `--scale` takes.
+pub const MAX_SCALE: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeKind {
@@ -61,8 +79,12 @@ pub enum UsageError {
     MissingDiscoverRepo,
     /// `record-tests` without `--` and a command after it.
     MissingCommand,
-    /// `replay` has one output so far, the dump, and is asked for it by name.
-    MissingDump,
+    /// `replay` without exactly one of its outputs, `--dump` or `--gif`, asked for by name.
+    MissingOutput,
+    /// A flag of `--gif`'s given without it.
+    GifOnly(&'static str),
+    /// A `--scale` that is not a whole number from 1 to [`MAX_SCALE`].
+    BadScale(OsString),
     /// A flag given without its value.
     MissingValue(&'static str),
     /// An `--at` that is not a whole number of seconds.
@@ -140,10 +162,23 @@ fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, Us
         .next()
         .filter(|repo| !repo.to_string_lossy().starts_with("--"))
         .ok_or(UsageError::MissingReplayRepo)?;
-    let (mut dump, mut observations, mut at) = (false, None, None);
+    let (mut dump, mut gif, mut observations, mut at) = (false, None, None, None);
+    let (mut night, mut scale) = (false, None);
     while let Some(arg) = args.next() {
         if arg == "--dump" && !dump {
             dump = true;
+        } else if arg == "--gif" && gif.is_none() {
+            let path = args.next().ok_or(UsageError::MissingValue("--gif"))?;
+            gif = Some(PathBuf::from(path));
+        } else if arg == "--night" && !night {
+            night = true;
+        } else if arg == "--scale" && scale.is_none() {
+            let value = args.next().ok_or(UsageError::MissingValue("--scale"))?;
+            let k = value
+                .to_str()
+                .and_then(|text| text.parse().ok())
+                .filter(|k| (1..=MAX_SCALE).contains(k));
+            scale = Some(k.ok_or(UsageError::BadScale(value))?);
         } else if arg == "--observations" && observations.is_none() {
             let path = args
                 .next()
@@ -157,13 +192,28 @@ fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, Us
             return Err(UsageError::Unexpected(arg));
         }
     }
-    if !dump {
-        return Err(UsageError::MissingDump);
-    }
+    let output = match (dump, gif) {
+        (true, None) => {
+            if night {
+                return Err(UsageError::GifOnly("--night"));
+            }
+            if scale.is_some() {
+                return Err(UsageError::GifOnly("--scale"));
+            }
+            ReplayOutput::Dump
+        }
+        (false, Some(path)) => ReplayOutput::Gif {
+            path,
+            night,
+            scale: scale.unwrap_or(1),
+        },
+        _ => return Err(UsageError::MissingOutput),
+    };
     Ok(Command::Replay(ReplayArgs {
         repo: PathBuf::from(repo),
         observations,
         at,
+        output,
     }))
 }
 
@@ -262,6 +312,7 @@ mod tests {
                 repo: PathBuf::from("moss"),
                 observations: observations.map(PathBuf::from),
                 at,
+                output: ReplayOutput::Dump,
             }))
         };
         assert_eq!(
@@ -295,7 +346,29 @@ mod tests {
         );
         assert_eq!(
             parse_strs(&["replay", "moss"]),
-            Err(UsageError::MissingDump)
+            Err(UsageError::MissingOutput)
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--gif", "fern.gif"]),
+            Err(UsageError::MissingOutput)
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--night"]),
+            Err(UsageError::GifOnly("--night"))
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--dump", "--scale", "2"]),
+            Err(UsageError::GifOnly("--scale"))
+        );
+        for bad in ["0", "9", "two", "-1"] {
+            assert_eq!(
+                parse_strs(&["replay", "moss", "--gif", "fern.gif", "--scale", bad]),
+                Err(UsageError::BadScale(bad.into()))
+            );
+        }
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--gif"]),
+            Err(UsageError::MissingValue("--gif"))
         );
         assert_eq!(
             parse_strs(&["replay", "moss", "--dump", "--at"]),
@@ -316,6 +389,47 @@ mod tests {
         assert_eq!(
             parse_strs(&["replay", "moss", "--dump", "x"]),
             unexpected("x")
+        );
+    }
+
+    #[test]
+    fn replay_writes_a_gif_by_day_or_night_at_a_scale() {
+        let gif = |night, scale| {
+            Ok(Command::Replay(ReplayArgs {
+                repo: PathBuf::from("moss"),
+                observations: Some(PathBuf::from("fern.jsonl")),
+                at: None,
+                output: ReplayOutput::Gif {
+                    path: PathBuf::from("fern.gif"),
+                    night,
+                    scale,
+                },
+            }))
+        };
+        assert_eq!(
+            parse_strs(&[
+                "replay",
+                "moss",
+                "--gif",
+                "fern.gif",
+                "--observations",
+                "fern.jsonl"
+            ]),
+            gif(false, 1)
+        );
+        assert_eq!(
+            parse_strs(&[
+                "replay",
+                "moss",
+                "--scale",
+                "8",
+                "--night",
+                "--observations",
+                "fern.jsonl",
+                "--gif",
+                "fern.gif"
+            ]),
+            gif(true, 8)
         );
     }
 

@@ -284,6 +284,14 @@ impl Prefs {
         dim_after(self.dim_after_minutes)
     }
 
+    /// The keys `which` hotkey is set to.
+    pub fn binding(&self, which: Which) -> Binding {
+        match which {
+            Which::Raise => self.raise,
+            Which::TimeLapse => self.timelapse,
+        }
+    }
+
     /// Takes `pref` into the model.
     pub fn apply(&mut self, pref: &Pref) {
         match pref {

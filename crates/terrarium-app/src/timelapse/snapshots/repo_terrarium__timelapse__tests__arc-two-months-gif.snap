@@ -1,0 +1,5 @@
+---
+source: crates/terrarium-app/src/timelapse/mod.rs
+expression: "format!(\"{} bytes, SHA-256 {}\", bytes.len(), to_hex(&Sha256::digest(&bytes)))"
+---
+774005 bytes, SHA-256 1fc9f495c289ab0c6c46d7ea12a58c71134313cac09b25f76224acf8623ada96

@@ -1,6 +1,5 @@
 //! The strip's right-click menu: Settings, Time-lapse, Pause or Resume, and Quit; in dev builds
-//! the debug window too. Time-lapse is shown and stays off until there is a window for it to
-//! open.
+//! the debug window too. Time-lapse and Pause are off while no repository is connected.
 
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use winit::event_loop::EventLoopProxy;
@@ -20,6 +19,7 @@ pub fn forward_events(proxy: EventLoopProxy<UserEvent>) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
     Settings,
+    TimeLapse,
     Pause,
     Quit,
     #[cfg(feature = "dev")]
@@ -29,6 +29,7 @@ pub enum Choice {
 pub struct StripMenu {
     menu: Menu,
     settings: MenuItem,
+    time_lapse: MenuItem,
     pause: MenuItem,
     quit: MenuItem,
     #[cfg(feature = "dev")]
@@ -66,6 +67,7 @@ impl StripMenu {
         Ok(Self {
             menu,
             settings,
+            time_lapse,
             pause,
             quit,
             #[cfg(feature = "dev")]
@@ -85,6 +87,7 @@ impl StripMenu {
         }
         [
             (&self.settings, Choice::Settings),
+            (&self.time_lapse, Choice::TimeLapse),
             (&self.pause, Choice::Pause),
             (&self.quit, Choice::Quit),
         ]
@@ -93,11 +96,12 @@ impl StripMenu {
         .map(|(_, choice)| choice)
     }
 
-    /// Shows the pause item as the strip now is: Pause while it runs, Resume while it is
-    /// paused, and off with no scene to pause.
-    pub fn sync(&self, paused: Option<bool>) {
+    /// Shows the items as the strip now is: Pause while it runs, Resume while it is paused,
+    /// and off with no scene to pause; Time-lapse on while a repository is connected.
+    pub fn sync(&self, paused: Option<bool>, connected: bool) {
         self.pause.set_text(pause_text(paused.unwrap_or(false)));
         self.pause.set_enabled(paused.is_some());
+        self.time_lapse.set_enabled(connected);
     }
 }
 

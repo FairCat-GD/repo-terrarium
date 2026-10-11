@@ -41,6 +41,7 @@ cargo run -p terrarium-app -- --demo                 # the strip through its nam
 cargo run -p terrarium-app -- discover <path>        # what each report adapter finds there
 cargo run -p terrarium-app -- record-tests -- <cmd>  # runs tests; their result is the weather
 cargo run -p terrarium-app -- replay <path> --dump   # a headless replay, as text
+cargo run -p terrarium-app -- replay <path> --gif out.gif  # its whole time-lapse, as a GIF
 cargo run -p terrarium-app -- --version              # prints the version
 cargo run -p terrarium-app -- --probe pinning        # the pinning checklist, with a report
 cargo xtask verify                                   # the gate: green before every commit
@@ -48,7 +49,7 @@ cargo xtask probe-zip                                # the Windows probe zip for
 cargo xtask render --demo out.png                    # the sample scene, out.png and out@3x.png
 ```
 
-Right-click the strip for its settings or to quit.
+Right-click the strip for its settings, the time-lapse, a pause, or to quit.
 
 There is no CI. `cargo xtask verify` runs locally before every commit. It includes a clippy pass
 for the Windows target, so Windows code is compiled and linted on a Mac.

@@ -91,13 +91,17 @@ pub struct OverlayInput {
     /// Whether the scene stands still: from the update that pauses it until the one that does
     /// not, nothing in it moves, while the label, dim mode and the hover layer go on.
     pub paused: bool,
+    /// Whether this is a time-lapse's composer: its scene runs [`TIME_LAPSE_PACE`] times faster
+    /// than the clock it is given, so its events play in miniature, and its label crossfades as
+    /// much faster.
+    pub time_lapse: bool,
     /// The soil panel and a hover label, as the pointer has them.
     pub hover: Hover,
 }
 
 impl OverlayInput {
     /// The label's lines at a local time, with the default day and night, no dimming, and the
-    /// scene running.
+    /// scene running at the composer's pace.
     pub fn new(label: Vec<String>, clock: LocalClock) -> OverlayInput {
         OverlayInput {
             label,
@@ -105,6 +109,7 @@ impl OverlayInput {
             day_night: DayNight::default(),
             dim: false,
             paused: false,
+            time_lapse: false,
             hover: Hover::default(),
         }
     }
@@ -592,45 +597,78 @@ pub struct Composer {
     /// The soil panel and the hover labels.
     hover: hover::HoverLayer,
     /// Where the scene's clock stands against the composer's.
-    pause: Pause,
+    pause: SceneClock,
 }
 
-/// The scene's own clock: the composer's, less every moment a pause has held it, and standing
-/// still through a pause. The label, dim mode and the hover layer keep the composer's clock;
-/// everything else is the scene's, so a resume carries on from the very picture the pause held.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Pause {
-    /// When the pause in progress began, on the composer's clock.
-    since: Option<Millis>,
-    /// How long the pauses before it held the scene.
-    held: u64,
+/// How many times faster than the composer's clock the scene's runs in a time-lapse: every
+/// tween, event, motion turn and drift.
+pub const TIME_LAPSE_PACE: u32 = 8;
+
+/// The scene's own clock: the composer's, held through a pause and run [`TIME_LAPSE_PACE`]
+/// times faster in a time-lapse. The label, dim mode and the hover layer keep the composer's
+/// clock; everything else is the scene's, so a resume carries on from the very picture the
+/// pause held.
+///
+/// It is anchored where its rate last changed and runs at that rate from there; before the
+/// anchor it runs at the composer's own pace, which is how a pause has always left it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SceneClock {
+    /// The composer's moment at the anchor.
+    real: Millis,
+    /// The scene's moment at the anchor.
+    scene: Millis,
+    /// Scene milliseconds per composer millisecond from the anchor: 0 while paused.
+    rate: u64,
 }
 
-impl Pause {
-    /// Pauses at `now`, or resumes then.
-    fn set(&mut self, paused: bool, now: Millis) {
-        match (paused, self.since) {
-            (true, None) => self.since = Some(now),
-            (false, Some(since)) => {
-                self.held = self.held.saturating_add(now.0.saturating_sub(since.0));
-                self.since = None;
-            }
-            _ => {}
+impl Default for SceneClock {
+    fn default() -> SceneClock {
+        SceneClock {
+            real: Millis(0),
+            scene: Millis(0),
+            rate: 1,
+        }
+    }
+}
+
+impl SceneClock {
+    /// Pauses, resumes, or runs at the time-lapse's pace from `now`; the scene's moment at
+    /// `now` stays where it was.
+    fn set(&mut self, paused: bool, time_lapse: bool, now: Millis) {
+        let rate = if paused {
+            0
+        } else if time_lapse {
+            u64::from(TIME_LAPSE_PACE)
+        } else {
+            1
+        };
+        if rate != self.rate {
+            *self = SceneClock {
+                real: now,
+                scene: self.scene(now),
+                rate,
+            };
         }
     }
 
     /// The scene's moment at the composer's `now`.
     fn scene(self, now: Millis) -> Millis {
-        let at = self.since.map_or(now, |since| since.min(now));
-        Millis(at.0.saturating_sub(self.held))
+        match now.0.checked_sub(self.real.0) {
+            Some(after) => Millis(self.scene.0.saturating_add(after.saturating_mul(self.rate))),
+            None => Millis(self.scene.0.saturating_sub(self.real.0 - now.0)),
+        }
     }
 
-    /// The composer's moment at the scene's `scene`, while the scene runs; a paused scene
-    /// reaches no moment.
+    /// The composer's first moment at which the scene has reached `scene`, while the scene
+    /// runs; a paused scene reaches no moment.
     fn real(self, scene: Millis) -> Option<Millis> {
-        self.since
-            .is_none()
-            .then(|| Millis(scene.0.saturating_add(self.held)))
+        if self.rate == 0 {
+            return None;
+        }
+        Some(match scene.0.checked_sub(self.scene.0) {
+            Some(after) => Millis(self.real.0.saturating_add(after.div_ceil(self.rate))),
+            None => Millis(self.real.0.saturating_sub(self.scene.0 - scene.0)),
+        })
     }
 }
 
@@ -685,7 +723,7 @@ impl Composer {
             fresh: BTreeMap::new(),
             sunk: BTreeMap::new(),
             hover: hover::HoverLayer::default(),
-            pause: Pause::default(),
+            pause: SceneClock::default(),
         }
     }
 
@@ -715,7 +753,7 @@ impl Composer {
     /// Moves the depiction toward `input` and `overlay` from `now`. The frame at `now` does
     /// not change. While the overlay pauses the scene, its changes wait for the resume.
     pub fn update(&mut self, input: &SceneInput, overlay: &OverlayInput, now: Millis) {
-        self.pause.set(overlay.paused, now);
+        self.pause.set(overlay.paused, overlay.time_lapse, now);
         let real = now;
         let now = self.pause.scene(real);
         for entry in self.entries.values_mut() {
@@ -765,7 +803,7 @@ impl Composer {
             entry.show(pieces, starts, rise, timing.change);
         }
         self.note_left(now);
-        self.update_label(&overlay.label, real);
+        self.update_label(&overlay.label, overlay.time_lapse, real);
         self.hover.set(&overlay.hover, real);
         self.update_clock(overlay, now);
         let residents = self.update_residents(input, now);
@@ -1327,8 +1365,14 @@ impl Composer {
     }
 
     /// Raises a new set of label lines when they change, crossfading from the old. The lines
-    /// are fitted to the plate here, once, rather than on every frame.
-    fn update_label(&mut self, lines: &[String], now: Millis) {
+    /// are fitted to the plate here, once, rather than on every frame. A time-lapse's label
+    /// crossfades at its scene's pace, so a date it shows keeps up with the days.
+    fn update_label(&mut self, lines: &[String], time_lapse: bool, now: Millis) {
+        let fade = if time_lapse {
+            LABEL_FADE_MS.div_ceil(TIME_LAPSE_PACE)
+        } else {
+            LABEL_FADE_MS
+        };
         let lines: Vec<String> = lines
             .iter()
             .map(|line| fit(line, self.label_capacity))
@@ -1346,14 +1390,14 @@ impl Composer {
         }
         for look in &mut self.label {
             if look.opacity.target() == SHOWN {
-                look.opacity = Tween::new(look.opacity.value(now), 0, now, LABEL_FADE_MS);
+                look.opacity = Tween::new(look.opacity.value(now), 0, now, fade);
             }
         }
         if !lines.is_empty() {
             self.label.push(LabelLook {
                 lines,
                 since: now,
-                opacity: Tween::new(0, SHOWN, now, LABEL_FADE_MS),
+                opacity: Tween::new(0, SHOWN, now, fade),
             });
         }
     }
@@ -3456,5 +3500,128 @@ mod tests {
             Some(waning[0].draw.sprite),
             Art::embedded().catalog.id("tmp.sky.moon.phase.3")
         );
+    }
+
+    #[test]
+    fn the_scene_clock_runs_at_its_rate_and_maps_back_to_the_first_moment_it_reaches() {
+        let mut clock = SceneClock::default();
+        assert_eq!(clock.scene(Millis(700)), Millis(700));
+        assert_eq!(clock.real(Millis(700)), Some(Millis(700)));
+        // A time-lapse from 1000: the scene's moment there stays, and runs eight times faster.
+        clock.set(false, true, Millis(1000));
+        assert_eq!(clock.scene(Millis(1000)), Millis(1000));
+        assert_eq!(clock.scene(Millis(1001)), Millis(1008));
+        assert_eq!(clock.real(Millis(1008)), Some(Millis(1001)));
+        // A scene's moment between two of the composer's is first reached at the later one.
+        assert_eq!(clock.real(Millis(1009)), Some(Millis(1002)));
+        assert_eq!(clock.scene(Millis(1002)), Millis(1016));
+        // Before its anchor the clock runs at the composer's pace.
+        assert_eq!(clock.scene(Millis(400)), Millis(400));
+        assert_eq!(clock.real(Millis(400)), Some(Millis(400)));
+        // Setting the same rate again moves nothing.
+        let before = clock;
+        clock.set(false, true, Millis(5000));
+        assert_eq!(clock, before);
+        // A pause holds the scene and reaches no moment; a resume carries on from there.
+        clock.set(true, true, Millis(1100));
+        assert_eq!(clock.scene(Millis(9000)), Millis(1800));
+        assert_eq!(clock.real(Millis(1800)), None);
+        clock.set(false, true, Millis(2100));
+        assert_eq!(clock.scene(Millis(2100)), Millis(1800));
+        assert_eq!(clock.scene(Millis(2110)), Millis(1880));
+        assert_eq!(clock.real(Millis(1880)), Some(Millis(2110)));
+        // Nothing overflows at the end of time.
+        assert_eq!(clock.scene(Millis(u64::MAX)), Millis(u64::MAX));
+        let last = clock.real(Millis(u64::MAX)).unwrap();
+        assert_eq!(clock.scene(last), Millis(u64::MAX));
+    }
+
+    #[test]
+    fn a_pause_at_the_composer_s_pace_maps_as_it_always_has() {
+        let mut clock = SceneClock::default();
+        clock.set(true, false, Millis(1000));
+        assert_eq!(clock.scene(Millis(1500)), Millis(1000));
+        assert_eq!(clock.scene(Millis(600)), Millis(600));
+        clock.set(false, false, Millis(3000));
+        // Held 2 s: the scene is 2 s behind, before the resume as well as after it.
+        for ms in [0, 1500, 2500, 3000, 7000] {
+            assert_eq!(
+                clock.scene(Millis(ms)),
+                Millis(ms.saturating_sub(2000)),
+                "{ms}"
+            );
+        }
+        for ms in [0, 500, 1000, 5000] {
+            assert_eq!(clock.real(Millis(ms)), Some(Millis(ms + 2000)), "{ms}");
+        }
+    }
+
+    #[test]
+    fn a_time_lapse_draws_what_the_composer_draws_at_eight_times_the_moment() {
+        let table = table();
+        let art = Art::embedded();
+        let lapse = OverlayInput {
+            time_lapse: true,
+            ..overlay(&[])
+        };
+        let mut fast = Composer::new(&table, preset::SALT);
+        let mut slow = Composer::new(&table, preset::SALT);
+        fast.update(&scene("thriving"), &lapse, Millis(1000));
+        slow.update(&scene("thriving"), &overlay(&[]), Millis(1000));
+        let pace = u64::from(TIME_LAPSE_PACE);
+        let scaled = |ms: u64| Millis(1000 + (ms - 1000) * pace);
+        fast.update(&scene("struggling-poor-soil"), &lapse, Millis(1500));
+        slow.update(&scene("struggling-poor-soil"), &overlay(&[]), scaled(1500));
+        for ms in [1000, 1001, 1250, 1500, 1501, 1600, 1875, 2000, 2400] {
+            assert_eq!(
+                fast.draws(art, &table, 0, Millis(ms)),
+                slow.draws(art, &table, 0, scaled(ms)),
+                "{ms}"
+            );
+            assert_eq!(fast.palette_mix(Millis(ms)), slow.palette_mix(scaled(ms)));
+        }
+        // It settles when the scene reaches the moment the slow one settles.
+        let settled = slow.settled_at();
+        assert!(settled > scaled(1500));
+        assert_eq!(
+            fast.settled_at(),
+            Millis(1000 + (settled.0 - 1000).div_ceil(pace))
+        );
+        // Each change it names is the first moment the scene reaches the slow one's.
+        let mut now = Millis(1500);
+        for _ in 0..50 {
+            let Some(next) = fast.next_change(art, &table, now) else {
+                break;
+            };
+            assert!(next > now);
+            let scene = slow.next_change(art, &table, scaled(now.0)).unwrap();
+            assert_eq!(next, Millis(1000 + (scene.0 - 1000).div_ceil(pace)));
+            now = next;
+        }
+    }
+
+    #[test]
+    fn a_time_lapse_label_crossfades_at_its_pace() {
+        let table = table();
+        let mut composer = Composer::new(&table, preset::SALT);
+        let input = preset::bare(PresentationState::Thriving, Vec::new());
+        let lapse = |line: &str| OverlayInput {
+            time_lapse: true,
+            ..overlay(&[line])
+        };
+        composer.update(&input, &lapse("mar 2024"), Millis(0));
+        let settled = composer.settled_at();
+        composer.update(&input, &lapse("apr 2024"), settled);
+        let fade = LABEL_FADE_MS.div_ceil(TIME_LAPSE_PACE);
+        assert_eq!(fade, 188);
+        let looks = |now: Millis| {
+            of(&composer, &table, 0, now, Subject::Label)
+                .iter()
+                .map(|keyed| keyed.key.look)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(looks(settled.plus(fade / 2)), BTreeSet::from([0, 1]));
+        assert_eq!(looks(settled.plus(fade)), BTreeSet::from([1]));
+        assert_eq!(composer.settled_at(), settled.plus(fade));
     }
 }

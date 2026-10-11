@@ -8,6 +8,7 @@ mod fixture;
 mod gallery;
 mod golden;
 mod graph;
+mod hero;
 mod pieces;
 mod probe_zip;
 mod purity;
@@ -42,6 +43,7 @@ fn main() -> ExitCode {
             fixture::run(std::path::Path::new(out))
         }
         [task] if task == "gallery" => gallery::run(root),
+        [task] if task == "hero" => hero::run(root),
         [task] if task == "golden" => golden::run(root, golden::Mode::Check),
         [task, flag] if task == "golden" && flag == "--check" => {
             golden::run(root, golden::Mode::Check)
@@ -67,8 +69,8 @@ fn main() -> ExitCode {
         _ => {
             eprintln!(
                 "usage: cargo xtask verify | arc | assets [--check] | bench | fixture <dir> | fixture \
-                 --bless | gallery | golden [--check | --bless [--same-version]] | probe-zip | \
-                 render --demo <out.png> | render --preset <name> <out.png>"
+                 --bless | gallery | golden [--check | --bless [--same-version]] | hero | \
+                 probe-zip | render --demo <out.png> | render --preset <name> <out.png>"
             );
             ExitCode::from(2)
         }

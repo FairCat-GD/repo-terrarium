@@ -5,6 +5,35 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-11
+
+The terrarium's whole history can be watched in 30 seconds, and saved as a GIF.
+
+### Added
+
+- **The time-lapse window** (right-click the strip, Time-lapse, or Control-Option-H; Ctrl+Alt+H
+  on Windows): the repository's history replayed from its first commit, or over a range of
+  days, in 30 seconds.
+  - The strip plays at a smaller scale, with Play and Stop and a scrubber that names the day.
+  - Everything moves eight times faster: plants and weather change in half a second, storms
+    and flowerings play in miniature, clouds race and the creatures scurry.
+  - The label shows the date: the day for a range of four months or less, the month for a
+    longer one.
+  - From and To choose the range; By day and By night choose the look.
+  - Days before the terrarium was connected show what git alone says, under neutral light and
+    soil.
+  - The strip itself is untouched while the window plays, and a paused strip stays paused.
+- **Save GIF…** writes the range as a 30-second GIF that repeats forever, at 1× to 4× (or the
+  strip's own scale). The same range always makes the same file.
+- **Save postcard…** writes the day shown as a PNG, settled, at the same scales.
+- `replay <path> --gif <file>` writes a repository's whole history as the same GIF from the
+  command line, with `--night` and `--scale <n>`.
+
+### Changed
+
+- **The time-lapse hotkey** set in Settings now opens the time-lapse, and the menu's
+  Time-lapse item is on while a repository is connected.
+
 ## [0.23.0] - 2026-10-11
 
 Everything the settings promised is in them, and the strip can be paused.
