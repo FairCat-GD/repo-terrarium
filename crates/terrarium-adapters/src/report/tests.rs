@@ -541,6 +541,7 @@ fn knip_6_counts_what_is_unused() {
         known.reading,
         Reading::DeadCode(KnipCounts {
             unused_exports: 3,
+            unused_exports_per_file: [("src/math.ts".to_owned(), 3)].into(),
             unused_members: 1,
             unused_files: vec!["src/legacy.ts".into()],
             unused_dependencies: 2,
@@ -550,7 +551,7 @@ fn knip_6_counts_what_is_unused() {
     assert_eq!(
         known.reading.normalized(),
         None,
-        "dead code waits for the export count"
+        "dead code is weighed against the exports the source metrics count"
     );
     assert_eq!(
         known.contributors,

@@ -15,6 +15,12 @@ sha2.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tree-sitter.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-go.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -30,6 +36,12 @@ fixture = []
 # The release-build budget for reading 10,000 commits, run by `cargo xtask bench`.
 [[bench]]
 name = "history"
+harness = false
+required-features = ["fixture"]
+
+# The release-build budgets for measuring 100,000 lines of source, cold and after one change.
+[[bench]]
+name = "metrics"
 harness = false
 required-features = ["fixture"]
 

@@ -14,16 +14,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use crate::sweep;
-use crate::windows::{self, TARGET};
-
-/// The `xwin` version the flags and the splat layout below are written for.
-const XWIN_VERSION: &str = "0.10.0";
-/// Where the splatted libraries live unless `TERRARIUM_XWIN_DIR` says otherwise.
-const XWIN_DIR_ENV: &str = "TERRARIUM_XWIN_DIR";
+use crate::windows::{self, TARGET, XWIN_DIR_ENV, XWIN_VERSION, xwin_dir};
 
 /// The release build of the app alone. Building the workspace would unify xtask's features
 /// into the app's dependencies, and with them `terrarium-adapters/fixture`, which never ships.
-const BUILD: [&str; 5] = ["build", "--release", "--locked", "-p", "terrarium-app"];
+pub const BUILD: [&str; 5] = ["build", "--release", "--locked", "-p", "terrarium-app"];
 
 pub fn run(root: &Path) -> ExitCode {
     let Some(xwin_dir) = xwin_dir() else {
@@ -36,13 +31,11 @@ pub fn run(root: &Path) -> ExitCode {
     }
     if !lib_dirs(&xwin_dir).iter().all(|dir| dir.is_dir()) {
         println!(
-            "probe-zip needs the Windows CRT and SDK libraries in {}.\n\
-             Getting them downloads Microsoft's packages and accepts Microsoft's license for \
-             them, so it is a person's decision. The one-time command is:\n  \
-             xwin --accept-license --cache-dir {} splat --output {}",
-            xwin_dir.display(),
-            xwin_dir.with_extension("cache").display(),
-            xwin_dir.display()
+            "{}",
+            windows::splat_needed(
+                &xwin_dir,
+                "probe-zip needs the Windows CRT and SDK libraries"
+            )
         );
         return ExitCode::FAILURE;
     }
@@ -108,15 +101,6 @@ pub fn run(root: &Path) -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// The splat directory: `TERRARIUM_XWIN_DIR`, else a cache under the user's home.
-fn xwin_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os(XWIN_DIR_ENV) {
-        return Some(PathBuf::from(dir));
-    }
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    Some(home.join("Library/Caches/repo-terrarium/xwin"))
 }
 
 /// `xwin --version` prints `xwin 0.10.0`.

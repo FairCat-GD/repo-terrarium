@@ -8,8 +8,10 @@
 //! later are ignored.
 //!
 //! The report lists only what is unused, never how much is exported, so it gives the counts the
-//! dead-code formula needs on one side only; the tree-sitter reader counts the other.
+//! dead-code formula needs on one side only; the source metrics count the other, which is why
+//! the unused exports are also kept per file.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::{Map, Value};
@@ -37,6 +39,9 @@ const DEPENDENCY_TYPES: [&str; 3] = [
 pub struct KnipCounts {
     /// Exports and exported types nothing imports.
     pub unused_exports: u64,
+    /// The same, by the file that exports them, relative to the repository root: what the
+    /// source metrics weigh against the exports they count in that file.
+    pub unused_exports_per_file: BTreeMap<String, u64>,
     /// Members of exported enums and namespaces nothing uses.
     pub unused_members: u64,
     /// Files nothing imports, relative to the repository root.
@@ -139,8 +144,16 @@ fn read_file(
             .saturating_add(u64::try_from(unused_files.len()).unwrap_or(u64::MAX));
         counts.unused_files.extend(unused_files);
         if let Some(path) = super::paths::relative_parts(path) {
+            let path = path.join("/");
+            if exports > 0 {
+                let held = counts
+                    .unused_exports_per_file
+                    .entry(path.clone())
+                    .or_default();
+                *held = held.saturating_add(exports);
+            }
             contributors.push(Contributor {
-                path: path.join("/"),
+                path,
                 value: i64::try_from(weight).unwrap_or(i64::MAX),
             });
         }

@@ -95,8 +95,9 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
   always writes the same bytes. `cargo xtask hero` writes the fixture arc's this way.
   `--mp4 <file>` writes it as an MP4 through the person's ffmpeg, at `--scale` or 4×,
   whichever is larger, and exits 1 when no ffmpeg is found.
-- `repo-terrarium discover <path>` prints what the repository has for each report adapter,
-  what each report found reads as, and how the missing ones connect (`discover`).
+- `repo-terrarium discover <path>` prints what the repository has for each adapter: the
+  source files at the default tip in each language the metrics read, what each report found
+  reads as, and how the missing ones connect (`discover`).
 - `repo-terrarium record-tests -- <command>` runs a test command in the current repository and
   writes how it ended to the data directory, where the strip reads it as local weather
   (`record-tests`). It exits with the command's own status.

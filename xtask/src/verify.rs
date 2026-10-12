@@ -12,11 +12,13 @@ use crate::{assets, golden, graph, sweep, windows};
 
 enum Step {
     /// A cargo subcommand. `tool` names a third-party subcommand to check for first; `env` is
-    /// set for this command only.
+    /// set for this command only, and with `windows_c`, the environment that compiles the
+    /// Windows target's C (`windows::lint_env`).
     Cargo {
         args: &'static [&'static str],
         tool: Option<Tool>,
         env: &'static [(&'static str, &'static str)],
+        windows_c: bool,
     },
     Graph,
     /// `cargo xtask assets --check`, in process.
@@ -46,6 +48,7 @@ const STAGES: &[Stage] = &[
             args: &["fmt", "--all", "--check"],
             tool: None,
             env: &[],
+            windows_c: false,
         },
     },
     Stage {
@@ -61,6 +64,7 @@ const STAGES: &[Stage] = &[
             ],
             tool: None,
             env: &[],
+            windows_c: false,
         },
     },
     // The dev build: the debug window, the sandbox and the egui probe.
@@ -78,6 +82,7 @@ const STAGES: &[Stage] = &[
             ],
             tool: None,
             env: &[],
+            windows_c: false,
         },
     },
     Stage {
@@ -96,8 +101,9 @@ const STAGES: &[Stage] = &[
             ],
             tool: None,
             // The Windows target, linted on macOS since nothing else compiles its code here. A
-            // lint never links, so the target's C is skipped (`windows.rs`).
-            env: windows::LINT_ENV,
+            // lint never links; the target's C is handled as `windows.rs` says.
+            env: &[],
+            windows_c: true,
         },
     },
     // The code that ships, as it is built: no tests and no xtask, so nothing turns on
@@ -118,6 +124,7 @@ const STAGES: &[Stage] = &[
             ],
             tool: None,
             env: &[],
+            windows_c: false,
         },
     },
     // The same for the Windows target, whose own code ships too and which the Windows stage
@@ -138,7 +145,8 @@ const STAGES: &[Stage] = &[
                 "warnings",
             ],
             tool: None,
-            env: windows::LINT_ENV,
+            env: &[],
+            windows_c: true,
         },
     },
     Stage {
@@ -151,6 +159,7 @@ const STAGES: &[Stage] = &[
                 version: "0.9.146",
             }),
             env: &[],
+            windows_c: false,
         },
     },
     // The release build's own features: what only a build without `dev` does, such as refusing
@@ -165,6 +174,7 @@ const STAGES: &[Stage] = &[
                 version: "0.9.146",
             }),
             env: &[],
+            windows_c: false,
         },
     },
     // nextest does not run doctests.
@@ -174,6 +184,7 @@ const STAGES: &[Stage] = &[
             args: &["test", "--workspace", "--doc", "--all-features"],
             tool: None,
             env: &[],
+            windows_c: false,
         },
     },
     Stage {
@@ -186,6 +197,7 @@ const STAGES: &[Stage] = &[
                 version: "0.20.2",
             }),
             env: &[],
+            windows_c: false,
         },
     },
     Stage {
@@ -212,7 +224,25 @@ pub fn run(root: &Path) -> ExitCode {
         println!("\n==> {}", stage.name);
         let started = Instant::now();
         let passed = match &stage.step {
-            Step::Cargo { args, tool, env } => run_cargo(&cargo, root, args, tool.as_ref(), env),
+            Step::Cargo {
+                args,
+                tool,
+                env,
+                windows_c,
+            } => {
+                let c_env = if *windows_c {
+                    windows::lint_env(root)
+                } else {
+                    Ok(Vec::new())
+                };
+                match c_env {
+                    Ok(c_env) => run_cargo(&cargo, root, args, tool.as_ref(), env, &c_env),
+                    Err(err) => {
+                        println!("{err}");
+                        false
+                    }
+                }
+            }
             Step::Graph => run_graph(root),
             Step::Assets => run_assets(root),
             Step::Golden => run_golden(root),
@@ -242,6 +272,7 @@ fn run_cargo(
     args: &[&str],
     tool: Option<&Tool>,
     env: &[(&str, &str)],
+    c_env: &[(&str, OsString)],
 ) -> bool {
     if let Some(tool) = tool
         && !has_pinned_version(cargo, root, tool)
@@ -255,6 +286,7 @@ fn run_cargo(
     let status = Command::new(cargo)
         .args(args)
         .envs(env.iter().copied())
+        .envs(c_env.iter().map(|(key, value)| (*key, value)))
         .current_dir(root)
         .status();
     match status {

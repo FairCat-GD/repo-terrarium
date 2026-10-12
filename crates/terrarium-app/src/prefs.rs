@@ -17,12 +17,12 @@ use terrarium_engine::lifecycle::{AdapterSettings, stored_adapters};
 use terrarium_platform::geometry::Edge;
 use terrarium_platform::login::{LoginError, LoginStatus};
 use terrarium_store::identifiers::{
-    SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH, SETTING_CRASHLOG_OPT_IN,
-    SETTING_DAYNIGHT_DAY_START, SETTING_DAYNIGHT_NIGHT_START, SETTING_DEAD_CODE_ENABLED,
-    SETTING_DEAD_CODE_REPORT_PATH, SETTING_DIM_AFTER_MINUTES, SETTING_HOTKEYS_RAISE,
-    SETTING_HOTKEYS_TIMELAPSE, SETTING_LOGIN_OPEN_AT_LOGIN, SETTING_STRIP_EDGE,
-    SETTING_STRIP_MONITOR, SETTING_STRIP_SIZE_STEP, SETTING_WEATHER_ENABLED,
-    SETTING_WEATHER_REPORT_PATH,
+    SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH,
+    SETTING_CRASHLOG_OPT_IN, SETTING_DAYNIGHT_DAY_START, SETTING_DAYNIGHT_NIGHT_START,
+    SETTING_DEAD_CODE_ENABLED, SETTING_DEAD_CODE_REPORT_PATH, SETTING_DIM_AFTER_MINUTES,
+    SETTING_HOTKEYS_RAISE, SETTING_HOTKEYS_TIMELAPSE, SETTING_LOGIN_OPEN_AT_LOGIN,
+    SETTING_STRIP_EDGE, SETTING_STRIP_MONITOR, SETTING_STRIP_SIZE_STEP,
+    SETTING_TODO_DENSITY_ENABLED, SETTING_WEATHER_ENABLED, SETTING_WEATHER_REPORT_PATH,
 };
 use terrarium_store::{DataDir, Store, StoreError};
 
@@ -84,7 +84,8 @@ impl TimeOfDay {
     }
 }
 
-/// The adapters settings can turn off, each with its report path.
+/// The adapters settings can turn off: the reports, each with its report path, and the metrics
+/// measured from the committed source, which have none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AdapterKind {
     Coverage,
@@ -92,13 +93,17 @@ pub enum AdapterKind {
     Tests,
     /// The Knip report.
     DeadCode,
+    Complexity,
+    TodoDensity,
 }
 
 impl AdapterKind {
-    pub const ALL: [AdapterKind; 3] = [
+    pub const ALL: [AdapterKind; 5] = [
         AdapterKind::Coverage,
         AdapterKind::Tests,
         AdapterKind::DeadCode,
+        AdapterKind::Complexity,
+        AdapterKind::TodoDensity,
     ];
 
     const fn enabled_key(self) -> &'static str {
@@ -106,15 +111,24 @@ impl AdapterKind {
             AdapterKind::Coverage => SETTING_COVERAGE_ENABLED,
             AdapterKind::Tests => SETTING_WEATHER_ENABLED,
             AdapterKind::DeadCode => SETTING_DEAD_CODE_ENABLED,
+            AdapterKind::Complexity => SETTING_COMPLEXITY_ENABLED,
+            AdapterKind::TodoDensity => SETTING_TODO_DENSITY_ENABLED,
         }
     }
 
-    const fn path_key(self) -> &'static str {
+    /// The setting holding its report path; `None` for a metric, which reads no report.
+    const fn path_key(self) -> Option<&'static str> {
         match self {
-            AdapterKind::Coverage => SETTING_COVERAGE_REPORT_PATH,
-            AdapterKind::Tests => SETTING_WEATHER_REPORT_PATH,
-            AdapterKind::DeadCode => SETTING_DEAD_CODE_REPORT_PATH,
+            AdapterKind::Coverage => Some(SETTING_COVERAGE_REPORT_PATH),
+            AdapterKind::Tests => Some(SETTING_WEATHER_REPORT_PATH),
+            AdapterKind::DeadCode => Some(SETTING_DEAD_CODE_REPORT_PATH),
+            AdapterKind::Complexity | AdapterKind::TodoDensity => None,
         }
+    }
+
+    /// Whether it reads a report, which has a path.
+    pub const fn reads_report(self) -> bool {
+        self.path_key().is_some()
     }
 
     pub fn enabled(self, enabled: Enabled) -> bool {
@@ -122,6 +136,8 @@ impl AdapterKind {
             AdapterKind::Coverage => enabled.coverage,
             AdapterKind::Tests => enabled.weather,
             AdapterKind::DeadCode => enabled.dead_code,
+            AdapterKind::Complexity => enabled.complexity,
+            AdapterKind::TodoDensity => enabled.todo_density,
         }
     }
 
@@ -130,6 +146,8 @@ impl AdapterKind {
             AdapterKind::Coverage => enabled.coverage = on,
             AdapterKind::Tests => enabled.weather = on,
             AdapterKind::DeadCode => enabled.dead_code = on,
+            AdapterKind::Complexity => enabled.complexity = on,
+            AdapterKind::TodoDensity => enabled.todo_density = on,
         }
     }
 
@@ -138,6 +156,7 @@ impl AdapterKind {
             AdapterKind::Coverage => overrides.coverage.as_deref(),
             AdapterKind::Tests => overrides.weather.as_deref(),
             AdapterKind::DeadCode => overrides.dead_code.as_deref(),
+            AdapterKind::Complexity | AdapterKind::TodoDensity => None,
         }
     }
 
@@ -146,6 +165,7 @@ impl AdapterKind {
             AdapterKind::Coverage => overrides.coverage = path,
             AdapterKind::Tests => overrides.weather = path,
             AdapterKind::DeadCode => overrides.dead_code = path,
+            AdapterKind::Complexity | AdapterKind::TodoDensity => {}
         }
     }
 }
@@ -347,8 +367,12 @@ pub fn save(store: &mut Store, pref: &Pref) -> Result<(), StoreError> {
         Pref::OpenAtLogin(on) => store.set_setting(SETTING_LOGIN_OPEN_AT_LOGIN, on),
         Pref::CrashLog(on) => store.set_setting(SETTING_CRASHLOG_OPT_IN, on),
         Pref::AdapterEnabled(kind, on) => store.set_setting(kind.enabled_key(), on),
-        Pref::ReportPath(kind, Some(path)) => store.set_setting(kind.path_key(), path),
-        Pref::ReportPath(kind, None) => store.clear_setting(kind.path_key()),
+        // The adapters tab asks for a path only of a report.
+        Pref::ReportPath(kind, path) => match (kind.path_key(), path) {
+            (Some(key), Some(path)) => store.set_setting(key, path),
+            (Some(key), None) => store.clear_setting(key),
+            (None, _) => Ok(()),
+        },
     }
 }
 
@@ -480,6 +504,8 @@ mod tests {
             Pref::AdapterEnabled(AdapterKind::Coverage, false),
             Pref::AdapterEnabled(AdapterKind::Tests, false),
             Pref::AdapterEnabled(AdapterKind::DeadCode, false),
+            Pref::AdapterEnabled(AdapterKind::Complexity, false),
+            Pref::AdapterEnabled(AdapterKind::TodoDensity, false),
             Pref::ReportPath(AdapterKind::Coverage, Some("out/lcov.info".into())),
             Pref::ReportPath(AdapterKind::Tests, Some("out/junit.xml".into())),
             Pref::ReportPath(AdapterKind::DeadCode, Some("out/knip.json".into())),
@@ -542,6 +568,8 @@ mod tests {
         assert_eq!(raw(SETTING_DAYNIGHT_NIGHT_START), "21:45");
         assert_eq!(raw(SETTING_DIM_AFTER_MINUTES), 10);
         assert_eq!(raw(SETTING_COVERAGE_ENABLED), false);
+        assert_eq!(raw(SETTING_COMPLEXITY_ENABLED), false);
+        assert_eq!(raw(SETTING_TODO_DENSITY_ENABLED), false);
         assert_eq!(raw(SETTING_CRASHLOG_OPT_IN), true);
     }
 

@@ -127,8 +127,9 @@ pub enum Reading {
 
 impl Reading {
     /// The health-oriented value: line coverage, or 1 for passing and 0 for failing tests. Dead
-    /// code has none yet: its formula needs the number of exported items, which a Knip report
-    /// does not hold, and the tree-sitter reader will count them.
+    /// code has none here: its formula needs the number of exported items, which a Knip report
+    /// does not hold; the source metrics count them
+    /// ([`Measurement::dead_code`](crate::metrics::Measurement::dead_code)).
     pub fn normalized(&self) -> Option<Q16> {
         match self {
             Reading::Coverage {
@@ -162,7 +163,7 @@ impl Reading {
 }
 
 /// `num / den` in `[0, 1]`, rounded, for counts of any size.
-fn ratio(num: u64, den: u64) -> Q16 {
+pub(crate) fn ratio(num: u64, den: u64) -> Q16 {
     let (mut num, mut den) = (num.min(den), den);
     while den > i64::MAX.unsigned_abs() {
         num >>= 1;

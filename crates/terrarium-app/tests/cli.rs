@@ -361,7 +361,10 @@ mod discover {
         );
         let text = String::from_utf8(out.stdout).unwrap();
         assert!(
-            text.starts_with("Found\n  git               default branch main\n"),
+            text.starts_with(
+                "Found\n  git               default branch main\n  source code       1 Rust \
+                 file at the default tip\n"
+            ),
             "{text}"
         );
         assert!(

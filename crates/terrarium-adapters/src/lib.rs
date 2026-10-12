@@ -7,4 +7,5 @@ pub mod exec;
 pub mod fixture;
 pub mod git;
 pub mod local_tests;
+pub mod metrics;
 pub mod report;

@@ -7,7 +7,8 @@ truth.
 
 - The gix history reader and `CommitFacts`.
 - Parsers for lcov, Cobertura, `JUnit` XML and Knip reports.
-- Tree-sitter metrics: complexity, TODO density and lines of code.
+- The source metrics (`metrics`): complexity, TODO density, lines of code and exported items,
+  parsed with tree-sitter in process.
 - Discovery of what a repository has, and what it lacks.
 - The GitHub Actions client.
 - The single `exec` module, the only place a process starts:
@@ -67,16 +68,51 @@ facts, and the security boundary has one home.
   no home directory reaches the store.
 - `local_tests` reads and writes the status file `record-tests` keeps in the data directory,
   whole or not at all.
-- Knip's report lists only what is unused, so dead code has no normalized value until the
-  tree-sitter reader counts exports.
+- Knip's report lists only what is unused, so dead code's value is computed against the
+  exports the source metrics count (`Measurement::dead_code`). Its unused exports are also kept
+  per file, so a file the metrics do not parse (a `.vue` one, say) weighs on neither side.
+
+## The source metrics (`metrics`)
+
+`Metrics::measure(git, commit, stop)` reads the files of one commit's tree from the object
+database, never the worktree, and parses those in the tier-one languages with tree-sitter, in
+process. Nothing runs.
+
+- **Languages** by extension: TypeScript (`.ts`, `.mts`, `.cts`), TSX, JavaScript (`.js`,
+  `.mjs`, `.cjs`, `.jsx`), Python, Rust and Go. Declaration files (`.d.ts`) hold no code.
+  Each language is one table of node kinds (`metrics/lang.rs`); a test checks every name
+  against its grammar. A tier-two language would be one more table behind a cargo feature.
+- **Exclusions:** the terrain's, as it applies them (`node_modules/`, `vendor/`, `dist/`,
+  `build/`, `target/`, `third_party/`, `*.min.*`, lockfiles), binary blobs, and files over 1
+  MiB, which are counted as oversized and not read.
+- **Complexity:** every function-like node with a body is a function (declarations, methods,
+  closures, arrows, lambdas). Each decision (`if`, `elif`, loops, `catch`/`except`, ternaries,
+  non-default cases, `&&`, `||`, `??` and their assignments, comprehension clauses, match
+  guards, `let … else`, a match's arms but one) counts toward the innermost function; its
+  cyclomatic complexity is 1 plus them. Nesting is each function's deepest nesting of control
+  structures; an `else if` chain does not deepen it. Normalized as `1 − clamp((mean − 1) / 14)`.
+- **TODO density:** `TODO`, `FIXME` and `HACK`, upper case, as whole words, in comments, per
+  1,000 lines of code (lines with a token that is not a comment). Normalized as
+  `1 − clamp(per_kloc / 20)`.
+- **Exports** (TypeScript, TSX, JavaScript): the distinct names a file's top-level `export`
+  statements give, as Knip counts exports and exported types.
+- **Errors:** a file with syntax errors still counts what it holds; a parse that runs past 2 s
+  counts nothing, and its parser is reset. Confidence is the share of files read that parsed
+  cleanly. A blob the object database lacks costs that file alone.
+- **Incremental:** each file's facts are kept by blob and language while a measurement or the
+  one before it used them, so a commit that changed three files costs three parses. They live
+  in memory only.
+- `languages_at` counts the files per language from paths alone, for discovery.
 
 ## Discovery (`discovery`)
 
 `discover(root, default_branch, overrides, status_file)` says what a repository has: git and its default
 branch, a coverage report (lcov first, then Cobertura), a `JUnit` report, a `record-tests`
-status file, a Knip report and configuration, CI workflows and test runners. It looks only at
-fixed lists of paths (a `*` matches within one segment) and the configured overrides, which must
-stay inside the repository; it never walks the tree, runs anything or writes.
+status file, a Knip report and configuration, CI workflows and test runners, and the source
+files at the default tip per language. It looks only at fixed lists of paths (a `*` matches
+within one segment) and the configured overrides, which must stay inside the repository; it
+never walks the worktree, runs anything or writes. The source files are counted from the
+committed tree, by path.
 
 ## Fixtures (`fixture`, behind the `fixture` feature)
 
@@ -92,6 +128,8 @@ The feature writes, so only xtask and dev-dependencies may turn it on.
   `cargo xtask verify` checks that no other crate can reach `ureq`.
 - gix is pinned exactly (`=0.88.0`): a bump can change line counts and so truth. It is opened
   read-only and isolated. The git command line is never run.
+- tree-sitter (0.26.x) and the grammars change only future observations, never replay; a change
+  to how the same commit is counted bumps `METRICS_VERSION`.
 - A parse failure degrades to `Unknown`, never to zero, and an unknown report is never
   recorded: the last reading holds and turns stale.
 - `std::process::Command` appears only in `exec` among the `src/` files of the code that ships

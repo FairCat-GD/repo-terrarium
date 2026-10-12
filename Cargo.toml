@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.25.0"
+version = "0.26.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -57,6 +57,14 @@ gix = { version = "=0.88.0", default-features = false, features = [
     "blob-diff",
     "pack-cache-lru-dynamic",
 ] }
+# Source metrics, parsed in process (tree-sitter 0.26.x). The tier-one grammars, each through
+# `tree-sitter-language`; the TypeScript crate holds TypeScript and TSX.
+tree-sitter = "0.26.13"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-rust = "0.24.2"
+tree-sitter-go = "0.25.0"
 
 # macOS FFI, used only by terrarium-platform. winit links objc2 0.5; these are 0.6, and the two
 # never exchange types. The framework crates enable every framework by default.

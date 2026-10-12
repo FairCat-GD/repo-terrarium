@@ -1,15 +1,16 @@
 //! The git history reader: gix in process, never the git command line.
 //!
 //! A repository is opened read-only and isolated: no system, global or user configuration, no
-//! environment, no includes and no replace refs. Nothing it holds can run: diffs read blobs from
-//! the object database with no filters, text conversion, external diff or attributes, and
-//! nothing here writes into the repository.
+//! environment, no includes and no replace refs. Nothing it holds can run: diffs, and the source
+//! metrics' reads of a commit's files, take blobs from the object database with no filters, text
+//! conversion, external diff or attributes, and nothing here writes into the repository.
 
 mod diff;
 mod history;
 pub(crate) mod refs;
 #[cfg(test)]
 mod tests;
+mod tip;
 mod walk;
 
 use std::fmt;
@@ -22,6 +23,7 @@ use terrarium_truth::{CommitId, RepoSeed};
 
 pub use history::{Change, History, HistoryNotes, Progress, RewriteReason};
 pub use refs::RepoState;
+pub(crate) use tip::Blob;
 
 /// Bytes of decoded objects kept in memory while reading: trees are read again for every
 /// commit that touches them.

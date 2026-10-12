@@ -13,6 +13,7 @@ mod pieces;
 mod probe_zip;
 mod purity;
 mod render;
+mod size;
 mod sweep;
 mod verify;
 mod windows;
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
             golden::run(root, golden::Mode::Bless { same_version: true })
         }
         [task] if task == "probe-zip" => probe_zip::run(root),
+        [task] if task == "size" => size::run(root),
         [task, flag, out] if task == "render" && flag == "--demo" => {
             render::run(std::path::Path::new(out))
         }
@@ -70,7 +72,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: cargo xtask verify | arc | assets [--check] | bench | fixture <dir> | fixture \
                  --bless | gallery | golden [--check | --bless [--same-version]] | hero | \
-                 probe-zip | render --demo <out.png> | render --preset <name> <out.png>"
+                 probe-zip | render --demo <out.png> | render --preset <name> <out.png> | size"
             );
             ExitCode::from(2)
         }

@@ -2,7 +2,7 @@
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
 The tasks are `verify`, `arc`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `hero`,
-`probe-zip` and `render`.
+`probe-zip`, `render` and `size`.
 
 ## `verify`
 
@@ -14,7 +14,9 @@ summary. The stages:
    features.
 3. **clippy (dev)**: the same with `--all-features`: the debug window and its egui and wgpu.
 4. **clippy (windows)**: `--all-features` for `x86_64-pc-windows-msvc`. There is no CI, so
-   this is what compiles and lints the Windows code.
+   this is what compiles and lints the Windows code. A lint never links: SQLite's C is
+   skipped, and the tree-sitter grammars' C, which has no such switch, is compiled for the
+   target with the Mac's clang against the `xwin` splat's headers, as `probe-zip` compiles it.
 5. **clippy (shipped)**: the code that ships, as it is built:
    `cargo clippy --package terrarium-app --package terrarium-adapters -- -D warnings`. Every
    workspace stage compiles adapters with `fixture`, which xtask and the dev-dependencies turn
@@ -32,7 +34,9 @@ summary. The stages:
 13. **golden**: `cargo xtask golden --check`, below, in process like `assets`.
 
 It needs `cargo-nextest` 0.9.146 and `cargo-deny` 0.20.2, pinned in `src/verify.rs`. A stage whose
-tool is missing, or at another version, fails and names the install command.
+tool is missing, or at another version, fails and names the install command. The two Windows
+stages need the `xwin` splat's headers (see `probe-zip`); while they are missing, those stages
+fail and print the one-time command, which a person runs, since it accepts Microsoft's license.
 
 ## The crate-graph check
 
@@ -205,6 +209,11 @@ profile, so the timings are those of a shipped build.
   budget. It is generated in a temporary directory and read once untimed, because a read
   straight after writing 100,000 loose objects races the file system flushing them; the
   second read is timed.
+- `terrarium-adapters` `metrics` (built with `fixture`): measuring a fictional codebase of
+  more than 100,000 lines of code in the six tier-one languages (1,080 files, one commit) takes
+  under 1 s from nothing, and measuring again after a commit that changes one file, which
+  parses that file alone, under 50 ms. It is measured once untimed first, with metrics of its
+  own, for the same reason as `history`.
 - `terrarium-engine` `replay` (N-05): reading the same kind of 10,000-commit history and
   replaying it in full, sim and events included, takes under 30 s, the first connect's budget.
   Observations of every kind are generated beside it, so every detector runs.
@@ -283,3 +292,11 @@ The Windows probe build for testers. There is no CI, so it is cross-built on the
   - `README.txt`, the tester's instructions. They are app copy, so the task takes them from
     `repo-terrarium --probe-readme`;
   - `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder.
+
+## `size`
+
+`cargo xtask size` builds the app for release as it ships (`cargo build --release --locked -p
+terrarium-app`, the app alone, as `probe-zip` builds it) and fails unless the binary is under
+25,000,000 bytes (N-08's "< 25 MB", read in decimal megabytes). A fat-LTO build takes minutes, so
+it runs like `bench`, when a change could move the size (a dependency, a grammar, the art), not
+as a `verify` stage. It measures the binary of the machine it runs on.

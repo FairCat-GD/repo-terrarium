@@ -3,14 +3,17 @@
 //!
 //! Only a known reading becomes an observation. A report that is missing, unreadable, cut short
 //! or says nothing is not recorded, so the last reading holds and turns stale once the default
-//! tip moves past it, rather than turning unknown (I-3). Dead code is not recorded yet: its
-//! formula needs the number of exported items, which a Knip report does not hold and the
-//! tree-sitter reader will count.
+//! tip moves past it, rather than turning unknown (I-3). The same holds for the source metrics:
+//! a commit with no function records no complexity, one with no code no TODO density, and a
+//! Knip report weighed against no counted export no dead code.
 
 use sha2::{Digest, Sha256};
-use terrarium_adapters::report::{Format, Reading, Report};
+use terrarium_adapters::discovery::Enabled;
+use terrarium_adapters::metrics::{METRICS_VERSION, Measurement};
+use terrarium_adapters::report::{self, Format, Reading, Report};
 use terrarium_store::raw::{
-    CoverageFormat, CoverageRaw, LeftRaw, RefRewriteRaw, Shape as _, WeatherRaw, WeatherState,
+    ComplexityRaw, CoverageFormat, CoverageRaw, DeadCodeRaw, LeftRaw, RefRewriteRaw, Shape as _,
+    TodoDensityRaw, WeatherRaw, WeatherState,
 };
 use terrarium_store::{Contributor, MAX_RAW_BYTES, ObservationRecord};
 use terrarium_truth::domain::{LeftCommit, ObservationHead, WeatherSource};
@@ -20,7 +23,8 @@ use terrarium_truth::{CommitId, ObservationKind, Q16};
 const REF_REWRITE_VERSION: u32 = 3;
 
 /// The observation `report` makes when HEAD was at `head` at `recorded_at` (Unix seconds,
-/// UTC), or `None` when it is not recorded.
+/// UTC), or `None` when it is not recorded. A Knip report makes none here: its dead code is
+/// weighed against the exports of the source, in [`dead_code`].
 pub fn record(
     report: &Report,
     head: ObservationHead,
@@ -87,14 +91,120 @@ pub fn record(
         normalized: Some(normalized),
         // Everything recorded was read in full.
         confidence: Q16::ONE,
-        contributors: known
-            .contributors
-            .iter()
-            .map(|c| Contributor {
-                path: c.path.clone(),
-                value: c.value,
-            })
-            .collect(),
+        contributors: stored(&known.contributors),
+    })
+}
+
+fn stored(contributors: &[report::Contributor]) -> Vec<Contributor> {
+    contributors
+        .iter()
+        .map(|c| Contributor {
+            path: c.path.clone(),
+            value: c.value,
+        })
+        .collect()
+}
+
+/// The complexity and TODO density of the source `measurement` read at `head`, which is the
+/// default tip, each when its switch is on and it is known. A row's content hash is the
+/// SHA-256 of its `raw`.
+pub fn metrics(
+    measurement: &Measurement,
+    enabled: Enabled,
+    head: &ObservationHead,
+    recorded_at: i64,
+) -> Vec<ObservationRecord> {
+    let record =
+        |kind, raw: String, normalized, confidence, contributors: &[report::Contributor]| {
+            ObservationRecord {
+                kind,
+                adapter_version: METRICS_VERSION,
+                recorded_at,
+                head: head.clone(),
+                source: None,
+                report_mtime: None,
+                content_hash: Sha256::digest(raw.as_bytes()).into(),
+                raw,
+                normalized: Some(normalized),
+                confidence,
+                contributors: stored(contributors),
+            }
+        };
+    let mut records = Vec::new();
+    if let Some(reading) = measurement.complexity().filter(|_| enabled.complexity) {
+        let sources = reading.sources;
+        let raw = ComplexityRaw {
+            functions: reading.functions,
+            decision_points: reading.decision_points,
+            max_cyclomatic: reading.max_cyclomatic,
+            max_nesting: reading.max_nesting,
+            nesting_total: reading.nesting_total,
+            files: sources.files,
+            partial: sources.partial,
+            unparsed: sources.unparsed,
+            oversized: sources.oversized,
+        };
+        records.push(record(
+            ObservationKind::Complexity,
+            raw.to_raw(),
+            reading.normalized,
+            sources.confidence(),
+            &reading.contributors,
+        ));
+    }
+    if let Some(reading) = measurement.todo_density().filter(|_| enabled.todo_density) {
+        let sources = reading.sources;
+        let raw = TodoDensityRaw {
+            lines: reading.lines,
+            todo: reading.todo,
+            fixme: reading.fixme,
+            hack: reading.hack,
+            files: sources.files,
+            partial: sources.partial,
+            unparsed: sources.unparsed,
+            oversized: sources.oversized,
+        };
+        records.push(record(
+            ObservationKind::TodoDensity,
+            raw.to_raw(),
+            reading.normalized,
+            sources.confidence(),
+            &reading.contributors,
+        ));
+    }
+    records
+}
+
+/// The dead code a known Knip `report` makes against the exports `measurement` counted at
+/// HEAD's commit (`head`), or `None` when it is not recorded. It is a report's reading: its
+/// content hash and modification time are the report's.
+pub fn dead_code(
+    report: &Report,
+    measurement: &Measurement,
+    head: ObservationHead,
+    recorded_at: i64,
+) -> Option<ObservationRecord> {
+    let known = report.known()?;
+    let Reading::DeadCode(counts) = &known.reading else {
+        return None;
+    };
+    let reading = measurement.dead_code(counts)?;
+    let raw = DeadCodeRaw {
+        unused_items: reading.unused_items,
+        exported_items: reading.exported_items,
+    };
+    Some(ObservationRecord {
+        kind: ObservationKind::DeadCode,
+        adapter_version: Format::Knip.adapter_version(),
+        recorded_at,
+        head,
+        source: None,
+        report_mtime: known.mtime,
+        content_hash: known.content_hash,
+        raw: raw.to_raw(),
+        normalized: Some(reading.normalized),
+        confidence: reading.confidence,
+        contributors: stored(&reading.contributors),
     })
 }
 
@@ -162,10 +272,11 @@ pub fn ref_rewrite(
 }
 
 /// Which report format wrote a stored observation, read back from its `raw`: coverage names
-/// its format, and of the local weather only a `record-tests` run carries an exit code. `None`
-/// for every other kind and source.
+/// its format, dead code is Knip's, and of the local weather only a `record-tests` run carries
+/// an exit code. `None` for every other kind and source.
 pub fn producer(record: &ObservationRecord) -> Option<Format> {
     match (record.kind, &record.source) {
+        (ObservationKind::DeadCode, None) => Some(Format::Knip),
         (ObservationKind::Coverage, None) => {
             let raw: CoverageRaw = serde_json::from_str(&record.raw).ok()?;
             Some(match raw.format {
@@ -199,6 +310,7 @@ mod tests {
     use std::path::Path;
 
     use terrarium_adapters::local_tests::Status;
+    use terrarium_adapters::metrics::{Counted, FileFacts, Language, Read};
     use terrarium_adapters::report::Why;
     use terrarium_store::{DataDir, NewTerrarium, RepoLocation, Store};
     use terrarium_truth::RepoSeed;
@@ -459,6 +571,117 @@ mod tests {
         assert_eq!(raw.rewritten, Some(2_000));
         assert!(raw.left.len() > 100, "{}", raw.left.len());
         assert_eq!(raw.left.last().map(|l| &l.commit), Some(&id(1_999)));
+    }
+
+    fn facts(language: Language, counted: Counted, exports: u64) -> FileFacts {
+        FileFacts {
+            language,
+            read: Read::Clean,
+            counted,
+            exports,
+        }
+    }
+
+    #[test]
+    fn the_metrics_records_carry_what_they_were_computed_from() {
+        let counted = Counted {
+            lines: 400,
+            functions: 10,
+            decision_points: 70,
+            max_cyclomatic: 9,
+            max_nesting: 3,
+            nesting_total: 12,
+            todo: 2,
+            fixme: 1,
+            hack: 1,
+        };
+        let measurement = Measurement {
+            files: [("src/bed.rs".to_owned(), facts(Language::Rust, counted, 0))].into(),
+        };
+        let records = metrics(&measurement, Enabled::default(), &head(), 50);
+        let [complexity, todo] = &records[..] else {
+            panic!("{records:?}");
+        };
+        assert_eq!(complexity.kind, ObservationKind::Complexity);
+        assert_eq!(complexity.adapter_version, METRICS_VERSION);
+        // A mean of 8: (8 − 1) / 14 = 0.5.
+        assert_eq!(complexity.normalized, Some(Q16::HALF));
+        assert_eq!(
+            complexity.raw,
+            r#"{"functions":10,"decision_points":70,"max_cyclomatic":9,"max_nesting":3,"nesting_total":12,"files":1,"partial":0,"unparsed":0,"oversized":0}"#
+        );
+        assert_eq!(
+            complexity.content_hash,
+            <[u8; 32]>::from(Sha256::digest(complexity.raw.as_bytes()))
+        );
+        assert_eq!(
+            (complexity.source.clone(), complexity.report_mtime),
+            (None, None)
+        );
+        assert_eq!(complexity.confidence, Q16::ONE);
+        assert_eq!(
+            complexity.contributors,
+            [Contributor {
+                path: "src/bed.rs".into(),
+                value: 70
+            }]
+        );
+        assert_eq!(todo.kind, ObservationKind::TodoDensity);
+        // 4 markers in 400 lines is 10 per 1,000: 0.5.
+        assert_eq!(todo.normalized, Some(Q16::HALF));
+        assert_eq!(
+            todo.raw,
+            r#"{"lines":400,"todo":2,"fixme":1,"hack":1,"files":1,"partial":0,"unparsed":0,"oversized":0}"#
+        );
+        for record in &records {
+            record.check().unwrap();
+            assert_eq!(producer(record), None);
+        }
+        let only_todo = Enabled {
+            complexity: false,
+            ..Enabled::default()
+        };
+        let kinds: Vec<_> = metrics(&measurement, only_todo, &head(), 50)
+            .iter()
+            .map(|r| r.kind)
+            .collect();
+        assert_eq!(kinds, [ObservationKind::TodoDensity]);
+        assert!(metrics(&Measurement::default(), Enabled::default(), &head(), 50).is_empty());
+    }
+
+    #[test]
+    fn dead_code_is_a_knip_reports_reading_against_the_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "knip-report.json",
+            r#"{"issues":[{"file":"web/a.ts","exports":[{"name":"x"}]}]}"#,
+        );
+        let knip = read(dir.path(), Format::Knip, "knip-report.json");
+        let measurement = Measurement {
+            files: [(
+                "web/a.ts".to_owned(),
+                facts(Language::TypeScript, Counted::default(), 4),
+            )]
+            .into(),
+        };
+        let record = dead_code(&knip, &measurement, head(), 9).expect("recorded");
+        record.check().unwrap();
+        assert_eq!(record.raw, r#"{"unused_items":1,"exported_items":4}"#);
+        assert_eq!(
+            record.normalized,
+            Some(Q16::ONE.saturating_sub(Q16::from_ratio(1, 4)))
+        );
+        let known = knip.known().unwrap();
+        assert_eq!(record.content_hash, known.content_hash);
+        assert_eq!(record.report_mtime, known.mtime);
+        assert_eq!(producer(&record), Some(Format::Knip));
+        // No export counted: none.
+        assert_eq!(dead_code(&knip, &Measurement::default(), head(), 9), None);
+        // Not a Knip report: none.
+        write(dir.path(), "lcov.info", "SF:a.ts\nDA:1,1\nend_of_record\n");
+        let lcov = read(dir.path(), Format::Lcov, "lcov.info");
+        assert_eq!(dead_code(&lcov, &measurement, head(), 9), None);
     }
 
     #[test]

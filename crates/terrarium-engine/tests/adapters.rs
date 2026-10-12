@@ -1,7 +1,8 @@
-//! Every report adapter, from a file in a repository's worktree through `observe::record`, the
-//! store and the headless replay (I-3): a missing report is unknown, never zero; a
-//! reading the default tip has moved past is held and marked stale, never lowered, even when its
-//! file then stops reading; a feature branch's reading is stored but never applied.
+//! Every report adapter, from a file in a repository's worktree through `observe::record` (or,
+//! for Knip, `observe::dead_code` against the source's exports), the store and the headless
+//! replay (I-3): a missing report is unknown, never zero; a reading the default tip has moved
+//! past is held and marked stale, never lowered, even when its file then stops reading; a
+//! feature branch's reading is stored but never applied.
 #![forbid(unsafe_code)]
 
 use std::fs;
@@ -10,9 +11,10 @@ use std::path::{Path, PathBuf};
 use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp};
 use terrarium_adapters::git::GitRepo;
 use terrarium_adapters::local_tests::{self, Status};
+use terrarium_adapters::metrics::Metrics;
 use terrarium_adapters::report::{Format, Report};
 use terrarium_engine::headless::{Request, replay_dump};
-use terrarium_engine::observe::record;
+use terrarium_engine::observe::{dead_code, record};
 use terrarium_store::{DataDir, NewTerrarium, ObservationRecord, RepoLocation, Store};
 use terrarium_truth::domain::{ObservationHead, WeatherSource};
 use terrarium_truth::{CommitId, Q16, Reading, ReplayDump};
@@ -22,8 +24,8 @@ const FIRST: i64 = 1_704_704_400;
 const DAY: i64 = 86_400;
 const HOUR: i64 = 3_600;
 
-/// A repository with a commit on `main` every day from day 0 to day 12, and a feature branch
-/// that leaves `main` at day 10.
+/// A repository with a commit on `main` every day from day 0 to day 12 (day 0's with a
+/// TypeScript module), and a feature branch that leaves `main` at day 10.
 struct Fixture {
     dir: tempfile::TempDir,
     main: Vec<CommitId>,
@@ -37,13 +39,15 @@ impl Fixture {
         let mut main = Vec::new();
         let mut feature = None;
         for day in 0..=12 {
+            let mut edits = vec![Edit::write(&format!("src/fern_{day}.rs"), "fn fern() {}\n")];
+            if day == 0 {
+                edits.push(Edit::write(
+                    "web/garden.ts",
+                    "export const sow = 1;\nexport function weed() {}\nexport class Bed {}\n",
+                ));
+            }
             let id = repo
-                .commit(
-                    "main",
-                    Stamp::at(FIRST + day * DAY),
-                    "tend",
-                    &[Edit::write(&format!("src/fern_{day}.rs"), "fn fern() {}\n")],
-                )
+                .commit("main", Stamp::at(FIRST + day * DAY), "tend", &edits)
                 .unwrap();
             main.push(id);
             if day == 10 {
@@ -287,17 +291,43 @@ fn status_text(exit_code: i64) -> String {
 }
 
 #[test]
-fn a_knip_report_is_read_but_dead_code_stays_unknown() {
+fn a_knip_report_weighed_against_the_sources_exports_is_soils_dead_code() {
     let fx = Fixture::new();
     fx.write(
         "knip-report.json",
-        r#"{"issues":[{"file":"src/fern_0.rs","exports":[{"name":"fern"}]}]}"#,
+        r#"{"issues":[{"file":"web/garden.ts","exports":[{"name":"weed"}]}]}"#,
     );
     let report = Report::read(&fx.repo(), Format::Knip, &["knip-report.json".to_owned()]);
     assert!(report.known().is_some());
-    assert_eq!(record(&report, fx.on_main(10), FIRST + 10 * DAY), None);
-    let dump = fx.replay(&[], FIRST + 12 * DAY);
-    assert_eq!(dump.report.climate.soil, Reading::Unknown);
+    assert_eq!(
+        record(&report, fx.on_main(12), FIRST + 12 * DAY),
+        None,
+        "a report alone holds no export count"
+    );
+    let git = GitRepo::open(&fx.repo()).unwrap();
+    let measurement = Metrics::new()
+        .measure(&git, &fx.main[12], &mut || false)
+        .unwrap();
+    let observed = dead_code(
+        &report,
+        &measurement,
+        fx.on_main(12),
+        FIRST + 12 * DAY + HOUR,
+    )
+    .expect("one unused export of three");
+    assert_eq!(observed.raw, r#"{"unused_items":1,"exported_items":3}"#);
+    let dump = fx.replay(std::slice::from_ref(&observed), FIRST + 12 * DAY + 2 * HOUR);
+    assert!(
+        matches!(
+            dump.report.causes.dead_code,
+            Reading::Known { value, stale: false, .. } if Some(value) == observed.normalized
+        ),
+        "{:?}",
+        dump.report.causes
+    );
+    // Without it, soil has nothing to go on.
+    let none = fx.replay(&[], FIRST + 12 * DAY + 2 * HOUR);
+    assert_eq!(none.report.climate.soil, Reading::Unknown);
 }
 
 #[test]

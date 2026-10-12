@@ -105,7 +105,8 @@ ever gain optional keys; readers ignore keys they do not know.
 | `dead_code` | `{"unused_items":n,"exported_items":n}` | yes |
 | `weather` | `{"state":"pass"\|"fail"\|"unknown"}` | JSON only |
 | `ref_rewrite` | `{"ref":"<ref>","old":"<hex>","new":"<hex>"}`, plus `rewritten` (the commits taken off the default chain) and `left` (those that deleted whole directories: `commit`, `time`, `deleted` paths and lines) when known; older rows may hold `fossils` instead. `normalized` null | yes |
-| `complexity`, `todo_density` | defined by the tree-sitter adapter | JSON only |
+| `complexity` | `{"functions":n,"decision_points":n,"max_cyclomatic":n,"max_nesting":n,"nesting_total":n,"files":n,"partial":n,"unparsed":n,"oversized":n}`: the mean cyclomatic complexity is `1 + decision_points / functions`; the files are the commit's source files and how they were read | JSON only |
+| `todo_density` | `{"lines":n,"todo":n,"fixme":n,"hack":n,"files":n,"partial":n,"unparsed":n,"oversized":n}`: markers per 1,000 lines of code | JSON only |
 
 The store enforces what truth reads, so every stored row converts:
 `StoredObservation::to_observation` gives replay its `Observation`.

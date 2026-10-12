@@ -18,7 +18,7 @@ use terrarium_compose::frame::GROUND_Y;
 use terrarium_compose::panel::{
     self, Freshness, Hover, Landmark, Layout, Page, Panel, Row, Shape, Tag, Target, Trend,
 };
-use terrarium_engine::Details;
+use terrarium_engine::{Details, Found};
 use terrarium_store::Contributor;
 use terrarium_truth::climate::Trend as TruthTrend;
 use terrarium_truth::{Q16, Reading};
@@ -417,16 +417,38 @@ fn files(source: Source, facts: &PanelFacts) -> Page {
                 Reading::Unknown => words::NO_TEST_REPORT,
             },
         ),
-        Source::DeadCode => cause(words::DEAD_CODE, &files.dead_code, &report.causes.dead_code),
-        Source::Complexity => cause(
+        Source::DeadCode => (
+            words::DEAD_CODE,
+            &files.dead_code,
+            if known(&report.causes.dead_code) {
+                words::NO_FILES
+            } else if !found.enabled.dead_code {
+                words::DEAD_CODE_OFF
+            } else if found.dead_code {
+                words::DEAD_CODE_NOT_READ
+            } else {
+                words::NO_KNIP_REPORT
+            },
+        ),
+        Source::Complexity => (
             words::COMPLEXITY,
             &files.complexity,
-            &report.causes.complexity,
+            measured(
+                &report.causes.complexity,
+                found.enabled.complexity,
+                words::COMPLEXITY_OFF,
+                found,
+            ),
         ),
-        Source::TodoDensity => cause(
+        Source::TodoDensity => (
             words::TODO_DENSITY,
             &files.todo_density,
-            &report.causes.todo_density,
+            measured(
+                &report.causes.todo_density,
+                found.enabled.todo_density,
+                words::TODO_DENSITY_OFF,
+                found,
+            ),
         ),
     };
     let mut rows: Vec<Row> = Vec::new();
@@ -456,17 +478,14 @@ fn files(source: Source, facts: &PanelFacts) -> Page {
     }
 }
 
-/// A soil cause's page: its files, or why there are none.
-fn cause<'a>(
-    title: &'a str,
-    files: &'a [Contributor],
-    read: &Reading,
-) -> (&'a str, &'a [Contributor], &'a str) {
-    let empty = match read {
+/// Why a page of a metric measured from the source lists no file.
+fn measured(read: &Reading, on: bool, off: &'static str, found: Found) -> &'static str {
+    match read {
         Reading::Known { .. } => words::NO_FILES,
+        Reading::Unknown if !on => off,
+        Reading::Unknown if found.source_code == Some(false) => words::NO_SOURCE,
         Reading::Unknown => words::NOT_MEASURED,
-    };
-    (title, files, empty)
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +604,8 @@ mod tests {
             found: Found {
                 coverage: true,
                 test_report: true,
+                dead_code: true,
+                source_code: Some(true),
                 enabled: Enabled::default(),
             },
         };
@@ -939,6 +960,50 @@ mod tests {
     }
 
     #[test]
+    fn a_soil_cause_s_page_says_why_it_lists_no_file() {
+        let lines = |source: Source, facts: &PanelFacts| -> Vec<String> {
+            page_of(Level::Files(source), facts)
+                .rows
+                .into_iter()
+                .map(|r| r.name)
+                .collect()
+        };
+        let bare = bare();
+        assert_eq!(lines(Source::DeadCode, &bare), [words::NO_KNIP_REPORT]);
+        for source in [Source::Complexity, Source::TodoDensity] {
+            assert_eq!(lines(source, &bare), [words::NOT_MEASURED]);
+        }
+        let mut no_source = bare.clone();
+        no_source.details.found.source_code = Some(false);
+        for source in [Source::Complexity, Source::TodoDensity] {
+            assert_eq!(lines(source, &no_source), [words::NO_SOURCE]);
+        }
+        let mut found = bare.clone();
+        found.details.found.dead_code = true;
+        found.details.found.source_code = Some(true);
+        assert_eq!(lines(Source::DeadCode, &found), [words::DEAD_CODE_NOT_READ]);
+        assert_eq!(lines(Source::TodoDensity, &found), [words::NOT_MEASURED]);
+        let mut off = found.clone();
+        off.details.found.enabled = Enabled {
+            dead_code: false,
+            complexity: false,
+            todo_density: false,
+            ..Enabled::default()
+        };
+        assert_eq!(lines(Source::DeadCode, &off), [words::DEAD_CODE_OFF]);
+        assert_eq!(lines(Source::Complexity, &off), [words::COMPLEXITY_OFF]);
+        assert_eq!(lines(Source::TodoDensity, &off), [words::TODO_DENSITY_OFF]);
+        // Known with no file to name: the switch and the source no longer matter.
+        let mut known = off.clone();
+        known.report.causes.complexity = Reading::Known {
+            value: Q16::ONE,
+            stale: false,
+            since_tick: terrarium_truth::Tick::ZERO,
+        };
+        assert_eq!(lines(Source::Complexity, &known), [words::NO_FILES]);
+    }
+
+    #[test]
     fn a_page_of_files_lists_them_or_says_why_it_cannot() {
         let light = page_of(Level::Files(Source::Light), &facts());
         assert_eq!(light.shape, Shape::Files);
@@ -972,6 +1037,8 @@ mod tests {
         found.details.found = Found {
             coverage: true,
             test_report: true,
+            dead_code: true,
+            source_code: Some(true),
             enabled: Enabled::default(),
         };
         assert_eq!(
@@ -986,8 +1053,8 @@ mod tests {
         let mut off = found.clone();
         off.details.found.enabled = Enabled {
             coverage: false,
-            dead_code: true,
             weather: false,
+            ..Enabled::default()
         };
         assert_eq!(
             lines(Level::Files(Source::Light), &off),

@@ -8,17 +8,23 @@
 //! the next, so it is never asked again. Its seed is checked against the repository by the first
 //! refresh.
 //!
-//! **Refresh.** Git first (`read_history`, then `read_since`), then the reports, then replay:
+//! **Refresh.** Git first (`read_history`, then `read_since`), then the source, then the
+//! reports, then replay:
 //! 1. A rewrite of history that moved the default branch's tip to a commit its old tip is not an
 //!    ancestor of is recorded as a `ref_rewrite`, with the HEAD of the same refresh.
-//! 2. A report is read only once its newest file has been still for [`DEBOUNCE`], so a file a
+//! 2. The committed source at the default tip is measured once per tip, while HEAD is at it:
+//!    its complexity and TODO density carry HEAD as every observation does, and truth follows
+//!    HEAD's branch. Only blobs not met before are parsed. The first refresh of a session leaves
+//!    it to an immediate follow-up, so a cold parse never holds back the first snapshot.
+//! 3. A report is read only once its newest file has been still for [`DEBOUNCE`], so a file a
 //!    tool is still writing is never read half-written (lcov has no end marker to say so); a
 //!    report not yet still is read by a follow-up.
-//! 3. A report is recorded only when its content differs from the newest stored observation of
+//! 4. A report is recorded only when its content differs from the newest stored observation of
 //!    the same format. Per format rather than per kind and source: local weather has two
 //!    writers, and an unchanged `JUnit` report must not be recorded again after a
-//!    `record-tests` run, nor an older one when the newer cannot be read.
-//! 4. Replay follows the cache contract in `terrarium_truth::replay`: the base state is the
+//!    `record-tests` run, nor an older one when the newer cannot be read. A Knip report's dead
+//!    code is weighed against the exports counted in HEAD's commit, once per report and commit.
+//! 5. Replay follows the cache contract in `terrarium_truth::replay`: the base state is the
 //!    state before the open hour, resumed when truth accepts the inputs it consumed and replayed
 //!    in full otherwise; the live state is a copy of it advanced through the open hour. The base
 //!    is cached about once an hour.
@@ -33,9 +39,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use terrarium_adapters::discovery;
+use terrarium_adapters::discovery::{self, Enabled};
 use terrarium_adapters::git::{Change, GitError, GitRepo, History, Progress, RewriteReason};
 use terrarium_adapters::local_tests;
+use terrarium_adapters::metrics::{METRICS_VERSION, Measurement, Metrics};
 use terrarium_adapters::report::{Format, Report};
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
 use terrarium_store::{
@@ -45,8 +52,8 @@ use terrarium_store::{
 use terrarium_truth::climate::ClimateReport;
 use terrarium_truth::domain::{LeftCommit, ObservationHead, merge_key};
 use terrarium_truth::{
-    Basis, CommitId, Observation, Prepared, ReplayError, SIM_VERSION, SceneInput, SimState, Tick,
-    observation_tick, project_showing,
+    Basis, CommitId, Observation, ObservationKind, Prepared, ReplayError, SIM_VERSION, SceneInput,
+    SimState, Tick, observation_tick, project_showing,
 };
 
 use crate::clock::{Clock, SystemClock};
@@ -272,6 +279,56 @@ struct Newest {
     hash: [u8; 32],
 }
 
+/// What measuring the source did in a refresh.
+enum Metered {
+    /// Nothing to measure, or nothing known to record.
+    Unchanged,
+    Recorded,
+    /// Left to a follow-up: the session has no view yet.
+    Deferred,
+    /// The commit's tree could not be read; the refresh goes on without it.
+    Failed(Problem),
+}
+
+/// What the adapters of one refresh did.
+#[derive(Default)]
+struct Observed {
+    recorded: bool,
+    follow_up: Option<Duration>,
+    /// What kept the source from being measured.
+    problem: Option<Problem>,
+}
+
+impl Observed {
+    fn take(&mut self, metered: Metered) {
+        match metered {
+            Metered::Unchanged => {}
+            Metered::Recorded => self.recorded = true,
+            Metered::Deferred => self.follow_up = Some(Duration::ZERO),
+            Metered::Failed(problem) => self.problem = Some(problem),
+        }
+    }
+}
+
+/// What a look at the reports found.
+struct ReportsRead {
+    /// New readings, oldest file first.
+    records: Vec<(Format, ObservationRecord)>,
+    /// When to look again at the reports not yet still.
+    wait: Option<Duration>,
+    found: Found,
+    /// A known Knip report not yet weighed at HEAD's commit.
+    knip: Option<Report>,
+}
+
+/// The sooner of two follow-ups.
+fn sooner(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// What the strip was last sent, minus the stats.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Shown {
@@ -304,6 +361,13 @@ pub struct Live {
     history: Option<History>,
     observations: Vec<Observation>,
     newest: BTreeMap<Format, Newest>,
+    /// The source metrics' parsers, and the facts of the files they have read this session.
+    metrics: Metrics,
+    /// The default tip whose source was measured last, and the metrics switched on then, so
+    /// each tip is measured once, and again only for a metric switched on since.
+    measured: Option<(CommitId, Enabled)>,
+    /// The Knip report last weighed (its content hash), and HEAD's commit it was weighed at.
+    knip_weighed: Option<([u8; 32], CommitId)>,
     /// Which reports the last look at the worktree found.
     found: Found,
     /// The files behind the readings shown, by observation.
@@ -367,6 +431,19 @@ impl Live {
             note_newest(&mut newest, row);
             observations.push(row.to_observation()?);
         }
+        // One measurement records both metrics, so the newest of either says which tip it was.
+        let measured = stored
+            .iter()
+            .filter(|row| {
+                let record = &row.record;
+                matches!(
+                    record.kind,
+                    ObservationKind::Complexity | ObservationKind::TodoDensity
+                ) && record.adapter_version == METRICS_VERSION
+                    && record.head.at_default_tip
+            })
+            .max_by_key(|row| (row.record.recorded_at, row.id.get()))
+            .map(|row| (row.record.head.commit.clone(), adapters.enabled));
         let (base, cached_tick) = match cached_base(&store, &terrarium)? {
             Some((base, tick)) => (Some(base), Some(tick)),
             None => (None, None),
@@ -387,6 +464,9 @@ impl Live {
             history: None,
             observations,
             newest,
+            metrics: Metrics::new(),
+            measured,
+            knip_weighed: None,
             found: Found::default(),
             files: FileCache::default(),
             base,
@@ -510,16 +590,9 @@ impl Live {
             return Err(Fault::Cancelled);
         }
         let root = git.workdir().map(Path::to_path_buf);
-        let mut follow_up = None;
-        if refresh.reports {
-            let (records, wait, found) = self.read_reports(root.as_deref(), &head);
-            follow_up = wait;
-            self.found = found;
-            for (format, record) in records {
-                self.append(Some(format), record)?;
-                recorded = true;
-            }
-        }
+        let observed = self.observe(&git, root.as_deref(), &head, refresh.reports, cancel)?;
+        recorded |= observed.recorded;
+        let follow_up = observed.follow_up;
         let adapters_done = Instant::now();
         let history = self.history.as_ref().ok_or(MISSING_HISTORY)?;
         let through = history.grid.tick_at(self.now);
@@ -534,6 +607,9 @@ impl Live {
         } else {
             self.replay(through)?
         };
+        if let Some(unmeasured) = observed.problem {
+            problem.get_or_insert(unmeasured);
+        }
         let scene = self.scene().ok_or(MISSING_VIEW)?;
         if let Err(err) = self.remember_seen() {
             problem.get_or_insert(err.into());
@@ -585,6 +661,144 @@ impl Live {
             self.adapters = adapters;
         }
         Ok(())
+    }
+
+    /// Runs the adapters: the source at the default tip, then, when `reports` asks, the reports
+    /// under `root`; records what is new.
+    fn observe(
+        &mut self,
+        git: &GitRepo,
+        root: Option<&Path>,
+        head: &ObservationHead,
+        reports: bool,
+        cancel: &AtomicBool,
+    ) -> Result<Observed, Fault> {
+        let mut observed = Observed::default();
+        observed.take(self.measure_tip(git, head, cancel)?);
+        if reports {
+            let read = self.read_reports(root, head);
+            self.found = read.found;
+            for (format, record) in read.records {
+                self.append(Some(format), record)?;
+                observed.recorded = true;
+            }
+            if let Some(knip) = read.knip {
+                observed.take(self.weigh_dead_code(git, &knip, head, cancel)?);
+            }
+            observed.follow_up = sooner(observed.follow_up, read.wait);
+        }
+        Ok(observed)
+    }
+
+    /// Measures the committed source at the default tip and records its complexity and TODO
+    /// density, once per tip and only while HEAD is at it, with HEAD's head; a metric switched
+    /// on since is recorded at the same tip on its own. A tip whose tree cannot be read is not
+    /// tried again until it moves.
+    fn measure_tip(
+        &mut self,
+        git: &GitRepo,
+        head: &ObservationHead,
+        cancel: &AtomicBool,
+    ) -> Result<Metered, Fault> {
+        let on = self.adapters.enabled;
+        let done = match &self.measured {
+            Some((tip, under)) if *tip == head.commit => *under,
+            _ => Enabled {
+                complexity: false,
+                todo_density: false,
+                ..on
+            },
+        };
+        let due = Enabled {
+            complexity: on.complexity && !done.complexity,
+            todo_density: on.todo_density && !done.todo_density,
+            ..on
+        };
+        if !(due.complexity || due.todo_density) || !head.at_default_tip {
+            return Ok(Metered::Unchanged);
+        }
+        if self.view.is_none() {
+            return Ok(Metered::Deferred);
+        }
+        let measured = Enabled {
+            complexity: done.complexity || on.complexity,
+            todo_density: done.todo_density || on.todo_density,
+            ..on
+        };
+        let measurement = match self.measurement(git, &head.commit, cancel)? {
+            Ok(measurement) => measurement,
+            Err(problem) => {
+                self.measured = Some((head.commit.clone(), measured));
+                return Ok(Metered::Failed(problem));
+            }
+        };
+        self.found.source_code = Some(measurement.has_source());
+        // Replay orders rows of one second by their commit, so a newer tip's reading is dated
+        // after the last one, as a repeated key is.
+        let last = self
+            .observations
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o.value.kind(),
+                    ObservationKind::Complexity | ObservationKind::TodoDensity
+                )
+            })
+            .map(|o| o.recorded_at)
+            .max();
+        let at = last.map_or(self.now, |last| self.now.max(last + 1));
+        let mut metered = Metered::Unchanged;
+        for record in observe::metrics(&measurement, due, head, at) {
+            self.append(None, record)?;
+            metered = Metered::Recorded;
+        }
+        self.measured = Some((head.commit.clone(), measured));
+        Ok(metered)
+    }
+
+    /// Records the dead code a Knip `report` makes against the exports counted in HEAD's
+    /// commit, once per report and commit, recorded or not.
+    fn weigh_dead_code(
+        &mut self,
+        git: &GitRepo,
+        report: &Report,
+        head: &ObservationHead,
+        cancel: &AtomicBool,
+    ) -> Result<Metered, Fault> {
+        if self.view.is_none() {
+            return Ok(Metered::Deferred);
+        }
+        let Some(known) = report.known() else {
+            return Ok(Metered::Unchanged);
+        };
+        self.knip_weighed = Some((known.content_hash, head.commit.clone()));
+        let measurement = match self.measurement(git, &head.commit, cancel)? {
+            Ok(measurement) => measurement,
+            Err(problem) => return Ok(Metered::Failed(problem)),
+        };
+        let Some(record) = observe::dead_code(report, &measurement, head.clone(), self.now) else {
+            return Ok(Metered::Unchanged);
+        };
+        self.append(Some(Format::Knip), record)?;
+        Ok(Metered::Recorded)
+    }
+
+    /// The source files of `commit`, parsing only those not met before. A stop is a cancel;
+    /// any other error is a problem the refresh carries.
+    fn measurement(
+        &mut self,
+        git: &GitRepo,
+        commit: &CommitId,
+        cancel: &AtomicBool,
+    ) -> Result<Result<Measurement, Problem>, Fault> {
+        match self
+            .metrics
+            .measure(git, commit, &mut || cancel.load(Ordering::Relaxed))
+        {
+            Ok(measurement) => Ok(Ok(measurement)),
+            Err(GitError::Cancelled) => Err(Fault::Cancelled),
+            Err(err) => Ok(Err(Problem::Git(err))),
+        }
     }
 
     /// What the panel and the hover labels say of the state shown, with HEAD at `head`.
@@ -766,20 +980,18 @@ impl Live {
         })
     }
 
-    /// Reads the coverage report, the test report and the status file that have been still
-    /// long enough, and returns what is new among them, oldest file first, when to look again
-    /// at the rest, and which reports the worktree has.
-    fn read_reports(
-        &self,
-        root: Option<&Path>,
-        head: &ObservationHead,
-    ) -> (Vec<(Format, ObservationRecord)>, Option<Duration>, Found) {
+    /// Reads the coverage, test and Knip reports and the status file that have been still long
+    /// enough, and returns what is new among them, when to look again at the rest, and which
+    /// reports the worktree has.
+    fn read_reports(&self, root: Option<&Path>, head: &ObservationHead) -> ReportsRead {
         let mut wait: Option<Duration> = None;
         let enabled = self.adapters.enabled;
         let mut found = Found {
             enabled,
+            source_code: self.found.source_code,
             ..Found::default()
         };
+        let mut knip = None;
         let mut defer = |left: Duration| wait = Some(wait.map_or(left, |w| w.min(left)));
         let mut reports: Vec<Report> = Vec::new();
         // Reports live in the worktree; the status file lives in the data directory, so a bare
@@ -788,6 +1000,13 @@ impl Live {
             let located = discovery::locate_reports(root, &self.adapters.overrides);
             found.coverage = located.coverage.located().is_some();
             found.test_report = located.test_report.located().is_some();
+            found.dead_code = located.dead_code.located().is_some();
+            if let Some(located) = located.dead_code.located().filter(|_| enabled.dead_code) {
+                match unsettled(located.files.iter().map(|file| root.join(file))) {
+                    Some(left) => defer(left),
+                    None => knip = Some(Report::read(root, located.format, &located.files)),
+                }
+            }
             for located in [
                 located.coverage.located().filter(|_| enabled.coverage),
                 located.test_report.located().filter(|_| enabled.weather),
@@ -819,13 +1038,31 @@ impl Live {
             })
             .collect();
         new.sort_by_key(|(mtime, format, _)| (*mtime, *format));
-        (
-            new.into_iter()
+        // A Knip report is weighed when it is new: unlike the stored row's, and unlike the one
+        // weighed last at this commit.
+        let knip = knip.filter(|report| {
+            report.known().is_some_and(|known| {
+                let hash = known.content_hash;
+                let stored = self
+                    .newest
+                    .get(&Format::Knip)
+                    .is_some_and(|newest| newest.hash == hash);
+                let weighed = self
+                    .knip_weighed
+                    .as_ref()
+                    .is_some_and(|(weighed, at)| *weighed == hash && *at == head.commit);
+                !stored && !weighed
+            })
+        });
+        ReportsRead {
+            records: new
+                .into_iter()
                 .map(|(_, format, record)| (format, record))
                 .collect(),
             wait,
             found,
-        )
+            knip,
+        }
     }
 
     /// Whether an observation held has `record`'s merge key. The key is built once, and only an

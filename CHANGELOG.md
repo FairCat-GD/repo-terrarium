@@ -5,6 +5,33 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-12
+
+Soil now reads the code itself: complexity and TODO density come from the code committed on the
+default branch, and a Knip report becomes dead code.
+
+### Added
+
+- **Complexity and TODO density** are measured from the TypeScript, TSX, JavaScript, Python,
+  Rust and Go committed at the default branch's tip, while it is checked out, with no report
+  and nothing run. Complexity is the functions' mean cyclomatic complexity; TODO density is
+  `TODO`, `FIXME` and `HACK` in comments per 1,000 lines of code. Each new tip is measured once,
+  and only the files it changed are read again. The soil panel names the files with the most
+  decisions and the most markers.
+- **Dead code** from a Knip report (`knip-report.json`, or the path set in Settings): its unused
+  exports and unused files, weighed against the exports counted in the committed code. The
+  report is watched like the others.
+- **Complexity** and **TODO density** switches in Settings, under Adapters, on by default.
+- The discovery report (`discover`, the connect window, Settings) lists the source files at the
+  default tip per language.
+- `cargo xtask size`: the release binary must stay under 25 MB.
+
+### Changed
+
+- The soil panel says why a soil cause lists no file: off in settings, no Knip report found,
+  none read yet, or no code in the languages read.
+- The discovery report's Knip line no longer says its counts are not part of soil.
+
 ## [0.25.0] - 2026-10-12
 
 A terrarium's history moves to another computer, its climate can be read as data, and the

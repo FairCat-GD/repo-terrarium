@@ -27,6 +27,12 @@ const BENCHES: &[(&str, &str, &[&str], &str)] = &[
         "reading a synthetic 10,000-commit history, under 10 s",
     ),
     (
+        "terrarium-adapters",
+        "metrics",
+        &["fixture"],
+        "measuring 100,000 lines of source, under 1 s, and one changed file, under 50 ms",
+    ),
+    (
         "terrarium-engine",
         "replay",
         &[],

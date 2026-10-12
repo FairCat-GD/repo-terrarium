@@ -39,8 +39,13 @@ The headless live pipeline, run on a worker thread.
   all choose it there. What the live scenes had the chance to play is kept across restarts
   (`shown`), so a restart within an event's hour does not play it again.
 - Observations (`observe`): a report an adapter read, HEAD and a time become the store's
-  record; and a ref rewrite's record. Only a known reading is recorded; dead code waits for the
-  export count the tree-sitter reader brings.
+  record; a Knip report becomes dead code weighed against the exports the source metrics
+  counted in HEAD's commit; a measurement of the source becomes complexity and TODO density;
+  and a ref rewrite becomes its record. Only a known reading is recorded.
+- **The source** (`live`): the committed source at the default tip is measured once per tip,
+  while HEAD is at it, parsing only the files not met before in the session. A session's first
+  refresh leaves it to an immediate follow-up, so the first snapshot never waits on a parse; a
+  newer tip's readings are dated after the last ones.
 
 ## Why it is a crate of its own
 

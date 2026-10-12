@@ -58,6 +58,8 @@ pub const SETTING_LOGIN_OPEN_AT_LOGIN: &str = "login.open_at_login";
 pub const SETTING_COVERAGE_ENABLED: &str = "adapters.coverage.enabled";
 pub const SETTING_DEAD_CODE_ENABLED: &str = "adapters.dead_code.enabled";
 pub const SETTING_WEATHER_ENABLED: &str = "adapters.weather.enabled";
+pub const SETTING_COMPLEXITY_ENABLED: &str = "adapters.complexity.enabled";
+pub const SETTING_TODO_DENSITY_ENABLED: &str = "adapters.todo_density.enabled";
 pub const SETTING_KNIP_RUN_OPT_IN: &str = "adapters.knip.run_opt_in";
 pub const SETTING_COVERAGE_REPORT_PATH: &str = "adapters.coverage.report_path";
 pub const SETTING_DEAD_CODE_REPORT_PATH: &str = "adapters.dead_code.report_path";
@@ -117,6 +119,11 @@ mod tests {
         assert_eq!(SETTING_COVERAGE_ENABLED, "adapters.coverage.enabled");
         assert_eq!(SETTING_DEAD_CODE_ENABLED, "adapters.dead_code.enabled");
         assert_eq!(SETTING_WEATHER_ENABLED, "adapters.weather.enabled");
+        assert_eq!(SETTING_COMPLEXITY_ENABLED, "adapters.complexity.enabled");
+        assert_eq!(
+            SETTING_TODO_DENSITY_ENABLED,
+            "adapters.todo_density.enabled"
+        );
         assert_eq!(SETTING_KNIP_RUN_OPT_IN, "adapters.knip.run_opt_in");
         assert_eq!(SETTING_CI_GITHUB_REPO, "ci.github.repo");
         assert_eq!(SETTING_CRASHLOG_OPT_IN, "crashlog.opt_in");

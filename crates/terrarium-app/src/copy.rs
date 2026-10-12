@@ -2,6 +2,7 @@
 //! instructions, notifications or exclamation marks. The probe is a tester's tool, so its steps
 //! do give instructions, in the same plain tone.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt::{self, Display, Write as _};
 use std::path::Path;
@@ -11,6 +12,7 @@ use terrarium_adapters::discovery::{
 };
 use terrarium_adapters::exec::{FedError, Finished};
 use terrarium_adapters::git::GitError;
+use terrarium_adapters::metrics::Language;
 use terrarium_adapters::report::{
     Format, KNIP_MIN_MAJOR, KnipCounts, Outcome, Reading, Report as AdapterReport, Why,
 };
@@ -400,6 +402,11 @@ fn report_rows(found: &Discovery, reads: &Reads, hints: Hints) -> String {
     if let Ok(branch) = &found.git {
         row(&mut out, "git", &format!("default branch {branch}"));
     }
+    if found.source_code.is_empty() {
+        missing.push(("source code", None, Hint::SourceCode));
+    } else {
+        row(&mut out, "source code", &source_text(&found.source_code));
+    }
     match &found.coverage {
         Search::Found(located) => row(
             &mut out,
@@ -562,7 +569,7 @@ fn reading_text(reading: &Reading) -> String {
             unused_files,
             ..
         }) => format!(
-            "{} and {}, not part of soil yet",
+            "{} and {}",
             plural(*unused_exports, "unused export", "unused exports"),
             plural(
                 u64::try_from(unused_files.len()).unwrap_or(u64::MAX),
@@ -601,12 +608,47 @@ fn why_text(format: Format, why: &Why) -> String {
     }
 }
 
+/// The source files the metrics read at the default tip, per language: `41 Rust files and 3
+/// TSX files at the default tip`.
+fn source_text(languages: &BTreeMap<Language, u64>) -> String {
+    let counts: Vec<String> = languages
+        .iter()
+        .map(|(language, n)| {
+            let name = language_name(*language);
+            plural(*n, &format!("{name} file"), &format!("{name} files"))
+        })
+        .collect();
+    let counts: Vec<&str> = counts.iter().map(String::as_str).collect();
+    format!("{} at the default tip", all_of(&counts))
+}
+
+/// A language's name as its own documentation writes it.
+pub fn language_name(language: Language) -> &'static str {
+    match language {
+        Language::TypeScript => "TypeScript",
+        Language::Tsx => "TSX",
+        Language::JavaScript => "JavaScript",
+        Language::Python => "Python",
+        Language::Rust => "Rust",
+        Language::Go => "Go",
+    }
+}
+
 /// `a, b or c`.
 fn either(items: &[&str]) -> String {
     match items {
         [] => String::new(),
         [only] => (*only).to_owned(),
         [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// `a, b and c`.
+fn all_of(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -641,6 +683,7 @@ fn runner_name(runner: Runner) -> &'static str {
 /// The adapters a discovery report can say are missing.
 #[derive(Clone, Copy)]
 enum Hint {
+    SourceCode,
     Coverage,
     Tests,
     DeadCode,
@@ -651,6 +694,22 @@ enum Hint {
 /// when it has one.
 fn hint_text(hint: Hint, runner: Option<Runner>) -> String {
     match hint {
+        Hint::SourceCode => {
+            let languages: Vec<&str> = [
+                Language::TypeScript,
+                Language::JavaScript,
+                Language::Python,
+                Language::Rust,
+                Language::Go,
+            ]
+            .into_iter()
+            .map(language_name)
+            .collect();
+            format!(
+                "Complexity and TODO density are read from {} committed on the default branch.",
+                all_of(&languages)
+            )
+        }
         Hint::Coverage => format!(
             "lcov is read from {}; Cobertura XML from {}. Of several there, the newest is read.",
             either(LCOV_PATHS),
@@ -1096,6 +1155,8 @@ pub mod settings {
     pub const CLEAR: &str = "Clear";
     pub const OUTSIDE: &str = "That path is not inside the repository.";
     pub const LOOKING: &str = "Looking at the repository…";
+    pub const MEASURED_FROM_SOURCE: &str = "Measured from the TypeScript, JavaScript, Python, \
+        Rust and Go committed at the default branch's tip, while it is checked out.";
     pub const KNIP_RUN: &str = "Run Knip from this repository";
     pub const KNIP_LATER: &str = "Running Knip comes with a later version.";
     pub const CI: &str = "GitHub Actions";
@@ -1108,6 +1169,8 @@ pub mod settings {
             AdapterKind::Coverage => "Coverage report",
             AdapterKind::Tests => "Test results",
             AdapterKind::DeadCode => "Dead-code report (Knip)",
+            AdapterKind::Complexity => "Complexity",
+            AdapterKind::TodoDensity => "TODO density",
         }
     }
 
@@ -1237,8 +1300,14 @@ pub mod panel {
     pub const NO_FAILING_TESTS: &str = "no failing tests";
     pub const FAILING_UNNAMED: &str = "the failing tests are not named";
     pub const NOT_MEASURED: &str = "not measured yet";
+    pub const NO_SOURCE: &str = "no code in the languages read";
+    pub const NO_KNIP_REPORT: &str = "no Knip report found";
+    pub const DEAD_CODE_NOT_READ: &str = "no dead code read yet";
     pub const COVERAGE_OFF: &str = "coverage is off in settings";
     pub const TESTS_OFF: &str = "tests are off in settings";
+    pub const DEAD_CODE_OFF: &str = "dead code is off in settings";
+    pub const COMPLEXITY_OFF: &str = "complexity is off in settings";
+    pub const TODO_DENSITY_OFF: &str = "todo density is off in settings";
     pub const NO_FILES: &str = "no files named";
 
     /// A reading's value to two decimals: `0.78`, or `1.20` for rain at a fifth over its usual
@@ -2024,7 +2093,10 @@ mod tests {
     }
 
     mod discovery {
+        use std::collections::BTreeMap;
+
         use terrarium_adapters::discovery::{Discovery, Located, Runner, RunnerFound, Search};
+        use terrarium_adapters::metrics::Language;
         use terrarium_adapters::report::{
             Format, KnipCounts, Known, Outcome, Reading, Report, Why,
         };
@@ -2064,7 +2136,12 @@ mod tests {
                 knip_installed: None,
                 ci_workflows: Vec::new(),
                 runners: Vec::new(),
+                source_code: BTreeMap::new(),
             }
+        }
+
+        fn rust_and_tsx() -> BTreeMap<Language, u64> {
+            [(Language::Tsx, 3), (Language::Rust, 41)].into()
         }
 
         fn no_reads() -> Reads {
@@ -2095,6 +2172,7 @@ mod tests {
                     runner: Runner::Maven,
                     config: "pom.xml".to_owned(),
                 }],
+                source_code: rust_and_tsx(),
                 ..nothing()
             };
             let reads = Reads {
@@ -2127,6 +2205,7 @@ mod tests {
                 report_rows(&discovery, &reads, Hints::Shown),
                 "Found\n\
                  \x20 git               default branch main\n\
+                 \x20 source code       3 TSX files and 41 Rust files at the default tip\n\
                  \x20 coverage report   coverage/lcov.info, lcov: 1204 of 1530 lines covered\n\
                  \x20 test report       target/surefire-reports/TEST-*.xml, 2 JUnit files: 120 \
                  tests, 3 failing, 1 skipped\n\
@@ -2150,6 +2229,7 @@ mod tests {
                 local_tests: true,
                 dead_code: found(Format::Knip, "knip-report.json", &["knip-report.json"]),
                 ci_workflows: vec![".github/workflows/ci.yml".to_owned()],
+                source_code: rust_and_tsx(),
                 ..nothing()
             };
             let little = nothing();
@@ -2182,9 +2262,14 @@ mod tests {
             let (missing, connect) = rest.split_once("To connect\n").unwrap();
             assert_eq!(
                 missing,
-                "  coverage report\n  test report\n  dead-code report\n  CI workflow\n"
+                "  source code\n  coverage report\n  test report\n  dead-code report\n  CI \
+                 workflow\n"
             );
-            assert_eq!(connect.lines().count(), 4, "{connect}");
+            assert_eq!(connect.lines().count(), 5, "{connect}");
+            assert!(connect.contains(
+                "  source code       Complexity and TODO density are read from TypeScript, \
+                 JavaScript, Python, Rust and Go committed on the default branch.\n"
+            ));
             assert!(connect.contains(
                 "  coverage report   lcov is read from coverage/lcov.info, lcov.info or \
                  coverage.lcov; Cobertura XML from coverage/cobertura-coverage.xml, coverage.xml \
@@ -2315,9 +2400,15 @@ mod tests {
                 )),
                 ..no_reads()
             };
-            assert!(report_rows(&knip, &read, Hints::Shown).contains(
-                "knip-report.json, Knip: 1 unused export and 2 unused files, not part of soil yet"
-            ));
+            assert!(
+                report_rows(&knip, &read, Hints::Shown)
+                    .contains("knip-report.json, Knip: 1 unused export and 2 unused files\n")
+            );
+            let one = BTreeMap::from([(Language::Go, 1)]);
+            assert_eq!(
+                super::super::source_text(&one),
+                "1 Go file at the default tip"
+            );
         }
     }
 

@@ -1,5 +1,6 @@
 //! The adapters tab (`adapters.*`): what the repository has for each adapter, with a line on
-//! how each missing one connects, and for each report whether it is read and from where.
+//! how each missing one connects, for each report whether it is read and from where, and
+//! whether each metric of the committed source is measured.
 //!
 //! Running Knip and the GitHub Actions weather are shown and stay off until a later version
 //! brings them: no [`Pref`] names their settings, so nothing here can write them.
@@ -14,7 +15,8 @@ pub struct AdaptersSection {
     enabled: Enabled,
     /// The paths the strip reads, and the ones typed and not applied yet.
     applied: Overrides,
-    typed: [String; 3],
+    /// By [`index`]; a metric's stays empty.
+    typed: [String; 5],
     /// The report, once discovery has made it.
     report: Option<String>,
     /// A path typed that was refused, and for which report.
@@ -26,6 +28,8 @@ fn index(kind: AdapterKind) -> usize {
         AdapterKind::Coverage => 0,
         AdapterKind::Tests => 1,
         AdapterKind::DeadCode => 2,
+        AdapterKind::Complexity => 3,
+        AdapterKind::TodoDensity => 4,
     }
 }
 
@@ -65,8 +69,11 @@ impl AdaptersSection {
     }
 
     /// The path typed for `kind`, applied: an empty one goes back to the usual places, and one
-    /// outside the repository is refused, as discovery would refuse it.
+    /// outside the repository is refused, as discovery would refuse it. A metric has none.
     pub fn apply_path(&mut self, kind: AdapterKind) -> Option<Pref> {
+        if !kind.reads_report() {
+            return None;
+        }
         let typed = self.typed[index(kind)].trim();
         let path = if typed.is_empty() {
             None
@@ -107,6 +114,10 @@ impl AdaptersSection {
             let mut on = kind.enabled(self.enabled);
             if ui.checkbox(&mut on, words::READ).changed() {
                 changes.extend(self.set_on(kind, on));
+            }
+            if !kind.reads_report() {
+                ui.label(words::MEASURED_FROM_SOURCE);
+                continue;
             }
             ui.horizontal(|ui| {
                 ui.label(words::REPORT_PATH);
@@ -161,6 +172,19 @@ mod tests {
             section.set_on(AdapterKind::Coverage, false),
             Some(Pref::AdapterEnabled(AdapterKind::Coverage, false))
         );
+    }
+
+    #[test]
+    fn a_metric_has_a_switch_and_no_path() {
+        let mut section = section();
+        assert_eq!(
+            section.set_on(AdapterKind::Complexity, false),
+            Some(Pref::AdapterEnabled(AdapterKind::Complexity, false))
+        );
+        assert_eq!(section.set_on(AdapterKind::TodoDensity, true), None);
+        section.typed[index(AdapterKind::TodoDensity)] = "out/todo.json".into();
+        assert_eq!(section.apply_path(AdapterKind::TodoDensity), None);
+        assert_eq!(section.refused, None);
     }
 
     #[test]

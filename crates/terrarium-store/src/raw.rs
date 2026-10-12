@@ -36,6 +36,40 @@ pub struct DeadCodeRaw {
     pub exported_items: u32,
 }
 
+/// `complexity`: what `normalized` is computed from, `1 − clamp((mean_cyclomatic − 1) / 14)` with
+/// `mean_cyclomatic = 1 + decision_points / functions`, and how far to trust it. `files` counts
+/// the source files of the commit read; `partial` of them parsed with syntax errors and still
+/// counted, `unparsed` counted nothing (a parse past its time limit, a blob that could not be
+/// read), and `oversized` were too large to read. Nesting is each function's deepest nesting of
+/// control structures: the deepest of all, and their sum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComplexityRaw {
+    pub functions: u64,
+    pub decision_points: u64,
+    pub max_cyclomatic: u64,
+    pub max_nesting: u64,
+    pub nesting_total: u64,
+    pub files: u64,
+    pub partial: u64,
+    pub unparsed: u64,
+    pub oversized: u64,
+}
+
+/// `todo_density`: what `normalized` is computed from, `1 − clamp(todos_per_kloc / 20)` with
+/// `todos_per_kloc = 1000 × (todo + fixme + hack) / lines`, where `lines` hold code, and the
+/// source files as in [`ComplexityRaw`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoDensityRaw {
+    pub lines: u64,
+    pub todo: u64,
+    pub fixme: u64,
+    pub hack: u64,
+    pub files: u64,
+    pub partial: u64,
+    pub unparsed: u64,
+    pub oversized: u64,
+}
+
 /// `weather`: the run's outcome, which `normalized` repeats (pass 1, fail 0, unknown null), and
 /// what the run said beyond it, when it said: a test report's counts, or the exit code of a run
 /// `record-tests` recorded.
@@ -161,6 +195,8 @@ pub trait Shape: Serialize {
 
 impl Shape for CoverageRaw {}
 impl Shape for DeadCodeRaw {}
+impl Shape for ComplexityRaw {}
+impl Shape for TodoDensityRaw {}
 impl Shape for WeatherRaw {}
 impl Shape for RefRewriteRaw {}
 
@@ -353,6 +389,40 @@ mod tests {
                 "b".repeat(40),
                 "d".repeat(40)
             )
+        );
+    }
+
+    #[test]
+    fn the_source_metrics_shapes_are_pinned() {
+        // Stored data: these texts never change.
+        let complexity = ComplexityRaw {
+            functions: 40,
+            decision_points: 96,
+            max_cyclomatic: 12,
+            max_nesting: 4,
+            nesting_total: 51,
+            files: 9,
+            partial: 1,
+            unparsed: 0,
+            oversized: 2,
+        };
+        assert_eq!(
+            complexity.to_raw(),
+            r#"{"functions":40,"decision_points":96,"max_cyclomatic":12,"max_nesting":4,"nesting_total":51,"files":9,"partial":1,"unparsed":0,"oversized":2}"#
+        );
+        let todo = TodoDensityRaw {
+            lines: 2_400,
+            todo: 5,
+            fixme: 2,
+            hack: 1,
+            files: 9,
+            partial: 1,
+            unparsed: 0,
+            oversized: 2,
+        };
+        assert_eq!(
+            todo.to_raw(),
+            r#"{"lines":2400,"todo":5,"fixme":2,"hack":1,"files":9,"partial":1,"unparsed":0,"oversized":2}"#
         );
     }
 

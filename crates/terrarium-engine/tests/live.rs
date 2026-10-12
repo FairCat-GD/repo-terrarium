@@ -1,7 +1,8 @@
 //! The live pipeline on fixture repositories in temporary directories, driven refresh by refresh
 //! with a clock the test sets (N-04): connect and relink, reports
-//! recorded once, a rewrite replayed in full and recorded as a `ref_rewrite`, the cache resuming
-//! to what a full replay gives, the repository going missing and coming back, the clock jumping.
+//! recorded once, the default tip's source measured once per tip, a rewrite replayed in full and
+//! recorded as a `ref_rewrite`, the cache resuming to what a full replay gives, the repository
+//! going missing and coming back, the clock jumping.
 #![forbid(unsafe_code)]
 
 use std::fs;
@@ -14,23 +15,26 @@ use std::time::{Duration, SystemTime};
 use terrarium_adapters::fixture::{self, Edit, FixtureRepo, Stamp};
 use terrarium_adapters::git::GitRepo;
 use terrarium_adapters::local_tests::Status;
+use terrarium_adapters::metrics::METRICS_VERSION;
 use terrarium_adapters::report::{Format, Report};
 use terrarium_engine::live::Done;
 use terrarium_engine::observe::record;
 use terrarium_engine::schedule::{Cause, Reach, Refresh};
 use terrarium_engine::{
-    Branch, ConnectError, EngineConfig, Live, ManualClock, Replay, Snapshot, Start, lifecycle,
+    Branch, ConnectError, EngineConfig, Live, ManualClock, Problem, Replay, Snapshot, Start,
+    lifecycle,
 };
 use terrarium_store::identifiers::{
-    SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH, SETTING_REPO_ACTIVE,
-    SETTING_WEATHER_ENABLED,
+    SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH,
+    SETTING_DEAD_CODE_ENABLED, SETTING_REPO_ACTIVE, SETTING_WEATHER_ENABLED,
 };
 use terrarium_store::raw::RefRewriteRaw;
 use terrarium_store::{DataDir, InstallKey, SimCache, Store, StoredObservation};
+use terrarium_truth::domain::ObservationHead;
 use terrarium_truth::landmarks::fossil_id;
 use terrarium_truth::scene::{EventKind, GroundMark, Light, Strength};
 use terrarium_truth::{
-    Basis, CommitId, ObservationKind, Prepared, SIM_VERSION, SimState, SimVersion,
+    Basis, CommitId, ObservationKind, Prepared, Q16, Reading, SIM_VERSION, SimState, SimVersion,
 };
 
 /// Monday 2024-01-08, 09:00 UTC.
@@ -1481,4 +1485,243 @@ fn weather_s_files_are_the_failing_tests_of_the_run_in_effect() {
     fx.report("junit.xml", JUNIT);
     let passing = shown(&mut live, Cause::Watch, true);
     assert_eq!(passing.details.files.weather, []);
+}
+
+// The source metrics.
+
+/// The first refresh of a session, which leaves the source to an immediate follow-up, then that
+/// follow-up.
+fn first_and_follow_up(live: &mut Live) -> (Done, Done) {
+    let first = refresh(live, Cause::Connect, true);
+    assert_eq!(first.reach, Some(Reach::Found), "{first:?}");
+    let followed = refresh(live, Cause::FollowUp, true);
+    assert_eq!(followed.reach, Some(Reach::Found), "{followed:?}");
+    (first, followed)
+}
+
+/// Each `(path, text)` committed on `main` a minute ago.
+fn commit_files(fx: &mut Fixture, files: &[(&str, &str)]) -> CommitId {
+    let now = terrarium_engine::Clock::wall_secs(&fx.clock);
+    let edits: Vec<Edit> = files
+        .iter()
+        .map(|(path, text)| Edit::write(path, text))
+        .collect();
+    fx.repo
+        .commit("main", Stamp::at(now - MINUTE), "tend", &edits)
+        .unwrap()
+}
+
+#[test]
+fn the_default_tips_source_is_measured_once_per_tip_after_the_first_snapshot() {
+    let mut fx = Fixture::new(3);
+    let mut live = fx.connect();
+    let (first, followed) = first_and_follow_up(&mut live);
+    assert!(
+        first.snapshot.is_some(),
+        "the first snapshot waits for no parse"
+    );
+    assert_eq!(first.follow_up, Some(Duration::ZERO));
+    assert_eq!(followed.problem, None);
+    let tip = fx.main.last().unwrap().clone();
+    let complexity = fx.rows(ObservationKind::Complexity);
+    let todo = fx.rows(ObservationKind::TodoDensity);
+    assert_eq!((complexity.len(), todo.len()), (1, 1));
+    let record = &complexity[0].record;
+    assert_eq!(
+        record.head,
+        ObservationHead {
+            commit: tip.clone(),
+            branch: Some("main".into()),
+            at_default_tip: true,
+        }
+    );
+    assert_eq!(record.adapter_version, METRICS_VERSION);
+    assert_eq!(
+        record.normalized,
+        Some(Q16::ONE),
+        "three functions, no decision"
+    );
+    assert_eq!(
+        record.raw,
+        r#"{"functions":3,"decision_points":0,"max_cyclomatic":1,"max_nesting":0,"nesting_total":0,"files":3,"partial":0,"unparsed":0,"oversized":0}"#
+    );
+    assert_eq!(
+        todo[0].record.raw,
+        r#"{"lines":3,"todo":0,"fixme":0,"hack":0,"files":3,"partial":0,"unparsed":0,"oversized":0}"#
+    );
+    let causes = followed.snapshot.expect("a snapshot").report.causes;
+    assert!(
+        matches!(causes.complexity, Reading::Known { value, stale: false, .. } if value == Q16::ONE),
+        "{causes:?}"
+    );
+    // The same tip, again: nothing more.
+    refresh(&mut live, Cause::Hour, false);
+    refresh(&mut live, Cause::Request, true);
+    assert_eq!(fx.rows(ObservationKind::Complexity).len(), 1);
+    // A new tip with a decision and a marker: measured, and only the changed file parsed.
+    let tip = commit_files(
+        &mut fx,
+        &[(
+            "src/bramble.rs",
+            "// TODO: thin it\nfn bramble(a: bool) { if a {} }\n",
+        )],
+    );
+    let moved = shown(&mut live, Cause::Watch, false);
+    let complexity = fx.rows(ObservationKind::Complexity);
+    assert_eq!(complexity.len(), 2);
+    assert_eq!(complexity[1].record.head.commit, tip);
+    // The clock has not moved: the newer reading is dated after the older, so it is the one
+    // held.
+    assert!(complexity[1].record.recorded_at > complexity[0].record.recorded_at);
+    assert_eq!(complexity[1].record.contributors[0].path, "src/bramble.rs");
+    assert_eq!(
+        fx.rows(ObservationKind::TodoDensity)[1].record.contributors[0].path,
+        "src/bramble.rs"
+    );
+    assert_eq!(moved.details.files.complexity.len(), 1, "the panel's files");
+    assert_eq!(moved.details.found.source_code, Some(true));
+}
+
+#[test]
+fn the_source_is_measured_only_while_head_is_at_the_default_tip() {
+    let mut fx = Fixture::new(3);
+    fx.repo.branch("feature/moss", "main").unwrap();
+    commit(&mut fx.repo, "feature/moss", 3 * DAY);
+    fx.repo.set_head("feature/moss").unwrap();
+    let mut live = fx.connect();
+    let (first, _) = first_and_follow_up(&mut live);
+    assert_eq!(first.follow_up, None, "nothing waits for a follow-up");
+    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    fx.repo.set_head("main").unwrap();
+    refresh(&mut live, Cause::Watch, false);
+    let rows = fx.rows(ObservationKind::Complexity);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].record.head.branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_metric_switched_off_is_not_recorded_and_switched_on_is_recorded_at_the_same_tip() {
+    let fx = Fixture::new(3);
+    let mut live = fx.connect();
+    fx.store()
+        .set_setting(SETTING_COMPLEXITY_ENABLED, &false)
+        .unwrap();
+    first_and_follow_up(&mut live);
+    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    assert_eq!(fx.rows(ObservationKind::TodoDensity).len(), 1);
+    fx.store()
+        .set_setting(SETTING_COMPLEXITY_ENABLED, &true)
+        .unwrap();
+    refresh(&mut live, Cause::Request, true);
+    assert_eq!(fx.rows(ObservationKind::Complexity).len(), 1);
+    assert_eq!(
+        fx.rows(ObservationKind::TodoDensity).len(),
+        1,
+        "TODO density was measured at this tip already"
+    );
+}
+
+#[test]
+fn a_measured_tip_is_not_measured_again_after_a_restart() {
+    let fx = Fixture::new(3);
+    let mut live = fx.connect();
+    first_and_follow_up(&mut live);
+    drop(live);
+    let mut live = fx.reconnect().expect("connected");
+    let (first, _) = first_and_follow_up(&mut live);
+    assert_eq!(first.follow_up, None);
+    assert_eq!(fx.rows(ObservationKind::Complexity).len(), 1);
+    assert_eq!(fx.rows(ObservationKind::TodoDensity).len(), 1);
+}
+
+#[test]
+fn a_tip_whose_tree_cannot_be_read_is_a_problem_the_refresh_carries_once() {
+    let fx = Fixture::new(3);
+    let mut live = fx.connect();
+    refresh(&mut live, Cause::Connect, true);
+    // The history is read; the tip's tree goes, as a partial clone may lack it.
+    let tip = fx.main.last().unwrap().clone();
+    fx.repo
+        .remove_object(&fx.repo.tree_of(&tip).unwrap())
+        .unwrap();
+    let followed = refresh(&mut live, Cause::FollowUp, true);
+    assert_eq!(followed.reach, Some(Reach::Found));
+    assert!(
+        matches!(followed.problem, Some(Problem::Git(_))),
+        "{:?}",
+        followed.problem
+    );
+    let again = refresh(&mut live, Cause::Request, true);
+    assert_eq!(
+        again.problem, None,
+        "the tip is not tried again until it moves"
+    );
+    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+}
+
+const KNIP: &str = r#"{"issues":[{"file":"web/garden.ts","exports":[{"name":"weed"}]},{"file":"web/old.ts","files":[{"name":"web/old.ts"}]}]}"#;
+
+#[test]
+fn a_knip_report_is_weighed_against_the_exports_at_heads_commit_once() {
+    let mut fx = Fixture::new(3);
+    commit_files(
+        &mut fx,
+        &[
+            (
+                "web/garden.ts",
+                "export const sow = 1;\nexport function weed() {}\nexport class Bed {}\n",
+            ),
+            ("web/old.ts", "export const rake = 1;\n"),
+        ],
+    );
+    fx.report("knip-report.json", KNIP);
+    let mut live = fx.connect();
+    let (first, followed) = first_and_follow_up(&mut live);
+    assert_eq!(first.follow_up, Some(Duration::ZERO));
+    let rows = fx.rows(ObservationKind::DeadCode);
+    assert_eq!(rows.len(), 1);
+    let record = &rows[0].record;
+    // `weed`, and old.ts's one export, of four.
+    assert_eq!(record.raw, r#"{"unused_items":2,"exported_items":4}"#);
+    assert_eq!(record.normalized, Some(Q16::HALF));
+    let report = Report::read(
+        &fx.repo_path(),
+        Format::Knip,
+        &["knip-report.json".to_owned()],
+    );
+    assert_eq!(record.content_hash, report.known().unwrap().content_hash);
+    assert!(followed.snapshot.unwrap().details.found.dead_code);
+    // The same report: not weighed again.
+    refresh(&mut live, Cause::Request, true);
+    assert_eq!(fx.rows(ObservationKind::DeadCode).len(), 1);
+    // A new one is.
+    fx.report(
+        "knip-report.json",
+        r#"{"issues":[{"file":"web/garden.ts","exports":[{"name":"weed"}]}]}"#,
+    );
+    refresh(&mut live, Cause::Request, true);
+    let rows = fx.rows(ObservationKind::DeadCode);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[1].record.raw,
+        r#"{"unused_items":1,"exported_items":4}"#
+    );
+}
+
+#[test]
+fn a_knip_report_with_its_adapter_off_or_no_export_counted_records_nothing() {
+    let mut fx = Fixture::new(3);
+    fx.report("knip-report.json", KNIP);
+    let mut live = fx.connect();
+    first_and_follow_up(&mut live);
+    assert!(
+        fx.rows(ObservationKind::DeadCode).is_empty(),
+        "no TypeScript or JavaScript export: no reading"
+    );
+    commit_files(&mut fx, &[("web/garden.ts", "export const sow = 1;\n")]);
+    fx.store()
+        .set_setting(SETTING_DEAD_CODE_ENABLED, &false)
+        .unwrap();
+    refresh(&mut live, Cause::Request, true);
+    assert!(fx.rows(ObservationKind::DeadCode).is_empty());
 }

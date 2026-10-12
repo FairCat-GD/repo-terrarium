@@ -14,9 +14,9 @@ use serde::de::DeserializeOwned;
 use terrarium_adapters::discovery::{Enabled, Overrides};
 use terrarium_adapters::git::{GitError, GitRepo};
 use terrarium_store::identifiers::{
-    SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_ENABLED,
-    SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE, SETTING_WEATHER_ENABLED,
-    SETTING_WEATHER_REPORT_PATH,
+    SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH,
+    SETTING_DEAD_CODE_ENABLED, SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE,
+    SETTING_TODO_DENSITY_ENABLED, SETTING_WEATHER_ENABLED, SETTING_WEATHER_REPORT_PATH,
 };
 use terrarium_store::{
     DataDir, ImportError, ImportReport, InstallKey, RepoLocation, Store, StoreError, Terrarium,
@@ -130,6 +130,8 @@ pub fn stored_adapters(store: &Store) -> Result<AdapterSettings, StoreError> {
             coverage: on(SETTING_COVERAGE_ENABLED)?,
             dead_code: on(SETTING_DEAD_CODE_ENABLED)?,
             weather: on(SETTING_WEATHER_ENABLED)?,
+            complexity: on(SETTING_COMPLEXITY_ENABLED)?,
+            todo_density: on(SETTING_TODO_DENSITY_ENABLED)?,
         },
     })
 }

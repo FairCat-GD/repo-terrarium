@@ -2,18 +2,21 @@
 //! are worded, and the hint for each missing adapter, are the app's copy.
 //!
 //! It looks only where the fixed lists below say, plus a configured path per adapter, and
-//! never walks the repository. A `*` matches within one path segment. Every path is relative to
+//! never walks the worktree; the source code it lists is read from the default tip's committed
+//! tree, by path alone. A `*` matches within one path segment. Every path is relative to
 //! the repository root, and a configured one that is absolute or climbs out of it is refused.
 //! Where several fixed paths hold a report, the one written last is read. Nothing is run, and
 //! nothing is written.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::git::GitError;
+use crate::git::{GitError, GitRepo};
+use crate::metrics::{Language, languages_at};
 use crate::report::{Format, MAX_FILES, installed_knip, read_bounded};
 
 /// lcov first, then Cobertura, each in the order tools write them: Jest, Vitest, c8 and nyc;
@@ -155,14 +158,21 @@ pub struct Overrides {
     pub weather: Option<String>,
 }
 
-/// Which adapters read their reports (`adapters.<kind>.enabled`): each is on until the settings
-/// turn it off. One that is off is still discovered; it is neither read nor watched.
+/// Which adapters read (`adapters.<kind>.enabled`): each is on until the settings turn it off.
+/// A report adapter that is off is still discovered; it is neither read nor watched. Complexity
+/// and TODO density are measured from the committed source, not a report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one switch per adapter, as the settings show them: any of them may be on"
+)]
 pub struct Enabled {
     pub coverage: bool,
     pub dead_code: bool,
     /// Test results: a `JUnit` report and the `record-tests` status file.
     pub weather: bool,
+    pub complexity: bool,
+    pub todo_density: bool,
 }
 
 impl Default for Enabled {
@@ -171,6 +181,8 @@ impl Default for Enabled {
             coverage: true,
             dead_code: true,
             weather: true,
+            complexity: true,
+            todo_density: true,
         }
     }
 }
@@ -218,6 +230,9 @@ pub struct Discovery {
     pub knip_installed: Option<String>,
     pub ci_workflows: Vec<String>,
     pub runners: Vec<RunnerFound>,
+    /// The source files at the default tip in each language the source metrics read; empty
+    /// when there are none, or the tip could not be read.
+    pub source_code: BTreeMap<Language, u64>,
 }
 
 /// Discovers what the repository at `root` has. `git` is its default branch, or why it could
@@ -232,11 +247,11 @@ pub fn discover(
     let Reports {
         coverage,
         test_report,
+        dead_code,
     } = locate_reports(root, overrides);
-    let dead_code = match &overrides.dead_code {
-        Some(path) => configured(root, path, Format::Knip),
-        None => newest_of(root, &[(Format::Knip, &[KNIP_REPORT_PATH])]),
-    };
+    let source_code = git
+        .as_ref()
+        .map_or_else(|_| BTreeMap::new(), |branch| source_code(root, branch));
     let package = package_keys(root);
     let knip_config = KNIP_CONFIG_PATHS
         .iter()
@@ -263,17 +278,31 @@ pub fn discover(
         knip_installed: installed_knip(root),
         ci_workflows,
         runners: runners(root, &package),
+        source_code,
     }
 }
 
-/// The reports a refresh reads: coverage and test results, found as [`discover`] finds them.
+/// The source files at the tip of `default_branch`, counted per language from their paths.
+fn source_code(root: &Path, default_branch: &str) -> BTreeMap<Language, u64> {
+    let Ok(git) = GitRepo::open(root) else {
+        return BTreeMap::new();
+    };
+    git.state()
+        .ok()
+        .and_then(|state| state.branches.get(default_branch).cloned())
+        .and_then(|tip| languages_at(&git, &tip).ok())
+        .unwrap_or_default()
+}
+
+/// The reports a refresh reads, found as [`discover`] finds them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reports {
     pub coverage: Search,
     pub test_report: Search,
+    pub dead_code: Search,
 }
 
-/// Where the coverage and test reports under `root` are, and nothing else: what the live
+/// Where the coverage, test and Knip reports under `root` are, and nothing else: what the live
 /// refresh looks up each time, without discovery's configuration checks.
 pub fn locate_reports(root: &Path, overrides: &Overrides) -> Reports {
     let coverage = match &overrides.coverage {
@@ -290,14 +319,19 @@ pub fn locate_reports(root: &Path, overrides: &Overrides) -> Reports {
         Some(path) => configured(root, path, Format::JUnit),
         None => newest_of(root, &[(Format::JUnit, JUNIT_PATHS)]),
     };
+    let dead_code = match &overrides.dead_code {
+        Some(path) => configured(root, path, Format::Knip),
+        None => newest_of(root, &[(Format::Knip, &[KNIP_REPORT_PATH])]),
+    };
     Reports {
         coverage,
         test_report,
+        dead_code,
     }
 }
 
-/// Every path a coverage or test report may be found at, a configured one replacing its fixed
-/// list, as `/`-separated patterns relative to the root: what a watcher watches for. A refused
+/// Every path a coverage, test or Knip report may be found at, a configured one replacing its
+/// fixed list, as `/`-separated patterns relative to the root: what a watcher watches for. A refused
 /// configured path is left out, and so is every path of an adapter that is off.
 pub fn report_patterns(overrides: &Overrides, enabled: Enabled) -> Vec<String> {
     let mut patterns = Vec::new();
@@ -317,6 +351,11 @@ pub fn report_patterns(overrides: &Overrides, enabled: Enabled) -> Vec<String> {
         &[LCOV_PATHS, COBERTURA_PATHS],
     );
     add(enabled.weather, &overrides.weather, &[JUNIT_PATHS]);
+    add(
+        enabled.dead_code,
+        &overrides.dead_code,
+        &[&[KNIP_REPORT_PATH]],
+    );
     patterns
 }
 
@@ -832,18 +871,19 @@ mod tests {
         let fixed = report_patterns(&Overrides::default(), all);
         assert_eq!(
             fixed.len(),
-            LCOV_PATHS.len() + COBERTURA_PATHS.len() + JUNIT_PATHS.len()
+            LCOV_PATHS.len() + COBERTURA_PATHS.len() + JUNIT_PATHS.len() + 1
         );
+        assert!(fixed.iter().any(|p| p == KNIP_REPORT_PATH));
         assert!(fixed.iter().any(|p| p == "target/nextest/*/junit.xml"));
         let configured = report_patterns(
             &Overrides {
                 coverage: Some("./out/cov.info".into()),
                 weather: Some("../outside.xml".into()),
-                dead_code: None,
+                dead_code: Some("reports/knip.json".into()),
             },
             all,
         );
-        assert_eq!(configured, ["out/cov.info"]);
+        assert_eq!(configured, ["out/cov.info", "reports/knip.json"]);
         assert_eq!(
             configured_path("./out/cov.info").as_deref(),
             Some("out/cov.info")
@@ -859,6 +899,7 @@ mod tests {
             &Overrides::default(),
             Enabled {
                 coverage: false,
+                dead_code: false,
                 ..all
             },
         );
@@ -870,10 +911,53 @@ mod tests {
             },
             Enabled {
                 weather: false,
+                dead_code: false,
                 ..all
             },
         );
         assert_eq!(no_tests, ["out/cov.info"]);
+        let no_dead_code = report_patterns(
+            &Overrides::default(),
+            Enabled {
+                coverage: false,
+                weather: false,
+                ..all
+            },
+        );
+        assert_eq!(no_dead_code, [KNIP_REPORT_PATH]);
+    }
+
+    #[test]
+    fn the_source_code_is_counted_from_the_default_tips_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = FixtureRepo::init(&dir.path().join("moss")).unwrap();
+        let stamp = Stamp::at(1_709_510_400);
+        repo.commit(
+            "main",
+            stamp,
+            "seed",
+            &[
+                Edit::write("src/a.rs", "fn a() {}\n"),
+                Edit::write("web/b.ts", "export const b = 1;\n"),
+                Edit::write("node_modules/c/index.js", "module.exports = 1;\n"),
+            ],
+        )
+        .unwrap();
+        repo.branch("feature", "main").unwrap();
+        repo.commit(
+            "feature",
+            stamp,
+            "elsewhere",
+            &[Edit::write("c.go", "package c\n")],
+        )
+        .unwrap();
+        // A file only in the worktree is not committed source.
+        fs::write(repo.path().join("d.py"), "x = 1\n").unwrap();
+        let found = discover_in(repo.path(), &Overrides::default(), None);
+        assert_eq!(
+            found.source_code,
+            [(Language::TypeScript, 1), (Language::Rust, 1)].into()
+        );
     }
 
     #[test]
@@ -886,6 +970,7 @@ mod tests {
         let reports = locate_reports(repo.path(), &Overrides::default());
         assert_eq!(reports.coverage, found.coverage);
         assert_eq!(reports.test_report, found.test_report);
+        assert_eq!(reports.dead_code, found.dead_code);
         assert!(reports.coverage.located().is_some());
     }
 }

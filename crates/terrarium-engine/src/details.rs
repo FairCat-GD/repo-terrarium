@@ -70,11 +70,17 @@ pub struct BranchReading {
     pub value: Option<Q16>,
 }
 
-/// Which reports the worktree has, and which adapters the settings have on.
+/// Which reports the worktree has, whether the default tip has source code the metrics read,
+/// and which adapters the settings have on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub coverage: bool,
     pub test_report: bool,
+    /// A Knip report.
+    pub dead_code: bool,
+    /// Whether the default tip, when it was last measured in this session, held a source file
+    /// in a language the metrics read; `None` before it was.
+    pub source_code: Option<bool>,
     pub enabled: Enabled,
 }
 
