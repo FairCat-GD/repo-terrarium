@@ -235,12 +235,12 @@ pub struct Discovery {
     pub source_code: BTreeMap<Language, u64>,
 }
 
-/// Discovers what the repository at `root` has. `git` is its default branch, or why it could
-/// not be read, from the caller's own open of it; `status_file` is where `record-tests` would
+/// Discovers what the repository at `root` has. `git` is the caller's own open of it with its
+/// default branch, or why it could not be read; `status_file` is where `record-tests` would
 /// have written its file for this repository, when the data directory is known.
 pub fn discover(
     root: &Path,
-    git: Result<String, GitError>,
+    git: Result<(&GitRepo, String), GitError>,
     overrides: &Overrides,
     status_file: Option<&Path>,
 ) -> Discovery {
@@ -249,9 +249,11 @@ pub fn discover(
         test_report,
         dead_code,
     } = locate_reports(root, overrides);
-    let source_code = git
-        .as_ref()
-        .map_or_else(|_| BTreeMap::new(), |branch| source_code(root, branch));
+    let source_code = git.as_ref().map_or_else(
+        |_| BTreeMap::new(),
+        |(repo, branch)| source_code(repo, branch),
+    );
+    let git = git.map(|(_, branch)| branch);
     let package = package_keys(root);
     let knip_config = KNIP_CONFIG_PATHS
         .iter()
@@ -282,15 +284,13 @@ pub fn discover(
     }
 }
 
-/// The source files at the tip of `default_branch`, counted per language from their paths.
-fn source_code(root: &Path, default_branch: &str) -> BTreeMap<Language, u64> {
-    let Ok(git) = GitRepo::open(root) else {
-        return BTreeMap::new();
-    };
+/// The source files at the tip of `default_branch`, counted per language from the paths of
+/// its tree.
+fn source_code(git: &GitRepo, default_branch: &str) -> BTreeMap<Language, u64> {
     git.state()
         .ok()
         .and_then(|state| state.branches.get(default_branch).cloned())
-        .and_then(|tip| languages_at(&git, &tip).ok())
+        .and_then(|tip| languages_at(git, &tip).ok())
         .unwrap_or_default()
 }
 
@@ -569,7 +569,11 @@ mod tests {
     use crate::git::GitRepo;
 
     fn discover_in(root: &Path, overrides: &Overrides, status_file: Option<&Path>) -> Discovery {
-        let git = GitRepo::open(root).and_then(|repo| repo.default_branch());
+        let opened = GitRepo::open(root);
+        let git = opened
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|repo| Ok((repo, repo.default_branch()?)));
         discover(root, git, overrides, status_file)
     }
 

@@ -1635,6 +1635,51 @@ fn a_measured_tip_is_not_measured_again_after_a_restart() {
 }
 
 #[test]
+fn a_metric_switched_on_before_a_restart_is_measured_at_the_same_tip() {
+    let fx = Fixture::new(3);
+    fx.store()
+        .set_setting(SETTING_COMPLEXITY_ENABLED, &false)
+        .unwrap();
+    let mut live = fx.connect();
+    first_and_follow_up(&mut live);
+    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    drop(live);
+    fx.store()
+        .set_setting(SETTING_COMPLEXITY_ENABLED, &true)
+        .unwrap();
+    let mut live = fx.reconnect().expect("connected");
+    first_and_follow_up(&mut live);
+    assert_eq!(fx.rows(ObservationKind::Complexity).len(), 1);
+    assert_eq!(
+        fx.rows(ObservationKind::TodoDensity).len(),
+        1,
+        "TODO density has its row at this tip"
+    );
+}
+
+#[test]
+fn a_newer_reading_in_the_same_second_is_dated_after_and_held() {
+    let mut fx = Fixture::new(3);
+    let mut live = fx.connect();
+    fx.report("coverage/lcov.info", LCOV);
+    shown(&mut live, Cause::Connect, true);
+    // A commit and a new report, and the clock has not moved.
+    let tip = fx.commit_now();
+    fx.report("coverage/lcov.info", LCOV_LOWER);
+    refresh(&mut live, Cause::Watch, true);
+    let rows = fx.rows(ObservationKind::Coverage);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].record.head.commit, tip);
+    assert!(rows[1].record.recorded_at > rows[0].record.recorded_at);
+    let held = fx
+        .full_replay()
+        .readings
+        .coverage
+        .expect("a coverage reading");
+    assert_eq!(held.head, tip, "the newer report is the one light holds");
+}
+
+#[test]
 fn a_tip_whose_tree_cannot_be_read_is_a_problem_the_refresh_carries_once() {
     let fx = Fixture::new(3);
     let mut live = fx.connect();

@@ -106,7 +106,8 @@ process. Nothing runs.
 
 ## Discovery (`discovery`)
 
-`discover(root, default_branch, overrides, status_file)` says what a repository has: git and its default
+`discover(root, git, overrides, status_file)`, given the caller's open repository and its default
+branch, says what a repository has: git and its default
 branch, a coverage report (lcov first, then Cobertura), a `JUnit` report, a `record-tests`
 status file, a Knip report and configuration, CI workflows and test runners, and the source
 files at the default tip per language. It looks only at fixed lists of paths (a `*` matches

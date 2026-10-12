@@ -126,11 +126,6 @@ impl AdapterKind {
         }
     }
 
-    /// Whether it reads a report, which has a path.
-    pub const fn reads_report(self) -> bool {
-        self.path_key().is_some()
-    }
-
     pub fn enabled(self, enabled: Enabled) -> bool {
         match self {
             AdapterKind::Coverage => enabled.coverage,

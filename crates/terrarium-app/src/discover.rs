@@ -31,14 +31,14 @@ pub struct Reads {
 }
 
 pub fn run(repo: &Path) -> ExitCode {
-    let git = GitRepo::open(repo);
-    let default_branch = git
+    let opened = GitRepo::open(repo);
+    let git = opened
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(GitRepo::default_branch);
-    let seed = match (&git, &default_branch) {
-        (Ok(git), Ok(branch)) => git.identity(branch).ok().map(|identity| identity.seed),
-        _ => None,
+        .and_then(|git| Ok((git, git.default_branch()?)));
+    let seed = match &git {
+        Ok((git, branch)) => git.identity(branch).ok().map(|identity| identity.seed),
+        Err(_) => None,
     };
     let data = seed.and_then(|_| DataDir::resolve().ok());
     let status_file = seed
@@ -48,7 +48,7 @@ pub fn run(repo: &Path) -> ExitCode {
         .zip(data.as_ref())
         .and_then(|(seed, data)| connected_overrides(data, &seed))
         .unwrap_or_default();
-    let found = discover(repo, default_branch, &overrides, status_file.as_deref());
+    let found = discover(repo, git, &overrides, status_file.as_deref());
     if let Err(err) = &found.git {
         eprintln!("{}", copy::discover_failed(repo, err));
         return ExitCode::FAILURE;
@@ -93,12 +93,12 @@ fn report(data: &DataDir, terrarium: &Terrarium, hints: Hints) -> String {
         .map(|adapters| adapters.overrides)
         .unwrap_or_default();
     let status_file = data.local_tests(&terrarium.seed);
-    let found = discover(
-        &repo,
-        Ok(terrarium.repo.default_branch.clone()),
-        &overrides,
-        Some(&status_file),
-    );
+    let opened = GitRepo::open(&repo);
+    let git = opened
+        .as_ref()
+        .map(|git| (git, terrarium.repo.default_branch.clone()))
+        .map_err(Clone::clone);
+    let found = discover(&repo, git, &overrides, Some(&status_file));
     let reads = read_all(&repo, &found, Some(&status_file));
     copy::discovery_report(&found, &reads, hints)
 }

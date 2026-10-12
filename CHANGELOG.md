@@ -31,6 +31,8 @@ default branch, and a Knip report becomes dead code.
 - The soil panel says why a soil cause lists no file: off in settings, no Knip report found,
   none read yet, or no code in the languages read.
 - The discovery report's Knip line no longer says its counts are not part of soil.
+- A coverage, dead-code, complexity or TODO density reading taken in the same second as one
+  before it is dated a second later, so the newer one is the reading light or soil holds.
 
 ## [0.25.0] - 2026-10-12
 

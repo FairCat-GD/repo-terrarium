@@ -156,7 +156,7 @@ pub(super) fn count(tree: &Tree, source: &[u8], roles: &Roles) -> Counted {
                 open.push((node.kind_id(), exit));
                 continue;
             }
-            rows.mark(node);
+            rows.mark(node, source);
             leave(exit, &mut frames, &mut counted);
         }
         loop {
@@ -297,21 +297,17 @@ impl Rows {
         Rows(vec![0; lines.div_ceil(64)])
     }
 
-    /// Marks the lines a token spans. A token that ends at the start of a line does not reach
-    /// it, and an empty one (a token the parser supplied as missing) marks nothing.
-    fn mark(&mut self, node: Node<'_>) {
-        if node.start_byte() == node.end_byte() {
-            return;
-        }
-        let first = node.start_position().row;
-        let end = node.end_position();
-        let last = if end.column == 0 && end.row > first {
-            end.row - 1
-        } else {
-            end.row
-        };
-        for row in first..=last {
-            if let Some(word) = self.0.get_mut(row / 64) {
+    /// Marks the lines on which a token holds something other than whitespace, so markup's
+    /// whitespace between elements (JSX text) never makes a blank line code, and an empty token
+    /// (one the parser supplied as missing) marks nothing.
+    fn mark(&mut self, node: Node<'_>, source: &[u8]) {
+        let mut row = node.start_position().row;
+        for &byte in source.get(node.byte_range()).unwrap_or_default() {
+            if byte == b'\n' {
+                row += 1;
+            } else if !byte.is_ascii_whitespace()
+                && let Some(word) = self.0.get_mut(row / 64)
+            {
                 *word |= 1 << (row % 64);
             }
         }

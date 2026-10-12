@@ -290,6 +290,9 @@ enum Metered {
     Failed(Problem),
 }
 
+/// The measurement a refresh made, and the commit it is of.
+type Held = Option<(CommitId, Measurement)>;
+
 /// What the adapters of one refresh did.
 #[derive(Default)]
 struct Observed {
@@ -431,19 +434,7 @@ impl Live {
             note_newest(&mut newest, row);
             observations.push(row.to_observation()?);
         }
-        // One measurement records both metrics, so the newest of either says which tip it was.
-        let measured = stored
-            .iter()
-            .filter(|row| {
-                let record = &row.record;
-                matches!(
-                    record.kind,
-                    ObservationKind::Complexity | ObservationKind::TodoDensity
-                ) && record.adapter_version == METRICS_VERSION
-                    && record.head.at_default_tip
-            })
-            .max_by_key(|row| (row.record.recorded_at, row.id.get()))
-            .map(|row| (row.record.head.commit.clone(), adapters.enabled));
+        let measured = measured_at_connect(&stored, adapters.enabled);
         let (base, cached_tick) = match cached_base(&store, &terrarium)? {
             Some((base, tick)) => (Some(base), Some(tick)),
             None => (None, None),
@@ -674,7 +665,8 @@ impl Live {
         cancel: &AtomicBool,
     ) -> Result<Observed, Fault> {
         let mut observed = Observed::default();
-        observed.take(self.measure_tip(git, head, cancel)?);
+        let mut measured = None;
+        observed.take(self.measure_tip(git, head, cancel, &mut measured)?);
         if reports {
             let read = self.read_reports(root, head);
             self.found = read.found;
@@ -683,7 +675,7 @@ impl Live {
                 observed.recorded = true;
             }
             if let Some(knip) = read.knip {
-                observed.take(self.weigh_dead_code(git, &knip, head, cancel)?);
+                observed.take(self.weigh_dead_code(git, &knip, head, cancel, &mut measured)?);
             }
             observed.follow_up = sooner(observed.follow_up, read.wait);
         }
@@ -699,6 +691,7 @@ impl Live {
         git: &GitRepo,
         head: &ObservationHead,
         cancel: &AtomicBool,
+        source: &mut Held,
     ) -> Result<Metered, Fault> {
         let on = self.adapters.enabled;
         let done = match &self.measured {
@@ -725,30 +718,16 @@ impl Live {
             todo_density: done.todo_density || on.todo_density,
             ..on
         };
-        let measurement = match self.measurement(git, &head.commit, cancel)? {
-            Ok(measurement) => measurement,
-            Err(problem) => {
-                self.measured = Some((head.commit.clone(), measured));
-                return Ok(Metered::Failed(problem));
-            }
+        if let Err(problem) = self.measure(git, &head.commit, cancel, source)? {
+            self.measured = Some((head.commit.clone(), measured));
+            return Ok(Metered::Failed(problem));
+        }
+        let Some((_, measurement)) = source.as_ref() else {
+            return Err(Fault::Problem(Problem::Missing("measurement")));
         };
         self.found.source_code = Some(measurement.has_source());
-        // Replay orders rows of one second by their commit, so a newer tip's reading is dated
-        // after the last one, as a repeated key is.
-        let last = self
-            .observations
-            .iter()
-            .filter(|o| {
-                matches!(
-                    o.value.kind(),
-                    ObservationKind::Complexity | ObservationKind::TodoDensity
-                )
-            })
-            .map(|o| o.recorded_at)
-            .max();
-        let at = last.map_or(self.now, |last| self.now.max(last + 1));
         let mut metered = Metered::Unchanged;
-        for record in observe::metrics(&measurement, due, head, at) {
+        for record in observe::metrics(measurement, due, head, self.now) {
             self.append(None, record)?;
             metered = Metered::Recorded;
         }
@@ -764,6 +743,7 @@ impl Live {
         report: &Report,
         head: &ObservationHead,
         cancel: &AtomicBool,
+        source: &mut Held,
     ) -> Result<Metered, Fault> {
         if self.view.is_none() {
             return Ok(Metered::Deferred);
@@ -772,30 +752,40 @@ impl Live {
             return Ok(Metered::Unchanged);
         };
         self.knip_weighed = Some((known.content_hash, head.commit.clone()));
-        let measurement = match self.measurement(git, &head.commit, cancel)? {
-            Ok(measurement) => measurement,
-            Err(problem) => return Ok(Metered::Failed(problem)),
+        if let Err(problem) = self.measure(git, &head.commit, cancel, source)? {
+            return Ok(Metered::Failed(problem));
+        }
+        let Some((_, measurement)) = source.as_ref() else {
+            return Err(Fault::Problem(Problem::Missing("measurement")));
         };
-        let Some(record) = observe::dead_code(report, &measurement, head.clone(), self.now) else {
+        let Some(record) = observe::dead_code(report, measurement, head.clone(), self.now) else {
             return Ok(Metered::Unchanged);
         };
         self.append(Some(Format::Knip), record)?;
         Ok(Metered::Recorded)
     }
 
-    /// The source files of `commit`, parsing only those not met before. A stop is a cancel;
-    /// any other error is a problem the refresh carries.
-    fn measurement(
+    /// Leaves the source files of `commit` in `source`, measured once a refresh: a measurement
+    /// already held for it is used again, else only files not met before are parsed. A stop is
+    /// a cancel; any other error is a problem the refresh carries.
+    fn measure(
         &mut self,
         git: &GitRepo,
         commit: &CommitId,
         cancel: &AtomicBool,
-    ) -> Result<Result<Measurement, Problem>, Fault> {
+        source: &mut Held,
+    ) -> Result<Result<(), Problem>, Fault> {
+        if source.as_ref().is_some_and(|(at, _)| at == commit) {
+            return Ok(Ok(()));
+        }
         match self
             .metrics
             .measure(git, commit, &mut || cancel.load(Ordering::Relaxed))
         {
-            Ok(measurement) => Ok(Ok(measurement)),
+            Ok(measurement) => {
+                *source = Some((commit.clone(), measurement));
+                Ok(Ok(()))
+            }
             Err(GitError::Cancelled) => Err(Fault::Cancelled),
             Err(err) => Ok(Err(Problem::Git(err))),
         }
@@ -1079,14 +1069,26 @@ impl Live {
             .any(|o| o.recorded_at == record.recorded_at && o.merge_key() == key)
     }
 
+    /// Whether a light or soil reading of `record`'s kind is held from the same second. Replay
+    /// orders the readings of one second by their commit, so a newer one at another head could
+    /// lose to the one before it.
+    fn ties_reading(&self, record: &ObservationRecord) -> bool {
+        record.kind.is_reading()
+            && self
+                .observations
+                .iter()
+                .any(|o| o.recorded_at == record.recorded_at && o.value.kind() == record.kind)
+    }
+
     /// Stores `record` with a `recorded_at` no stored observation of its kind, source and head
-    /// already has, and keeps it for replay.
+    /// already has, and, for a reading, none of its kind has: a second later each time. Keeps
+    /// it for replay.
     fn append(
         &mut self,
         producer: Option<Format>,
         mut record: ObservationRecord,
     ) -> Result<(), Fault> {
-        while self.holds_key_of(&record) {
+        while self.holds_key_of(&record) || self.ties_reading(&record) {
             record.recorded_at += 1;
         }
         let id = self.store.append_observation(self.terrarium.id, &record)?;
@@ -1236,6 +1238,40 @@ fn cached_base(
                 && state.next_tick == cache.tick
         })
         .map(|state| (state, cache.tick)))
+}
+
+/// The tip the source was last measured at, and the metrics recorded there: the newest
+/// default-tip row of either metric names the tip, and each metric counts as measured there
+/// only when it has a row at it, so one switched on since is measured again.
+fn measured_at_connect(stored: &[StoredObservation], on: Enabled) -> Option<(CommitId, Enabled)> {
+    let metric = |row: &&StoredObservation| {
+        let record = &row.record;
+        matches!(
+            record.kind,
+            ObservationKind::Complexity | ObservationKind::TodoDensity
+        ) && record.adapter_version == METRICS_VERSION
+            && record.head.at_default_tip
+    };
+    let tip = stored
+        .iter()
+        .filter(metric)
+        .max_by_key(|row| (row.record.recorded_at, row.id.get()))?
+        .record
+        .head
+        .commit
+        .clone();
+    let has = |kind| {
+        stored
+            .iter()
+            .filter(metric)
+            .any(|row| row.record.kind == kind && row.record.head.commit == tip)
+    };
+    let under = Enabled {
+        complexity: has(ObservationKind::Complexity),
+        todo_density: has(ObservationKind::TodoDensity),
+        ..on
+    };
+    Some((tip, under))
 }
 
 /// Notes `row` as its format's newest stored observation, if it is: at connect, the largest

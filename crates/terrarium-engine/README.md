@@ -44,8 +44,11 @@ The headless live pipeline, run on a worker thread.
   and a ref rewrite becomes its record. Only a known reading is recorded.
 - **The source** (`live`): the committed source at the default tip is measured once per tip,
   while HEAD is at it, parsing only the files not met before in the session. A session's first
-  refresh leaves it to an immediate follow-up, so the first snapshot never waits on a parse; a
-  newer tip's readings are dated after the last ones.
+  refresh leaves it to an immediate follow-up, so the first snapshot never waits on a parse.
+  One measurement serves the tip's metrics and a Knip report's exports in the same refresh.
+- **Readings of one second:** replay orders the light and soil readings of one second by their
+  commit, so a reading recorded in the same second as one of its kind is dated a second later,
+  and the newer is the one held.
 
 ## Why it is a crate of its own
 

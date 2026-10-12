@@ -15,21 +15,21 @@ pub struct AdaptersSection {
     enabled: Enabled,
     /// The paths the strip reads, and the ones typed and not applied yet.
     applied: Overrides,
-    /// By [`index`]; a metric's stays empty.
-    typed: [String; 5],
+    /// By [`index`]: the reports only, since a metric has no path.
+    typed: [String; 3],
     /// The report, once discovery has made it.
     report: Option<String>,
     /// A path typed that was refused, and for which report.
     refused: Option<AdapterKind>,
 }
 
-fn index(kind: AdapterKind) -> usize {
+/// Where a report's typed path is kept; `None` for a metric, which has no path.
+fn index(kind: AdapterKind) -> Option<usize> {
     match kind {
-        AdapterKind::Coverage => 0,
-        AdapterKind::Tests => 1,
-        AdapterKind::DeadCode => 2,
-        AdapterKind::Complexity => 3,
-        AdapterKind::TodoDensity => 4,
+        AdapterKind::Coverage => Some(0),
+        AdapterKind::Tests => Some(1),
+        AdapterKind::DeadCode => Some(2),
+        AdapterKind::Complexity | AdapterKind::TodoDensity => None,
     }
 }
 
@@ -52,9 +52,10 @@ impl AdaptersSection {
         self.enabled = settings.enabled;
         for kind in AdapterKind::ALL {
             let path = kind.path(&settings.overrides);
-            if kind.path(&self.applied) != path {
-                path.unwrap_or_default()
-                    .clone_into(&mut self.typed[index(kind)]);
+            if let Some(i) = index(kind)
+                && kind.path(&self.applied) != path
+            {
+                path.unwrap_or_default().clone_into(&mut self.typed[i]);
             }
         }
         self.applied.clone_from(&settings.overrides);
@@ -71,10 +72,7 @@ impl AdaptersSection {
     /// The path typed for `kind`, applied: an empty one goes back to the usual places, and one
     /// outside the repository is refused, as discovery would refuse it. A metric has none.
     pub fn apply_path(&mut self, kind: AdapterKind) -> Option<Pref> {
-        if !kind.reads_report() {
-            return None;
-        }
-        let typed = self.typed[index(kind)].trim();
+        let typed = self.typed[index(kind)?].trim();
         let path = if typed.is_empty() {
             None
         } else {
@@ -89,7 +87,7 @@ impl AdaptersSection {
     }
 
     pub fn clear_path(&mut self, kind: AdapterKind) -> Option<Pref> {
-        self.typed[index(kind)].clear();
+        self.typed[index(kind)?].clear();
         self.apply_path(kind)
     }
 
@@ -115,13 +113,13 @@ impl AdaptersSection {
             if ui.checkbox(&mut on, words::READ).changed() {
                 changes.extend(self.set_on(kind, on));
             }
-            if !kind.reads_report() {
+            let Some(i) = index(kind) else {
                 ui.label(words::MEASURED_FROM_SOURCE);
                 continue;
-            }
+            };
             ui.horizontal(|ui| {
                 ui.label(words::REPORT_PATH);
-                let field = egui::TextEdit::singleline(&mut self.typed[index(kind)])
+                let field = egui::TextEdit::singleline(&mut self.typed[i])
                     .hint_text(words::NO_PATH)
                     .desired_width(220.0);
                 ui.add(field);
@@ -182,8 +180,9 @@ mod tests {
             Some(Pref::AdapterEnabled(AdapterKind::Complexity, false))
         );
         assert_eq!(section.set_on(AdapterKind::TodoDensity, true), None);
-        section.typed[index(AdapterKind::TodoDensity)] = "out/todo.json".into();
+        assert_eq!(index(AdapterKind::TodoDensity), None);
         assert_eq!(section.apply_path(AdapterKind::TodoDensity), None);
+        assert_eq!(section.clear_path(AdapterKind::Complexity), None);
         assert_eq!(section.refused, None);
     }
 

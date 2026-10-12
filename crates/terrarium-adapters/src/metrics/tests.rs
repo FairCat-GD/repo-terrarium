@@ -344,6 +344,15 @@ fn lines_of_code_leave_out_blank_and_comment_lines() {
     // `fn a()`, `let s = "one`, `two";` (the string spans it) and `}`.
     assert_eq!(facts.counted.lines, 4);
     assert_eq!(clean(Language::Rust, "").counted.lines, 0);
+    // Markup's whitespace between elements is no line of code.
+    let tsx = clean(
+        Language::Tsx,
+        "const Bed = () => (\n  <div>\n    <span />\n\n    <span />\n  </div>\n);\n",
+    );
+    assert_eq!(
+        tsx.counted.lines, 6,
+        "the blank line inside the markup is not code"
+    );
 }
 
 #[test]
