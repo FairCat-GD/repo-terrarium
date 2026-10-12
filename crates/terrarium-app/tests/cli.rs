@@ -246,6 +246,78 @@ mod replay {
         assert!(String::from_utf8(out.stderr).unwrap().contains("no day"));
         assert_eq!(std::fs::read(&gif).unwrap(), bytes);
     }
+
+    /// A stand-in ffmpeg in `dir`: it notes its arguments and how many bytes its stdin held,
+    /// and writes a few bytes to the file its last argument names.
+    #[cfg(unix)]
+    fn fake_ffmpeg(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script = "#!/bin/sh\n\
+            here=$(/usr/bin/dirname \"$0\")\n\
+            for arg; do last=$arg; printf '%s\\n' \"$arg\" >> \"$here/args\"; done\n\
+            /usr/bin/wc -c > \"$here/count\"\n\
+            printf video > \"${last#file:}\"\n";
+        std::fs::create_dir_all(dir).unwrap();
+        let file = dir.join("ffmpeg");
+        std::fs::write(&file, script).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_feeds_the_time_lapse_to_ffmpeg_as_raw_rgb_and_names_the_mp4_once_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        small_repo(&repo);
+        let tools = dir.path().join("tools");
+        fake_ffmpeg(&tools);
+        let out_dir = dir.path().join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let mp4 = out_dir.join("fern.mp4");
+        let at = (FIRST + 30 * DAY).to_string();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_repo-terrarium"))
+            .args([
+                "replay",
+                repo.to_str().unwrap(),
+                "--at",
+                &at,
+                "--mp4",
+                mp4.to_str().unwrap(),
+                "--scale",
+                "2",
+            ])
+            .env("PATH", &tools)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        let args = std::fs::read_to_string(tools.join("args")).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        let after = |flag: &str| args[args.iter().position(|arg| *arg == flag).unwrap() + 1];
+        assert_eq!(after("-video_size"), "2560x296", "2× asked, 4× written");
+        assert_eq!(after("-pix_fmt"), "rgb24");
+        assert_eq!(after("-i"), "pipe:0");
+        assert_eq!(
+            args.last().copied(),
+            Some(format!("file:{}.part", mp4.display()).as_str())
+        );
+        let count: usize = std::fs::read_to_string(tools.join("count"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(count, 450 * 2560 * 296 * 3, "every frame, whole");
+        assert_eq!(std::fs::read(&mp4).unwrap(), b"video");
+        let entries: Vec<_> = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["fern.mp4"], "nothing beside it");
+    }
 }
 
 mod discover {

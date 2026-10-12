@@ -69,11 +69,11 @@ use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
 use crate::probe::{Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
 use crate::settings::{MonitorChoice, RepoFacts, SettingsForm};
-use crate::shell::{Export, Intent, Picking, Shell};
+use crate::shell::{DataFile, Export, Intent, Picking, Shell};
 use crate::soil::{Hits, SoilPanel};
 use crate::timelapse::form::TimeLapseForm;
 use crate::timelapse::job::{Msg, Session};
-use crate::{crash, discover, now_secs};
+use crate::{crash, discover, now_secs, portability};
 
 /// What the strip runs as.
 pub enum Mode {
@@ -467,6 +467,8 @@ pub enum UserEvent {
     Discovered(u64, String),
     /// What a job of the time-lapse window of that generation says.
     TimeLapse(u64, Msg),
+    /// What the settings window's export of that generation says.
+    Portability(u64, portability::Msg),
 }
 
 /// Why the strip could not run. Its wording is in the copy module.
@@ -549,8 +551,11 @@ enum Effect {
     /// Connected: open the strip, laid out by this salt.
     Open(InstallSalt),
     /// The engine started again: show what the live view says, laid out anew by the salt
-    /// given (a re-seed).
-    Show(Option<InstallSalt>),
+    /// given (a re-seed); with the history changed, a time-lapse of it is out of date.
+    Show {
+        reseeded: Option<InstallSalt>,
+        history_changed: bool,
+    },
     /// Disconnected: close the strip, and open the connect window.
     Close,
 }
@@ -683,6 +688,9 @@ impl Repo {
                 Effect::Nothing
             }
             Outcome::Restarted { changed, started } => {
+                let history_changed = changed
+                    .as_ref()
+                    .is_ok_and(lifecycle::Changed::changes_history);
                 let mut effect = Effect::Nothing;
                 if let Some(connected) = &mut self.connected {
                     match started {
@@ -693,12 +701,18 @@ impl Repo {
                                 .then(|| InstallSalt::new(terrarium.install_salt));
                             connected.live.restarted(terrarium.repo.name.clone());
                             connected.terrarium = terrarium;
-                            effect = Effect::Show(reseeded);
+                            effect = Effect::Show {
+                                reseeded,
+                                history_changed,
+                            };
                         }
                         Err(err) => {
                             eprintln!("{}", copy::connect_failed(None, &err));
                             if connected.live.apply(Update::Halted) != Changed::Nothing {
-                                effect = Effect::Show(None);
+                                effect = Effect::Show {
+                                    reseeded: None,
+                                    history_changed,
+                                };
                             }
                         }
                     }
@@ -708,7 +722,13 @@ impl Repo {
                     if let Some(facts) = facts {
                         form.set_repo(facts);
                     }
-                    form.finished(changed.err().map(|err| copy::connect_problem(&err)));
+                    match &changed {
+                        Ok(lifecycle::Changed::Terrarium) => form.finished(None),
+                        Ok(lifecycle::Changed::Imported(report)) => {
+                            form.imported(copy::settings::imported(report));
+                        }
+                        Err(refused) => form.finished(Some(copy::change_refused(refused))),
+                    }
                 }
                 shell.redraw(WindowKind::Settings);
                 effect
@@ -769,6 +789,8 @@ struct Strip {
     timelapse: Option<Session>,
     /// The generation of the latest time-lapse window: only its jobs are heard.
     lapses: u64,
+    /// The generation of the settings window's latest export: only it is heard.
+    exports: u64,
     reopen: Option<pinning::ReopenHook>,
     #[cfg(feature = "dev")]
     dev: Dev,
@@ -827,6 +849,7 @@ impl Strip {
             shell: Shell::default(),
             timelapse: None,
             lapses: 0,
+            exports: 0,
             reopen: None,
             #[cfg(feature = "dev")]
             dev: Dev::new(matches!(mode, Mode::Probe(ProbeKind::Egui))),
@@ -1336,7 +1359,52 @@ impl Strip {
                 }
                 self.shell.redraw(WindowKind::TimeLapse);
             }
+            Picking::SaveData(file) => {
+                if let Some(form) = &mut self.shell.settings {
+                    form.export_to(file, path);
+                    let intents = form.take_intents();
+                    self.carry_out(intents);
+                }
+                self.shell.redraw(WindowKind::Settings);
+            }
+            Picking::Import => {
+                if let Some(form) = &mut self.shell.settings {
+                    form.import_chosen(path);
+                }
+                self.shell.redraw(WindowKind::Settings);
+            }
         }
+    }
+
+    /// Exports the connected terrarium's `file` to `path`, off the loop.
+    fn export(&mut self, file: DataFile, path: PathBuf) {
+        let Some((data, terrarium)) = self.repo.as_ref().and_then(|repo| {
+            let connected = repo.connected.as_ref()?;
+            Some((repo.data.clone(), connected.terrarium.as_ref().clone()))
+        }) else {
+            return;
+        };
+        self.exports += 1;
+        portability::spawn(
+            &self.proxy,
+            self.exports,
+            data,
+            terrarium,
+            file,
+            path,
+            now_secs(),
+        );
+    }
+
+    /// What the settings window's export said, if it is the latest.
+    fn export_said(&mut self, generation: u64, msg: &portability::Msg) {
+        if generation != self.exports {
+            return;
+        }
+        if let Some(form) = &mut self.shell.settings {
+            form.export_said(msg);
+        }
+        self.shell.redraw(WindowKind::Settings);
     }
 
     /// What a time-lapse job said, if it is the open window's.
@@ -1348,6 +1416,7 @@ impl Strip {
             return;
         }
         match msg {
+            Msg::Ffmpeg(ffmpeg) => form.ffmpeg(ffmpeg),
             Msg::Reading(percent) => form.reading(percent),
             Msg::Read(Ok(lapse)) => {
                 session.read(lapse);
@@ -1384,6 +1453,11 @@ impl Strip {
             Export::Postcard => {
                 if let Some((shot, scale)) = form.postcard() {
                     session.write_postcard(shot, scale, path);
+                }
+            }
+            Export::Mp4 => {
+                if let Some((film, scale, ffmpeg)) = form.mp4() {
+                    session.write_mp4(film, scale, ffmpeg, path);
                 }
             }
         }
@@ -1425,6 +1499,8 @@ impl Strip {
                     }
                 }
                 Intent::Write { export, path } => self.write(export, path),
+                Intent::Export { file, path } => self.export(file, path),
+                Intent::Import(path) => self.change_connected(|id| Job::Import { id, path }),
             }
         }
     }
@@ -1595,7 +1671,7 @@ impl Strip {
     fn pick(&self, picking: Picking) {
         let kind = match picking {
             Picking::Repository => WindowKind::Connect,
-            Picking::Location => WindowKind::Settings,
+            Picking::Location | Picking::SaveData(_) | Picking::Import => WindowKind::Settings,
             Picking::Save(_) => WindowKind::TimeLapse,
         };
         let mut dialog = rfd::AsyncFileDialog::new();
@@ -1611,6 +1687,7 @@ impl Strip {
                 let (filter, extension) = match export {
                     Export::Gif => (copy::timelapse::GIF, "gif"),
                     Export::Postcard => (copy::timelapse::PNG, "png"),
+                    Export::Mp4 => (copy::timelapse::MP4, "mp4"),
                 };
                 Box::pin(
                     dialog
@@ -1619,6 +1696,24 @@ impl Strip {
                         .save_file(),
                 )
             }
+            Picking::SaveData(file) => {
+                let Some(form) = &self.shell.settings else {
+                    return;
+                };
+                let (filter, extension) = match file {
+                    DataFile::Observations => (copy::settings::OBSERVATIONS_FILTER, "jsonl"),
+                    DataFile::Climate => (copy::settings::JSON_FILTER, "json"),
+                };
+                Box::pin(
+                    dialog
+                        .set_file_name(form.file_name(file))
+                        .add_filter(filter, &[extension])
+                        .save_file(),
+                )
+            }
+            // No filter: macOS merges filters, and would hide an export renamed; a file that
+            // is not one is refused by the import.
+            Picking::Import => Box::pin(dialog.pick_file()),
         };
         let proxy = self.proxy.clone();
         let _ = thread::Builder::new()
@@ -1680,9 +1775,14 @@ impl Strip {
                 self.open_view(event_loop);
                 self.sync_menu();
             }
-            Effect::Show(reseeded) => {
-                // A relinked or re-seeded terrarium's time-lapse is another's.
-                self.close_timelapse();
+            Effect::Show {
+                reseeded,
+                history_changed,
+            } => {
+                // A relinked, re-seeded or newly imported terrarium's time-lapse is another's.
+                if history_changed {
+                    self.close_timelapse();
+                }
                 let Some(repo) = &self.repo else {
                     return;
                 };
@@ -1878,6 +1978,7 @@ impl ApplicationHandler<UserEvent> for Strip {
                 self.shell.redraw(WindowKind::Settings);
             }
             UserEvent::TimeLapse(generation, msg) => self.time_lapse_said(generation, msg),
+            UserEvent::Portability(generation, msg) => self.export_said(generation, &msg),
         }
     }
 
@@ -2183,18 +2284,24 @@ mod tests {
         form.take_intents();
         shell.settings = Some(form);
         let restart = |salt: u8| Outcome::Restarted {
-            changed: Ok(()),
+            changed: Ok(lifecycle::Changed::Terrarium),
             started: Ok((engine(dir.path()), terrarium(salt))),
         };
         let mut asked = Asked::default();
         assert_eq!(
             repo.changed(1, restart(3), &mut shell, &mut asked),
-            Effect::Show(None),
+            Effect::Show {
+                reseeded: None,
+                history_changed: true
+            },
             "relinked: the same salt"
         );
         assert_eq!(
             repo.changed(1, restart(9), &mut shell, &mut asked),
-            Effect::Show(Some(InstallSalt::new([9; 16]))),
+            Effect::Show {
+                reseeded: Some(InstallSalt::new([9; 16])),
+                history_changed: true
+            },
             "re-seeded"
         );
         assert_eq!(
@@ -2208,15 +2315,67 @@ mod tests {
         assert_eq!(form.take_intents(), [Intent::Reseed]);
         // An engine that cannot start again leaves the strip halted.
         let failed = Outcome::Restarted {
-            changed: Ok(()),
+            changed: Ok(lifecycle::Changed::Terrarium),
             started: Err(ConnectError::Halted),
         };
         assert_eq!(
             repo.changed(1, failed, &mut shell, &mut asked),
-            Effect::Show(None)
+            Effect::Show {
+                reseeded: None,
+                history_changed: true
+            }
         );
         let live = &repo.connected.as_ref().unwrap().live;
         assert_eq!(live.label().last().map(String::as_str), Some("halted"));
+    }
+
+    #[test]
+    fn an_import_says_what_it_did_and_dates_the_time_lapse_only_when_it_added_any() {
+        use terrarium_store::{ImportError, ImportReport};
+        use terrarium_truth::SIM_VERSION;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        connected(dir.path(), &mut repo, &mut shell);
+        let facts = repo.facts().unwrap();
+        shell.settings = Some(SettingsForm::new(facts, &Prefs::default(), String::new()));
+        let imported = |inserted, duplicates| {
+            Ok(lifecycle::Changed::Imported(ImportReport {
+                sim_version: SIM_VERSION,
+                inserted,
+                duplicates,
+                conflicts: vec![],
+            }))
+        };
+        let mut asked = Asked::default();
+        for (changed, history_changed) in [
+            (imported(0, 4), false),
+            (imported(3, 1), true),
+            (
+                Err(lifecycle::Refused::Import(ImportError::NotAnExport)),
+                false,
+            ),
+            (Err(lifecycle::Refused::ImportHalted), false),
+        ] {
+            let outcome = Outcome::Restarted {
+                changed,
+                started: Ok((engine(dir.path()), terrarium(3))),
+            };
+            assert_eq!(
+                repo.changed(1, outcome, &mut shell, &mut asked),
+                Effect::Show {
+                    reseeded: None,
+                    history_changed
+                }
+            );
+            assert!(repo.engine.is_some(), "the engine runs again");
+        }
+        // The form is free again after each.
+        let form = shell.settings.as_mut().unwrap();
+        form.repo().ask_reseed();
+        form.repo().reseed();
+        assert_eq!(form.take_intents(), [Intent::Reseed]);
     }
 
     #[test]

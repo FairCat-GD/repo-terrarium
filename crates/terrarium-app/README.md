@@ -22,11 +22,16 @@ The `repo-terrarium` binary.
   window and dropped with the last, painted only when egui asks (`repaint`): the connect window
   (`connect`), open while no repository is connected, and the settings window (`settings`), a
   tab each for the repository, the strip, the adapters, the hotkeys, the time and the rest.
-  Their forms are tested models whose presses come back as intents; the folder picker is the
+  Their forms are tested models whose presses come back as intents; every picker is the
   first of two steps.
-- The terrarium's lifecycle (`lifecycle`): connecting from the window, relinking, re-seeding
-  and disconnecting, each on a thread of its own that stops the engine, changes the store and
-  starts a new engine, whose generation tags its updates.
+- The terrarium's lifecycle (`lifecycle`): connecting from the window, relinking, re-seeding,
+  importing observations and disconnecting, each on a thread of its own that stops the engine,
+  changes the store and starts a new engine, whose generation tags its updates.
+- The terrarium's data (`portability`), from the settings' repository tab: its observations
+  exported as JSON Lines (the store's format), which the same repository's terrarium on another
+  computer imports, and its climate exported as JSON (below). Each export reads through a
+  connection of its own on a thread of its own; every file the app writes is written beside its
+  path and takes the name once whole (`files`).
 - One app at a time (`instance`): a lock in the data directory, and the requests a second
   launch leaves there. Opening at login (`login`), through the platform's login item.
 - The `Presenter` that puts composed pixels on screen (`present`), with softbuffer as the first
@@ -40,8 +45,10 @@ The `repo-terrarium` binary.
 - `--probe pinning` (`probe`): the strip with a recorder, a guided checklist and a report.
 - The time-lapse window (`timelapse`): the repository's history replayed by a replay and a
   composer of its own, played in 30 seconds over a range of days, by day or by night, and
-  written as a GIF or a postcard PNG. Its reading, replaying and writing run on threads of
-  their own; the live strip's engine and composer are never touched.
+  written as a GIF, a postcard PNG, or, when the person's ffmpeg is found, an MP4 (`mp4`): raw
+  RGB upscaled to 4× or more fed to it, which writes H.264 in `yuv420p`. Its reading,
+  replaying and writing run on threads of their own; the live strip's engine and composer are
+  never touched.
 - In dev builds (`--features dev`): the debug window (`debug`), with its simulation of the real
   sim over a history its sliders make (`sandbox`), and `--probe egui` (`egui_probe`).
 
@@ -86,6 +93,8 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
   `--gif <file>` writes the whole history's time-lapse instead, as the window does, with
   `--night` by night and `--scale <n>` (1 to 8) times the scene's size; the same command
   always writes the same bytes. `cargo xtask hero` writes the fixture arc's this way.
+  `--mp4 <file>` writes it as an MP4 through the person's ffmpeg, at `--scale` or 4×,
+  whichever is larger, and exits 1 when no ffmpeg is found.
 - `repo-terrarium discover <path>` prints what the repository has for each report adapter,
   what each report found reads as, and how the missing ones connect (`discover`).
 - `repo-terrarium record-tests -- <command>` runs a test command in the current repository and
@@ -101,6 +110,36 @@ where each half lives, compose's layout in `tests/composer.rs` and truth's dump 
 - In dev builds, `repo-terrarium --probe egui` opens and closes the debug window five times on
   timers and writes `egui-memory-<time>.txt` to the current directory: memory, loop wakes and
   focus per phase. Run it on a release build.
+
+## Climate export (format version 1)
+
+One JSON object in UTF-8: the header's fields, then `days`, one line each, then `timeline`,
+one line each.
+
+```json
+{"format":"repo-terrarium-climate","format_version":1,"seed":"<64 hex>","sim_version":8,"days":[
+{"date":"2024-03-14","light":{"value":0.80914306640625,"stale":false},"soil":null,
+ "dead_code":null,"complexity":0.75,"todo_density":0.9,"rain":1.25,"wind":1.0,"health":0.5,
+ "activity":0.5,"terrain":12345,"weather":{"state":"pass","source":"ci:main","stale":false}}
+],"timeline":[
+{"at":"2024-03-14T05:00:00Z","state":"thriving","health":"healthy","activity":"active"}
+]}
+```
+
+The day is wrapped here; in a file each is one line.
+
+- A day is each UTC day the history has finished, from its first commit, as that day's close
+  left it, with the observations recorded here.
+- `light` and `soil` are smoothed, as health reads them, with whether the reading behind each
+  is stale; `dead_code`, `complexity` and `todo_density` are the soil's components as last
+  reported. Each is 1 at its best.
+- `rain` and `wind` are against the repository's own pace, 1 being its usual; `health` and
+  `activity` are what the presentation reads; `terrain` is the default tip's text lines.
+- `weather.state` is `pass` or `fail`, `source` is `ci:<branch>` or `local`, and both are
+  `null` while unknown or hazy.
+- Unknown is `null`, never 0. Every fraction is exact: a whole number of 65536ths.
+- `timeline` lists every change of the presentation's state, health class or activity class,
+  each from the UTC hour it began.
 
 ## Requirements
 

@@ -29,6 +29,10 @@ pub enum Picking {
     Location,
     /// Where a time-lapse export is saved.
     Save(Export),
+    /// Where the settings window saves the terrarium's data.
+    SaveData(DataFile),
+    /// The observations export to import.
+    Import,
 }
 
 /// What the time-lapse window writes.
@@ -38,6 +42,17 @@ pub enum Export {
     Gif,
     /// The day shown, as a PNG.
     Postcard,
+    /// The range played, as an MP4 through the person's ffmpeg.
+    Mp4,
+}
+
+/// What the settings window exports of the connected terrarium.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataFile {
+    /// Its recorded observations, as JSON Lines.
+    Observations,
+    /// Its presentation timeline and each day's climate, as JSON.
+    Climate,
 }
 
 /// What a window's press asks the strip for.
@@ -64,6 +79,10 @@ pub enum Intent {
     Film { from: usize, to: usize, night: bool },
     /// Write a time-lapse export to the path picked.
     Write { export: Export, path: PathBuf },
+    /// Export the terrarium's data to the path picked.
+    Export { file: DataFile, path: PathBuf },
+    /// Import the observations export picked, confirmed.
+    Import(PathBuf),
 }
 
 #[derive(Default)]

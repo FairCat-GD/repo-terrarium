@@ -7,7 +7,7 @@
 //! the window says so, and the strip runs on.
 
 use std::panic::{self, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -19,12 +19,17 @@ use terrarium_store::{DataDir, Terrarium};
 use terrarium_truth::Tick;
 use winit::event_loop::EventLoopProxy;
 
+use terrarium_adapters::exec::{Tool, find_ffmpeg};
+
+use super::mp4::write_mp4;
 use super::{Film, write_gif, write_postcard};
 use crate::copy;
 use crate::strip::UserEvent;
 
 /// What a time-lapse job says.
 pub enum Msg {
+    /// The person's ffmpeg, if one was found: the MP4 is offered only then.
+    Ffmpeg(Option<Tool>),
     /// How far the history's read has come, in percent.
     Reading(u8),
     /// The history read, or why not, worded.
@@ -34,7 +39,7 @@ pub enum Msg {
         asked: u64,
         film: Result<Arc<Film>, String>,
     },
-    /// How far the GIF's writing has come, in percent.
+    /// How far a GIF's or an MP4's writing has come, in percent.
     Writing(u8),
     /// An export written to its path, or why not, worded.
     Written(Result<PathBuf, String>),
@@ -54,7 +59,7 @@ pub struct Session {
 
 impl Session {
     /// Starts reading `terrarium`'s history through now, from its repository and the store
-    /// in `data`.
+    /// in `data`, after looking for the person's ffmpeg, never inside the repository.
     pub fn start(
         generation: u64,
         proxy: &EventLoopProxy<UserEvent>,
@@ -79,6 +84,8 @@ impl Session {
             "terrarium-time-lapse",
             halted,
             move || {
+                let ffmpeg = find_ffmpeg(Some(Path::new(&terrarium.repo.path)));
+                let _ = progress.send_event(UserEvent::TimeLapse(generation, Msg::Ffmpeg(ffmpeg)));
                 let mut heard = |percent| {
                     let _ = progress
                         .send_event(UserEvent::TimeLapse(generation, Msg::Reading(percent)));
@@ -149,19 +156,32 @@ impl Session {
             "terrarium-time-lapse-gif",
             halted,
             move || {
-                let mut last = None;
-                let mut heard = |percent: u8| {
-                    let step = percent / 5;
-                    if last != Some(step) {
-                        last = Some(step);
-                        let _ = progress
-                            .send_event(UserEvent::TimeLapse(generation, Msg::Writing(percent)));
-                    }
-                };
+                let mut heard = in_steps(progress, generation);
                 Msg::Written(
                     write_gif(&film, salt, scale, &path, &mut heard)
                         .map(|()| path)
                         .map_err(|err| copy::timelapse::not_saved(&err)),
+                )
+            },
+        );
+    }
+
+    /// Writes `film` as an MP4 at `scale`, or 4× if larger, to `path` through `ffmpeg`.
+    pub fn write_mp4(&self, film: Arc<Film>, scale: u32, ffmpeg: Tool, path: PathBuf) {
+        let (generation, salt) = (self.generation, self.salt);
+        let progress = self.proxy.clone();
+        let halted = |why| Msg::Written(Err(why));
+        spawn(
+            &self.proxy,
+            generation,
+            "terrarium-time-lapse-mp4",
+            halted,
+            move || {
+                let mut heard = in_steps(progress, generation);
+                Msg::Written(
+                    write_mp4(&film, salt, scale, &ffmpeg, &path, &mut heard)
+                        .map(|()| path)
+                        .map_err(|err| copy::timelapse::not_saved(&copy::ffmpeg_problem(&err))),
                 )
             },
         );
@@ -190,6 +210,18 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A writing's progress, sent as it passes each 5%.
+fn in_steps(proxy: EventLoopProxy<UserEvent>, generation: u64) -> impl FnMut(u8) {
+    let mut last = None;
+    move |percent: u8| {
+        let step = percent / 5;
+        if last != Some(step) {
+            last = Some(step);
+            let _ = proxy.send_event(UserEvent::TimeLapse(generation, Msg::Writing(percent)));
+        }
     }
 }
 

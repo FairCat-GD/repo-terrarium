@@ -10,9 +10,15 @@ truth.
 - Tree-sitter metrics: complexity, TODO density and lines of code.
 - Discovery of what a repository has, and what it lacks.
 - The GitHub Actions client.
-- The single `exec` module, the only place a process starts: the command a person gives
-  `record-tests` (on Windows, a bare name is looked up with `PATHEXT`, so `.cmd` scripts such
-  as `npm` run), and later a tool behind its per-adapter opt-in.
+- The single `exec` module, the only place a process starts:
+  - the command a person gives `record-tests` (on Windows, a bare name is looked up with
+    `PATHEXT`, so `.cmd` scripts such as `npm` run);
+  - a tool the person installed, fed on its stdin with nothing inherited and a time limit:
+    their ffmpeg, which writes the time-lapse's MP4. It is looked for on `PATH`, then on macOS
+    in `/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin`, since an app opened from
+    Finder or at login gets only the system's `PATH`; never inside the repository, and on
+    Windows only as an `.exe`;
+  - later, a tool behind its per-adapter opt-in.
 
 ## Why it is a crate of its own
 

@@ -56,6 +56,13 @@ pub enum ReplayOutput {
         night: bool,
         scale: u32,
     },
+    /// `--mp4 <file>`: the same time-lapse as an MP4, through the person's ffmpeg, at
+    /// `--scale <n>` or 4×, whichever is larger.
+    Mp4 {
+        path: PathBuf,
+        night: bool,
+        scale: u32,
+    },
 }
 
 /// The largest scale `--scale` takes.
@@ -79,9 +86,10 @@ pub enum UsageError {
     MissingDiscoverRepo,
     /// `record-tests` without `--` and a command after it.
     MissingCommand,
-    /// `replay` without exactly one of its outputs, `--dump` or `--gif`, asked for by name.
+    /// `replay` without exactly one of its outputs, `--dump`, `--gif` or `--mp4`, asked for
+    /// by name.
     MissingOutput,
-    /// A flag of `--gif`'s given without it.
+    /// A flag of the time-lapse's, `--gif`'s or `--mp4`'s, given without either.
     GifOnly(&'static str),
     /// A `--scale` that is not a whole number from 1 to [`MAX_SCALE`].
     BadScale(OsString),
@@ -162,7 +170,7 @@ fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, Us
         .next()
         .filter(|repo| !repo.to_string_lossy().starts_with("--"))
         .ok_or(UsageError::MissingReplayRepo)?;
-    let (mut dump, mut gif, mut observations, mut at) = (false, None, None, None);
+    let (mut dump, mut gif, mut mp4, mut observations, mut at) = (false, None, None, None, None);
     let (mut night, mut scale) = (false, None);
     while let Some(arg) = args.next() {
         if arg == "--dump" && !dump {
@@ -170,6 +178,9 @@ fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, Us
         } else if arg == "--gif" && gif.is_none() {
             let path = args.next().ok_or(UsageError::MissingValue("--gif"))?;
             gif = Some(PathBuf::from(path));
+        } else if arg == "--mp4" && mp4.is_none() {
+            let path = args.next().ok_or(UsageError::MissingValue("--mp4"))?;
+            mp4 = Some(PathBuf::from(path));
         } else if arg == "--night" && !night {
             night = true;
         } else if arg == "--scale" && scale.is_none() {
@@ -192,8 +203,8 @@ fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, Us
             return Err(UsageError::Unexpected(arg));
         }
     }
-    let output = match (dump, gif) {
-        (true, None) => {
+    let output = match (dump, gif, mp4) {
+        (true, None, None) => {
             if night {
                 return Err(UsageError::GifOnly("--night"));
             }
@@ -202,7 +213,12 @@ fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, Us
             }
             ReplayOutput::Dump
         }
-        (false, Some(path)) => ReplayOutput::Gif {
+        (false, Some(path), None) => ReplayOutput::Gif {
+            path,
+            night,
+            scale: scale.unwrap_or(1),
+        },
+        (false, None, Some(path)) => ReplayOutput::Mp4 {
             path,
             night,
             scale: scale.unwrap_or(1),
@@ -389,6 +405,39 @@ mod tests {
         assert_eq!(
             parse_strs(&["replay", "moss", "--dump", "x"]),
             unexpected("x")
+        );
+    }
+
+    #[test]
+    fn replay_writes_an_mp4_alone_by_day_or_night_at_a_scale() {
+        assert_eq!(
+            parse_strs(&[
+                "replay", "moss", "--mp4", "fern.mp4", "--night", "--scale", "6"
+            ]),
+            Ok(Command::Replay(ReplayArgs {
+                repo: PathBuf::from("moss"),
+                observations: None,
+                at: None,
+                output: ReplayOutput::Mp4 {
+                    path: PathBuf::from("fern.mp4"),
+                    night: true,
+                    scale: 6,
+                },
+            }))
+        );
+        for both in [
+            &["replay", "moss", "--gif", "fern.gif", "--mp4", "fern.mp4"][..],
+            &["replay", "moss", "--dump", "--mp4", "fern.mp4"][..],
+        ] {
+            assert_eq!(parse_strs(both), Err(UsageError::MissingOutput), "{both:?}");
+        }
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--mp4"]),
+            Err(UsageError::MissingValue("--mp4"))
+        );
+        assert_eq!(
+            parse_strs(&["replay", "moss", "--mp4", "a.mp4", "--mp4", "b.mp4"]),
+            unexpected("--mp4")
         );
     }
 

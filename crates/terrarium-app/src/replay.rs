@@ -1,5 +1,6 @@
 //! `replay <path>`: a headless replay, printed as truth's canonical dump (`--dump`) or written as
-//! the whole history's time-lapse (`--gif <file>`).
+//! the whole history's time-lapse (`--gif <file>`, or `--mp4 <file>` through the person's
+//! ffmpeg).
 //!
 //! It opens no window. Its store lives in a temporary directory that is removed when it ends,
 //! so it never reads or writes the data directory.
@@ -9,12 +10,15 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::ExitCode;
 
+use terrarium_adapters::exec::find_ffmpeg;
+
 use terrarium_compose::salt::InstallSalt;
 use terrarium_engine::headless::{Request, lapse, replay_dump};
 use terrarium_store::DataDir;
 use terrarium_truth::canonical_dump;
 
 use crate::cli::{ReplayArgs, ReplayOutput};
+use crate::timelapse::mp4::write_mp4;
 use crate::timelapse::{Film, write_gif};
 use crate::{copy, now_secs, output};
 
@@ -28,6 +32,9 @@ pub fn run(args: &ReplayArgs) -> ExitCode {
         }
         ReplayOutput::Gif { path, night, scale } => {
             gif(args, path, *night, *scale).map(|()| ExitCode::SUCCESS)
+        }
+        ReplayOutput::Mp4 { path, night, scale } => {
+            mp4(args, path, *night, *scale).map(|()| ExitCode::SUCCESS)
         }
     };
     done.unwrap_or_else(|message| {
@@ -71,7 +78,8 @@ fn dump(args: &ReplayArgs) -> Result<String, String> {
     Ok(canonical_dump(&dump))
 }
 
-fn gif(args: &ReplayArgs, path: &Path, night: bool, scale: u32) -> Result<(), String> {
+/// The whole history's time-lapse, by day or by `night`.
+fn film(args: &ReplayArgs, night: bool) -> Result<Film, String> {
     let temp = tempfile::tempdir().map_err(|err| copy::replay_store_unavailable(&err))?;
     let data = DataDir::at(temp.path());
     let mut observations = observations(args)?;
@@ -81,8 +89,28 @@ fn gif(args: &ReplayArgs, path: &Path, night: bool, scale: u32) -> Result<(), St
     let Some(last) = closes.len().checked_sub(1) else {
         return Err(copy::replay_no_day(&args.repo));
     };
-    let film = Film::new(&lapse, &closes, 0, last, night)
-        .map_err(|err| copy::replay_failed(&args.repo, &err.into()))?;
+    Film::new(&lapse, &closes, 0, last, night)
+        .map_err(|err| copy::replay_failed(&args.repo, &err.into()))
+}
+
+fn gif(args: &ReplayArgs, path: &Path, night: bool, scale: u32) -> Result<(), String> {
+    let film = film(args, night)?;
     write_gif(&film, InstallSalt::new(SALT), scale, path, &mut |_| {})
         .map_err(|err| copy::replay_gif_failed(path, &err))
+}
+
+/// The MP4, through the person's ffmpeg, looked for before the history is read, and never in
+/// the repository.
+fn mp4(args: &ReplayArgs, path: &Path, night: bool, scale: u32) -> Result<(), String> {
+    let ffmpeg = find_ffmpeg(Some(&args.repo)).ok_or_else(copy::replay_no_ffmpeg)?;
+    let film = film(args, night)?;
+    write_mp4(
+        &film,
+        InstallSalt::new(SALT),
+        scale,
+        &ffmpeg,
+        path,
+        &mut |_| {},
+    )
+    .map_err(|err| copy::replay_mp4_failed(path, &err))
 }

@@ -1,18 +1,20 @@
-//! The time-lapse: the repository's history replayed from its stored observations by a replay
-//! and a composer of its own, played in 30 seconds and written as a GIF or a postcard. The live
-//! strip's engine and composer are never touched, and a paused strip stays paused.
+//! The time-lapse: the repository's history replayed from its stored
+//! observations by a replay and a composer of its own, played in 30 seconds and written as a
+//! GIF, a postcard or, through the person's ffmpeg, an MP4. The live strip's engine and composer are never touched, and a paused
+//! strip stays paused.
 //!
-//! - this module makes a [`Film`] from a history's days and writes it;
+//! - this module makes a [`Film`] from a history's days and writes it; `mp4` writes it through
+//!   ffmpeg;
 //! - `form` is the window, a model drawn with egui, and its `player`;
 //! - `job` runs the reading, the replay and the writing off the loop.
 
 pub mod form;
 pub mod job;
+pub mod mp4;
 pub mod player;
 
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, Write};
+use std::path::Path;
 
 use terrarium_compose::catalog::Art;
 use terrarium_compose::clock::LocalClock;
@@ -26,6 +28,7 @@ use terrarium_engine::timelapse::Lapse;
 use terrarium_truth::{ReplayError, Tick};
 
 use crate::copy;
+use crate::files::write_beside;
 
 /// The longest range whose label names each day; a longer one plays its days too quickly to
 /// read, and names the month.
@@ -154,38 +157,8 @@ pub fn write_postcard(shot: &Shot, salt: InstallSalt, scale: u32, path: &Path) -
     })
 }
 
-/// Writes `path` through `write`, into a file beside it that takes its name only once whole;
-/// a failure leaves `path` as it was and removes what was begun.
-fn write_beside(
-    path: &Path,
-    write: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
-) -> io::Result<()> {
-    let part = beside(path);
-    let written = File::create(&part).and_then(|file| {
-        let mut file = BufWriter::new(file);
-        write(&mut file)?;
-        file.into_inner()
-            .map_err(io::IntoInnerError::into_error)?
-            .sync_all()
-    });
-    match written.and_then(|()| std::fs::rename(&part, path)) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            let _ = std::fs::remove_file(&part);
-            Err(err)
-        }
-    }
-}
-
-/// The file an export is written into before it takes its name: `<name>.part`, beside it.
-fn beside(path: &Path) -> PathBuf {
-    let mut part = path.as_os_str().to_owned();
-    part.push(".part");
-    PathBuf::from(part)
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use sha2::{Digest, Sha256};
@@ -199,9 +172,10 @@ mod tests {
     use terrarium_truth::scene::EventKind;
 
     use super::*;
+    use crate::files::beside;
 
     /// The fixture arc, read as `replay` reads it.
-    fn arc() -> (tempfile::TempDir, Lapse) {
+    pub(crate) fn arc() -> (tempfile::TempDir, Lapse) {
         let dir = tempfile::tempdir().unwrap();
         fixture::arc(&dir.path().join("repo")).unwrap();
         let observations = std::fs::read(
@@ -295,21 +269,5 @@ mod tests {
         let mut expected = vec![[0; 4]; size.pixel_count()];
         upscale_into(&settled, &size, |rgba| rgba, &mut expected).unwrap();
         assert_eq!(pixels, expected);
-    }
-
-    #[test]
-    fn a_write_that_fails_leaves_the_path_as_it_was_and_nothing_beside_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fern.png");
-        std::fs::write(&path, b"before").unwrap();
-        let failed = write_beside(&path, |_| Err(io::Error::other("full")));
-        assert!(failed.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"before");
-        assert!(!beside(&path).exists());
-        let missing = dir.path().join("gone").join("fern.png");
-        assert!(write_beside(&missing, |file| file.write_all(b"after")).is_err());
-        assert!(!beside(&missing).exists());
-        write_beside(&path, |file| file.write_all(b"after")).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"after");
     }
 }

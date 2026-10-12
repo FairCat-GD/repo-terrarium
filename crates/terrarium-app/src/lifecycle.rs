@@ -1,5 +1,5 @@
-//! Connecting from the connect window, relinking, re-seeding and disconnecting, run on a thread
-//! of their own so the event loop never waits: the engine running is stopped and its thread
+//! Connecting from the connect window, relinking, re-seeding, importing observations and
+//! disconnecting, run on a thread of their own so the event loop never waits: the engine running is stopped and its thread
 //! joined, so nothing it writes follows; the store is changed (`terrarium_engine::lifecycle`);
 //! a new engine starts; and the outcome comes back to the event loop as one event.
 //!
@@ -13,7 +13,9 @@ use std::thread;
 use terrarium_engine::lifecycle as change;
 use terrarium_engine::{ConnectError, Engine, EngineConfig, Sink, Start};
 use terrarium_store::identifiers::SETTING_LOGIN_OPEN_AT_LOGIN;
-use terrarium_store::{DataDir, InstallKey, Store, Terrarium, TerrariumId};
+use terrarium_store::{
+    DataDir, ImportError, ImportReport, InstallKey, Store, Terrarium, TerrariumId,
+};
 use terrarium_truth::scene::SceneInput;
 use winit::event_loop::EventLoopProxy;
 
@@ -36,6 +38,11 @@ pub enum Job {
     Reseed {
         id: TerrariumId,
     },
+    /// Imports the observations export at `path`.
+    Import {
+        id: TerrariumId,
+        path: PathBuf,
+    },
     Disconnect {
         id: TerrariumId,
         delete_observations: bool,
@@ -53,15 +60,43 @@ pub enum Outcome {
         scene: Option<SceneInput>,
         report: String,
     },
-    /// Relinked or re-seeded, or refused (`changed`), and the engine started again on what
-    /// the store now holds.
+    /// Relinked, re-seeded or imported, or refused (`changed`), and the engine started again
+    /// on what the store now holds.
     Restarted {
-        changed: Result<(), ConnectError>,
+        changed: Result<Changed, Refused>,
         started: Result<(Engine, Box<Terrarium>), ConnectError>,
     },
     Disconnected,
     /// Nothing was connected, and why.
     NotConnected(ConnectError),
+}
+
+/// What a change that restarts the engine did.
+#[derive(Debug)]
+pub enum Changed {
+    /// Relinked or re-seeded.
+    Terrarium,
+    /// Imported observations, and how many of each kind of line.
+    Imported(ImportReport),
+}
+
+impl Changed {
+    /// Whether the terrarium's history changed, so a time-lapse of it is out of date.
+    pub fn changes_history(&self) -> bool {
+        match self {
+            Changed::Terrarium => true,
+            Changed::Imported(report) => report.inserted > 0,
+        }
+    }
+}
+
+/// Why a change was refused; the store holds what it held.
+#[derive(Debug)]
+pub enum Refused {
+    Connect(ConnectError),
+    Import(ImportError),
+    /// The import stopped on a panic; its transaction wrote nothing.
+    ImportHalted,
 }
 
 /// A sink for the engine of `generation`: its updates go to the event loop, tagged.
@@ -105,9 +140,13 @@ fn run(job: Job, data: &DataDir, proxy: &EventLoopProxy<UserEvent>, generation: 
             (_, Start::NotConnected) => Err(ConnectError::Halted),
         }
     };
-    let restart = |changed: Result<(), ConnectError>| Outcome::Restarted {
+    let restart = |changed: Result<Changed, Refused>| Outcome::Restarted {
         changed,
         started: start(None).map(|(engine, terrarium, _)| (engine, terrarium)),
+    };
+    // A panic while changing the store still starts the engine again on what it holds.
+    let changing = |change: &dyn Fn() -> Result<Changed, Refused>, halted: Refused| {
+        panic::catch_unwind(AssertUnwindSafe(change)).unwrap_or(Err(halted))
     };
     match job {
         Job::Connect { path, first_run } => match start(Some(path)) {
@@ -130,14 +169,36 @@ fn run(job: Job, data: &DataDir, proxy: &EventLoopProxy<UserEvent>, generation: 
             }
             Err(err) => Outcome::NotConnected(err),
         },
-        Job::Relink { id, path } => restart(change::relink(data, id, &path).map(|_| ())),
-        Job::Reseed { id } => restart(change::reseed(data, id).map(|_| ())),
+        Job::Relink { id, path } => restart(changing(
+            &|| {
+                change::relink(data, id, &path)
+                    .map(|_| Changed::Terrarium)
+                    .map_err(Refused::Connect)
+            },
+            Refused::Connect(ConnectError::Halted),
+        )),
+        Job::Reseed { id } => restart(changing(
+            &|| {
+                change::reseed(data, id)
+                    .map(|_| Changed::Terrarium)
+                    .map_err(Refused::Connect)
+            },
+            Refused::Connect(ConnectError::Halted),
+        )),
+        Job::Import { id, path } => restart(changing(
+            &|| {
+                change::import(data, id, &path)
+                    .map(Changed::Imported)
+                    .map_err(Refused::Import)
+            },
+            Refused::ImportHalted,
+        )),
         Job::Disconnect {
             id,
             delete_observations,
         } => match change::disconnect(data, id, delete_observations) {
             Ok(()) => Outcome::Disconnected,
-            Err(err) => restart(Err(err)),
+            Err(err) => restart(Err(Refused::Connect(err))),
         },
     }
 }

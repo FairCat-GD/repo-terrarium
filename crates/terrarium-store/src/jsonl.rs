@@ -282,7 +282,9 @@ fn parse_line(text: &str) -> Result<ObservationRecord, LineProblem> {
         .into_record()
 }
 
-/// Merges one line's record: inserted, a duplicate, or a conflict added to the report.
+/// Merges one line's record: inserted, a duplicate, or a conflict added to the report. Most
+/// lines of a move to another machine are new, so the insert comes first and the stored row is
+/// looked up only when its merge key is taken; the failed insert undoes only itself.
 fn merge(
     lookup: &mut KeyLookup<'_>,
     inserter: &mut Inserter<'_>,
@@ -296,26 +298,30 @@ fn merge(
     let checked = record
         .checked()
         .map_err(|why| line_problem(LineProblem::Invalid(why)))?;
-    match lookup.find(terrarium, &record)? {
-        None => {
-            inserter.insert(terrarium, checked)?;
+    match inserter.insert(terrarium, checked) {
+        Ok(_) => {
             report.inserted += 1;
+            return Ok(());
         }
-        Some(stored) => {
-            let columns = differing(&stored.record, &record);
-            if columns.is_empty() {
-                report.duplicates += 1;
-            } else {
-                report.conflicts.push(Conflict {
-                    line: number,
-                    kind: record.kind,
-                    source: record.source,
-                    head_commit: record.head.commit,
-                    recorded_at: record.recorded_at,
-                    columns,
-                });
-            }
-        }
+        Err(StoreError::AlreadyRecorded) => {}
+        Err(err) => return Err(err.into()),
+    }
+    // The key's row exists, or the insert would have taken; one missing now is no row to keep.
+    let stored = lookup
+        .find(terrarium, &record)?
+        .ok_or(StoreError::Corrupt("observations"))?;
+    let columns = differing(&stored.record, &record);
+    if columns.is_empty() {
+        report.duplicates += 1;
+    } else {
+        report.conflicts.push(Conflict {
+            line: number,
+            kind: record.kind,
+            source: record.source,
+            head_commit: record.head.commit,
+            recorded_at: record.recorded_at,
+            columns,
+        });
     }
     Ok(())
 }
@@ -603,6 +609,27 @@ mod tests {
             "the stored rows are kept"
         );
         assert_eq!(after.last().unwrap().record, extra);
+    }
+
+    #[test]
+    fn a_line_repeated_within_one_file_merges_with_the_one_inserted_before_it() {
+        let (source, id) = holding(&[record(ObservationKind::Coverage, 1)]);
+        let file = String::from_utf8(export(&source, id)).unwrap();
+        let lines: Vec<&str> = file.lines().collect();
+        let mut changed: Value = serde_json::from_str(lines[1]).unwrap();
+        changed["confidence"] = json!(1234);
+        let text = format!("{}\n{}\n{}\n{changed}\n", lines[0], lines[1], lines[1]);
+        let mut fx = Fixture::new();
+        let there = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
+        let report = fx
+            .store
+            .import_observations(there, text.as_bytes())
+            .unwrap();
+        assert_eq!((report.inserted, report.duplicates), (1, 1));
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].line, 4);
+        assert_eq!(report.conflicts[0].columns, ["confidence"]);
+        assert_eq!(count(&fx), 1);
     }
 
     #[test]

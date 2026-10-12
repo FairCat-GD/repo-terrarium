@@ -1,6 +1,8 @@
 //! The time-lapse's replay: a repository's history and its recorded observations, read once,
 //! then replayed from its first commit to give the scene at the close of each day the
-//! time-lapse shows, with the event the live view would choose since the day shown before.
+//! time-lapse shows, with the event the live view would choose since the day shown before. The
+//! same replay gives each day's climate and the presentation's timeline, which the climate
+//! export writes.
 //!
 //! It reads the repository read-only and the store through a connection of its own, and writes
 //! nothing: not the sim cache, not the events shown. The live engine's state is never touched.
@@ -11,8 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use terrarium_adapters::git::{GitError, GitRepo, Progress};
 use terrarium_store::{DataDir, Store, StoreError, StoredObservation, Terrarium};
+use terrarium_truth::climate::{ClimateReport, DailyClimate};
 use terrarium_truth::replay::{first_close, utc_day};
 use terrarium_truth::time::TICKS_PER_DAY;
+use terrarium_truth::timeline::TimelineEntry;
 use terrarium_truth::{
     Basis, CommitFacts, Observation, Prepared, ReplayError, SceneInput, SimState, Tick,
 };
@@ -25,6 +29,19 @@ pub struct Lapse {
     pub(crate) observations: Vec<Observation>,
     pub(crate) basis: Basis,
     pub(crate) through: Tick,
+}
+
+/// One day's climate, as its close left it.
+pub struct Day<'a> {
+    pub close: Tick,
+    /// The UTC day that ends at the close, as days since 1970-01-01.
+    pub day: i64,
+    /// Truth's record of the day: smoothed light and soil, the soil's components, rain and
+    /// wind against their baselines, health, activity and terrain.
+    pub record: &'a DailyClimate,
+    /// The climate as the soil panel reads it then: the newest readings, whether each is
+    /// stale, and the weather.
+    pub report: ClimateReport,
 }
 
 #[derive(Debug)]
@@ -128,16 +145,59 @@ impl Lapse {
         &self,
         closes: &[Tick],
     ) -> Result<(Vec<SceneInput>, SimState), ReplayError> {
+        let mut showing = Showing::default();
+        let mut scenes = Vec::with_capacity(closes.len());
+        let state = self.walk(closes, |state, _| {
+            scenes.push(showing.scene(state));
+            Ok::<(), ReplayError>(())
+        })?;
+        Ok((scenes, state))
+    }
+
+    /// Each day the history has finished, in order, handed to `each` as it is replayed, so
+    /// nothing is held but the day at hand; an error from `each` stops the replay. Returns
+    /// every change of the presentation, oldest first.
+    pub fn days<E: From<ReplayError>>(
+        &self,
+        each: &mut dyn FnMut(Day<'_>) -> Result<(), E>,
+    ) -> Result<Vec<TimelineEntry>, E> {
+        let state = self.walk(&self.closes(), |state, close| {
+            // A close always records its day; one without its record has nothing to say.
+            let Some(record) = state.daily.last().filter(|record| record.tick == close) else {
+                return Ok(());
+            };
+            each(Day {
+                close,
+                day: self.day(close),
+                record,
+                report: state.report(),
+            })
+        })?;
+        Ok(state.timeline.entries)
+    }
+
+    /// When `tick` begins, in Unix seconds.
+    pub fn tick_secs(&self, tick: Tick) -> i64 {
+        self.basis.grid.start_secs(tick)
+    }
+
+    /// Replays from tick 0 through each of `closes` in turn, showing `at` the state at each.
+    ///
+    /// # Panics
+    /// If `closes` is not in order.
+    fn walk<E: From<ReplayError>>(
+        &self,
+        closes: &[Tick],
+        mut at: impl FnMut(&SimState, Tick) -> Result<(), E>,
+    ) -> Result<SimState, E> {
         assert!(closes.is_sorted(), "closes in order");
         let prepared = Prepared::new(self.basis.clone(), &self.commits, &self.observations)?;
         let mut state = SimState::new(self.basis.clone());
-        let mut showing = Showing::default();
-        let mut scenes = Vec::with_capacity(closes.len());
         for &close in closes {
             state.advance_through(&prepared, close)?;
-            scenes.push(showing.scene(&state));
+            at(&state, close)?;
         }
-        Ok((scenes, state))
+        Ok(state)
     }
 }
 
@@ -311,6 +371,61 @@ mod tests {
         )
         .unwrap();
         assert!(lapse.closes().is_empty());
+    }
+
+    /// Why a test's visitor stopped the replay.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Stop {
+        Asked,
+        Replay(ReplayError),
+    }
+
+    impl From<ReplayError> for Stop {
+        fn from(err: ReplayError) -> Stop {
+            Stop::Replay(err)
+        }
+    }
+
+    #[test]
+    fn every_finished_day_gives_its_climate_in_order_then_the_timeline() {
+        let (_dir, arc) = arc();
+        let closes = arc.closes();
+        let mut seen = Vec::new();
+        let mut known_light = 0;
+        let timeline = arc
+            .days(&mut |day: Day<'_>| -> Result<(), Stop> {
+                assert_eq!(day.record.tick, day.close);
+                assert_eq!(day.day, arc.day(day.close));
+                assert_eq!(
+                    day.record.light.is_some(),
+                    day.report.climate.light.known_value().is_some()
+                );
+                known_light += usize::from(day.record.light.is_some());
+                seen.push(day.close);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, closes, "one day per close");
+        assert!(
+            known_light > 0 && known_light < closes.len(),
+            "light is unknown before its first report"
+        );
+        let (_, state) = arc.replay(&closes).unwrap();
+        assert_eq!(timeline, state.timeline.entries);
+        assert!(timeline.len() > 3);
+        assert_eq!(
+            arc.tick_secs(closes[0]),
+            (arc.day(closes[0]) + 1) * DAY,
+            "a close begins its UTC day"
+        );
+        // A visitor's error ends the replay there.
+        let mut heard = 0;
+        let stopped = arc.days(&mut |_| {
+            heard += 1;
+            if heard == 3 { Err(Stop::Asked) } else { Ok(()) }
+        });
+        assert_eq!(stopped, Err(Stop::Asked));
+        assert_eq!(heard, 3);
     }
 
     #[test]

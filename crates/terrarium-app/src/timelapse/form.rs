@@ -1,6 +1,7 @@
-//! The time-lapse window: the strip at a reduced scale, a scrubber with the date, Play and
-//! Stop, the range of days, by day or by night, and the two exports. A thin view over a model
-//! the strip drives: what its presses ask for comes back as [`Intent`]s.
+//! The time-lapse window: the strip at a reduced scale, a
+//! scrubber with the date, Play and Stop, the range of days, by day or by night, and the
+//! exports: a GIF, a postcard, and an MP4 when the person's ffmpeg was found. A thin view over a model the strip drives: what its presses ask for comes back as
+//! [`Intent`]s.
 //!
 //! An export is two steps: the save dialog asks where ([`Intent::Pick`]), and only the path it
 //! answers with writes ([`Intent::Write`]), so the writing can be driven without the dialog.
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use egui::{ColorImage, TextureHandle, TextureOptions, Vec2};
+use terrarium_adapters::exec::Tool;
 use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::sky::LocalDate;
@@ -31,9 +33,19 @@ pub struct TimeLapseForm {
     shown_up_to: u32,
     /// The largest scale an export is written at.
     scales: u32,
+    /// The person's ffmpeg, kept apart from the phase, since its answer can come while the
+    /// history is read.
+    ffmpeg: Ffmpeg,
     phase: Phase,
     intents: Vec<Intent>,
     texture: Option<Texture>,
+}
+
+enum Ffmpeg {
+    /// Being looked for: neither the MP4 nor why not is shown yet.
+    Looking,
+    Found(Tool),
+    Missing,
 }
 
 enum Phase {
@@ -59,8 +71,8 @@ struct Ready {
     pending: bool,
     /// What the last export or film said.
     status: Option<String>,
-    /// An export is being written.
-    writing: bool,
+    /// The export being written.
+    writing: Option<Export>,
 }
 
 /// The picture as uploaded to the window's egui context, and which picture it is. A window
@@ -80,10 +92,16 @@ impl TimeLapseForm {
             salt,
             shown_up_to: strip_scale.saturating_sub(1).max(1),
             scales: strip_scale.max(EXPORT_SCALES),
+            ffmpeg: Ffmpeg::Looking,
             phase: Phase::Reading(None),
             intents: Vec::new(),
             texture: None,
         }
+    }
+
+    /// Whether the person's ffmpeg was found: the MP4 is offered only then.
+    pub fn ffmpeg(&mut self, ffmpeg: Option<Tool>) {
+        self.ffmpeg = ffmpeg.map_or(Ffmpeg::Missing, Ffmpeg::Found);
     }
 
     pub fn reading(&mut self, percent: u8) {
@@ -116,7 +134,7 @@ impl TimeLapseForm {
             player: Player::new(self.salt),
             pending: true,
             status: None,
-            writing: false,
+            writing: None,
         }));
         Some(Intent::Film {
             from: 0,
@@ -150,17 +168,19 @@ impl TimeLapseForm {
         }
     }
 
-    /// How far a GIF's writing has come.
+    /// How far a GIF's or an MP4's writing has come.
     pub fn writing(&mut self, percent: u8) {
-        if let Phase::Ready(ready) = &mut self.phase {
-            ready.status = Some(words::writing(percent));
+        if let Phase::Ready(ready) = &mut self.phase
+            && let Some(export) = ready.writing
+        {
+            ready.status = Some(words::writing(export, percent));
         }
     }
 
     /// An export is written, or why not.
     pub fn written(&mut self, written: Result<PathBuf, String>) {
         if let Phase::Ready(ready) = &mut self.phase {
-            ready.writing = false;
+            ready.writing = None;
             ready.status = Some(match written {
                 Ok(path) => words::saved(&path),
                 Err(why) => why,
@@ -174,9 +194,10 @@ impl TimeLapseForm {
         let writable = match export {
             Export::Gif => self.gif().is_some(),
             Export::Postcard => self.postcard().is_some(),
+            Export::Mp4 => self.mp4().is_some(),
         };
         if let (Phase::Ready(ready), Some(path), true) = (&mut self.phase, path, writable) {
-            ready.writing = true;
+            ready.writing = Some(export);
             ready.status = None;
             self.intents.push(Intent::Write { export, path });
         }
@@ -184,11 +205,12 @@ impl TimeLapseForm {
 
     /// The name the save dialog offers for `export`.
     pub fn file_name(&self, export: Export) -> String {
-        match (export, self.postcard()) {
-            (Export::Postcard, Some((shot, _))) => {
-                words::postcard_name(&self.name, shot.clock.date)
+        match export {
+            Export::Gif => words::gif_name(&self.name),
+            Export::Mp4 => words::mp4_name(&self.name),
+            Export::Postcard => {
+                words::postcard_name(&self.name, self.postcard().map(|(shot, _)| shot.clock.date))
             }
-            _ => words::gif_name(&self.name),
         }
     }
 
@@ -196,6 +218,16 @@ impl TimeLapseForm {
     pub fn gif(&self) -> Option<(Arc<Film>, u32)> {
         let ready = self.settled()?;
         Some((Arc::clone(ready.player.film()?), ready.scale))
+    }
+
+    /// The film to write as an MP4, its scale, and the ffmpeg that writes it: none without
+    /// one, or while another film is on its way.
+    pub fn mp4(&self) -> Option<(Arc<Film>, u32, Tool)> {
+        let (film, scale) = self.gif()?;
+        match &self.ffmpeg {
+            Ffmpeg::Found(ffmpeg) => Some((film, scale, ffmpeg.clone())),
+            Ffmpeg::Looking | Ffmpeg::Missing => None,
+        }
     }
 
     /// The shot shown, to write as a postcard, and its scale: none while another film is on
@@ -280,7 +312,7 @@ impl TimeLapseForm {
         };
         let texture = upload(&mut self.texture, ui.ctx(), image, serial);
         ui.image((texture.id(), picture_size(ui, self.shown_up_to)));
-        let asked = ready.controls(ui, self.scales, now);
+        let asked = ready.controls(ui, self.scales, &self.ffmpeg, now);
         if let Some((moved_from, released)) = asked.moved {
             self.range(asked.from, asked.to, moved_from, released);
         }
@@ -305,7 +337,7 @@ struct Asked {
 impl Ready {
     /// Draws the controls under the picture; the player and the scale take their changes at
     /// once.
-    fn controls(&mut self, ui: &mut egui::Ui, scales: u32, now: Instant) -> Asked {
+    fn controls(&mut self, ui: &mut egui::Ui, scales: u32, ffmpeg: &Ffmpeg, now: Instant) -> Asked {
         let film = self.player.film().cloned();
         let mut asked = Asked {
             from: self.from,
@@ -364,13 +396,17 @@ impl Ready {
                     }
                 });
         });
-        let writable = film.is_some() && !self.writing && !self.pending;
+        let writable = film.is_some() && self.writing.is_none() && !self.pending;
+        let mp4 = matches!(ffmpeg, Ffmpeg::Found(_));
         ui.horizontal(|ui| {
             for (export, word) in [
                 (Export::Gif, words::SAVE_GIF),
                 (Export::Postcard, words::SAVE_POSTCARD),
+                (Export::Mp4, words::SAVE_MP4),
             ] {
-                if ui.add_enabled(writable, egui::Button::new(word)).clicked() {
+                if (export != Export::Mp4 || mp4)
+                    && ui.add_enabled(writable, egui::Button::new(word)).clicked()
+                {
                     asked.picked = Some(export);
                 }
             }
@@ -378,6 +414,9 @@ impl Ready {
                 ui.label(status.as_str());
             }
         });
+        if let Ffmpeg::Missing = ffmpeg {
+            ui.add(egui::Label::new(words::NO_FFMPEG).wrap());
+        }
         asked
     }
 }
@@ -460,6 +499,86 @@ mod tests {
         output.drop_without_applying_deltas();
     }
 
+    /// The text one pass draws, a line per piece.
+    fn drawn(form: &mut TimeLapseForm) -> String {
+        fn texts(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    out.push_str(text.galley.text());
+                    out.push('\n');
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| form.ui(ui));
+        let mut out = String::new();
+        for clipped in &output.shapes {
+            texts(&clipped.shape, &mut out);
+        }
+        output.drop_without_applying_deltas();
+        out
+    }
+
+    #[test]
+    fn without_ffmpeg_the_mp4_is_not_offered_and_a_fact_says_why() {
+        let mut form = form();
+        // The answer comes while the history is read, and outlasts the read.
+        form.ffmpeg(None);
+        pass(&mut form);
+        form.read(&[DAY_ONE, DAY_ONE + 1]);
+        form.filmed(film(2), Instant::now());
+        let text = drawn(&mut form);
+        assert!(text.contains(words::SAVE_GIF), "{text}");
+        assert!(!text.contains(words::SAVE_MP4), "{text}");
+        assert!(text.contains(words::NO_FFMPEG), "{text}");
+        assert!(form.mp4().is_none());
+        form.picked(Export::Mp4, Some(PathBuf::from("fern.mp4")));
+        assert!(form.take_intents().is_empty(), "nothing writes an MP4");
+        // While it is looked for, neither is shown.
+        let mut looking = self::form();
+        looking.read(&[DAY_ONE, DAY_ONE + 1]);
+        looking.filmed(film(2), Instant::now());
+        let text = drawn(&mut looking);
+        assert!(!text.contains(words::SAVE_MP4) && !text.contains(words::NO_FFMPEG));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn with_ffmpeg_the_mp4_asks_where_then_writes_with_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ffmpeg");
+        std::fs::write(&file, "").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        let ffmpeg = terrarium_adapters::exec::find_tool(&["ffmpeg"], Some(&path), &[], None);
+        assert!(ffmpeg.is_some());
+        let mut form = form();
+        form.read(&[DAY_ONE, DAY_ONE + 1]);
+        form.ffmpeg(ffmpeg.clone());
+        form.filmed(film(2), Instant::now());
+        let text = drawn(&mut form);
+        assert!(text.contains(words::SAVE_MP4) && !text.contains(words::NO_FFMPEG));
+        assert_eq!(form.file_name(Export::Mp4), "fern-time-lapse.mp4");
+        let (_, scale, tool) = form.mp4().unwrap();
+        assert_eq!((scale, Some(tool)), (1, ffmpeg));
+        form.picked(Export::Mp4, Some(PathBuf::from("fern.mp4")));
+        assert_eq!(
+            form.take_intents(),
+            [Intent::Write {
+                export: Export::Mp4,
+                path: PathBuf::from("fern.mp4")
+            }]
+        );
+        form.writing(60);
+        let Phase::Ready(ready) = &form.phase else {
+            unreachable!()
+        };
+        assert_eq!(ready.status.as_deref(), Some("Writing the MP4: 60%"));
+    }
+
     #[test]
     fn a_history_read_asks_for_its_whole_range_by_day_and_one_with_no_day_says_so() {
         let mut form = form();
@@ -539,13 +658,13 @@ mod tests {
         let Phase::Ready(ready) = &form.phase else {
             unreachable!()
         };
-        assert!(ready.writing);
+        assert_eq!(ready.writing, Some(Export::Gif));
         assert_eq!(ready.status.as_deref(), Some("Writing the GIF: 45%"));
         form.written(Ok(PathBuf::from("/tmp/fern.gif")));
         let Phase::Ready(ready) = &form.phase else {
             unreachable!()
         };
-        assert!(!ready.writing);
+        assert_eq!(ready.writing, None);
         assert_eq!(ready.status.as_deref(), Some("Saved fern.gif"));
         // A film that fails once one plays is said beside it.
         form.film_failed("no".to_owned());

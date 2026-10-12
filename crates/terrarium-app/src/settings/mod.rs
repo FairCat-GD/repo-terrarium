@@ -26,8 +26,9 @@ use self::strip::StripSection;
 use self::time::TimeSection;
 use crate::copy::settings as words;
 use crate::hotkey::Which;
+use crate::portability::Msg;
 use crate::prefs::{Pref, Prefs};
-use crate::shell::Intent;
+use crate::shell::{DataFile, Intent};
 
 /// The window's tabs, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,34 @@ impl SettingsForm {
     /// The lifecycle change asked for ended: `problem` says why it failed.
     pub fn finished(&mut self, problem: Option<String>) {
         self.repo.finished(problem);
+    }
+
+    /// An import is done, and what it did, worded.
+    pub fn imported(&mut self, report: Vec<String>) {
+        self.repo.imported(report);
+    }
+
+    /// The save dialog for `file` answered.
+    pub fn export_to(&mut self, file: DataFile, path: Option<PathBuf>) {
+        self.repo.export_to(file, path);
+    }
+
+    /// What an export says.
+    pub fn export_said(&mut self, msg: &Msg) {
+        match msg {
+            Msg::Written(written) => self.repo.exported(written),
+            msg => self.repo.exporting(msg),
+        }
+    }
+
+    /// The file picker for an import answered.
+    pub fn import_chosen(&mut self, path: Option<PathBuf>) {
+        self.repo.import_chosen(path);
+    }
+
+    /// The name the save dialog offers for `file`.
+    pub fn file_name(&self, file: DataFile) -> String {
+        self.repo.file_name(file)
     }
 
     /// Shows `prefs`, as the strip now runs on them, in every tab.
@@ -269,6 +298,27 @@ mod tests {
             form.show(tab);
             draw(&ctx, &mut form);
         }
+        // The repository tab exporting, then asking to import, then reporting.
+        form.show(Tab::Repository);
+        form.export_to(DataFile::Climate, Some("/out/moss-climate.json".into()));
+        form.export_said(&Msg::Reading(30));
+        draw(&ctx, &mut form);
+        form.export_said(&Msg::Written(Ok("/out/moss-climate.json".into())));
+        form.import_chosen(Some("/in/moss-observations.jsonl".into()));
+        draw(&ctx, &mut form);
+        form.imported(vec!["Imported 3 observations; 0 were already here.".into()]);
+        draw(&ctx, &mut form);
+        let asked = form.take_intents();
+        assert!(
+            matches!(
+                &asked[..],
+                [Intent::Export {
+                    file: DataFile::Climate,
+                    ..
+                }]
+            ),
+            "{asked:?}"
+        );
         form.set_report(None);
         form.show(Tab::Adapters);
         draw(&ctx, &mut form);

@@ -16,6 +16,7 @@ mod egui_host;
 #[cfg(feature = "dev")]
 mod egui_probe;
 mod feed;
+mod files;
 mod hotkey;
 mod hover;
 mod idle;
@@ -27,6 +28,7 @@ mod menu;
 mod monitor;
 mod output;
 mod pinning;
+mod portability;
 mod prefs;
 mod present;
 mod probe;

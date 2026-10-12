@@ -9,6 +9,7 @@ use std::path::Path;
 use terrarium_adapters::discovery::{
     COBERTURA_PATHS, Discovery, KNIP_REPORT_PATH, LCOV_PATHS, Located, Runner, Search,
 };
+use terrarium_adapters::exec::{FedError, Finished};
 use terrarium_adapters::git::GitError;
 use terrarium_adapters::report::{
     Format, KNIP_MIN_MAJOR, KnipCounts, Outcome, Reading, Report as AdapterReport, Why,
@@ -65,8 +66,10 @@ pub fn usage_error(err: &UsageError) -> String {
         UsageError::MissingReplayRepo => "replay needs a repository path".to_owned(),
         UsageError::MissingDiscoverRepo => "discover needs a repository path".to_owned(),
         UsageError::MissingCommand => "record-tests runs the command that follows --".to_owned(),
-        UsageError::MissingOutput => "replay writes one result: --dump, or --gif <file>".to_owned(),
-        UsageError::GifOnly(flag) => format!("{flag} goes with --gif"),
+        UsageError::MissingOutput => {
+            "replay writes one result: --dump, --gif <file> or --mp4 <file>".to_owned()
+        }
+        UsageError::GifOnly(flag) => format!("{flag} goes with --gif or --mp4"),
         UsageError::BadScale(value) => format!(
             "'{}' is not a scale from 1 to {}",
             value.to_string_lossy(),
@@ -84,8 +87,8 @@ pub fn usage_error(err: &UsageError) -> String {
         .collect();
     format!(
         "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--repo <path> | --version | --demo | \
-         {} | --probe-readme]\n       {BINARY_NAME} replay <path> (--dump | --gif <file> \
-         [--night] [--scale <1-{max}>]) [--observations <file>] [--at <unix-seconds>]\n       \
+         {} | --probe-readme]\n       {BINARY_NAME} replay <path> (--dump | (--gif | --mp4) \
+         <file> [--night] [--scale <1-{max}>]) [--observations <file>] [--at <unix-seconds>]\n       \
          {BINARY_NAME} discover <path>\n       \
          {BINARY_NAME} record-tests -- <command> [<argument>...]",
         probes.join(" | "),
@@ -188,6 +191,16 @@ pub fn connect_problem(err: &ConnectError) -> String {
     }
 }
 
+/// Why a change the settings window asked for was refused, as the window says it.
+pub fn change_refused(refused: &crate::lifecycle::Refused) -> String {
+    use crate::lifecycle::Refused;
+    match refused {
+        Refused::Connect(err) => connect_problem(err),
+        Refused::Import(err) => settings::import_refused(err),
+        Refused::ImportHalted => settings::IMPORT_HALTED.to_owned(),
+    }
+}
+
 fn other_repository() -> &'static str {
     "that folder holds another repository"
 }
@@ -270,6 +283,40 @@ pub fn replay_gif_failed(path: &Path, err: &impl Display) -> String {
         "{BINARY_NAME}: the GIF could not be written to {}: {err}",
         path.display()
     )
+}
+
+pub fn replay_mp4_failed(path: &Path, err: &FedError) -> String {
+    format!(
+        "{BINARY_NAME}: the MP4 could not be written to {}: {}",
+        path.display(),
+        ffmpeg_problem(err)
+    )
+}
+
+pub fn replay_no_ffmpeg() -> String {
+    format!("{BINARY_NAME}: {}", timelapse::NO_FFMPEG)
+}
+
+/// Why ffmpeg did not write the MP4: how it ended, with the last line it gave as its reason.
+pub fn ffmpeg_problem(err: &FedError) -> String {
+    match err {
+        FedError::CannotRun(err) => format!("ffmpeg could not be started: {err}"),
+        FedError::Failed { ended, stderr } => {
+            let ended = match ended {
+                Finished::Code(code) => format!("exit code {code}"),
+                Finished::Signal(signal) => format!("signal {signal}"),
+            };
+            match stderr.lines().last() {
+                Some(why) => format!("ffmpeg stopped with {ended}: {why}"),
+                None => format!("ffmpeg stopped with {ended}"),
+            }
+        }
+        FedError::TimedOut => format!(
+            "ffmpeg ran past {} minutes and was stopped",
+            crate::timelapse::mp4::LIMIT.as_secs() / 60
+        ),
+        FedError::Feed(err) => err.to_string(),
+    }
 }
 
 pub fn discover_failed(repo: &Path, err: &GitError) -> String {
@@ -825,8 +872,11 @@ pub mod connect {
 /// The settings window: its tabs, and in each what is set and what it does.
 pub mod settings {
     use std::fmt::Display;
+    use std::path::PathBuf;
 
     use terrarium_platform::login::{LoginError, LoginStatus};
+    use terrarium_store::{ImportError, ImportReport};
+    use terrarium_truth::SIM_VERSION;
 
     use super::{PRODUCT_NAME, VERSION};
     use crate::hotkey::{Platform, Refusal};
@@ -871,6 +921,145 @@ pub mod settings {
     /// A change that could not be kept.
     pub fn not_saved(err: &impl Display) -> String {
         format!("The setting could not be saved: {err}")
+    }
+
+    // The terrarium's data.
+    pub const DATA_FACT: &str = "Light, soil and weather history live only in the \
+        observations recorded here. Exported, they can be imported into the same repository's \
+        terrarium on another computer. The climate export lists each day's climate and the \
+        terrarium's states, as JSON.";
+    pub const EXPORT_OBSERVATIONS: &str = "Export observations…";
+    pub const IMPORT_OBSERVATIONS: &str = "Import observations…";
+    pub const EXPORT_CLIMATE: &str = "Export climate…";
+    pub const IMPORT_STATEMENT: &str = "Importing adds the file's observations to this \
+        terrarium for good, and replays its history with them. An observation already \
+        recorded here is kept as it is.";
+    pub const IMPORT: &str = "Import";
+    pub const OBSERVATIONS_FILTER: &str = "Observations";
+    pub const JSON_FILTER: &str = "JSON";
+    pub const IMPORT_HALTED: &str = "The import stopped on an internal error. Nothing was \
+        imported.";
+    pub const EXPORT_HALTED: &str = "The export stopped on an internal error.";
+
+    /// The observations export's name, as the save dialog offers it.
+    pub fn observations_name(repo: &str) -> String {
+        format!("{repo}-observations.jsonl")
+    }
+
+    /// The climate export's name, as the save dialog offers it.
+    pub fn climate_name(repo: &str) -> String {
+        format!("{repo}-climate.json")
+    }
+
+    /// An export under way: the history being read, and how far, or the file being written.
+    pub fn exporting(reading: Option<u8>) -> String {
+        match reading {
+            Some(percent) => format!("Reading the history: {percent}%"),
+            None => "Writing the file".to_owned(),
+        }
+    }
+
+    /// An export written, or why not.
+    pub fn exported(written: &Result<PathBuf, String>) -> String {
+        match written {
+            Ok(path) => super::timelapse::saved(path),
+            Err(why) => super::timelapse::not_saved(why),
+        }
+    }
+
+    /// The most conflicts an import's report lists one by one.
+    pub const CONFLICTS_LISTED: usize = 10;
+
+    /// What an import did: how many observations it added, how many were here already, the
+    /// file's simulation version when it is another, and each observation it kept as stored.
+    pub fn imported(report: &ImportReport) -> Vec<String> {
+        let mut lines = vec![format!(
+            "Imported {}; {} {} already here.",
+            observations(report.inserted),
+            report.duplicates,
+            if report.duplicates == 1 {
+                "was"
+            } else {
+                "were"
+            }
+        )];
+        if report.sim_version != SIM_VERSION {
+            lines.push(format!(
+                "The file was exported under simulation version {}; this is version {}.",
+                report.sim_version.0, SIM_VERSION.0
+            ));
+        }
+        if !report.conflicts.is_empty() {
+            let n = report.conflicts.len();
+            lines.push(format!(
+                "{} {} from the {} recorded here, which {} kept:",
+                observations(u64::try_from(n).unwrap_or(u64::MAX)),
+                if n == 1 { "differs" } else { "differ" },
+                if n == 1 { "one" } else { "ones" },
+                if n == 1 { "is" } else { "are" },
+            ));
+            for conflict in report.conflicts.iter().take(CONFLICTS_LISTED) {
+                let source = conflict
+                    .source
+                    .as_ref()
+                    .map(|source| format!(" ({})", source.to_column()))
+                    .unwrap_or_default();
+                let commit = conflict.head_commit.as_str();
+                lines.push(format!(
+                    "  line {}: {}{source} at {} on {}, in {}",
+                    conflict.line,
+                    conflict.kind.as_column(),
+                    commit.get(..7).unwrap_or(commit),
+                    utc_time(conflict.recorded_at),
+                    conflict.columns.join(", ")
+                ));
+            }
+            if let Some(more) = n.checked_sub(CONFLICTS_LISTED).filter(|&more| more > 0) {
+                lines.push(format!("  and {more} more"));
+            }
+        }
+        lines
+    }
+
+    fn observations(n: u64) -> String {
+        if n == 1 {
+            "1 observation".to_owned()
+        } else {
+            format!("{n} observations")
+        }
+    }
+
+    /// A moment as `2024-03-14 10:05 UTC`.
+    fn utc_time(secs: i64) -> String {
+        let date = super::utc_date(secs);
+        let minutes = secs.rem_euclid(86_400) / 60;
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+            date.year,
+            date.month,
+            date.day,
+            minutes / 60,
+            minutes % 60
+        )
+    }
+
+    /// Why an import was refused; nothing was written.
+    pub fn import_refused(err: &ImportError) -> String {
+        let why = match err {
+            ImportError::Read(err) => format!("The file could not be read: {err}."),
+            ImportError::NotAnExport => "That file is not an observations export.".to_owned(),
+            ImportError::FormatVersion(version) => {
+                format!("That export's format version {version} is not one this version reads.")
+            }
+            ImportError::SeedMismatch { .. } => {
+                "That file holds another repository's observations.".to_owned()
+            }
+            ImportError::Line { number, problem } => {
+                format!("Line {number} of the file does not read: {problem}.")
+            }
+            ImportError::Store(err) => format!("The data directory failed: {err}."),
+        };
+        format!("{why} Nothing was imported.")
     }
 
     // The strip.
@@ -1196,6 +1385,7 @@ pub mod timelapse {
     use terrarium_truth::ReplayError;
 
     use super::MONTHS;
+    use crate::shell::Export;
 
     pub const FROM: &str = "From";
     pub const TO: &str = "To";
@@ -1206,8 +1396,17 @@ pub mod timelapse {
     pub const SCALE: &str = "Scale";
     pub const SAVE_GIF: &str = "Save GIF…";
     pub const SAVE_POSTCARD: &str = "Save postcard…";
+    pub const SAVE_MP4: &str = "Save MP4…";
     pub const GIF: &str = "GIF";
     pub const PNG: &str = "PNG";
+    pub const MP4: &str = "MP4";
+    /// Why the window offers no MP4: where ffmpeg was looked for.
+    pub const NO_FFMPEG: &str = if cfg!(target_os = "macos") {
+        "An MP4 is saved through ffmpeg, which is not on PATH, in /opt/homebrew/bin, \
+         /usr/local/bin or /opt/local/bin."
+    } else {
+        "An MP4 is saved through ffmpeg, which is not on PATH."
+    };
     pub const PREPARING: &str = "Preparing the days";
     pub const NO_DAY_YET: &str = "No day of this history has ended yet.";
     pub const ANOTHER_REPOSITORY: &str =
@@ -1260,8 +1459,14 @@ pub mod timelapse {
         format!("{k}×")
     }
 
-    pub fn writing(percent: u8) -> String {
-        format!("Writing the GIF: {percent}%")
+    /// How far the writing of `export` has come.
+    pub fn writing(export: Export, percent: u8) -> String {
+        let what = match export {
+            Export::Gif => "GIF",
+            Export::Mp4 => "MP4",
+            Export::Postcard => "postcard",
+        };
+        format!("Writing the {what}: {percent}%")
     }
 
     pub fn saved(path: &Path) -> String {
@@ -1282,12 +1487,20 @@ pub mod timelapse {
         format!("{repo}-time-lapse.gif")
     }
 
-    /// The postcard's name, as the save dialog offers it.
-    pub fn postcard_name(repo: &str, date: LocalDate) -> String {
-        format!(
-            "{repo}-{:04}-{:02}-{:02}.png",
-            date.year, date.month, date.day
-        )
+    /// The MP4's name, as the save dialog offers it.
+    pub fn mp4_name(repo: &str) -> String {
+        format!("{repo}-time-lapse.mp4")
+    }
+
+    /// The postcard's name, as the save dialog offers it: named by the day it shows.
+    pub fn postcard_name(repo: &str, date: Option<LocalDate>) -> String {
+        match date {
+            Some(date) => format!(
+                "{repo}-{:04}-{:02}-{:02}.png",
+                date.year, date.month, date.day
+            ),
+            None => format!("{repo}-postcard.png"),
+        }
     }
 }
 
@@ -1575,6 +1788,82 @@ mod tests {
             "src/old - 2023"
         );
         assert_eq!(panel::fossil(None, 1_680_523_200), "2023");
+    }
+
+    #[test]
+    fn an_import_counts_what_it_did_lists_its_conflicts_and_a_refusal_wrote_nothing() {
+        use terrarium_store::{Conflict, ImportError, ImportReport};
+        use terrarium_truth::domain::WeatherSource;
+        use terrarium_truth::{CommitId, ObservationKind, RepoSeed, SimVersion};
+
+        let conflict = |line| Conflict {
+            line,
+            kind: ObservationKind::Weather,
+            source: Some(WeatherSource::Ci {
+                branch: "main".to_owned(),
+            }),
+            head_commit: CommitId::from_hex(&"a".repeat(40)).unwrap(),
+            recorded_at: 1_710_410_700,
+            columns: vec!["raw", "confidence"],
+        };
+        let report = ImportReport {
+            sim_version: SimVersion(7),
+            inserted: 1,
+            duplicates: 2,
+            conflicts: (14..26).map(conflict).collect(),
+        };
+        let lines = settings::imported(&report);
+        assert_eq!(lines[0], "Imported 1 observation; 2 were already here.");
+        assert_eq!(
+            lines[1],
+            format!(
+                "The file was exported under simulation version 7; this is version {}.",
+                SIM_VERSION.0
+            )
+        );
+        assert_eq!(
+            lines[2],
+            "12 observations differ from the ones recorded here, which are kept:"
+        );
+        assert_eq!(
+            lines[3],
+            "  line 14: weather (ci:main) at aaaaaaa on 2024-03-14 10:05 UTC, in raw, confidence"
+        );
+        assert_eq!(lines.len(), 3 + settings::CONFLICTS_LISTED + 1);
+        assert_eq!(lines.last().unwrap(), "  and 2 more");
+        let single = ImportReport {
+            sim_version: SIM_VERSION,
+            inserted: 0,
+            duplicates: 1,
+            conflicts: vec![conflict(2)],
+        };
+        assert_eq!(
+            settings::imported(&single)[..2],
+            [
+                "Imported 0 observations; 1 was already here.",
+                "1 observation differs from the one recorded here, which is kept:",
+            ]
+        );
+        let seed = RepoSeed::from_bytes([1; 32]);
+        assert_eq!(
+            settings::import_refused(&ImportError::SeedMismatch {
+                file: seed,
+                terrarium: seed
+            }),
+            "That file holds another repository's observations. Nothing was imported."
+        );
+        let stopped = FedError::Failed {
+            ended: Finished::Code(1),
+            stderr: "starting\nUnknown encoder 'libx264'".to_owned(),
+        };
+        assert_eq!(
+            timelapse::not_saved(&ffmpeg_problem(&stopped)),
+            "Not saved: ffmpeg stopped with exit code 1: Unknown encoder 'libx264'"
+        );
+        assert_eq!(
+            ffmpeg_problem(&FedError::TimedOut),
+            "ffmpeg ran past 10 minutes and was stopped"
+        );
     }
 
     #[test]

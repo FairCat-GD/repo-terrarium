@@ -5,6 +5,33 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-12
+
+A terrarium's history moves to another computer, its climate can be read as data, and the
+time-lapse saves as an MP4.
+
+### Added
+
+- **Export observations…** in Settings, under Repository, saves the light, soil and weather
+  recorded here as a JSON Lines file.
+- **Import observations…** reads such a file into the same repository's terrarium, for
+  example on another computer. It asks first, since an import cannot be undone. A file from
+  another repository is refused and nothing is written. Afterwards the window says how many
+  observations were added and how many were already here, and lists any that differ from the
+  ones recorded here, which are kept. The history then replays with them.
+- **Export climate…** saves each finished day's climate (light, soil and its causes, rain,
+  wind, health, activity, terrain and weather) and every change of the terrarium's state, as
+  JSON. The format is described in the app's README.
+- **Save MP4…** in the time-lapse window writes the time-lapse as an MP4 through your own
+  ffmpeg, at 4× or the scale chosen if larger. It shows when ffmpeg is found on PATH or, on
+  macOS, where Homebrew and MacPorts put it; otherwise a line says where it was looked for.
+- `replay <path> --mp4 <file>` writes the same MP4 from the command line.
+
+### Changed
+
+- **An import is faster:** each new observation is written straight away, and only one
+  already recorded is looked up.
+
 ## [0.24.0] - 2026-10-11
 
 The terrarium's whole history can be watched in 30 seconds, and saved as a GIF.
