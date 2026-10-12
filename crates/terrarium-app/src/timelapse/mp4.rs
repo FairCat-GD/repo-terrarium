@@ -135,18 +135,11 @@ pub fn write_mp4(
     let size = size(scale);
     let path = std::path::absolute(path).map_err(FedError::Feed)?;
     let folder = path.parent().unwrap_or(&path).to_path_buf();
-    let mut ran = Ok(());
-    let written = fill_beside(&path, |part| {
-        ran = run_fed(ffmpeg, &ffmpeg_args(&size, part), &folder, LIMIT, |stdin| {
+    fill_beside(&path, |part| {
+        run_fed(ffmpeg, &ffmpeg_args(&size, part), &folder, LIMIT, |stdin| {
             feed_frames(film, salt, &size, stdin, progress)
-        });
-        match &ran {
-            Ok(()) => Ok(()),
-            Err(_) => Err(io::Error::other("ffmpeg did not finish")),
-        }
-    });
-    ran?;
-    written.map_err(FedError::Feed)
+        })
+    })
 }
 
 #[cfg(test)]

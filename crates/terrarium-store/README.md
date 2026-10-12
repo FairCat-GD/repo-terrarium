@@ -89,8 +89,8 @@ Import refuses, writing nothing, any of these:
 Otherwise each line merges by (`kind`, `source`, `head_commit`, `recorded_at`):
 - a new key is inserted;
 - a line equal to the stored row in every column is a duplicate;
-- any other line is a conflict, reported with the differing columns, and the stored row is
-  kept.
+- any other line is a conflict, and the stored row is kept. The report counts every conflict
+  and names the first 10 with their differing columns.
 
 A line's `id` belongs to the install that exported it and is not kept.
 

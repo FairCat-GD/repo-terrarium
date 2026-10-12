@@ -179,10 +179,18 @@ pub enum FedError {
     CannotRun(io::Error),
     /// It ended without success, with the end of what it wrote to stderr.
     Failed { ended: Finished, stderr: String },
+    /// Its stdin or stderr could not be opened, so it was stopped before being fed.
+    NoPipes,
     /// It ran past its time and was stopped.
     TimedOut,
-    /// Feeding it failed on this side, though it ended well.
+    /// Feeding it, or writing beside it, failed on this side, though it ended well.
     Feed(io::Error),
+}
+
+impl From<io::Error> for FedError {
+    fn from(err: io::Error) -> FedError {
+        FedError::Feed(err)
+    }
 }
 
 /// How much of a tool's stderr is kept: its end, where the reason it stopped is.
@@ -190,6 +198,10 @@ const STDERR_TAIL: usize = 4096;
 
 /// How often a fed tool is looked at once its input is closed.
 const WAIT_STEP: Duration = Duration::from_millis(10);
+
+/// How long the end of a tool's stderr is waited for once it has ended. A process it started
+/// can hold the pipe open past its end; the run does not wait on that.
+const TAIL_GRACE: Duration = Duration::from_secs(2);
 
 /// `CREATE_NO_WINDOW`: a console tool started from the app opens no console window.
 #[cfg(windows)]
@@ -226,18 +238,21 @@ pub fn run_fed(
     let mut child = command.spawn().map_err(FedError::CannotRun)?;
     let (Some(mut stdin), Some(stderr)) = (child.stdin.take(), child.stderr.take()) else {
         end(&mut child);
-        return Err(FedError::CannotRun(io::Error::other("no pipes")));
+        return Err(FedError::NoPipes);
     };
-    let tail = match thread::Builder::new()
+    let (said, tail) = mpsc::channel();
+    let reader = thread::Builder::new()
         .name("terrarium-tool-stderr".into())
-        .spawn(move || keep_tail(stderr))
-    {
-        Ok(tail) => tail,
+        .spawn(move || {
+            let _ = said.send(keep_tail(stderr));
+        });
+    match reader {
+        Ok(_) => {}
         Err(err) => {
             end(&mut child);
             return Err(FedError::CannotRun(err));
         }
-    };
+    }
     let child = Arc::new(Mutex::new(child));
     let timed_out = Arc::new(AtomicBool::new(false));
     let (done, ran) = mpsc::channel::<()>();
@@ -247,8 +262,13 @@ pub fn run_fed(
             .name("terrarium-tool-watchdog".into())
             .spawn(move || {
                 if ran.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
-                    timed_out.store(true, Ordering::SeqCst);
-                    let _ = lock(&child).kill();
+                    // Only a tool still running is stopped: one that ended as the time ran
+                    // out ended on its own.
+                    let mut child = lock(&child);
+                    if matches!(child.try_wait(), Ok(None)) {
+                        timed_out.store(true, Ordering::SeqCst);
+                        let _ = child.kill();
+                    }
                 }
             })
     };
@@ -256,7 +276,6 @@ pub fn run_fed(
         Ok(watchdog) => watchdog,
         Err(err) => {
             end(&mut lock(&child));
-            let _ = tail.join();
             return Err(FedError::CannotRun(err));
         }
     };
@@ -275,7 +294,7 @@ pub fn run_fed(
     };
     drop(done);
     let _ = watchdog.join();
-    let stderr = tail.join().unwrap_or_default();
+    let stderr = tail.recv_timeout(TAIL_GRACE).unwrap_or_default();
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(payload) => panic::resume_unwind(payload),
@@ -310,6 +329,7 @@ fn keep_tail(mut stderr: impl Read) -> String {
     let mut buf = [0; 8192];
     loop {
         match stderr.read(&mut buf) {
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 tail.extend_from_slice(&buf[..n]);
@@ -559,6 +579,70 @@ mod tests {
             1 << 20,
         )
         .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_that_ended_before_its_limit_is_never_called_timed_out() {
+        let dir = tempfile::tempdir().unwrap();
+        // The tool ends at once; its feed is still busy when the limit passes.
+        let ran = run_fed(
+            &Tool(PathBuf::from("/bin/sh")),
+            &["-c".into(), "exit 0".into()],
+            dir.path(),
+            Duration::from_millis(200),
+            |_| {
+                thread::sleep(Duration::from_secs(1));
+                Ok(())
+            },
+        );
+        assert!(ran.is_ok(), "{ran:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_left_holding_stderr_does_not_hold_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        // The shell ends at once; the sleep it leaves keeps stderr open for 20 s.
+        sh(
+            "/bin/sleep 20 & exit 0",
+            dir.path(),
+            Duration::from_secs(60),
+            0,
+        )
+        .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A reader that is interrupted once, then gives what it holds.
+    struct Interrupted<'a>(bool, &'a [u8]);
+
+    impl Read for Interrupted<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.1.read(buf)
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_of_stderr_reads_on() {
+        assert_eq!(keep_tail(Interrupted(false, b"why\n")), "why");
+        let long: Vec<u8> = b"x"
+            .repeat(STDERR_TAIL)
+            .into_iter()
+            .chain(*b"end")
+            .collect();
+        let tail = keep_tail(&long[..]);
+        assert_eq!(tail.len(), STDERR_TAIL);
+        assert!(tail.ends_with("xend"));
     }
 
     #[cfg(unix)]

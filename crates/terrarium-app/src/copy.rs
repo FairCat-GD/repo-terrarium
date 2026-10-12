@@ -142,7 +142,7 @@ const MONTHS: [&str; 12] = [
 
 /// The UTC calendar date of a moment in Unix seconds.
 fn utc_date(secs: i64) -> LocalDate {
-    LocalDate::from_days_since_epoch(secs.div_euclid(86_400))
+    LocalDate::of_unix_secs(secs)
 }
 
 /// The weather's word, on the label and in the debug window alike.
@@ -301,6 +301,7 @@ pub fn replay_no_ffmpeg() -> String {
 pub fn ffmpeg_problem(err: &FedError) -> String {
     match err {
         FedError::CannotRun(err) => format!("ffmpeg could not be started: {err}"),
+        FedError::NoPipes => "ffmpeg's input or error output could not be opened".to_owned(),
         FedError::Failed { ended, stderr } => {
             let ended = match ended {
                 Finished::Code(code) => format!("exit code {code}"),
@@ -967,11 +968,9 @@ pub mod settings {
         }
     }
 
-    /// The most conflicts an import's report lists one by one.
-    pub const CONFLICTS_LISTED: usize = 10;
-
     /// What an import did: how many observations it added, how many were here already, the
-    /// file's simulation version when it is another, and each observation it kept as stored.
+    /// file's simulation version when it is another, and how many it kept as stored, the
+    /// first of them by line.
     pub fn imported(report: &ImportReport) -> Vec<String> {
         let mut lines = vec![format!(
             "Imported {}; {} {} already here.",
@@ -989,16 +988,16 @@ pub mod settings {
                 report.sim_version.0, SIM_VERSION.0
             ));
         }
-        if !report.conflicts.is_empty() {
-            let n = report.conflicts.len();
+        if report.conflicted > 0 {
+            let n = report.conflicted;
             lines.push(format!(
                 "{} {} from the {} recorded here, which {} kept:",
-                observations(u64::try_from(n).unwrap_or(u64::MAX)),
+                observations(n),
                 if n == 1 { "differs" } else { "differ" },
                 if n == 1 { "one" } else { "ones" },
                 if n == 1 { "is" } else { "are" },
             ));
-            for conflict in report.conflicts.iter().take(CONFLICTS_LISTED) {
+            for conflict in &report.conflicts {
                 let source = conflict
                     .source
                     .as_ref()
@@ -1014,7 +1013,8 @@ pub mod settings {
                     conflict.columns.join(", ")
                 ));
             }
-            if let Some(more) = n.checked_sub(CONFLICTS_LISTED).filter(|&more| more > 0) {
+            let listed = u64::try_from(report.conflicts.len()).unwrap_or(u64::MAX);
+            if let Some(more) = n.checked_sub(listed).filter(|&more| more > 0) {
                 lines.push(format!("  and {more} more"));
             }
         }
@@ -1031,13 +1031,10 @@ pub mod settings {
 
     /// A moment as `2024-03-14 10:05 UTC`.
     fn utc_time(secs: i64) -> String {
-        let date = super::utc_date(secs);
         let minutes = secs.rem_euclid(86_400) / 60;
         format!(
-            "{:04}-{:02}-{:02} {:02}:{:02} UTC",
-            date.year,
-            date.month,
-            date.day,
+            "{} {:02}:{:02} UTC",
+            super::utc_date(secs).iso(),
             minutes / 60,
             minutes % 60
         )
@@ -1495,10 +1492,7 @@ pub mod timelapse {
     /// The postcard's name, as the save dialog offers it: named by the day it shows.
     pub fn postcard_name(repo: &str, date: Option<LocalDate>) -> String {
         match date {
-            Some(date) => format!(
-                "{repo}-{:04}-{:02}-{:02}.png",
-                date.year, date.month, date.day
-            ),
+            Some(date) => format!("{repo}-{}.png", date.iso()),
             None => format!("{repo}-postcard.png"),
         }
     }
@@ -1810,7 +1804,8 @@ mod tests {
             sim_version: SimVersion(7),
             inserted: 1,
             duplicates: 2,
-            conflicts: (14..26).map(conflict).collect(),
+            conflicted: 12,
+            conflicts: (14..24).map(conflict).collect(),
         };
         let lines = settings::imported(&report);
         assert_eq!(lines[0], "Imported 1 observation; 2 were already here.");
@@ -1829,12 +1824,13 @@ mod tests {
             lines[3],
             "  line 14: weather (ci:main) at aaaaaaa on 2024-03-14 10:05 UTC, in raw, confidence"
         );
-        assert_eq!(lines.len(), 3 + settings::CONFLICTS_LISTED + 1);
+        assert_eq!(lines.len(), 3 + 10 + 1);
         assert_eq!(lines.last().unwrap(), "  and 2 more");
         let single = ImportReport {
             sim_version: SIM_VERSION,
             inserted: 0,
             duplicates: 1,
+            conflicted: 1,
             conflicts: vec![conflict(2)],
         };
         assert_eq!(

@@ -22,6 +22,9 @@ pub const EXPORT_FORMAT_VERSION: u32 = 1;
 /// The longest line an import reads, in bytes, not counting its line ending. The largest
 /// `raw`, escaped, and twenty contributors fit with room to spare.
 pub const MAX_IMPORT_LINE_BYTES: usize = 1024 * 1024;
+/// The conflicts an import's report holds one by one; past them, each is only counted, so a
+/// file of nothing but conflicts never fills memory.
+pub const CONFLICTS_KEPT: usize = 10;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +120,8 @@ pub struct ImportReport {
     /// Lines equal to a stored observation in every column.
     pub duplicates: u64,
     /// Lines whose merge key is stored with other values; the stored row is kept.
+    pub conflicted: u64,
+    /// The first [`CONFLICTS_KEPT`] of them, in the file's order.
     pub conflicts: Vec<Conflict>,
 }
 
@@ -314,6 +319,10 @@ fn merge(
     if columns.is_empty() {
         report.duplicates += 1;
     } else {
+        report.conflicted += 1;
+        if report.conflicts.len() == CONFLICTS_KEPT {
+            return Ok(());
+        }
         report.conflicts.push(Conflict {
             line: number,
             kind: record.kind,
@@ -425,6 +434,7 @@ impl Store {
             sim_version,
             inserted: 0,
             duplicates: 0,
+            conflicted: 0,
             conflicts: Vec::new(),
         };
         let tx = self.conn.transaction()?;
@@ -558,6 +568,7 @@ mod tests {
                 sim_version: SIM_VERSION,
                 inserted: 7,
                 duplicates: 0,
+                conflicted: 0,
                 conflicts: vec![],
             }
         );
@@ -590,7 +601,10 @@ mod tests {
             .store
             .import_observations(id, &export(&other, other_id)[..])
             .unwrap();
-        assert_eq!((report.inserted, report.duplicates), (1, 6));
+        assert_eq!(
+            (report.inserted, report.duplicates, report.conflicted),
+            (1, 6, 1)
+        );
         assert_eq!(
             report.conflicts,
             vec![Conflict {
@@ -625,11 +639,38 @@ mod tests {
             .store
             .import_observations(there, text.as_bytes())
             .unwrap();
-        assert_eq!((report.inserted, report.duplicates), (1, 1));
+        assert_eq!(
+            (report.inserted, report.duplicates, report.conflicted),
+            (1, 1, 1)
+        );
         assert_eq!(report.conflicts.len(), 1);
         assert_eq!(report.conflicts[0].line, 4);
         assert_eq!(report.conflicts[0].columns, ["confidence"]);
         assert_eq!(count(&fx), 1);
+    }
+
+    #[test]
+    fn past_the_first_conflicts_each_is_only_counted() {
+        let records: Vec<ObservationRecord> = (1..=25)
+            .map(|at| record(ObservationKind::Coverage, at))
+            .collect();
+        let (mut fx, id) = holding(&records);
+        let mut changed = records;
+        for r in &mut changed {
+            r.confidence = Q16::HALF;
+        }
+        let (other, other_id) = holding(&changed);
+        let report = fx
+            .store
+            .import_observations(id, &export(&other, other_id)[..])
+            .unwrap();
+        assert_eq!(report.conflicted, 25);
+        assert_eq!(report.conflicts.len(), CONFLICTS_KEPT);
+        assert_eq!(
+            report.conflicts.iter().map(|c| c.line).collect::<Vec<_>>(),
+            (2..12).collect::<Vec<_>>(),
+            "the first, in the file's order"
+        );
     }
 
     #[test]

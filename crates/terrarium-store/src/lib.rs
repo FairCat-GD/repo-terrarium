@@ -18,8 +18,8 @@ pub use cache::SimCache;
 pub use data_dir::{DataDir, DataDirError};
 pub use error::{Invalid, StoreError};
 pub use jsonl::{
-    Conflict, EXPORT_FORMAT, EXPORT_FORMAT_VERSION, ImportError, ImportReport, LineProblem,
-    MAX_IMPORT_LINE_BYTES,
+    CONFLICTS_KEPT, Conflict, EXPORT_FORMAT, EXPORT_FORMAT_VERSION, ImportError, ImportReport,
+    LineProblem, MAX_IMPORT_LINE_BYTES,
 };
 pub use observations::{
     Contributor, MAX_CONTRIBUTORS, MAX_RAW_BYTES, ObservationId, ObservationRecord,

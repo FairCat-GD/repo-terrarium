@@ -65,6 +65,19 @@ impl LocalDate {
     }
 }
 
+impl LocalDate {
+    /// The UTC date of the moment `secs` seconds after 1970-01-01, as the soil panel, the
+    /// label and the exports name past moments.
+    pub fn of_unix_secs(secs: i64) -> LocalDate {
+        LocalDate::from_days_since_epoch(secs.div_euclid(86_400))
+    }
+
+    /// The date as ISO 8601 writes it: `2024-03-14`.
+    pub fn iso(self) -> String {
+        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
 /// The eight phases of the moon, each centred on its principal moment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MoonPhase {
@@ -227,6 +240,12 @@ mod tests {
         assert_eq!(
             LocalDate::from_days_since_epoch(-1),
             LocalDate::new(1969, 12, 31)
+        );
+        assert_eq!(LocalDate::new(2024, 3, 4).iso(), "2024-03-04");
+        assert_eq!(LocalDate::of_unix_secs(-1), LocalDate::new(1969, 12, 31));
+        assert_eq!(
+            LocalDate::of_unix_secs(1_710_410_700),
+            LocalDate::new(2024, 3, 14)
         );
         for days in (-800_000..800_000)
             .step_by(997)

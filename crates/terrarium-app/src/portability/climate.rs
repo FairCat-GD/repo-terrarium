@@ -139,7 +139,7 @@ fn day_line(day: &Day<'_>) -> DayLine {
         })
     };
     DayLine {
-        date: iso_date(LocalDate::from_days_since_epoch(day.day)),
+        date: LocalDate::from_days_since_epoch(day.day).iso(),
         light: held(record.light, climate.light),
         soil: held(record.soil, climate.soil),
         dead_code: record.dead_code.map(number),
@@ -174,7 +174,7 @@ fn change(lapse: &Lapse, entry: TimelineEntry) -> Change {
     Change {
         at: format!(
             "{}T{:02}:00:00Z",
-            iso_date(LocalDate::from_days_since_epoch(secs.div_euclid(86_400))),
+            LocalDate::of_unix_secs(secs).iso(),
             secs.rem_euclid(86_400) / 3600
         ),
         state: match entry.state {
@@ -201,10 +201,6 @@ fn change(lapse: &Lapse, entry: TimelineEntry) -> Change {
 /// that an `f64` holds whole.
 fn number(value: Q16) -> f64 {
     f64::from(value.raw()) / 65_536.0
-}
-
-fn iso_date(date: LocalDate) -> String {
-    format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
 
 #[cfg(test)]
@@ -248,7 +244,7 @@ mod tests {
         assert_eq!(value["sim_version"], SIM_VERSION.0);
         let lines = value["days"].as_array().unwrap();
         assert_eq!(lines.len(), closes.len());
-        let date = |close| iso_date(LocalDate::from_days_since_epoch(lapse.day(close)));
+        let date = |close| LocalDate::from_days_since_epoch(lapse.day(close)).iso();
         assert_eq!(lines[0]["date"], date(closes[0]));
         assert_eq!(
             lines[lines.len() - 1]["date"],

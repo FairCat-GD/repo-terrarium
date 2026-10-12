@@ -708,7 +708,11 @@ impl Repo {
                         }
                         Err(err) => {
                             eprintln!("{}", copy::connect_failed(None, &err));
-                            if connected.live.apply(Update::Halted) != Changed::Nothing {
+                            // Halted already, the scene has nothing new to show; a history
+                            // changed still dates a time-lapse of it.
+                            if connected.live.apply(Update::Halted) != Changed::Nothing
+                                || history_changed
+                            {
                                 effect = Effect::Show {
                                     reseeded: None,
                                     history_changed,
@@ -2345,6 +2349,7 @@ mod tests {
                 sim_version: SIM_VERSION,
                 inserted,
                 duplicates,
+                conflicted: 0,
                 conflicts: vec![],
             }))
         };
@@ -2370,6 +2375,21 @@ mod tests {
                 }
             );
             assert!(repo.engine.is_some(), "the engine runs again");
+        }
+        // An engine that cannot start again after rows were added still dates the
+        // time-lapse, the second time too, when the strip is halted already.
+        for _ in 0..2 {
+            let outcome = Outcome::Restarted {
+                changed: imported(3, 0),
+                started: Err(ConnectError::Halted),
+            };
+            assert_eq!(
+                repo.changed(1, outcome, &mut shell, &mut asked),
+                Effect::Show {
+                    reseeded: None,
+                    history_changed: true
+                }
+            );
         }
         // The form is free again after each.
         let form = shell.settings.as_mut().unwrap();
