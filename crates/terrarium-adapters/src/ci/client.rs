@@ -37,11 +37,16 @@ pub trait Fetch: Send {
     fn forget(&mut self);
 }
 
-/// What GitHub said last for one branch's runs.
+/// What GitHub said last for one branch's runs, and where: a renamed repository's runs are
+/// asked for at their new address from then on, so its tag can be a `304`.
 struct Known {
+    url: String,
     etag: String,
     verdict: Option<Verdict>,
 }
+
+/// How much of a refusal's body is read to tell a rate limit from a refused token.
+const REFUSAL_BODY: u64 = 64 * 1024;
 
 /// The client for `api.github.com`.
 pub struct GitHub {
@@ -127,7 +132,16 @@ impl GitHub {
                 let reset_at = header("x-ratelimit-reset")
                     .and_then(|s| s.trim().parse().ok())
                     .filter(|_| exhausted);
-                if status == 429 || retry_after.is_some() || exhausted {
+                // GitHub's secondary limits may say so in the body alone.
+                let mut said_limit = || {
+                    response
+                        .body_mut()
+                        .with_config()
+                        .limit(REFUSAL_BODY)
+                        .read_to_string()
+                        .is_ok_and(|body| body.to_ascii_lowercase().contains("rate limit"))
+                };
+                if status == 429 || retry_after.is_some() || exhausted || said_limit() {
                     Err(CiError::RateLimited {
                         retry_after,
                         reset_at,
@@ -177,8 +191,10 @@ impl Fetch for GitHub {
         token: &Token,
     ) -> Result<Option<Verdict>, CiError> {
         let path = runs_path(slug, branch);
-        let etag = self.known.get(&path).map(|known| known.etag.as_str());
-        let mut answer = self.call(&format!("{}{path}", self.base), etag, token)?;
+        let known = self.known.get(&path);
+        let mut url = known.map_or_else(|| format!("{}{path}", self.base), |k| k.url.clone());
+        let etag = known.map(|known| known.etag.clone());
+        let mut answer = self.call(&url, etag.as_deref(), token)?;
         if let Answer::Moved(location) = answer {
             // Only back to the API itself, once: a renamed repository's new address.
             if !location.starts_with(&format!("{}/", self.base)) {
@@ -188,6 +204,7 @@ impl Fetch for GitHub {
                 Answer::Moved(_) => return Err(CiError::NotFound),
                 answer => answer,
             };
+            url = location;
         }
         match answer {
             Answer::Body { etag, bytes } => {
@@ -198,6 +215,7 @@ impl Fetch for GitHub {
                         self.known.insert(
                             path,
                             Known {
+                                url,
                                 etag,
                                 verdict: verdict.clone(),
                             },

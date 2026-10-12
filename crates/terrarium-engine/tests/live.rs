@@ -5,6 +5,8 @@
 //! going missing and coming back, the clock jumping.
 #![forbid(unsafe_code)]
 
+mod common;
+
 use std::fs;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -12,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
+use common::write_still;
 use terrarium_adapters::fixture::{self, Edit, FixtureRepo, Stamp};
 use terrarium_adapters::git::GitRepo;
 use terrarium_adapters::local_tests::Status;
@@ -167,17 +170,6 @@ fn commit(repo: &mut FixtureRepo, branch: &str, at: i64) -> CommitId {
         &[Edit::write(&format!("src/fern_{at}.rs"), "fn fern() {}\n")],
     )
     .unwrap()
-}
-
-fn write_still(path: &Path, text: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, text).unwrap();
-    fs::File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(SystemTime::now() - Duration::from_secs(2))
-        .unwrap();
 }
 
 fn refresh(live: &mut Live, cause: Cause, reports: bool) -> Done {

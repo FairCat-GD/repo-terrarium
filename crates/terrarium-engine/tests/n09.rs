@@ -6,13 +6,14 @@
 //! crate-graph stage of `cargo xtask verify` keeps every other source away from sockets.
 #![forbid(unsafe_code)]
 
-use std::fs;
-use std::path::Path;
+mod common;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
+use common::write_still as still;
 use terrarium_adapters::ci::{CiError, Fetch, MemoryKeychain, Slug, Token, Verdict};
 use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp};
 use terrarium_engine::ci::CiConfig;
@@ -184,17 +185,6 @@ impl Session {
     }
 }
 
-fn still(path: &Path, text: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, text).unwrap();
-    fs::File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(SystemTime::now() - Duration::from_secs(2))
-        .unwrap();
-}
-
 fn slug() -> Slug {
     Slug::parse("example-garden/moss-bed").unwrap()
 }
@@ -312,4 +302,58 @@ fn a_refused_token_is_not_asked_with_again_until_it_changes() {
         s.calls.load(Ordering::SeqCst) == 2
     });
     assert_eq!(session.keychain.reads(), 2, "read again once it changed");
+}
+
+/// A client that fails inside itself on every call.
+struct Panicking(Arc<AtomicUsize>);
+
+impl Fetch for Panicking {
+    fn runs(&mut self, _: &Slug, _: &str, _: &Token) -> Result<Option<Verdict>, CiError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("a fictional failure inside the client");
+    }
+
+    fn forget(&mut self) {}
+}
+
+#[test]
+fn a_client_that_panics_is_answered_as_github_not_reached_and_polling_goes_on() {
+    let mut session = Session::start(
+        true,
+        MemoryKeychain::holding("github_pat_fictional"),
+        Ok(None),
+    );
+    session.stop();
+    // The same repository, run again with a client that panics.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    let config = EngineConfig {
+        clock: Arc::new(ManualClock::at(FIRST + DAYS * DAY + 2 * 3_600)),
+        ci: Some(CiConfig {
+            keychain: Arc::new(MemoryKeychain::holding("github_pat_fictional")),
+            fetch: Arc::new(move || Box::new(Panicking(Arc::clone(&counted)))),
+            every: EVERY,
+        }),
+        ..EngineConfig::new(
+            DataDir::at(session.dir.path().join("data")),
+            Some(session.dir.path().join("repo")),
+        )
+    };
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let into = Arc::clone(&heard);
+    let (engine, _) = Engine::spawn(
+        config,
+        Box::new(move |update| into.lock().unwrap().push(update)),
+    )
+    .unwrap();
+    let until = Instant::now() + PATIENCE;
+    while calls.load(Ordering::SeqCst) < 3 {
+        assert!(Instant::now() < until, "polling stopped after a panic");
+        thread::sleep(Duration::from_millis(20));
+    }
+    engine.shutdown_and_join();
+    let unreachable = heard.lock().unwrap().iter().any(|update| {
+        matches!(update, Update::Tools(tools) if tools.ci == CiStatus::Unreachable(slug()))
+    });
+    assert!(unreachable);
 }

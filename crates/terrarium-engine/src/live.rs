@@ -443,8 +443,9 @@ struct CiState {
     /// The repository whose runs are asked for, as of the last refresh: the one typed for this
     /// repository, else the one `origin` names.
     slug: Option<Slug>,
-    /// A repository was known earlier in the session, so losing it turns CI off.
-    had_slug: bool,
+    /// GitHub answered for a repository earlier in the session (a token was saved), so losing
+    /// the repository turns CI off.
+    read_here: bool,
     /// The newest stored row of each CI source, by branch.
     newest: BTreeMap<String, CiNewest>,
     /// A poll's answer with something to record, and whether GitHub is out of reach.
@@ -609,6 +610,11 @@ impl Live {
                 self.verified = false;
                 self.shown = None;
                 self.watch = None;
+                // The worker stops a run going while the repository is missing; the tip runs
+                // again once it is back.
+                if self.knip.running.take().is_some() {
+                    self.knip.status = KnipStatus::Waiting;
+                }
                 Done {
                     reach: Some(Reach::NotFound),
                     ..Done::default()
@@ -1329,12 +1335,18 @@ impl Live {
     /// weather to stop counting. True when it has something to record, kept for the refresh
     /// the worker then runs.
     pub fn ci_answered(&mut self, answered: Answered, outage: bool) -> bool {
+        // An answer for a repository no longer asked about says nothing of this one.
+        if self.ci.slug.as_ref() != Some(&answered.slug) {
+            return false;
+        }
         self.ci.status = CiStatus::of(&answered);
+        if matches!(answered.read, Read::Decided(_) | Read::Failed(_)) {
+            self.ci.read_here = true;
+        }
         let Some(head) = self.head.clone() else {
             return false;
         };
-        let wanted = self.ci.slug.as_ref() == Some(&answered.slug)
-            && !self.ci_rows(&answered.read, outage, &head).is_empty();
+        let wanted = !self.ci_rows(&answered.read, outage, &head).is_empty();
         if wanted {
             self.ci.answer = Some((answered, outage));
         }
@@ -1403,12 +1415,8 @@ impl Live {
             return Ok(false);
         }
         let mut rows = Vec::new();
-        if self.ci.slug.is_none() {
-            if std::mem::take(&mut self.ci.had_slug) {
-                rows = self.unread_rows(CiUnread::Off, head);
-            }
-        } else {
-            self.ci.had_slug = true;
+        if self.ci.slug.is_none() && std::mem::take(&mut self.ci.read_here) {
+            rows = self.unread_rows(CiUnread::Off, head);
         }
         if let Some((answered, outage)) = self.ci.answer.take()
             && self.ci.slug.as_ref() == Some(&answered.slug)
@@ -1494,11 +1502,16 @@ impl Live {
         let Some(done) = self.knip.done.take() else {
             return Ok(Metered::Unchanged);
         };
-        let (Some(root), true) = (root, done.head.commit == head.commit && head.at_default_tip)
-        else {
+        if done.head.commit != head.commit || !head.at_default_tip {
             if !matches!(self.knip.status, KnipStatus::Off) {
                 self.knip.status = KnipStatus::Waiting;
             }
+            return Ok(Metered::Unchanged);
+        }
+        // A bare repository has no worktree for Knip to read, nor a `node_modules`.
+        let Some(root) = root else {
+            self.knip.ran_at = Some(head.commit.clone());
+            self.knip.status = KnipStatus::NotInstalled;
             return Ok(Metered::Unchanged);
         };
         if self.view.is_none() {

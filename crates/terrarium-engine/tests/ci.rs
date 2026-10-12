@@ -382,6 +382,11 @@ fn an_answer_for_another_repository_is_not_recorded() {
     };
     assert!(!live.ci_answered(elsewhere, false));
     assert!(fx.ci_rows().is_empty());
+    assert_eq!(
+        live.tools().ci,
+        CiStatus::Quiet,
+        "nothing said of this repository"
+    );
 }
 
 #[test]
@@ -416,4 +421,34 @@ fn a_repository_typed_for_another_folder_is_not_read() {
         live.ci_ask().unwrap().slug,
         Slug::parse("example-garden/upstream").unwrap()
     );
+}
+
+#[test]
+fn losing_a_repository_never_read_in_this_session_records_nothing() {
+    let fx = Fixture::new();
+    {
+        let mut live = fx.connect();
+        answer(&mut live, decided("main", verdict(false, 1)), false).unwrap();
+    }
+    // A session that has read nothing from GitHub (no token here, say) loses the repository.
+    let mut live = fx.connect();
+    let config = fx.repo.git_dir().join("config");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace("github.com", "gitlab.example")).unwrap();
+    shown(&mut live, Cause::Request);
+    assert_eq!(live.tools().ci, CiStatus::NoRepository);
+    assert_eq!(
+        fx.ci_rows().len(),
+        1,
+        "the weather recorded stays as it was"
+    );
+    // One that has read from GitHub turns its weather off when the repository goes.
+    fs::write(&config, text).unwrap();
+    shown(&mut live, Cause::Request);
+    answer(&mut live, decided("main", verdict(false, 2)), false).unwrap();
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace("github.com", "gitlab.example")).unwrap();
+    shown(&mut live, Cause::Request);
+    let last = fx.ci_rows().pop().unwrap().record;
+    assert_eq!(last.normalized, None);
 }

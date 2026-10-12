@@ -85,7 +85,12 @@ impl AdaptersSection {
         }
     }
 
+    /// What the Knip run and the poll say now. A keychain problem holds until the poll says
+    /// something new of the token.
     pub fn set_tools(&mut self, tools: Tools) {
+        if tools.ci != self.tools.ci {
+            self.keychain_problem = None;
+        }
         self.tools = tools;
     }
 
@@ -486,5 +491,20 @@ mod tests {
         assert_eq!(section.take_token(), None);
         section.remove_token();
         assert_eq!(section.take_token(), Some(TokenChange::Remove));
+    }
+
+    #[test]
+    fn a_keychain_problem_gives_way_to_what_the_poll_says_next() {
+        use terrarium_engine::CiStatus;
+
+        let mut section = section();
+        section.token_saved(Some(KeychainError::Refused));
+        section.set_tools(Tools::default());
+        assert_eq!(section.keychain_problem, Some(KeychainError::Refused));
+        section.set_tools(Tools {
+            ci: CiStatus::Reading(Slug::parse("example-garden/moss-bed").unwrap()),
+            ..Tools::default()
+        });
+        assert_eq!(section.keychain_problem, None);
     }
 }

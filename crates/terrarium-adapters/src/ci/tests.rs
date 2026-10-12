@@ -369,6 +369,16 @@ fn githubs_refusals_limits_and_failures_say_which() {
                 reset_at: None,
             },
         ),
+        (
+            (
+                "HTTP/1.1 403 Forbidden".to_owned(),
+                r#"{"message":"You have exceeded a secondary rate limit."}"#.to_owned(),
+            ),
+            CiError::RateLimited {
+                retry_after: None,
+                reset_at: None,
+            },
+        ),
         (status("404 Not Found", ""), CiError::NotFound),
         (status("502 Bad Gateway", ""), CiError::Server(502)),
         (ok("\"m\"", "<html>not json</html>"), CiError::Malformed),
@@ -400,7 +410,11 @@ fn a_renamed_repository_is_followed_once_back_to_the_api() {
     let moved = format!("location: {base}/repositories/42/actions/runs?branch=main");
     let body = fixture("pass");
     thread::spawn(move || {
-        let responses = [status("301 Moved Permanently", &moved), ok("\"r\"", &body)];
+        let responses = [
+            status("301 Moved Permanently", &moved),
+            ok("\"r\"", &body),
+            status("304 Not Modified", "etag: \"r\""),
+        ];
         for (head, body) in responses {
             let Ok((stream, _)) = listener.accept() else {
                 return;
@@ -412,10 +426,18 @@ fn a_renamed_repository_is_followed_once_back_to_the_api() {
     let slug = Slug::parse("example-garden/moss-bed").unwrap();
     let token = Token::new("github_pat_fictional").unwrap();
     assert!(github.runs(&slug, "main", &token).unwrap().unwrap().passed);
+    // The next poll asks the new address with its tag, and a 304 keeps the verdict.
+    assert!(github.runs(&slug, "main", &token).unwrap().unwrap().passed);
     let requests = requests.lock().unwrap().clone();
     let moved_to = requests[1].to_ascii_lowercase();
     assert!(moved_to.starts_with("get /repositories/42/actions/runs"));
     assert!(moved_to.contains("authorization: bearer"));
+    let again = requests[2].to_ascii_lowercase();
+    assert!(
+        again.starts_with("get /repositories/42/actions/runs"),
+        "{again}"
+    );
+    assert!(again.contains("if-none-match: \"r\"\r\n"));
 }
 
 #[test]

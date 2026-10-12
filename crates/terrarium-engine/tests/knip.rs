@@ -383,3 +383,52 @@ fn the_engine_runs_knip_on_its_own_thread_and_writes_nothing_into_the_repository
         "the app wrote into the repository"
     );
 }
+
+#[test]
+fn in_a_bare_repository_knip_is_tried_once_per_tip() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut repo = FixtureRepo::init_bare(&dir.path().join("repo")).unwrap();
+    for day in 0..DAYS {
+        repo.commit(
+            "main",
+            Stamp::at(FIRST + day * DAY),
+            "tend",
+            &[Edit::write("src/fern.ts", "export const reed = 1;\n")],
+        )
+        .unwrap();
+    }
+    let fx = Fixture {
+        dir,
+        repo,
+        clock: ManualClock::at(FIRST + DAYS * DAY + 2 * 3_600),
+    };
+    let mut live = fx.connect();
+    fx.opt_in(&Fixture::here(&live));
+    settled(&mut live, Cause::Request);
+    let job = run_now(&mut live);
+    finish(&mut live, job);
+    assert_eq!(live.tools().knip, KnipStatus::NotInstalled);
+    assert!(live.knip_call().is_none(), "not again at this tip");
+    settled(&mut live, Cause::Watch);
+    assert!(live.knip_call().is_none());
+}
+
+#[test]
+fn a_run_stopped_while_the_repository_is_missing_runs_again_once_it_is_back() {
+    let fx = Fixture::new();
+    let mut live = fx.connect();
+    fx.opt_in(&Fixture::here(&live));
+    settled(&mut live, Cause::Request);
+    let _stopped = run_now(&mut live);
+    let away = fx.dir.path().join("away");
+    fs::rename(fx.repo_path(), &away).unwrap();
+    assert_eq!(
+        refresh(&mut live, Cause::Watch).reach,
+        Some(Reach::NotFound)
+    );
+    fs::rename(&away, fx.repo_path()).unwrap();
+    settled(&mut live, Cause::Retry);
+    let job = run_now(&mut live);
+    finish(&mut live, job);
+    assert_eq!(fx.dead_code().len(), 1);
+}

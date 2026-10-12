@@ -13,6 +13,7 @@
 //! - Nothing here runs without a [`CiConfig`]; the app gives one, and with no token saved and
 //!   no repository known the poller never builds a request.
 
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
@@ -105,7 +106,15 @@ impl Poller {
                                 },
                                 Ok(Some(token)) => {
                                     had_token = true;
-                                    ask_branches(client.as_mut(), &ask, token)
+                                    // A panic in the client answers as GitHub not reached, and
+                                    // the next poll asks with a client made afresh.
+                                    let asked = panic::catch_unwind(AssertUnwindSafe(|| {
+                                        ask_branches(client.as_mut(), &ask, token)
+                                    }));
+                                    asked.unwrap_or_else(|_| {
+                                        client = fetch();
+                                        Read::Failed(CiError::Unreachable)
+                                    })
                                 }
                             };
                             answer(Answered {
