@@ -50,6 +50,18 @@ const TRUTH_EXTERNAL: &[&str] = &["serde", "postcard", "indexmap", "sha2"];
 /// The HTTP client, reachable only through its owner (I-6).
 const HTTP_CLIENT: &str = "ureq";
 const HTTP_OWNER: &str = ADAPTERS;
+/// The one folder of the code that ships that may name the HTTP client or a socket: the GitHub
+/// Actions client (I-6, N-09).
+const CI_MODULE: &str = "crates/terrarium-adapters/src/ci/";
+/// What opens a socket or looks a host up. Naming one is reaching the network.
+const NETWORK_NAMES: &[&str] = &[
+    HTTP_CLIENT,
+    "TcpStream",
+    "TcpListener",
+    "UdpSocket",
+    "ToSocketAddrs",
+    "to_socket_addrs",
+];
 
 const FORBID_UNSAFE: &str = "#![forbid(unsafe_code)]";
 /// The one crate allowed `unsafe` (I-9).
@@ -166,6 +178,7 @@ pub fn check(ws: &Workspace) -> Vec<String> {
     }
     check_truth_sources(&ws.truth_sources, &mut violations);
     check_process_spawning(&ws.product_sources, &mut violations);
+    check_network(&ws.product_sources, &mut violations);
     check_http_client(ws, &mut violations);
     check_msrv(ws, &mut violations);
     violations
@@ -400,6 +413,74 @@ fn imports_command(tokens: TokenStream) -> bool {
         TokenTree::Punct(punct) => punct.as_char() == '*',
         TokenTree::Group(group) => imports_command(group.stream()),
         TokenTree::Literal(_) => false,
+    })
+}
+
+/// Only the CI module names the HTTP client, a socket or `std::net`: the graph keeps `ureq` out
+/// of every crate but adapters, and this keeps it, and every connection, inside one module of
+/// it (I-6, N-09). A file that does not lex is already reported.
+fn check_network(sources: &[SourceFile], out: &mut Vec<String>) {
+    for source in sources
+        .iter()
+        .filter(|s| !s.path.replace('\\', "/").starts_with(CI_MODULE))
+    {
+        let Ok(tokens) = TokenStream::from_str(&source.text) else {
+            continue;
+        };
+        out.extend(network_lines(tokens).into_iter().map(|(line, name)| {
+            format!(
+                "{}:{line} names {name}; only {CI_MODULE} reaches the network (I-6, N-09)",
+                source.path
+            )
+        }));
+    }
+}
+
+/// The lines where one of [`NETWORK_NAMES`] stands, or a path `std::net`, or
+/// `std::{…, net, …}`, with the name found.
+fn network_lines(tokens: TokenStream) -> Vec<(usize, String)> {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut lines = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Group(group) => lines.extend(network_lines(group.stream())),
+            TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                if NETWORK_NAMES.contains(&name.as_str()) {
+                    lines.push((ident.span().start().line, name));
+                    continue;
+                }
+                let path_sep = matches!(
+                    (tokens.get(i + 1), tokens.get(i + 2)),
+                    (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
+                        if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':'
+                );
+                if name != "std" || !path_sep {
+                    continue;
+                }
+                let names_net = match tokens.get(i + 3) {
+                    Some(TokenTree::Ident(next)) => next == "net",
+                    Some(TokenTree::Group(group)) => {
+                        group.delimiter() == Delimiter::Brace && imports_net(group.stream())
+                    }
+                    _ => false,
+                };
+                if names_net {
+                    lines.push((ident.span().start().line, "std::net".to_owned()));
+                }
+            }
+            TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+        }
+    }
+    lines
+}
+
+/// Whether a `use std::{…}` group names `net` itself.
+fn imports_net(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Ident(ident) => ident == "net",
+        TokenTree::Group(group) => imports_net(group.stream()),
+        TokenTree::Punct(_) | TokenTree::Literal(_) => false,
     })
 }
 
@@ -1037,6 +1118,64 @@ mod tests {
             text: "fn f() { \"unterminated }".into(),
         });
         fails_with(&ws, "crates/terrarium-app/src/broken.rs does not lex");
+    }
+
+    #[test]
+    fn only_the_ci_module_names_the_http_client_or_a_socket() {
+        for (text, line, name) in [
+            ("use ureq::Agent;\n", 1, "ureq"),
+            ("\nfn f() { let _ = ::ureq::get(\"x\"); }\n", 2, "ureq"),
+            ("use std::net::TcpStream;\n", 1, "std::net"),
+            ("use std::{io, net};\n", 1, "std::net"),
+            ("use std::net as n;\n", 1, "std::net"),
+            (
+                "fn f() { n::TcpStream::connect(\"x:1\"); }\n",
+                1,
+                "TcpStream",
+            ),
+            (
+                "mod m {\n    use std::{io, net::{UdpSocket as U}};\n}\n",
+                2,
+                "std::net",
+            ),
+            (
+                "fn f(a: &str) { let _ = a.to_socket_addrs(); }\n",
+                1,
+                "to_socket_addrs",
+            ),
+        ] {
+            let mut ws = workspace();
+            ws.product_sources.push(SourceFile {
+                path: "crates/terrarium-engine/src/ci.rs".into(),
+                text: text.into(),
+            });
+            fails_with(
+                &ws,
+                &format!("crates/terrarium-engine/src/ci.rs:{line} names {name}; only"),
+            );
+        }
+        // Inside the CI module, and in a string or a comment anywhere, it is no violation.
+        let mut ws = workspace();
+        for (path, text) in [
+            (
+                "crates/terrarium-adapters/src/ci/client.rs",
+                "use ureq::Agent;\n",
+            ),
+            (
+                "crates/terrarium-adapters/src/ci/tests.rs",
+                "use std::net::TcpListener;\n",
+            ),
+            (
+                "crates/terrarium-app/src/copy.rs",
+                "// ureq, std::net\nconst S: &str = \"TcpStream\";\n",
+            ),
+        ] {
+            ws.product_sources.push(SourceFile {
+                path: path.into(),
+                text: text.into(),
+            });
+        }
+        assert_eq!(check(&ws), Vec::<String>::new());
     }
 
     #[test]

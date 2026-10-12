@@ -15,6 +15,7 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
+use crate::ci::Slug;
 use crate::git::{GitError, GitRepo};
 use crate::metrics::{Language, languages_at};
 use crate::report::{Format, MAX_FILES, installed_knip, read_bounded};
@@ -229,6 +230,8 @@ pub struct Discovery {
     /// The version of the Knip in `node_modules`, if one is installed.
     pub knip_installed: Option<String>,
     pub ci_workflows: Vec<String>,
+    /// The GitHub repository `origin` names, whose runs the weather can read.
+    pub github: Option<Slug>,
     pub runners: Vec<RunnerFound>,
     /// The source files at the default tip in each language the source metrics read; empty
     /// when there are none, or the tip could not be read.
@@ -253,6 +256,11 @@ pub fn discover(
         |_| BTreeMap::new(),
         |(repo, branch)| source_code(repo, branch),
     );
+    let github = git
+        .as_ref()
+        .ok()
+        .and_then(|(repo, _)| repo.origin_url())
+        .and_then(|url| Slug::from_remote_url(&url));
     let git = git.map(|(_, branch)| branch);
     let package = package_keys(root);
     let knip_config = KNIP_CONFIG_PATHS
@@ -279,6 +287,7 @@ pub fn discover(
         knip_config,
         knip_installed: installed_knip(root),
         ci_workflows,
+        github,
         runners: runners(root, &package),
         source_code,
     }
@@ -635,6 +644,7 @@ mod tests {
         assert_eq!(found.knip_config, None);
         assert_eq!(found.knip_installed, None);
         assert!(found.ci_workflows.is_empty());
+        assert_eq!(found.github, None);
         assert!(found.runners.is_empty());
     }
 
@@ -672,6 +682,10 @@ mod tests {
             ),
             ("package.json", "{\"name\":\"moss\",\"jest\":{}}"),
         ]);
+        repo.append_git_config(
+            "[remote \"origin\"]\n\turl = https://github.com/example-garden/moss.git\n",
+        )
+        .unwrap();
         let status = repo.path().join("status.json");
         fs::write(&status, "{}").unwrap();
         let found = discover_in(repo.path(), &Overrides::default(), Some(&status));
@@ -706,6 +720,7 @@ mod tests {
             found.ci_workflows,
             [".github/workflows/ci.yml", ".github/workflows/nightly.yaml"]
         );
+        assert_eq!(found.github, Slug::parse("example-garden/moss"));
         assert_eq!(
             found.runners,
             [

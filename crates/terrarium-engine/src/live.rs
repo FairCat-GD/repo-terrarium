@@ -24,7 +24,13 @@
 //!    writers, and an unchanged `JUnit` report must not be recorded again after a
 //!    `record-tests` run, nor an older one when the newer cannot be read. A Knip report's dead
 //!    code is weighed against the exports counted in HEAD's commit, once per report and commit.
-//! 5. Replay follows the cache contract in `terrarium_truth::replay`: the base state is the
+//! 5. What came back from a job is recorded with HEAD as this refresh reads it: a Knip run's
+//!    report, weighed as a Knip report is, and only while HEAD is still at the tip it ran at;
+//!    and a GitHub Actions poll's weather (`observe::ci_weather`), recorded when its runs
+//!    changed, or when HEAD's branch is not the one the newest observation recorded, since
+//!    truth learns where HEAD is only from a row. Weather that can no longer be read is
+//!    recorded as unknown (`observe::ci_unread`), so the local results take over.
+//! 6. Replay follows the cache contract in `terrarium_truth::replay`: the base state is the
 //!    state before the open hour, resumed when truth accepts the inputs it consumed and replayed
 //!    in full otherwise; the live state is a copy of it advanced through the open hour. The base
 //!    is cached about once an hour.
@@ -39,25 +45,31 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
+use terrarium_adapters::binding::RepoBinding;
+use terrarium_adapters::ci::{CiError, Slug};
 use terrarium_adapters::discovery::{self, Enabled};
+use terrarium_adapters::exec::{KnipRun, Tool, find_node};
 use terrarium_adapters::git::{Change, GitError, GitRepo, History, Progress, RewriteReason};
 use terrarium_adapters::local_tests;
 use terrarium_adapters::metrics::{METRICS_VERSION, Measurement, Metrics};
-use terrarium_adapters::report::{Format, Report};
+use terrarium_adapters::report::{Format, Reading, Report};
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
+use terrarium_store::raw::CiUnread;
 use terrarium_store::{
     DataDir, InstallKey, NewTerrarium, ObservationId, ObservationRecord, SimCache, Store,
     StoreError, StoredObservation, Terrarium, TerrariumId,
 };
 use terrarium_truth::climate::ClimateReport;
-use terrarium_truth::domain::{LeftCommit, ObservationHead, merge_key};
+use terrarium_truth::domain::{LeftCommit, ObservationHead, WeatherSource, merge_key};
 use terrarium_truth::{
     Basis, CommitId, Observation, ObservationKind, Prepared, ReplayError, SIM_VERSION, SceneInput,
     SimState, Tick, observation_tick, project_showing,
 };
 
+use crate::ci::{Answered, Ask, CiConfig, CiStatus, Read};
 use crate::clock::{Clock, SystemClock};
-use crate::details::{self, Details, FileCache, Found, Sources};
+use crate::details::{self, DeadCodeFrom, Details, FileCache, Found, Sources};
+use crate::knip::{KnipCall, KnipDone, KnipJob, KnipStatus};
 use crate::lifecycle::{self, AdapterSettings, stored_adapters};
 use crate::observe;
 use crate::schedule::DEBOUNCE;
@@ -70,7 +82,11 @@ use crate::watch::{Places, WatchSet};
 /// note onto the label.
 const PROGRESS_AFTER: Duration = Duration::from_secs(1);
 
-/// What the engine connects, where its data lives, and the clock it reads.
+/// Finds the person's node for a repository's Knip, never inside the repository.
+pub type NodeLookup = Arc<dyn Fn(&Path) -> Option<Tool> + Send + Sync>;
+
+/// What the engine connects, where its data lives, the clock it reads, how it polls GitHub
+/// Actions, and where it finds node for Knip.
 #[derive(Clone)]
 pub struct EngineConfig {
     pub data: DataDir,
@@ -78,6 +94,10 @@ pub struct EngineConfig {
     pub repo: Option<PathBuf>,
     pub clock: Arc<dyn Clock>,
     pub progress_after: Duration,
+    /// `None` polls nothing: no keychain is read and no request is made (N-09). The app gives
+    /// one; tests give stand-ins, so none reaches the person's keychain or the network.
+    pub ci: Option<CiConfig>,
+    pub node: NodeLookup,
 }
 
 impl EngineConfig {
@@ -87,6 +107,8 @@ impl EngineConfig {
             repo,
             clock: Arc::new(SystemClock),
             progress_after: PROGRESS_AFTER,
+            ci: None,
+            node: Arc::new(|repo: &Path| find_node(Some(repo))),
         }
     }
 }
@@ -184,6 +206,14 @@ pub struct News {
     pub sim_updated: bool,
     /// The default branch moved without fast-forwarding, and the history replayed from it.
     pub history_rewritten: bool,
+}
+
+/// What the settings window says of the tools that run beside the refresh: the Knip run and
+/// the GitHub Actions poll.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tools {
+    pub knip: KnipStatus,
+    pub ci: CiStatus,
 }
 
 /// Something that went wrong in a refresh that the next one may not repeat. Its wording is the
@@ -390,6 +420,53 @@ pub struct Live {
     /// The session's time: the wall clock, never lower than before.
     now: i64,
     watch: Option<WatchSet>,
+    /// Where HEAD was at the last refresh that reached the repository.
+    head: Option<ObservationHead>,
+    node: NodeLookup,
+    ci: CiState,
+    knip: KnipState,
+}
+
+/// The newest stored weather of one CI source: when, its content hash, and whether it is known.
+#[derive(Clone, Copy, Debug)]
+struct CiNewest {
+    at: (i64, i64),
+    hash: [u8; 32],
+    known: bool,
+}
+
+/// The GitHub Actions weather, as this session follows it.
+#[derive(Default)]
+struct CiState {
+    /// Whether the session polls at all: the app gave it a keychain and a client.
+    on: bool,
+    /// The repository whose runs are asked for, as of the last refresh: the one typed for this
+    /// repository, else the one `origin` names.
+    slug: Option<Slug>,
+    /// A repository was known earlier in the session, so losing it turns CI off.
+    had_slug: bool,
+    /// The newest stored row of each CI source, by branch.
+    newest: BTreeMap<String, CiNewest>,
+    /// A poll's answer with something to record, and whether GitHub is out of reach.
+    answer: Option<(Answered, bool)>,
+    /// HEAD's branch or the repository changed: the worker asks at once.
+    ask_now: bool,
+    status: CiStatus,
+}
+
+/// The opt-in Knip run, as this session follows it.
+#[derive(Default)]
+struct KnipState {
+    /// The tip a run going was started at.
+    running: Option<CommitId>,
+    /// The tip Knip last ran at, whatever came of it: each tip runs once.
+    ran_at: Option<CommitId>,
+    /// The opt-in was given since the tip last ran: it runs at the tip even if a dead-code row
+    /// from a report is there.
+    forced: bool,
+    /// A run that came back, waiting for a refresh to record it.
+    done: Option<KnipDone>,
+    status: KnipStatus,
 }
 
 impl Live {
@@ -429,9 +506,14 @@ impl Live {
         std::fs::create_dir_all(&status_dir).map_err(StoreError::Io)?;
         let stored = store.observations(terrarium.id, None)?;
         let mut newest = BTreeMap::new();
+        let mut ci = CiState {
+            on: config.ci.is_some(),
+            ..CiState::default()
+        };
         let mut observations = Vec::with_capacity(stored.len());
         for row in &stored {
             note_newest(&mut newest, row);
+            note_ci_newest(&mut ci.newest, row);
             observations.push(row.to_observation()?);
         }
         let measured = measured_at_connect(&stored, adapters.enabled);
@@ -441,9 +523,10 @@ impl Live {
         };
         let showing = Showing::after(base.as_ref().map(|base| base.events.keys()));
         let remembered = Remembered::read(&store)?;
+        let knip_runs = knip_run(&adapters, &terrarium).is_some();
         Ok(Some(Live {
             status_file: config.data.local_tests(&terrarium.seed),
-            patterns: discovery::report_patterns(&adapters.overrides, adapters.enabled),
+            patterns: patterns(&adapters, knip_runs),
             store,
             terrarium,
             clock: Arc::clone(&config.clock),
@@ -469,6 +552,17 @@ impl Live {
             stored_seen: None,
             now,
             watch: None,
+            head: None,
+            node: Arc::clone(&config.node),
+            ci,
+            knip: KnipState {
+                status: if knip_runs {
+                    KnipStatus::Waiting
+                } else {
+                    KnipStatus::Off
+                },
+                ..KnipState::default()
+            },
         }))
     }
 
@@ -560,6 +654,7 @@ impl Live {
             self.verified = true;
         }
         let head = git.head(&branch).map_err(git_fault)?;
+        self.follow_head_and_repository(&git, &head);
         let read = self.read_history(&git, &branch, progress, cancel)?;
         if read.rewritten {
             // Rewritten history may be another repository at the same path.
@@ -583,6 +678,7 @@ impl Live {
         let root = git.workdir().map(Path::to_path_buf);
         let observed = self.observe(&git, root.as_deref(), &head, refresh.reports, cancel)?;
         recorded |= observed.recorded;
+        recorded |= self.record_ci(&head)?;
         let follow_up = observed.follow_up;
         let adapters_done = Instant::now();
         let history = self.history.as_ref().ok_or(MISSING_HISTORY)?;
@@ -644,14 +740,57 @@ impl Live {
         })
     }
 
-    /// Takes the adapters' settings in again.
+    /// Takes the adapters' settings in again. An opt-in to run Knip just given runs it at the
+    /// tip even where a report's dead code was recorded.
     fn reload_adapters(&mut self) -> Result<(), StoreError> {
         let adapters = stored_adapters(&self.store)?;
         if adapters != self.adapters {
-            self.patterns = discovery::report_patterns(&adapters.overrides, adapters.enabled);
+            let ran = knip_run(&self.adapters, &self.terrarium).is_some();
+            let runs = knip_run(&adapters, &self.terrarium).is_some();
+            if runs && !ran {
+                self.knip.forced = true;
+                self.knip.status = KnipStatus::Waiting;
+            }
+            self.patterns = patterns(&adapters, runs);
             self.adapters = adapters;
         }
         Ok(())
+    }
+
+    /// Notes where HEAD is and which GitHub repository the weather reads; either changing has
+    /// the worker poll at once.
+    fn follow_head_and_repository(&mut self, git: &GitRepo, head: &ObservationHead) {
+        if self.head.as_ref().map(|known| &known.branch) != Some(&head.branch) {
+            self.ci.ask_now = true;
+        }
+        self.head = Some(head.clone());
+        if !self.ci.on {
+            return;
+        }
+        let here = self.here();
+        let typed = self
+            .adapters
+            .ci_repository
+            .as_ref()
+            .filter(|typed| typed.binding == here)
+            .map(|typed| typed.repo.clone());
+        let slug = typed.or_else(|| git.origin_url().and_then(|url| Slug::from_remote_url(&url)));
+        if slug != self.ci.slug {
+            self.ci.ask_now = true;
+        }
+        match &slug {
+            None => self.ci.status = CiStatus::NoRepository,
+            Some(_) if self.ci.status == CiStatus::NoRepository => {
+                self.ci.status = CiStatus::Quiet;
+            }
+            Some(_) => {}
+        }
+        self.ci.slug = slug;
+    }
+
+    /// This repository, as a setting given for it names it.
+    fn here(&self) -> RepoBinding {
+        RepoBinding::new(&self.terrarium.seed, &self.terrarium.repo.path)
     }
 
     /// Runs the adapters: the source at the default tip, then, when `reports` asks, the reports
@@ -667,6 +806,7 @@ impl Live {
         let mut observed = Observed::default();
         let mut measured = None;
         observed.take(self.measure_tip(git, head, cancel, &mut measured)?);
+        observed.take(self.record_knip(git, root, head, cancel, &mut measured)?);
         if reports {
             let read = self.read_reports(root, head);
             self.found = read.found;
@@ -976,9 +1116,16 @@ impl Live {
     fn read_reports(&self, root: Option<&Path>, head: &ObservationHead) -> ReportsRead {
         let mut wait: Option<Duration> = None;
         let enabled = self.adapters.enabled;
+        // While Knip runs here, its output is the one dead-code report.
+        let knip_runs = knip_run(&self.adapters, &self.terrarium).is_some();
         let mut found = Found {
             enabled,
             source_code: self.found.source_code,
+            dead_code: if knip_runs {
+                DeadCodeFrom::KnipRun
+            } else {
+                DeadCodeFrom::Nothing
+            },
             ..Found::default()
         };
         let mut knip = None;
@@ -990,8 +1137,14 @@ impl Live {
             let located = discovery::locate_reports(root, &self.adapters.overrides);
             found.coverage = located.coverage.located().is_some();
             found.test_report = located.test_report.located().is_some();
-            found.dead_code = located.dead_code.located().is_some();
-            if let Some(located) = located.dead_code.located().filter(|_| enabled.dead_code) {
+            if !knip_runs && located.dead_code.located().is_some() {
+                found.dead_code = DeadCodeFrom::Report;
+            }
+            if let Some(located) = located
+                .dead_code
+                .located()
+                .filter(|_| enabled.dead_code && !knip_runs)
+            {
                 match unsettled(located.files.iter().map(|file| root.join(file))) {
                     Some(left) => defer(left),
                     None => knip = Some(Report::read(root, located.format, &located.files)),
@@ -1028,22 +1181,7 @@ impl Live {
             })
             .collect();
         new.sort_by_key(|(mtime, format, _)| (*mtime, *format));
-        // A Knip report is weighed when it is new: unlike the stored row's, and unlike the one
-        // weighed last at this commit.
-        let knip = knip.filter(|report| {
-            report.known().is_some_and(|known| {
-                let hash = known.content_hash;
-                let stored = self
-                    .newest
-                    .get(&Format::Knip)
-                    .is_some_and(|newest| newest.hash == hash);
-                let weighed = self
-                    .knip_weighed
-                    .as_ref()
-                    .is_some_and(|(weighed, at)| *weighed == hash && *at == head.commit);
-                !stored && !weighed
-            })
-        });
+        let knip = knip.filter(|report| self.knip_is_new(report, head));
         ReportsRead {
             records: new
                 .into_iter()
@@ -1069,26 +1207,25 @@ impl Live {
             .any(|o| o.recorded_at == record.recorded_at && o.merge_key() == key)
     }
 
-    /// Whether a light or soil reading of `record`'s kind is held from the same second. Replay
-    /// orders the readings of one second by their commit, so a newer one at another head could
-    /// lose to the one before it.
-    fn ties_reading(&self, record: &ObservationRecord) -> bool {
-        record.kind.is_reading()
-            && self
-                .observations
-                .iter()
-                .any(|o| o.recorded_at == record.recorded_at && o.value.kind() == record.kind)
+    /// Whether an observation at another head is held from the same second. Replay orders the
+    /// observations of one second by their merge key, not by when they were recorded, and truth
+    /// keeps the last reading of each kind and follows the newest observation's HEAD: a row
+    /// recorded at a new head could otherwise lose to the one before it.
+    fn ties_head(&self, record: &ObservationRecord) -> bool {
+        self.observations
+            .iter()
+            .any(|o| o.recorded_at == record.recorded_at && o.head != record.head)
     }
 
     /// Stores `record` with a `recorded_at` no stored observation of its kind, source and head
-    /// already has, and, for a reading, none of its kind has: a second later each time. Keeps
-    /// it for replay.
+    /// already has, and none at another head has: a second later each time. Keeps it for
+    /// replay.
     fn append(
         &mut self,
         producer: Option<Format>,
         mut record: ObservationRecord,
     ) -> Result<(), Fault> {
-        while self.holds_key_of(&record) || self.ties_reading(&record) {
+        while self.holds_key_of(&record) || self.ties_head(&record) {
             record.recorded_at += 1;
         }
         let id = self.store.append_observation(self.terrarium.id, &record)?;
@@ -1098,6 +1235,11 @@ impl Live {
             record,
         };
         self.observations.push(stored.to_observation()?);
+        // As for the reports: what this install just recorded is what the next poll compares
+        // with.
+        if let Some((branch, newest)) = ci_newest_of(&stored) {
+            self.ci.newest.insert(branch, newest);
+        }
         // What this install just recorded is what the next read compares with, even when a
         // stored row (imported, or recorded while the clock was ahead) is dated later.
         if let Some(format) = producer {
@@ -1165,6 +1307,303 @@ impl Live {
         self.base = base;
         self.view = Some(View { live, through });
         Ok((replay, problem))
+    }
+}
+
+/// The jobs that run beside the refresh: the Knip run and the GitHub Actions poll. What the
+/// worker asks here only reads or stashes; what came back is recorded by the next refresh.
+impl Live {
+    /// The poll to send, when a repository is known and HEAD has been read.
+    pub fn ci_ask(&self) -> Option<Ask> {
+        let slug = self.ci.slug.clone()?;
+        let head = self.head.as_ref()?;
+        let default = &self.terrarium.repo.default_branch;
+        let branches = match &head.branch {
+            Some(branch) if branch != default => vec![branch.clone(), default.clone()],
+            _ => vec![default.clone()],
+        };
+        Some(Ask { slug, branches })
+    }
+
+    /// Takes in a poll's answer; `outage` says GitHub has been out of reach long enough for its
+    /// weather to stop counting. True when it has something to record, kept for the refresh
+    /// the worker then runs.
+    pub fn ci_answered(&mut self, answered: Answered, outage: bool) -> bool {
+        self.ci.status = CiStatus::of(&answered);
+        let Some(head) = self.head.clone() else {
+            return false;
+        };
+        let wanted = self.ci.slug.as_ref() == Some(&answered.slug)
+            && !self.ci_rows(&answered.read, outage, &head).is_empty();
+        if wanted {
+            self.ci.answer = Some((answered, outage));
+        }
+        wanted
+    }
+
+    /// Whether HEAD's branch or the repository changed since the worker last asked.
+    pub fn ci_ask_now(&mut self) -> bool {
+        std::mem::take(&mut self.ci.ask_now)
+    }
+
+    /// What the worker does about Knip now: start it at the default tip when it may run there
+    /// and has not, or stop a run no longer wanted.
+    pub fn knip_call(&mut self) -> Option<KnipCall> {
+        let Some(run) = knip_run(&self.adapters, &self.terrarium) else {
+            self.knip.forced = false;
+            self.knip.status = KnipStatus::Off;
+            return self.knip.running.take().map(|_| KnipCall::Stop);
+        };
+        if self.knip.status == KnipStatus::Off {
+            self.knip.status = KnipStatus::Waiting;
+        }
+        let head = self.head.clone()?;
+        if self.knip.running.is_some() || self.view.is_none() || !head.at_default_tip {
+            return None;
+        }
+        let tip = &head.commit;
+        let due = self.knip.ran_at.as_ref() != Some(tip)
+            && (self.knip.forced || !self.has_dead_code_at(tip));
+        if !due {
+            return None;
+        }
+        self.knip.forced = false;
+        let Some(node) = (self.node)(run.root()) else {
+            self.knip.ran_at = Some(tip.clone());
+            self.knip.status = KnipStatus::NoNode;
+            return None;
+        };
+        self.knip.running = Some(tip.clone());
+        self.knip.status = KnipStatus::Running;
+        Some(KnipCall::Start(KnipJob { run, node, head }))
+    }
+
+    /// Takes in a run that ended; true when it has something to record. A run stopped as no
+    /// longer wanted has nothing.
+    pub fn knip_ran(&mut self, done: KnipDone) -> bool {
+        if self.knip.running.take().is_none() {
+            return false;
+        }
+        self.knip.done = Some(done);
+        true
+    }
+
+    /// What the settings window says of the Knip run and the GitHub Actions poll.
+    pub fn tools(&self) -> Tools {
+        Tools {
+            knip: self.knip.status.clone(),
+            ci: self.ci.status.clone(),
+        }
+    }
+
+    /// Records what the last poll learned, with HEAD at `head`; and, when the repository whose
+    /// runs were read is no longer known, records its CI weather as unknown.
+    fn record_ci(&mut self, head: &ObservationHead) -> Result<bool, Fault> {
+        if !self.ci.on {
+            return Ok(false);
+        }
+        let mut rows = Vec::new();
+        if self.ci.slug.is_none() {
+            if std::mem::take(&mut self.ci.had_slug) {
+                rows = self.unread_rows(CiUnread::Off, head);
+            }
+        } else {
+            self.ci.had_slug = true;
+        }
+        if let Some((answered, outage)) = self.ci.answer.take()
+            && self.ci.slug.as_ref() == Some(&answered.slug)
+        {
+            rows.extend(self.ci_rows(&answered.read, outage, head));
+        }
+        let recorded = !rows.is_empty();
+        for row in rows {
+            self.append(None, row)?;
+        }
+        Ok(recorded)
+    }
+
+    /// The rows `read` makes with HEAD at `head` (see the module's doc).
+    fn ci_rows(&self, read: &Read, outage: bool, head: &ObservationHead) -> Vec<ObservationRecord> {
+        let moved = self.head_moved(head);
+        match read {
+            Read::Decided(Some((branch, verdict))) => {
+                // Asked for HEAD's branch or the default one; HEAD has moved on since.
+                let default = &self.terrarium.repo.default_branch;
+                if head.branch.as_ref() != Some(branch) && branch != default {
+                    return Vec::new();
+                }
+                let same = self
+                    .ci
+                    .newest
+                    .get(branch)
+                    .is_some_and(|newest| newest.hash == verdict.hash);
+                if same && !moved {
+                    return Vec::new();
+                }
+                vec![observe::ci_weather(branch, verdict, head.clone(), self.now)]
+            }
+            // No run decides on HEAD's branch or the default one: a row for HEAD's branch says
+            // where HEAD is.
+            Read::Decided(None) => match &head.branch {
+                Some(branch) if moved => vec![observe::ci_unread(
+                    branch,
+                    CiUnread::NoRun,
+                    head.clone(),
+                    self.now,
+                )],
+                _ => Vec::new(),
+            },
+            Read::NoToken { removed: true } => self.unread_rows(CiUnread::Off, head),
+            Read::Failed(CiError::Refused) => self.unread_rows(CiUnread::Refused, head),
+            Read::Failed(CiError::NotFound) => self.unread_rows(CiUnread::NotFound, head),
+            Read::Failed(_) if outage => self.unread_rows(CiUnread::Unreachable, head),
+            Read::NoToken { removed: false } | Read::Keychain(_) | Read::Failed(_) => Vec::new(),
+        }
+    }
+
+    /// An unknown row for each CI source whose newest row is known: none of them is read now.
+    fn unread_rows(&self, why: CiUnread, head: &ObservationHead) -> Vec<ObservationRecord> {
+        self.ci
+            .newest
+            .iter()
+            .filter(|(_, newest)| newest.known)
+            .map(|(branch, _)| observe::ci_unread(branch, why, head.clone(), self.now))
+            .collect()
+    }
+
+    /// Whether HEAD at `head` is on another branch (or detached state) than the newest
+    /// observation recorded, which is where truth thinks HEAD is; true with no observation.
+    fn head_moved(&self, head: &ObservationHead) -> bool {
+        self.observations
+            .iter()
+            .max_by_key(|o| (o.recorded_at, o.id))
+            .is_none_or(|newest| newest.head.branch != head.branch)
+    }
+
+    /// Records the dead code of the Knip run that came back, with HEAD at `head`: only while
+    /// HEAD is still at the tip it ran at, since Knip read the worktree there; otherwise the tip
+    /// runs again once HEAD is back. Weighed as a Knip report is, once per output and commit.
+    fn record_knip(
+        &mut self,
+        git: &GitRepo,
+        root: Option<&Path>,
+        head: &ObservationHead,
+        cancel: &AtomicBool,
+        source: &mut Held,
+    ) -> Result<Metered, Fault> {
+        let Some(done) = self.knip.done.take() else {
+            return Ok(Metered::Unchanged);
+        };
+        let (Some(root), true) = (root, done.head.commit == head.commit && head.at_default_tip)
+        else {
+            if !matches!(self.knip.status, KnipStatus::Off) {
+                self.knip.status = KnipStatus::Waiting;
+            }
+            return Ok(Metered::Unchanged);
+        };
+        if self.view.is_none() {
+            self.knip.done = Some(done);
+            return Ok(Metered::Deferred);
+        }
+        self.knip.ran_at = Some(head.commit.clone());
+        let bytes = match done.outcome {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.knip.status = KnipStatus::of(&err);
+                return Ok(Metered::Unchanged);
+            }
+        };
+        let report = Report::from_output(
+            root,
+            Format::Knip,
+            KNIP_OUTPUT,
+            bytes,
+            self.now,
+            head.commit.as_str().as_bytes(),
+        );
+        self.knip.status = match report.known().map(|known| &known.reading) {
+            Some(Reading::DeadCode(counts)) => KnipStatus::Ran {
+                unused: counts.unused_exports,
+            },
+            _ => KnipStatus::NotAReport,
+        };
+        if !self.knip_is_new(&report, head) {
+            return Ok(Metered::Unchanged);
+        }
+        self.weigh_dead_code(git, &report, head, cancel, source)
+    }
+
+    /// Whether a known Knip report is new: unlike the stored row's, and unlike the one weighed
+    /// last at HEAD's commit.
+    fn knip_is_new(&self, report: &Report, head: &ObservationHead) -> bool {
+        report.known().is_some_and(|known| {
+            let hash = known.content_hash;
+            let stored = self
+                .newest
+                .get(&Format::Knip)
+                .is_some_and(|newest| newest.hash == hash);
+            let weighed = self
+                .knip_weighed
+                .as_ref()
+                .is_some_and(|(weighed, at)| *weighed == hash && *at == head.commit);
+            !stored && !weighed
+        })
+    }
+
+    /// Whether dead code was recorded at `tip`, by a run or from a report: the tip has its
+    /// reading, and a relaunch does not run Knip there again.
+    fn has_dead_code_at(&self, tip: &CommitId) -> bool {
+        self.observations
+            .iter()
+            .any(|o| o.value.kind() == ObservationKind::DeadCode && o.head.commit == *tip)
+    }
+}
+
+/// What a Knip run's report is called where a report's file name would be.
+const KNIP_OUTPUT: &str = "knip --reporter json";
+
+/// Knip, when it may run in `terrarium`'s repository: Dead code is on and the opt-in names it.
+fn knip_run(adapters: &AdapterSettings, terrarium: &Terrarium) -> Option<KnipRun> {
+    let here = RepoBinding::new(&terrarium.seed, &terrarium.repo.path);
+    adapters
+        .enabled
+        .dead_code
+        .then(|| KnipRun::permitted(adapters.knip_run.as_ref(), &here))
+        .flatten()
+}
+
+/// The reports the watcher watches: while Knip runs, its report file is not one of them.
+fn patterns(adapters: &AdapterSettings, knip_runs: bool) -> Vec<String> {
+    let enabled = Enabled {
+        dead_code: adapters.enabled.dead_code && !knip_runs,
+        ..adapters.enabled
+    };
+    discovery::report_patterns(&adapters.overrides, enabled)
+}
+
+/// A stored row's CI source's branch and its newest-row facts, if it is CI weather.
+fn ci_newest_of(row: &StoredObservation) -> Option<(String, CiNewest)> {
+    let Some(WeatherSource::Ci { branch }) = &row.record.source else {
+        return None;
+    };
+    Some((
+        branch.clone(),
+        CiNewest {
+            at: (row.record.recorded_at, row.id.get()),
+            hash: row.record.content_hash,
+            known: row.record.normalized.is_some(),
+        },
+    ))
+}
+
+/// Notes `row` as its CI source's newest stored row, if it is: at connect, the largest
+/// (`recorded_at`, row id).
+fn note_ci_newest(newest: &mut BTreeMap<String, CiNewest>, row: &StoredObservation) {
+    let Some((branch, row)) = ci_newest_of(row) else {
+        return;
+    };
+    if newest.get(&branch).is_none_or(|known| known.at < row.at) {
+        newest.insert(branch, row);
     }
 }
 

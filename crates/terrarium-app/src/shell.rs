@@ -15,7 +15,7 @@ use winit::window::{Window, WindowId};
 
 use crate::connect::ConnectForm;
 use crate::egui_host::{EguiHost, WindowKind};
-use crate::prefs::Pref;
+use crate::prefs::{Pref, TokenChange};
 use crate::settings::SettingsForm;
 use crate::timelapse::form::TimeLapseForm;
 use crate::{copy, pinning};
@@ -75,6 +75,8 @@ pub enum Intent {
     Done,
     /// A setting changed in the settings window: applied at once, then saved.
     Set(Pref),
+    /// The GitHub token saved to the keychain, or removed from it.
+    Token(TokenChange),
     /// The time-lapse of the days `from..=to`, by day or by night.
     Film { from: usize, to: usize, night: bool },
     /// Write a time-lapse export to the path picked.

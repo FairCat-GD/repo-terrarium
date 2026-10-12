@@ -8,6 +8,11 @@
 //!   installed and never inside the repository, feeding it on stdin: the time-lapse's MP4 goes
 //!   through their ffmpeg this way. It inherits nothing: no environment, no terminal, no
 //!   working directory but the one given.
+//! - [`KnipRun::run`] runs the Knip a repository installed, with the person's own node, and
+//!   keeps what it prints. It is the one run of code from a repository, so a [`KnipRun`] is
+//!   made only from the opt-in the settings hold for that repository
+//!   ([`KnipRun::permitted`]). Knip writes its own cache inside the repository
+//!   (`node_modules/.cache`): the one exemption from N-10, and Knip's write, never the app's.
 //!
 //! Each is executed directly, never through a shell, so its arguments reach it exactly as
 //! given. Nothing found in a repository is ever run from here without the user's per-adapter
@@ -17,11 +22,16 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+use serde_json::Value;
+
+use crate::binding::RepoBinding;
+use crate::report::{Format, KNIP_MIN_MAJOR, installed_knip, major, read_bounded, text};
 
 /// How a command ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,9 +133,27 @@ const FFMPEG_NAMES: &[&str] = if cfg!(windows) {
 /// which holds none of them.
 const MACOS_TOOL_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
 
+/// node's file name: on Windows only `node.exe`, for the same reason as ffmpeg's.
+const NODE_NAMES: &[&str] = if cfg!(windows) {
+    &["node.exe"]
+} else {
+    &["node"]
+};
+
 /// The person's ffmpeg: on `PATH`, then, on macOS, where its package managers put it; never
 /// one inside `outside`, the repository.
 pub fn find_ffmpeg(outside: Option<&Path>) -> Option<Tool> {
+    find_installed(FFMPEG_NAMES, outside)
+}
+
+/// The person's node, looked for as ffmpeg is; never one inside `outside`, the repository, so
+/// a repository cannot hand Knip a node of its own.
+pub fn find_node(outside: Option<&Path>) -> Option<Tool> {
+    find_installed(NODE_NAMES, outside)
+}
+
+/// The first of `names` on `PATH`, then, on macOS, where its package managers put tools.
+fn find_installed(names: &[&str], outside: Option<&Path>) -> Option<Tool> {
     let also: &[&str] = if cfg!(target_os = "macos") {
         MACOS_TOOL_DIRS
     } else {
@@ -133,7 +161,7 @@ pub fn find_ffmpeg(outside: Option<&Path>) -> Option<Tool> {
     };
     let also: Vec<&Path> = also.iter().map(Path::new).collect();
     let path = std::env::var_os("PATH");
-    find_tool(FFMPEG_NAMES, path.as_deref(), &also, outside)
+    find_tool(names, path.as_deref(), &also, outside)
 }
 
 /// The first file named one of `names` that can run, in each absolute directory of `path` in
@@ -219,14 +247,47 @@ pub fn run_fed(
     limit: Duration,
     feed: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> Result<(), FedError> {
-    let mut command = Command::new(&tool.0);
+    let mut command = bare(tool, args, cwd);
     command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(FedError::CannotRun)?;
+    let (Some(mut stdin), Some(stderr)) = (child.stdin.take(), child.stderr.take()) else {
+        end(&mut child);
+        return Err(FedError::NoPipes);
+    };
+    let watched = Watched::start(child, stderr, limit).map_err(FedError::CannotRun)?;
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| feed(&mut stdin)));
+    // Closed, so the tool sees its input end.
+    drop(stdin);
+    if !matches!(outcome, Ok(Ok(()))) {
+        let _ = lock(&watched.child).kill();
+    }
+    let ended = watched.wait(None);
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(payload) => panic::resume_unwind(payload),
+    };
+    if ended.timed_out {
+        return Err(FedError::TimedOut);
+    }
+    let status = ended.status.map_err(FedError::CannotRun)?;
+    match (outcome, status.success()) {
+        (Ok(()), true) => Ok(()),
+        (Err(err), true) => Err(FedError::Feed(err)),
+        (_, false) => Err(FedError::Failed {
+            ended: finished(status),
+            stderr: ended.stderr,
+        }),
+    }
+}
+
+/// `tool` with `args` in `cwd`, executed directly, with an empty environment but for what
+/// Windows' system libraries need, and on Windows no console window.
+fn bare(tool: &Tool, args: &[OsString], cwd: &Path) -> Command {
+    let mut command = Command::new(&tool.0);
+    command.args(args).current_dir(cwd).env_clear();
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
@@ -235,81 +296,105 @@ pub fn run_fed(
         }
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = command.spawn().map_err(FedError::CannotRun)?;
-    let (Some(mut stdin), Some(stderr)) = (child.stdin.take(), child.stderr.take()) else {
-        end(&mut child);
-        return Err(FedError::NoPipes);
-    };
-    let (said, tail) = mpsc::channel();
-    let reader = thread::Builder::new()
-        .name("terrarium-tool-stderr".into())
-        .spawn(move || {
-            let _ = said.send(keep_tail(stderr));
-        });
-    match reader {
-        Ok(_) => {}
-        Err(err) => {
+    command
+}
+
+/// A started tool, watched until it ends: the end of its stderr is read on a thread of its
+/// own, so a tool that writes much to it never blocks on a full pipe, and a watchdog stops it
+/// once `limit` has passed.
+struct Watched {
+    child: Arc<Mutex<Child>>,
+    timed_out: Arc<AtomicBool>,
+    done: mpsc::Sender<()>,
+    watchdog: JoinHandle<()>,
+    tail: mpsc::Receiver<String>,
+}
+
+/// How a watched tool ended.
+struct Ended {
+    status: io::Result<ExitStatus>,
+    /// The end of what it wrote to stderr.
+    stderr: String,
+    /// The watchdog stopped it at its limit.
+    timed_out: bool,
+    /// It was stopped because `stop` was set.
+    stopped: bool,
+}
+
+impl Watched {
+    /// Watches `child`. When a thread cannot start, the child is stopped and waited for.
+    fn start(mut child: Child, stderr: ChildStderr, limit: Duration) -> io::Result<Watched> {
+        let (said, tail) = mpsc::channel();
+        let reader = thread::Builder::new()
+            .name("terrarium-tool-stderr".into())
+            .spawn(move || {
+                let _ = said.send(keep_tail(stderr));
+            });
+        if let Err(err) = reader {
             end(&mut child);
-            return Err(FedError::CannotRun(err));
+            return Err(err);
+        }
+        let child = Arc::new(Mutex::new(child));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let (done, ran) = mpsc::channel::<()>();
+        let watchdog = {
+            let (child, timed_out) = (Arc::clone(&child), Arc::clone(&timed_out));
+            thread::Builder::new()
+                .name("terrarium-tool-watchdog".into())
+                .spawn(move || {
+                    if ran.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
+                        // Only a tool still running is stopped: one that ended as the time ran
+                        // out ended on its own.
+                        let mut child = lock(&child);
+                        if matches!(child.try_wait(), Ok(None)) {
+                            timed_out.store(true, Ordering::SeqCst);
+                            let _ = child.kill();
+                        }
+                    }
+                })
+        };
+        match watchdog {
+            Ok(watchdog) => Ok(Watched {
+                child,
+                timed_out,
+                done,
+                watchdog,
+                tail,
+            }),
+            Err(err) => {
+                end(&mut lock(&child));
+                Err(err)
+            }
         }
     }
-    let child = Arc::new(Mutex::new(child));
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let (done, ran) = mpsc::channel::<()>();
-    let watchdog = {
-        let (child, timed_out) = (Arc::clone(&child), Arc::clone(&timed_out));
-        thread::Builder::new()
-            .name("terrarium-tool-watchdog".into())
-            .spawn(move || {
-                if ran.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
-                    // Only a tool still running is stopped: one that ended as the time ran
-                    // out ended on its own.
-                    let mut child = lock(&child);
-                    if matches!(child.try_wait(), Ok(None)) {
-                        timed_out.store(true, Ordering::SeqCst);
+
+    /// Waits for the tool to end, stopping it as soon as `stop` is set, then for the end of its
+    /// stderr, never longer than [`TAIL_GRACE`] once it has ended.
+    fn wait(self, stop: Option<&AtomicBool>) -> Ended {
+        let mut stopped = false;
+        let status = loop {
+            let mut child = lock(&self.child);
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {
+                    if !stopped && stop.is_some_and(|stop| stop.load(Ordering::SeqCst)) {
+                        stopped = true;
                         let _ = child.kill();
                     }
                 }
-            })
-    };
-    let watchdog = match watchdog {
-        Ok(watchdog) => watchdog,
-        Err(err) => {
-            end(&mut lock(&child));
-            return Err(FedError::CannotRun(err));
+                Err(err) => break Err(err),
+            }
+            drop(child);
+            thread::sleep(WAIT_STEP);
+        };
+        drop(self.done);
+        let _ = self.watchdog.join();
+        Ended {
+            status,
+            stderr: self.tail.recv_timeout(TAIL_GRACE).unwrap_or_default(),
+            timed_out: self.timed_out.load(Ordering::SeqCst),
+            stopped,
         }
-    };
-    let outcome = panic::catch_unwind(AssertUnwindSafe(|| feed(&mut stdin)));
-    // Closed, so the tool sees its input end.
-    drop(stdin);
-    if !matches!(outcome, Ok(Ok(()))) {
-        let _ = lock(&child).kill();
-    }
-    let status = loop {
-        match lock(&child).try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => thread::sleep(WAIT_STEP),
-            Err(err) => break Err(err),
-        }
-    };
-    drop(done);
-    let _ = watchdog.join();
-    let stderr = tail.recv_timeout(TAIL_GRACE).unwrap_or_default();
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(payload) => panic::resume_unwind(payload),
-    };
-    if timed_out.load(Ordering::SeqCst) {
-        return Err(FedError::TimedOut);
-    }
-    let status = status.map_err(FedError::CannotRun)?;
-    match (outcome, status.success()) {
-        (Ok(()), true) => Ok(()),
-        (Err(err), true) => Err(FedError::Feed(err)),
-        (_, false) => Err(FedError::Failed {
-            ended: finished(status),
-            stderr,
-        }),
     }
 }
 
@@ -321,6 +406,253 @@ fn lock(child: &Mutex<Child>) -> std::sync::MutexGuard<'_, Child> {
 fn end(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// What a captured run printed, and how it ended.
+#[derive(Debug)]
+struct Captured {
+    stdout: Vec<u8>,
+    ended: Finished,
+    stderr: String,
+}
+
+/// Why a captured run printed nothing to keep.
+#[derive(Debug)]
+enum CaptureError {
+    CannotRun(io::Error),
+    NoPipes,
+    TimedOut,
+    Stopped,
+    /// It printed more than the cap, and was stopped.
+    TooLarge,
+}
+
+/// Runs `tool` with `args` in `cwd`, with nothing on stdin and an environment holding only
+/// `PATH` (and Windows' `SystemRoot`), and keeps what it prints to stdout, up to `cap` bytes:
+/// past that it is stopped. Past `limit`, or once `stop` is set, it is stopped too. It is
+/// always waited for; a process it started that holds stdout open is not waited for past
+/// [`TAIL_GRACE`].
+fn run_captured(
+    tool: &Tool,
+    args: &[OsString],
+    cwd: &Path,
+    path: &OsStr,
+    limit: Duration,
+    cap: u64,
+    stop: &AtomicBool,
+) -> Result<Captured, CaptureError> {
+    let mut command = bare(tool, args, cwd);
+    command
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(CaptureError::CannotRun)?;
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        end(&mut child);
+        return Err(CaptureError::NoPipes);
+    };
+    let watched = Watched::start(child, stderr, limit).map_err(CaptureError::CannotRun)?;
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let too_large = Arc::new(AtomicBool::new(false));
+    let (read, finished_reading) = mpsc::channel::<()>();
+    let reader = {
+        let (kept, too_large, child) = (
+            Arc::clone(&kept),
+            Arc::clone(&too_large),
+            Arc::clone(&watched.child),
+        );
+        thread::Builder::new()
+            .name("terrarium-tool-stdout".into())
+            .spawn(move || {
+                keep_head(stdout, cap, &kept, &too_large, &child);
+                let _ = read.send(());
+            })
+    };
+    if let Err(err) = reader {
+        let _ = lock(&watched.child).kill();
+        let _ = watched.wait(None);
+        return Err(CaptureError::CannotRun(err));
+    }
+    let ended = watched.wait(Some(stop));
+    let _ = finished_reading.recv_timeout(TAIL_GRACE);
+    if ended.stopped {
+        return Err(CaptureError::Stopped);
+    }
+    if ended.timed_out {
+        return Err(CaptureError::TimedOut);
+    }
+    if too_large.load(Ordering::SeqCst) {
+        return Err(CaptureError::TooLarge);
+    }
+    let status = ended.status.map_err(CaptureError::CannotRun)?;
+    let stdout = std::mem::take(&mut *kept.lock().unwrap_or_else(PoisonError::into_inner));
+    Ok(Captured {
+        stdout,
+        ended: finished(status),
+        stderr: ended.stderr,
+    })
+}
+
+/// Reads `stdout` into `kept` until it ends, or until it passes `cap`: then the tool is
+/// stopped, since what it prints can no longer be kept whole.
+fn keep_head(
+    mut stdout: impl Read,
+    cap: u64,
+    kept: &Mutex<Vec<u8>>,
+    too_large: &AtomicBool,
+    child: &Mutex<Child>,
+) {
+    let mut buf = [0; 8192];
+    loop {
+        match stdout.read(&mut buf) {
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                let mut kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
+                kept.extend_from_slice(&buf[..n]);
+                if u64::try_from(kept.len()).unwrap_or(u64::MAX) > cap {
+                    kept.clear();
+                    too_large.store(true, Ordering::SeqCst);
+                    let _ = lock(child).kill();
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// How long Knip may run.
+pub const KNIP_LIMIT: Duration = Duration::from_secs(180);
+/// Knip's report on stdout, and nothing else there.
+const KNIP_ARGS: [&str; 3] = ["--reporter", "json", "--no-progress"];
+/// Where an installed Knip's package lives, and its manifest, relative to the repository root.
+const KNIP_PACKAGE: &str = "node_modules/knip";
+const KNIP_MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Knip, permitted to run in one repository. Made only by [`KnipRun::permitted`], from the
+/// opt-in the settings hold, so nothing runs from a repository the person has not opted in
+/// for (I-5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnipRun {
+    root: PathBuf,
+}
+
+/// Why Knip did not give a report.
+#[derive(Debug)]
+pub enum KnipError {
+    /// No Knip in the repository's `node_modules`, or one whose manifest names no program.
+    NotInstalled,
+    /// An installed Knip before 6, whose report this does not read: never run.
+    Before6(String),
+    /// The program Knip's manifest names is outside `node_modules`: never run.
+    Outside,
+    CannotRun(io::Error),
+    TimedOut,
+    /// The run was stopped: the opt-in was withdrawn, or the app is closing.
+    Stopped,
+    /// It printed more than a Knip report is read up to.
+    TooLarge,
+    /// It ended without a report: Knip's own error (code 2), any other code or a signal, or
+    /// nothing printed. The end of its stderr says why.
+    Failed {
+        ended: Finished,
+        stderr: String,
+    },
+}
+
+impl KnipRun {
+    /// Knip for the repository `here`, when `opt_in` names it: the same seed at the same
+    /// folder.
+    pub fn permitted(opt_in: Option<&RepoBinding>, here: &RepoBinding) -> Option<KnipRun> {
+        (opt_in? == here).then(|| KnipRun {
+            root: PathBuf::from(&here.path),
+        })
+    }
+
+    /// The repository Knip runs in.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Runs the repository's Knip with `node`, the person's (found outside the repository by
+    /// [`find_node`]), and returns its JSON report. The program is the one Knip's manifest
+    /// names, which `node_modules/.bin/knip` runs too; it is run by node directly, since
+    /// `.bin/knip` would need node on `PATH`, and is a `.cmd`, run by a shell, on Windows. A
+    /// Knip before 6, or a program outside `node_modules`, is never run. Exit codes 0 and 1
+    /// carry a report (1 says it found something); anything else does not.
+    pub fn run(&self, node: &Tool, stop: &AtomicBool) -> Result<Vec<u8>, KnipError> {
+        let version = installed_knip(&self.root).ok_or(KnipError::NotInstalled)?;
+        if major(&version).is_some_and(|major| major < KNIP_MIN_MAJOR) {
+            return Err(KnipError::Before6(version));
+        }
+        let script = knip_program(&self.root)?;
+        let mut args = vec![script.into_os_string()];
+        args.extend(KNIP_ARGS.iter().map(OsString::from));
+        let path = node
+            .path()
+            .parent()
+            .map_or_else(OsString::new, |dir| dir.as_os_str().to_owned());
+        let cap = Format::Knip.max_file_bytes();
+        match run_captured(node, &args, &self.root, &path, KNIP_LIMIT, cap, stop) {
+            Ok(captured) => {
+                let printed = captured.stdout.iter().any(|b| !b.is_ascii_whitespace());
+                match captured.ended {
+                    Finished::Code(0 | 1) if printed => Ok(captured.stdout),
+                    ended => Err(KnipError::Failed {
+                        ended,
+                        stderr: captured.stderr,
+                    }),
+                }
+            }
+            Err(CaptureError::CannotRun(err)) => Err(KnipError::CannotRun(err)),
+            Err(CaptureError::NoPipes) => Err(KnipError::CannotRun(io::Error::other(
+                "the run's output could not be read",
+            ))),
+            Err(CaptureError::TimedOut) => Err(KnipError::TimedOut),
+            Err(CaptureError::Stopped) => Err(KnipError::Stopped),
+            Err(CaptureError::TooLarge) => Err(KnipError::TooLarge),
+        }
+    }
+}
+
+/// The program Knip's manifest names (`bin`, a path or a map holding `knip`), which must be a
+/// file inside the repository's `node_modules` once links are followed.
+fn knip_program(root: &Path) -> Result<PathBuf, KnipError> {
+    let package = root.join(KNIP_PACKAGE);
+    let manifest = read_bounded(
+        &package.join("package.json"),
+        "node_modules/knip/package.json",
+        KNIP_MANIFEST_MAX_BYTES,
+    )
+    .map_err(|_| KnipError::NotInstalled)?;
+    let manifest: Value = text(&manifest)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or(KnipError::NotInstalled)?;
+    let bin = match manifest.get("bin") {
+        Some(Value::String(bin)) => bin,
+        Some(Value::Object(bins)) => match bins.get("knip") {
+            Some(Value::String(bin)) => bin,
+            _ => return Err(KnipError::NotInstalled),
+        },
+        _ => return Err(KnipError::NotInstalled),
+    };
+    let modules = root
+        .join("node_modules")
+        .canonicalize()
+        .map_err(|_| KnipError::NotInstalled)?;
+    let program = package
+        .join(bin)
+        .canonicalize()
+        .map_err(|_| KnipError::NotInstalled)?;
+    if !program.starts_with(&modules) {
+        return Err(KnipError::Outside);
+    }
+    if !program.is_file() {
+        return Err(KnipError::NotInstalled);
+    }
+    Ok(program)
 }
 
 /// Reads `stderr` to its end, keeping its last [`STDERR_TAIL`] bytes, as text.
@@ -658,5 +990,228 @@ mod tests {
         );
         assert!(matches!(ended, Err(FedError::TimedOut)), "{ended:?}");
         assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    /// `/bin/sh -c <script>`, captured, with `PATH` set to `/bin`.
+    #[cfg(unix)]
+    fn captured(
+        script: &str,
+        cwd: &Path,
+        limit: Duration,
+        cap: u64,
+        stop: &AtomicBool,
+    ) -> Result<Captured, CaptureError> {
+        run_captured(
+            &Tool(PathBuf::from("/bin/sh")),
+            &["-c".into(), script.into()],
+            cwd,
+            OsStr::new("/bin"),
+            limit,
+            cap,
+            stop,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_a_captured_tool_prints_is_kept_whole_with_only_path_in_its_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let stop = AtomicBool::new(false);
+        let ran = captured(
+            "/bin/dd if=/dev/zero bs=65536 count=16 2>/dev/null; echo why >&2; exit 1",
+            dir.path(),
+            Duration::from_secs(30),
+            2 << 20,
+            &stop,
+        )
+        .unwrap();
+        assert_eq!(ran.stdout.len(), 1 << 20);
+        assert_eq!(ran.ended, Finished::Code(1));
+        assert_eq!(ran.stderr, "why");
+        let env = captured(
+            "/usr/bin/env",
+            dir.path(),
+            Duration::from_secs(30),
+            1 << 20,
+            &stop,
+        )
+        .unwrap();
+        let env = String::from_utf8(env.stdout).unwrap();
+        let names: Vec<&str> = env
+            .lines()
+            .filter_map(|line| line.split('=').next())
+            .filter(|name| !name.is_empty())
+            .collect();
+        // `sh` sets a few of its own (`PWD`, `SHLVL`, `_`); nothing comes from this process.
+        assert!(env.lines().any(|line| line == "PATH=/bin"), "{env}");
+        for name in [
+            "HOME",
+            "USER",
+            "TMPDIR",
+            "CARGO",
+            "RUST_LOG",
+            "NODE_OPTIONS",
+        ] {
+            assert!(!names.contains(&name), "{env}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_captured_tool_is_stopped_past_its_cap_its_limit_or_its_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let go = AtomicBool::new(false);
+        let start = std::time::Instant::now();
+        let large = captured(
+            "/bin/dd if=/dev/zero bs=65536 count=64 2>/dev/null; /bin/sleep 30",
+            dir.path(),
+            Duration::from_secs(60),
+            1 << 20,
+            &go,
+        );
+        assert!(matches!(large, Err(CaptureError::TooLarge)), "{large:?}");
+        let slow = captured(
+            "/bin/sleep 30",
+            dir.path(),
+            Duration::from_millis(300),
+            1 << 20,
+            &go,
+        );
+        assert!(matches!(slow, Err(CaptureError::TimedOut)), "{slow:?}");
+        let stop = Arc::new(AtomicBool::new(false));
+        let setter = {
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(200));
+                stop.store(true, Ordering::SeqCst);
+            })
+        };
+        let stopped = captured(
+            "/bin/sleep 30",
+            dir.path(),
+            Duration::from_secs(60),
+            1 << 20,
+            &stop,
+        );
+        setter.join().unwrap();
+        assert!(matches!(stopped, Err(CaptureError::Stopped)), "{stopped:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A repository whose `node_modules` holds a Knip of `version`, whose program (run here by
+    /// `sh`, standing in for node) prints `prints`, says how it was called in `called`, and ends
+    /// with `code`.
+    #[cfg(unix)]
+    fn fake_knip(root: &Path, version: &str, bin: &str, prints: &str, code: i32) {
+        let package = root.join("node_modules/knip");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            format!(r#"{{"name":"knip","version":"{version}","bin":{bin}}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("bin/knip.js"),
+            format!("echo \"$@\" > called\nprintf '%s' '{prints}'\nexit {code}\n"),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn sh_as_node() -> Tool {
+        find_tool(&["sh"], None, &[Path::new("/bin")], None).unwrap()
+    }
+
+    fn binding(seed: &str, path: &Path) -> RepoBinding {
+        RepoBinding {
+            seed: seed.to_owned(),
+            path: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[test]
+    fn knip_is_permitted_only_by_the_opt_in_given_for_this_repository() {
+        let here = binding("aa", Path::new("/work/garden"));
+        assert_eq!(KnipRun::permitted(None, &here), None);
+        let other_seed = binding("bb", Path::new("/work/garden"));
+        assert_eq!(KnipRun::permitted(Some(&other_seed), &here), None);
+        let other_folder = binding("aa", Path::new("/work/garden-fork"));
+        assert_eq!(KnipRun::permitted(Some(&other_folder), &here), None);
+        let run = KnipRun::permitted(Some(&here), &here).unwrap();
+        assert_eq!(run.root(), Path::new("/work/garden"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn knip_runs_its_own_program_with_its_report_arguments_and_gives_its_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let report = r#"{"issues":[]}"#;
+        fake_knip(&root, "6.2.0", r#"{"knip":"bin/knip.js"}"#, report, 1);
+        let run = KnipRun::permitted(Some(&binding("aa", &root)), &binding("aa", &root)).unwrap();
+        let stop = AtomicBool::new(false);
+        assert_eq!(run.run(&sh_as_node(), &stop).unwrap(), report.as_bytes());
+        let called = std::fs::read_to_string(root.join("called")).unwrap();
+        assert_eq!(called.trim(), "--reporter json --no-progress");
+        // A plain path in `bin` names the program as well.
+        fake_knip(&root, "6.2.0", r#""bin/knip.js""#, report, 0);
+        assert_eq!(run.run(&sh_as_node(), &stop).unwrap(), report.as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn knip_that_ends_without_a_report_says_how() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let run = KnipRun::permitted(Some(&binding("aa", &root)), &binding("aa", &root)).unwrap();
+        let stop = AtomicBool::new(false);
+        for (prints, code) in [("{}", 2), ("", 1), ("  ", 0)] {
+            fake_knip(&root, "6.2.0", r#""bin/knip.js""#, prints, code);
+            match run.run(&sh_as_node(), &stop) {
+                Err(KnipError::Failed { ended, .. }) => assert_eq!(ended, Finished::Code(code)),
+                other => panic!("{prints:?} {code}: {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn knip_before_6_missing_or_outside_node_modules_never_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let run = KnipRun::permitted(Some(&binding("aa", &root)), &binding("aa", &root)).unwrap();
+        let stop = AtomicBool::new(false);
+        let node = sh_as_node();
+        assert!(matches!(
+            run.run(&node, &stop),
+            Err(KnipError::NotInstalled)
+        ));
+        fake_knip(&root, "5.66.0", r#""bin/knip.js""#, "{}", 0);
+        assert!(matches!(run.run(&node, &stop), Err(KnipError::Before6(v)) if v == "5.66.0"));
+        std::fs::write(root.join("outside.js"), "touch called\n").unwrap();
+        fake_knip(&root, "6.2.0", r#""../../outside.js""#, "{}", 0);
+        assert!(matches!(run.run(&node, &stop), Err(KnipError::Outside)));
+        fake_knip(&root, "6.2.0", r#"{"knip-bun":"bin/knip.js"}"#, "{}", 0);
+        assert!(matches!(
+            run.run(&node, &stop),
+            Err(KnipError::NotInstalled)
+        ));
+        assert!(!root.join("called").exists(), "nothing ran");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_is_never_one_inside_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        tool_file(&root.join("repo/bin/node"), true);
+        let path = std::env::join_paths([root.join("repo/bin")]).unwrap();
+        let repo = root.join("repo");
+        assert_eq!(find_tool(NODE_NAMES, Some(&path), &[], Some(&repo)), None);
+        assert!(find_tool(NODE_NAMES, Some(&path), &[], None).is_some());
     }
 }

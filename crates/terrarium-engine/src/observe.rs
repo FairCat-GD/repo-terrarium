@@ -6,14 +6,19 @@
 //! tip moves past it, rather than turning unknown (I-3). The same holds for the source metrics:
 //! a commit with no function records no complexity, one with no code no TODO density, and a
 //! Knip report weighed against no counted export no dead code.
+//!
+//! CI weather is the exception, by the weather's fallback: GitHub's runs that can no longer be
+//! read (the token removed or refused, the repository gone, GitHub out of reach for a while)
+//! are recorded as unknown, which passes their source over for the local results, then haze.
 
 use sha2::{Digest, Sha256};
+use terrarium_adapters::ci::Verdict;
 use terrarium_adapters::discovery::Enabled;
 use terrarium_adapters::metrics::{METRICS_VERSION, Measurement};
 use terrarium_adapters::report::{self, Format, Reading, Report};
 use terrarium_store::raw::{
-    ComplexityRaw, CoverageFormat, CoverageRaw, DeadCodeRaw, LeftRaw, RefRewriteRaw, Shape as _,
-    TodoDensityRaw, WeatherRaw, WeatherState,
+    CiUnread, ComplexityRaw, CoverageFormat, CoverageRaw, DeadCodeRaw, LeftRaw, RefRewriteRaw,
+    Shape as _, TodoDensityRaw, WeatherRaw, WeatherState,
 };
 use terrarium_store::{Contributor, MAX_RAW_BYTES, ObservationRecord};
 use terrarium_truth::domain::{LeftCommit, ObservationHead, WeatherSource};
@@ -21,6 +26,8 @@ use terrarium_truth::{CommitId, ObservationKind, Q16};
 
 /// The `adapter_version` of the ref rewrites the live refresh records.
 const REF_REWRITE_VERSION: u32 = 3;
+/// The `adapter_version` of GitHub Actions weather.
+pub const CI_VERSION: u32 = 1;
 
 /// The observation `report` makes when HEAD was at `head` at `recorded_at` (Unix seconds,
 /// UTC), or `None` when it is not recorded. A Knip report makes none here: its dead code is
@@ -206,6 +213,80 @@ pub fn dead_code(
         confidence: reading.confidence,
         contributors: stored(&reading.contributors),
     })
+}
+
+/// The weather `branch`'s runs on GitHub give (source `ci:<branch>`), recorded with where HEAD
+/// is, `head`, which may be another branch: truth follows HEAD's branch, so the weather in
+/// effect is that branch's runs when it has some, else the default branch's. Its content hash
+/// is the verdict's, so the same runs are recorded once.
+pub fn ci_weather(
+    branch: &str,
+    verdict: &Verdict,
+    head: ObservationHead,
+    recorded_at: i64,
+) -> ObservationRecord {
+    let raw = WeatherRaw {
+        sha: Some(verdict.sha.clone()),
+        workflows: Some(verdict.workflows),
+        failing_workflows: Some(u64::try_from(verdict.failing.len()).unwrap_or(u64::MAX)),
+        ..WeatherRaw::of(if verdict.passed {
+            WeatherState::Pass
+        } else {
+            WeatherState::Fail
+        })
+    };
+    ObservationRecord {
+        kind: ObservationKind::Weather,
+        adapter_version: CI_VERSION,
+        recorded_at,
+        head,
+        source: Some(WeatherSource::Ci {
+            branch: branch.to_owned(),
+        }),
+        report_mtime: None,
+        content_hash: verdict.hash,
+        raw: raw.to_raw(),
+        normalized: Some(if verdict.passed { Q16::ONE } else { Q16::ZERO }),
+        confidence: Q16::ONE,
+        contributors: verdict
+            .failing
+            .iter()
+            .map(|path| Contributor {
+                path: path.clone(),
+                value: 1,
+            })
+            .collect(),
+    }
+}
+
+/// `branch`'s CI weather as unknown, and why: its runs can no longer be read here. Its content
+/// hash names the reason alone, so it is recorded once until a known one comes between.
+pub fn ci_unread(
+    branch: &str,
+    why: CiUnread,
+    head: ObservationHead,
+    recorded_at: i64,
+) -> ObservationRecord {
+    let raw = WeatherRaw {
+        unread: Some(why),
+        ..WeatherRaw::of(WeatherState::Unknown)
+    };
+    let raw = raw.to_raw();
+    ObservationRecord {
+        kind: ObservationKind::Weather,
+        adapter_version: CI_VERSION,
+        recorded_at,
+        head,
+        source: Some(WeatherSource::Ci {
+            branch: branch.to_owned(),
+        }),
+        report_mtime: None,
+        content_hash: Sha256::digest(raw.as_bytes()).into(),
+        raw,
+        normalized: None,
+        confidence: Q16::ONE,
+        contributors: Vec::new(),
+    }
 }
 
 /// A default branch that moved without fast-forwarding, and what the move took off its

@@ -1029,6 +1029,7 @@ fn read_every_way(repo: &FixtureRepo) -> History {
     let branch = git.default_branch().unwrap();
     git.identity(&branch).unwrap();
     git.state().unwrap();
+    git.origin_url();
     let history = git.read_history(&branch, &mut go).unwrap();
     let mut again = history.clone();
     git.read_since(&mut again, &branch, &mut go).unwrap();
@@ -1169,6 +1170,27 @@ fn repository_config_and_attributes_never_change_the_facts() {
     assert_eq!(
         (history.commits[1].added, history.commits[1].removed),
         (13, 11)
+    );
+}
+
+#[test]
+fn origin_is_read_from_the_repositorys_own_configuration() {
+    let dir = temp();
+    let mut repo = new_repo(&dir);
+    commit(&mut repo, "main", 1, &[Edit::write("a.rs", "a\n")]);
+    assert_eq!(open(&repo).origin_url(), None);
+    repo.append_git_config(
+        "[remote \"upstream\"]\n\turl = https://github.com/example-garden/upstream.git\n",
+    )
+    .unwrap();
+    assert_eq!(open(&repo).origin_url(), None, "only origin names it");
+    repo.append_git_config(
+        "[remote \"origin\"]\n\turl = git@github.com:example-garden/moss-bed.git\n",
+    )
+    .unwrap();
+    assert_eq!(
+        open(&repo).origin_url().as_deref(),
+        Some("git@github.com:example-garden/moss-bed.git")
     );
 }
 

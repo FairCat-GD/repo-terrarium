@@ -24,6 +24,11 @@ Shared input files for tests: report files, fixture repositories, sample observa
   `record-tests` writes). A test copies a file into a repository it owns and replaces `@ROOT@`
   with that repository's path, as a tool writing absolute paths would.
 
+- `ci/`: GitHub Actions' runs list (`GET /repos/{owner}/{repo}/actions/runs`) for a fictional
+  repository, in GitHub's shape with keys the client ignores: a pass, a fail, a failure while
+  another workflow runs, the newest commit still running over an older decided one, a re-run
+  that passed, runs that all ended silent, and none.
+
 Beside it, `tests/golden/` holds outputs rather than inputs: `arc.dump`, the canonical dump of
 the arc's replay, and `arc.sha256`, its hash. `cargo xtask golden --bless` writes them, and
 `verify`'s `golden` stage fails while they differ from a fresh replay.

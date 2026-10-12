@@ -8,10 +8,12 @@
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 
+use terrarium_adapters::ci::{GitHub, Keychain};
 use terrarium_engine::lifecycle as change;
-use terrarium_engine::{ConnectError, Engine, EngineConfig, Sink, Start};
+use terrarium_engine::{CiConfig, ConnectError, Engine, EngineConfig, POLL_EVERY, Sink, Start};
 use terrarium_store::identifiers::SETTING_LOGIN_OPEN_AT_LOGIN;
 use terrarium_store::{
     DataDir, ImportError, ImportReport, InstallKey, Store, Terrarium, TerrariumId,
@@ -106,12 +108,30 @@ pub fn sink(proxy: EventLoopProxy<UserEvent>, generation: u64) -> Sink {
     })
 }
 
+/// The engine the app runs on `repo`: it polls GitHub Actions with the token in `keychain`,
+/// and finds node for Knip where the person installed it.
+pub fn engine_config(
+    data: DataDir,
+    repo: Option<PathBuf>,
+    keychain: &Arc<dyn Keychain>,
+) -> EngineConfig {
+    EngineConfig {
+        ci: Some(CiConfig {
+            keychain: Arc::clone(keychain),
+            fetch: Arc::new(|| Box::new(GitHub::new())),
+            every: POLL_EVERY,
+        }),
+        ..EngineConfig::new(data, repo)
+    }
+}
+
 /// Runs `job` on a thread of its own, after stopping `engine`; the new engine is of
 /// `generation`, and the outcome is sent as [`UserEvent::Lifecycle`].
 pub fn spawn(
     job: Job,
     engine: Option<Engine>,
     data: DataDir,
+    keychain: Arc<dyn Keychain>,
     proxy: EventLoopProxy<UserEvent>,
     generation: u64,
 ) {
@@ -122,7 +142,7 @@ pub fn spawn(
             if let Some(engine) = engine {
                 engine.shutdown_and_join();
             }
-            let outcome = run(job, &data, &proxy, generation);
+            let outcome = run(job, &data, &keychain, &proxy, generation);
             let _ = proxy.send_event(UserEvent::Lifecycle(generation, Box::new(outcome)));
         });
     if let Err(err) = ran {
@@ -131,10 +151,16 @@ pub fn spawn(
     }
 }
 
-fn run(job: Job, data: &DataDir, proxy: &EventLoopProxy<UserEvent>, generation: u64) -> Outcome {
+fn run(
+    job: Job,
+    data: &DataDir,
+    keychain: &Arc<dyn Keychain>,
+    proxy: &EventLoopProxy<UserEvent>,
+    generation: u64,
+) -> Outcome {
     type Started = (Engine, Box<Terrarium>, Option<SceneInput>);
     let start = |repo: Option<PathBuf>| -> Result<Started, ConnectError> {
-        let config = EngineConfig::new(data.clone(), repo);
+        let config = engine_config(data.clone(), repo, keychain);
         match Engine::spawn(config, sink(proxy.clone(), generation))? {
             (engine, Start::Connected { terrarium, scene }) => Ok((engine, terrarium, scene)),
             (_, Start::NotConnected) => Err(ConnectError::Halted),

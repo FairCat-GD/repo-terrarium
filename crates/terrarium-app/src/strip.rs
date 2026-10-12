@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyEvent;
 use muda::MenuId;
+use std::sync::Arc;
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NativeImage, Viewport};
@@ -31,9 +32,12 @@ use terrarium_compose::scale::{SizeStep, StripScale};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::variants::ArtTable;
 use terrarium_compose::{preset, sample};
-use terrarium_engine::{ConnectError, Engine, EngineConfig, Start, Update};
+
+use terrarium_adapters::binding::RepoBinding;
+use terrarium_adapters::ci::{Keychain, NativeKeychain};
+use terrarium_engine::{ConnectError, Engine, Start, Tools, Update};
 use terrarium_platform::SystemEvent;
-use terrarium_store::identifiers::BUNDLE_ID;
+use terrarium_store::identifiers::{BUNDLE_ID, KEYCHAIN_ACCOUNT_GITHUB, KEYCHAIN_SERVICE};
 use terrarium_store::{DataDir, Store, Terrarium};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -540,8 +544,10 @@ struct Repo {
     first_run: bool,
     /// The first run's "Open at login", applied once the connect it was asked with succeeds.
     pending_login: Option<bool>,
-    /// Saves the settings changed, off the loop.
+    /// Saves the settings changed, and the GitHub token, off the loop.
     writer: Writer,
+    /// Where the GitHub token is kept: the OS keychain.
+    keychain: Arc<dyn Keychain>,
 }
 
 /// What a lifecycle change leaves the strip to do.
@@ -564,6 +570,8 @@ enum Effect {
 struct Connected {
     terrarium: Box<Terrarium>,
     live: LiveView,
+    /// What the Knip run and the GitHub Actions poll last said of themselves.
+    tools: Tools,
 }
 
 impl Repo {
@@ -587,15 +595,20 @@ impl Repo {
             let _ = crash::prune(&data.logs_dir(), crash::KEEP);
         }
         let saved = proxy.clone();
+        let keychain: Arc<dyn Keychain> = Arc::new(NativeKeychain::new(
+            KEYCHAIN_SERVICE,
+            KEYCHAIN_ACCOUNT_GITHUB,
+        ));
         let writer = Writer::start(
             data.clone(),
             Box::new(login::System),
             || terrarium_platform::login::status(BUNDLE_ID),
+            Arc::clone(&keychain),
             Box::new(move |answer| {
                 let _ = saved.send_event(UserEvent::Saved(answer));
             }),
         );
-        let config = EngineConfig::new(data.clone(), repo.clone());
+        let config = lifecycle::engine_config(data.clone(), repo.clone(), &keychain);
         let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy.clone(), 0))
             .map_err(|err| StripError::Connect(repo, err))?;
         let requests = proxy.clone();
@@ -619,6 +632,7 @@ impl Repo {
                 Some(Connected {
                     live: LiveView::new(terrarium.repo.name.clone(), scene),
                     terrarium,
+                    tools: Tools::default(),
                 }),
             ),
             Start::NotConnected => (None, None),
@@ -633,6 +647,7 @@ impl Repo {
             connected,
             pending_login: None,
             writer,
+            keychain,
         };
         Ok((repo, prefs))
     }
@@ -672,6 +687,7 @@ impl Repo {
                 self.connected = Some(Connected {
                     live: LiveView::new(name.clone(), scene),
                     terrarium,
+                    tools: Tools::default(),
                 });
                 if let Some(form) = &mut shell.connect {
                     form.connected(name, report);
@@ -756,6 +772,7 @@ impl Repo {
             name: repo.name.clone(),
             path: repo.path.clone(),
             default_branch: repo.default_branch.clone(),
+            binding: RepoBinding::new(&connected.terrarium.seed, &repo.path),
         })
     }
 }
@@ -1280,6 +1297,9 @@ impl Strip {
             form.set_repo(facts);
             form.set_missing(missing);
             form.set_prefs(prefs);
+            if let Some(connected) = &repo.connected {
+                form.set_tools(connected.tools.clone());
+            }
             repo.writer.ask_login_status();
             self.shell.open(event_loop, WindowKind::Settings);
             self.with_view(|strip, view| {
@@ -1497,6 +1517,11 @@ impl Strip {
                     self.shell.connect = None;
                 }
                 Intent::Set(pref) => self.set(pref),
+                Intent::Token(change) => {
+                    if let Some(repo) = &self.repo {
+                        repo.writer.change_token(change);
+                    }
+                }
                 Intent::Film { from, to, night } => {
                     if let Some(session) = &mut self.timelapse {
                         session.film(from, to, night);
@@ -1609,6 +1634,17 @@ impl Strip {
                         login.map(|err| copy::settings::login_problem(&err)),
                     );
                 }
+            }
+            Saved::Token { problem, .. } => {
+                if problem.is_none()
+                    && let Some(engine) = self.repo.as_ref().and_then(|repo| repo.engine.as_ref())
+                {
+                    engine.token_changed();
+                }
+                if let Some(form) = &mut self.shell.settings {
+                    form.token_saved(problem);
+                }
+                self.shell.redraw(WindowKind::Settings);
             }
             Saved::LoginStatus(status) => {
                 if let Some(form) = &mut self.shell.settings {
@@ -1752,6 +1788,7 @@ impl Strip {
             job,
             repo.engine.take(),
             repo.data.clone(),
+            Arc::clone(&repo.keychain),
             self.proxy.clone(),
             repo.generation,
         );
@@ -1819,6 +1856,14 @@ impl Strip {
         else {
             return;
         };
+        if let Update::Tools(tools) = update {
+            if let Some(form) = &mut self.shell.settings {
+                form.set_tools(tools.clone());
+                self.shell.redraw(WindowKind::Settings);
+            }
+            connected.tools = tools;
+            return;
+        }
         if connected.live.apply(update) != Changed::Nothing
             && let Some(scene) = &mut self.scene
         {
@@ -2149,6 +2194,7 @@ impl Strip {
 mod tests {
     use std::path::Path;
 
+    use terrarium_adapters::ci::MemoryKeychain;
     use terrarium_platform::login::LoginError;
     use terrarium_store::{RepoLocation, TerrariumId};
     use terrarium_truth::RepoSeed;
@@ -2174,10 +2220,13 @@ mod tests {
         let Ok(Claim::First(instance)) = Instance::claim(&data) else {
             panic!("the claim");
         };
+        // Never the person's keychain.
+        let keychain: Arc<dyn Keychain> = Arc::new(MemoryKeychain::default());
         let writer = Writer::start(
             data.clone(),
             Box::new(Asked::default()),
             || terrarium_platform::login::LoginStatus::Unavailable,
+            Arc::clone(&keychain),
             Box::new(|_| {}),
         );
         Repo {
@@ -2190,12 +2239,13 @@ mod tests {
             first_run: true,
             pending_login: None,
             writer,
+            keychain,
         }
     }
 
     /// An engine with nothing connected, which does nothing.
     fn engine(dir: &Path) -> Engine {
-        let config = EngineConfig::new(DataDir::at(dir.join("engine")), None);
+        let config = terrarium_engine::EngineConfig::new(DataDir::at(dir.join("engine")), None);
         Engine::spawn(config, Box::new(|_| {})).unwrap().0
     }
 

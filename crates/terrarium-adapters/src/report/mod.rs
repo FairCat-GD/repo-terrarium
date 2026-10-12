@@ -29,6 +29,7 @@ use std::time::UNIX_EPOCH;
 use sha2::{Digest, Sha256};
 use terrarium_truth::{ObservationKind, Q16, Q32};
 
+pub(crate) use knip::major;
 pub use knip::{KNIP_MIN_MAJOR, KnipCounts, installed_knip};
 pub(crate) use paths::relative_parts;
 
@@ -210,6 +211,36 @@ impl Report {
     /// Reads the report of `format` made of `files`, relative to `root`.
     pub fn read(root: &Path, format: Format, files: &[String]) -> Report {
         finish(root, format, files.to_vec(), load(root, format, files))
+    }
+
+    /// The report of `format` a tool printed rather than wrote, named `shown`, printed at `at`
+    /// (Unix seconds): Knip's, when it runs. Its content hash covers `tag` as well, the commit
+    /// it ran at, so the same output at another commit is another report.
+    pub fn from_output(
+        root: &Path,
+        format: Format,
+        shown: &str,
+        bytes: Vec<u8>,
+        at: i64,
+        tag: &[u8],
+    ) -> Report {
+        let loaded = if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > format.max_file_bytes() {
+            Err(Why::TooLarge(shown.to_owned()))
+        } else {
+            Ok(vec![Loaded {
+                path: shown.to_owned(),
+                bytes,
+                mtime: Some(at),
+            }])
+        };
+        let mut report = finish(root, format, vec![shown.to_owned()], loaded);
+        if let Outcome::Known(known) = &mut report.outcome {
+            let mut hasher = Sha256::new();
+            hasher.update(known.content_hash);
+            hasher.update(tag);
+            known.content_hash = hasher.finalize().into();
+        }
+        report
     }
 
     pub fn known(&self) -> Option<&Known> {

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.26.0"
+version = "0.27.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -65,6 +65,16 @@ tree-sitter-javascript = "0.25.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 tree-sitter-go = "0.25.0"
+# The GitHub Actions weather (I-6), used only by `terrarium-adapters::ci`: rustls on ring, with
+# Mozilla's root list compiled in (`webpki-roots`, the licence exception in deny.toml), so a
+# poll reaches api.github.com and nothing else; the OS's certificate store could also ask a
+# certificate's issuer about revocation. No gzip, json or cookies.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+# The runs URL's branch and repository names.
+percent-encoding = "2.3.2"
+# The CI token, in the OS keychain (keyring 4.x, pinned exactly). Its `v1` mode picks the
+# platform's store: the macOS keychain, the Windows credential manager.
+keyring = "=4.2.0"
 
 # macOS FFI, used only by terrarium-platform. winit links objc2 0.5; these are 0.6, and the two
 # never exchange types. The framework crates enable every framework by default.

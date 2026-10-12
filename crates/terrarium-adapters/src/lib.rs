@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
+pub mod binding;
+pub mod ci;
 pub mod discovery;
 pub mod exec;
 #[cfg(any(test, feature = "fixture"))]

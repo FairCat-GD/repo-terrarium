@@ -201,6 +201,8 @@ impl LiveView {
                 }
             }
             Update::Problem(problem) => eprintln!("{}", copy::engine_problem(&problem)),
+            // The settings window's, not the strip's.
+            Update::Tools(_) => {}
         }
         if (&self.facts, &self.panel) == (&before.0, &before.1) {
             Changed::Nothing

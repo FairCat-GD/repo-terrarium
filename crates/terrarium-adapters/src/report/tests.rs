@@ -834,3 +834,47 @@ proptest! {
         prop_assert_eq!(known.reading, coverage(distinct.len() as u64, hit.len() as u64));
     }
 }
+
+#[test]
+fn a_printed_report_reads_as_a_written_one_and_its_hash_names_its_commit() {
+    let dir = stage(&[]);
+    let bytes = fs::read(fixture("knip/v6.json")).unwrap();
+    let printed = |tag: &[u8]| {
+        Report::from_output(
+            dir.path(),
+            Format::Knip,
+            "knip",
+            bytes.clone(),
+            1_760_000_000,
+            tag,
+        )
+    };
+    let at_a = printed(b"aaaa");
+    let known = at_a.known().expect("known");
+    assert_eq!(known.mtime, Some(1_760_000_000));
+    assert_eq!(at_a.files, ["knip"]);
+    assert_eq!(
+        printed(b"aaaa").known().unwrap().content_hash,
+        known.content_hash
+    );
+    assert_ne!(
+        printed(b"bbbb").known().unwrap().content_hash,
+        known.content_hash
+    );
+    let written = stage(&[("knip/v6.json", "knip-report.json")]);
+    let read = Report::read(
+        written.path(),
+        Format::Knip,
+        &["knip-report.json".to_owned()],
+    );
+    assert_eq!(read.known().unwrap().reading, known.reading);
+    let cut = Report::from_output(
+        dir.path(),
+        Format::Knip,
+        "knip",
+        b"{\"issues\":[".to_vec(),
+        0,
+        b"a",
+    );
+    assert!(cut.known().is_none());
+}

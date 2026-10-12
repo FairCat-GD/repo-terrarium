@@ -65,7 +65,7 @@ pub fn installed_knip(root: &Path) -> Option<String> {
 }
 
 /// The major version of a semver text, if it starts with one.
-fn major(version: &str) -> Option<u64> {
+pub(crate) fn major(version: &str) -> Option<u64> {
     let digits: String = version
         .trim_start_matches('v')
         .chars()

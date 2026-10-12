@@ -10,16 +10,19 @@
 
 use std::path::PathBuf;
 
+use terrarium_adapters::binding::RepoBinding;
+
 use crate::copy::settings as words;
 use crate::portability::Msg;
 use crate::shell::{DataFile, Intent, Picking};
 
-/// The connected repository, as the section shows it.
+/// The connected repository, as the section shows it, and as a setting given for it names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoFacts {
     pub name: String,
     pub path: String,
     pub default_branch: String,
+    pub binding: RepoBinding,
 }
 
 pub struct RepoSection {
@@ -445,6 +448,10 @@ mod tests {
             name: "moss".into(),
             path: "/projects/moss".into(),
             default_branch: "main".into(),
+            binding: RepoBinding {
+                seed: "5e".repeat(32),
+                path: "/projects/moss".into(),
+            },
         })
     }
 

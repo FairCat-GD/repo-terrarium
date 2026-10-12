@@ -5,11 +5,17 @@
 //! its default, so a settings row written by hand or by another version never stops the strip.
 //! A change is one [`Pref`]: applied to the model the strip runs on, then written by
 //! [`Writer`], a thread of its own, so the event loop never waits on the database.
+//!
+//! The GitHub token is no setting: [`Writer`] keeps it in the keychain, and it never reaches
+//! the `settings` table, a [`Pref`] or an answer.
 
+use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
+use terrarium_adapters::binding::{CiRepository, RepoBinding};
+use terrarium_adapters::ci::{Keychain, KeychainError, Token};
 use terrarium_adapters::discovery::{Enabled, Overrides};
 use terrarium_compose::clock::DayNight;
 use terrarium_compose::scale::SizeStep;
@@ -17,12 +23,13 @@ use terrarium_engine::lifecycle::{AdapterSettings, stored_adapters};
 use terrarium_platform::geometry::Edge;
 use terrarium_platform::login::{LoginError, LoginStatus};
 use terrarium_store::identifiers::{
-    SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH,
-    SETTING_CRASHLOG_OPT_IN, SETTING_DAYNIGHT_DAY_START, SETTING_DAYNIGHT_NIGHT_START,
-    SETTING_DEAD_CODE_ENABLED, SETTING_DEAD_CODE_REPORT_PATH, SETTING_DIM_AFTER_MINUTES,
-    SETTING_HOTKEYS_RAISE, SETTING_HOTKEYS_TIMELAPSE, SETTING_LOGIN_OPEN_AT_LOGIN,
-    SETTING_STRIP_EDGE, SETTING_STRIP_MONITOR, SETTING_STRIP_SIZE_STEP,
-    SETTING_TODO_DENSITY_ENABLED, SETTING_WEATHER_ENABLED, SETTING_WEATHER_REPORT_PATH,
+    SETTING_CI_GITHUB_REPO, SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED,
+    SETTING_COVERAGE_REPORT_PATH, SETTING_CRASHLOG_OPT_IN, SETTING_DAYNIGHT_DAY_START,
+    SETTING_DAYNIGHT_NIGHT_START, SETTING_DEAD_CODE_ENABLED, SETTING_DEAD_CODE_REPORT_PATH,
+    SETTING_DIM_AFTER_MINUTES, SETTING_HOTKEYS_RAISE, SETTING_HOTKEYS_TIMELAPSE,
+    SETTING_KNIP_RUN_OPT_IN, SETTING_LOGIN_OPEN_AT_LOGIN, SETTING_STRIP_EDGE,
+    SETTING_STRIP_MONITOR, SETTING_STRIP_SIZE_STEP, SETTING_TODO_DENSITY_ENABLED,
+    SETTING_WEATHER_ENABLED, SETTING_WEATHER_REPORT_PATH,
 };
 use terrarium_store::{DataDir, Store, StoreError};
 
@@ -221,13 +228,31 @@ pub enum Pref {
     AdapterEnabled(AdapterKind, bool),
     /// A report path, relative to the repository; `None` goes back to the fixed places.
     ReportPath(AdapterKind, Option<String>),
+    /// The repository Knip may run in, the connected one; `None` withdraws it.
+    KnipRun(Option<RepoBinding>),
+    /// The GitHub repository typed for the connected repository's CI weather; `None` goes back
+    /// to the one its `origin` names.
+    CiRepository(Option<CiRepository>),
 }
 
 impl Pref {
     /// Whether the engine reads it: an adapter's setting, which a refresh then takes in.
     pub const fn is_adapter(&self) -> bool {
-        matches!(self, Pref::AdapterEnabled(..) | Pref::ReportPath(..))
+        matches!(
+            self,
+            Pref::AdapterEnabled(..)
+                | Pref::ReportPath(..)
+                | Pref::KnipRun(_)
+                | Pref::CiRepository(_)
+        )
     }
+}
+
+/// A change to the GitHub token in the keychain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TokenChange {
+    Save(Token),
+    Remove,
 }
 
 impl Prefs {
@@ -324,6 +349,8 @@ impl Prefs {
             Pref::ReportPath(kind, path) => {
                 kind.set_path(&mut self.adapters.overrides, path.clone());
             }
+            Pref::KnipRun(binding) => self.adapters.knip_run.clone_from(binding),
+            Pref::CiRepository(typed) => self.adapters.ci_repository.clone_from(typed),
         }
     }
 }
@@ -368,6 +395,10 @@ pub fn save(store: &mut Store, pref: &Pref) -> Result<(), StoreError> {
             (Some(key), None) => store.clear_setting(key),
             (None, _) => Ok(()),
         },
+        Pref::KnipRun(Some(binding)) => store.set_setting(SETTING_KNIP_RUN_OPT_IN, binding),
+        Pref::KnipRun(None) => store.clear_setting(SETTING_KNIP_RUN_OPT_IN),
+        Pref::CiRepository(Some(typed)) => store.set_setting(SETTING_CI_GITHUB_REPO, typed),
+        Pref::CiRepository(None) => store.clear_setting(SETTING_CI_GITHUB_REPO),
     }
 }
 
@@ -383,11 +414,17 @@ pub enum Saved {
     },
     /// What the OS says of opening at login.
     LoginStatus(LoginStatus),
+    /// The token was saved (`saved`) or removed, or `problem` says why the keychain would not.
+    Token {
+        saved: bool,
+        problem: Option<KeychainError>,
+    },
 }
 
 enum Job {
     Save(Pref),
     LoginStatus,
+    Token(TokenChange),
 }
 
 /// The thread that writes settings, in the order they were changed, and asks the OS about
@@ -397,12 +434,14 @@ pub struct Writer {
 }
 
 impl Writer {
-    /// Starts the writer on the store in `data`. Settings changed before the store opens wait
-    /// for it; if it cannot open, each change answers with why.
+    /// Starts the writer on the store in `data`, keeping the token in `keychain`. Settings
+    /// changed before the store opens wait for it; if it cannot open, each change answers with
+    /// why.
     pub fn start(
         data: DataDir,
         mut login: Box<dyn LoginItem + Send>,
         status: fn() -> LoginStatus,
+        keychain: Arc<dyn Keychain>,
         answer: Box<dyn Fn(Saved) + Send>,
     ) -> Writer {
         let (jobs, rx) = mpsc::channel::<Job>();
@@ -428,6 +467,17 @@ impl Writer {
                             });
                         }
                         Job::LoginStatus => answer(Saved::LoginStatus(status())),
+                        Job::Token(change) => {
+                            let saved = matches!(change, TokenChange::Save(_));
+                            let done = match &change {
+                                TokenChange::Save(token) => keychain.save(token),
+                                TokenChange::Remove => keychain.remove(),
+                            };
+                            answer(Saved::Token {
+                                saved,
+                                problem: done.err(),
+                            });
+                        }
                     }
                 }
             });
@@ -441,12 +491,18 @@ impl Writer {
     pub fn ask_login_status(&self) {
         let _ = self.jobs.send(Job::LoginStatus);
     }
+
+    /// Saves or removes the GitHub token in the keychain.
+    pub fn change_token(&self, change: TokenChange) {
+        let _ = self.jobs.send(Job::Token(change));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use terrarium_adapters::ci::MemoryKeychain;
     use terrarium_platform::login::LoginError;
 
     use super::*;
@@ -504,7 +560,20 @@ mod tests {
             Pref::ReportPath(AdapterKind::Coverage, Some("out/lcov.info".into())),
             Pref::ReportPath(AdapterKind::Tests, Some("out/junit.xml".into())),
             Pref::ReportPath(AdapterKind::DeadCode, Some("out/knip.json".into())),
+            Pref::KnipRun(Some(moss())),
+            Pref::CiRepository(Some(CiRepository {
+                binding: moss(),
+                repo: terrarium_adapters::ci::Slug::parse("example-garden/moss-bed").unwrap(),
+            })),
         ]
+    }
+
+    /// The connected repository, as a setting given for it names it.
+    fn moss() -> RepoBinding {
+        RepoBinding {
+            seed: "5e".repeat(32),
+            path: "/projects/moss".into(),
+        }
     }
 
     #[test]
@@ -535,6 +604,8 @@ mod tests {
             Pref::ReportPath(AdapterKind::Coverage, None),
             Pref::Edge(Edge::Bottom),
             Pref::SizeStep(SizeStep::Full),
+            Pref::KnipRun(None),
+            Pref::CiRepository(None),
         ] {
             save(&mut fx.store, &pref).unwrap();
             expected.apply(&pref);
@@ -543,6 +614,8 @@ mod tests {
         assert_eq!(back, expected);
         assert_eq!(back.monitor, None);
         assert_eq!(back.adapters.overrides.coverage, None);
+        assert_eq!(back.adapters.knip_run, None);
+        assert_eq!(back.adapters.ci_repository, None);
         assert_eq!(
             fx.store.setting::<String>(SETTING_STRIP_MONITOR).unwrap(),
             None
@@ -666,6 +739,7 @@ mod tests {
             fx.data.clone(),
             Box::new(Refusing(Arc::clone(&asked))),
             || LoginStatus::Unavailable,
+            Arc::new(MemoryKeychain::default()),
             Box::new(move |saved| tx.send(saved).unwrap()),
         );
         writer.save(Pref::DimAfter(15));
@@ -702,5 +776,63 @@ mod tests {
             prefs.open_at_login,
             "the choice is kept when the OS refuses"
         );
+    }
+
+    #[test]
+    fn the_token_goes_to_the_keychain_and_never_into_the_settings() {
+        let fx = Fixture::new();
+        let keychain = Arc::new(MemoryKeychain::default());
+        let (tx, rx) = mpsc::channel();
+        let writer = Writer::start(
+            fx.data.clone(),
+            Box::new(Refusing(Arc::default())),
+            || LoginStatus::Unavailable,
+            Arc::clone(&keychain) as Arc<dyn Keychain>,
+            Box::new(move |saved| tx.send(saved).unwrap()),
+        );
+        let secret = "github_pat_fictional_sentinel";
+        writer.change_token(TokenChange::Save(Token::new(secret).unwrap()));
+        for pref in changed() {
+            writer.save(pref);
+        }
+        let answers: Vec<Saved> = (0..=changed().len()).map(|_| rx.recv().unwrap()).collect();
+        assert_eq!(
+            answers[0],
+            Saved::Token {
+                saved: true,
+                problem: None
+            }
+        );
+        assert_eq!(keychain.held().as_deref(), Some(secret));
+        assert!(!format!("{answers:?}").contains("sentinel"));
+        drop(writer);
+        // Every file the data directory holds, the database's journal included: none holds it.
+        for entry in std::fs::read_dir(fx.data.database().parent().unwrap()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains("sentinel"),
+                    "{path:?}"
+                );
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let writer = Writer::start(
+            fx.data.clone(),
+            Box::new(Refusing(Arc::default())),
+            || LoginStatus::Unavailable,
+            Arc::clone(&keychain) as Arc<dyn Keychain>,
+            Box::new(move |saved| tx.send(saved).unwrap()),
+        );
+        writer.change_token(TokenChange::Remove);
+        assert_eq!(
+            rx.recv().unwrap(),
+            Saved::Token {
+                saved: false,
+                problem: None
+            }
+        );
+        assert_eq!(keychain.held(), None);
     }
 }

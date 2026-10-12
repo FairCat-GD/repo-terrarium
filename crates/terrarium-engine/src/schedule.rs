@@ -12,6 +12,10 @@
 //!   from sleep or any jump of the clock looks like; since the tick is read from the clock and
 //!   never counted, no tick is applied twice. The worker looks at least once a minute.
 //! - **A wake** from the platform, or a request, refreshes at once.
+//! - **A job** that came back (a CI poll's answer with something to record, a Knip run's
+//!   report) refreshes at once, without reading the reports. A refresh due at once for a
+//!   stronger reason is never weakened by one: a request still reads the reports and the
+//!   settings.
 //! - **Repository not found:** nothing but a retry once a minute.
 
 use std::time::Duration;
@@ -45,6 +49,22 @@ pub enum Cause {
     Request,
     /// The repository that was not found is looked for again.
     Retry,
+    /// A CI poll or a Knip run came back with something to record.
+    Job,
+}
+
+impl Cause {
+    /// Which of two refreshes due at once is the one run: a connect, then a request (which
+    /// reads the reports and the settings), then a wake, then a job's.
+    fn rank(self) -> u8 {
+        match self {
+            Cause::Connect => 4,
+            Cause::Request => 3,
+            Cause::Wake => 2,
+            Cause::Job => 1,
+            Cause::Watch | Cause::FollowUp | Cause::Hour | Cause::Retry => 0,
+        }
+    }
 }
 
 /// One refresh to run.
@@ -65,6 +85,8 @@ pub enum Event {
     },
     Wake,
     Request,
+    /// A job came back with something to record.
+    Job,
 }
 
 /// Whether the repository can be read.
@@ -114,7 +136,8 @@ impl Schedule {
 
     pub fn on(&mut self, event: Event, mono: Duration) {
         if self.reach == Reach::NotFound {
-            // The watcher is gone; a wake or a request only looks for the repository sooner.
+            // The watcher is gone; a wake or a request only looks for the repository sooner,
+            // and a job has nothing to record into.
             if matches!(event, Event::Wake | Event::Request) {
                 self.retry_at = mono;
             }
@@ -129,8 +152,16 @@ impl Schedule {
                     reports: reports || self.settle.is_some_and(|settle| settle.reports),
                 });
             }
-            Event::Wake => self.now = Some(Cause::Wake),
-            Event::Request => self.now = Some(Cause::Request),
+            Event::Wake => self.at_once(Cause::Wake),
+            Event::Request => self.at_once(Cause::Request),
+            Event::Job => self.at_once(Cause::Job),
+        }
+    }
+
+    /// A refresh at once for `cause`, unless one is due at once for a stronger reason.
+    fn at_once(&mut self, cause: Cause) {
+        if self.now.is_none_or(|now| now.rank() < cause.rank()) {
+            self.now = Some(cause);
         }
     }
 
@@ -359,5 +390,41 @@ mod tests {
         );
         s.reached(Reach::Found, RETRY_EVERY + ms(3));
         assert_eq!(s.take(RETRY_EVERY + ms(4), T + HOUR), None);
+    }
+
+    #[test]
+    fn a_refresh_due_at_once_is_never_weakened() {
+        let mut s = connected();
+        s.on(Event::Request, ms(10));
+        s.on(Event::Job, ms(11));
+        s.on(Event::Wake, ms(12));
+        assert_eq!(
+            s.take(ms(13), T),
+            Some(Refresh {
+                cause: Cause::Request,
+                reports: true
+            }),
+            "the request still reads the reports and the settings"
+        );
+        s.on(Event::Job, ms(20));
+        assert_eq!(
+            s.take(ms(21), T),
+            Some(Refresh {
+                cause: Cause::Job,
+                reports: false
+            })
+        );
+        s.on(Event::Job, ms(30));
+        s.on(Event::Wake, ms(31));
+        assert_eq!(s.take(ms(32), T).map(|r| r.cause), Some(Cause::Wake));
+        assert_eq!(s.wait(ms(32), T), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_job_while_the_repository_is_missing_is_dropped() {
+        let mut s = connected();
+        s.reached(Reach::NotFound, ms(10));
+        s.on(Event::Job, ms(20));
+        assert_eq!(s.take(ms(21), T), None);
     }
 }

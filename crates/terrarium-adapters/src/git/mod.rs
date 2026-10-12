@@ -169,6 +169,15 @@ impl GitRepo {
         })
     }
 
+    /// The URL `origin` fetches from, as the repository's own configuration gives it (its
+    /// `insteadOf` rewrites applied; included files are not read): what names the GitHub
+    /// repository whose runs are the weather. `None` with no `origin` or no URL.
+    pub fn origin_url(&self) -> Option<String> {
+        let remote = self.repo.find_remote("origin").ok()?;
+        let url = remote.url(gix::remote::Direction::Fetch)?;
+        Some(url.to_bstring().to_str_lossy().into_owned())
+    }
+
     /// The directory holding this worktree's `HEAD`: `.git`, or a linked worktree's own.
     pub fn git_dir(&self) -> &Path {
         self.repo.git_dir()

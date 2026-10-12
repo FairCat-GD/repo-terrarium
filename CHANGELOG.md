@@ -5,6 +5,38 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-12
+
+The weather can follow GitHub Actions, and Knip can run on its own in the repository that
+asked for it.
+
+### Added
+
+- **Weather from GitHub Actions.** Save an access token in Settings, under Adapters (a
+  fine-grained token with read access to Actions is enough), and the weather follows the
+  repository's workflow runs: the checked-out branch's, else the default branch's. A commit
+  with a failing workflow is a storm; one whose workflows all ended with at least one passing
+  is clear. The token is kept in the macOS keychain or the Windows credential manager, never in
+  the settings, and only api.github.com is asked, once a minute. When GitHub cannot be read
+  for a while (offline, the token refused or removed), the weather follows the local test
+  results again.
+- The GitHub repository is the one `origin` names; another can be typed for this repository.
+- **Run Knip from this repository**, under Adapters: the repository's own Knip runs with node
+  from this computer, once for each new commit on the default branch while that branch is
+  checked out, and its report becomes dead code. It is never `npx` and never an install. The
+  switch holds for this repository at this folder; another repository needs its own.
+- Settings say how the Knip run and the GitHub poll went: reading, no token, not found, not
+  reached, node not found, Knip not installed, and so on.
+- The discovery report names the GitHub repository `origin` points at.
+- The soil panel lists the failing workflows when the weather comes from GitHub.
+
+### Changed
+
+- Any reading or weather recorded in the same second as one at another commit or branch is
+  dated a second later, so the newer one is the one that holds.
+- Asking the app to read its settings again is no longer lost when the machine wakes at the
+  same moment.
+
 ## [0.26.0] - 2026-10-12
 
 Soil now reads the code itself: complexity and TODO density come from the code committed on the

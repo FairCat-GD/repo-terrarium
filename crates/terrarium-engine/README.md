@@ -46,9 +46,19 @@ The headless live pipeline, run on a worker thread.
   while HEAD is at it, parsing only the files not met before in the session. A session's first
   refresh leaves it to an immediate follow-up, so the first snapshot never waits on a parse.
   One measurement serves the tip's metrics and a Knip report's exports in the same refresh.
-- **Readings of one second:** replay orders the light and soil readings of one second by their
-  commit, so a reading recorded in the same second as one of its kind is dated a second later,
-  and the newer is the one held.
+- **Observations of one second:** replay orders the observations of one second by their merge
+  key, not by when they were recorded, and truth keeps the last reading of each kind and follows
+  the newest observation's HEAD. So an observation recorded in the same second as one at
+  another head is dated a second later, and the newer is the one held.
+- **Jobs** (`ci`, `knip`): the GitHub Actions poll and the opt-in Knip run each run on a thread
+  of their own and come back to the worker, which owns them; a refresh records what they
+  brought. The poll reads the token from the keychain once, asks HEAD's branch then the default
+  one every minute (longer while GitHub cannot be reached or limits the rate, never while it
+  refuses the token), and records a branch's runs when they change, or when HEAD's branch is not
+  the one truth last heard of. Runs that can no longer be read are recorded as unknown, so the
+  local results take over. Knip runs once per default tip while HEAD is there, only on the
+  opt-in given for this repository; its report is weighed as a Knip report's, and only while
+  HEAD is still at the tip it ran at.
 
 ## Why it is a crate of its own
 
@@ -61,8 +71,10 @@ caller passes one, so tests use their own.
 - It depends on `terrarium-truth`, `terrarium-adapters` and `terrarium-store`, and on no other
   workspace crate. It has no UI types.
 - Only the refresh path calls adapters. Replay never runs a tool (I-4).
-- Nothing here writes into the repository or runs anything from it (I-5).
+- Nothing here writes into the repository. Nothing runs from it but Knip, on the opt-in given
+  for that repository, whose own cache writes are the one exemption from N-10 (I-5).
+- No connection is made without a `CiConfig`, a token and a GitHub repository (N-09).
 
 ## Requirements
 
-N-04, N-06 and N-10; invariants I-4, I-5 and I-16.
+N-04, N-06, N-09 and N-10; invariants I-4, I-5, I-6 and I-16.

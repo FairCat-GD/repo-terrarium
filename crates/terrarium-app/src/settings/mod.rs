@@ -14,6 +14,8 @@ mod time;
 
 use std::path::PathBuf;
 
+use terrarium_adapters::ci::KeychainError;
+use terrarium_engine::Tools;
 use terrarium_platform::login::LoginStatus;
 
 use self::adapters::AdaptersSection;
@@ -83,9 +85,9 @@ impl SettingsForm {
     pub fn new(repo: RepoFacts, prefs: &Prefs, logs: String) -> SettingsForm {
         SettingsForm {
             tab: Tab::Repository,
+            adapters: AdaptersSection::new(&prefs.adapters, repo.binding.clone()),
             repo: RepoSection::new(repo),
             strip: StripSection::new(prefs),
-            adapters: AdaptersSection::new(&prefs.adapters),
             hotkeys: HotkeysSection::new(prefs),
             time: TimeSection::new(prefs),
             general: GeneralSection::new(prefs, logs),
@@ -100,7 +102,18 @@ impl SettingsForm {
     }
 
     pub fn set_repo(&mut self, repo: RepoFacts) {
+        self.adapters.set_here(repo.binding.clone());
         self.repo.set_repo(repo);
+    }
+
+    /// What the Knip run and the GitHub Actions poll last said of themselves.
+    pub fn set_tools(&mut self, tools: Tools) {
+        self.adapters.set_tools(tools);
+    }
+
+    /// The keychain took the token change, or `problem` says why not.
+    pub fn token_saved(&mut self, problem: Option<KeychainError>) {
+        self.adapters.token_saved(problem);
     }
 
     pub fn is_missing(&self) -> bool {
@@ -196,6 +209,7 @@ impl SettingsForm {
             .take_intent()
             .into_iter()
             .chain(self.changes.drain(..).map(Intent::Set))
+            .chain(self.adapters.take_token().map(Intent::Token))
             .collect()
     }
 
@@ -239,6 +253,10 @@ mod tests {
                 name: "moss".into(),
                 path: "/projects/moss".into(),
                 default_branch: "main".into(),
+                binding: terrarium_adapters::binding::RepoBinding {
+                    seed: "5e".repeat(32),
+                    path: "/projects/moss".into(),
+                },
             },
             &Prefs::default(),
             "/data/logs".into(),
@@ -321,6 +339,60 @@ mod tests {
         );
         form.set_report(None);
         form.show(Tab::Adapters);
+        draw(&ctx, &mut form);
+        assert!(form.take_intents().is_empty(), "drawing asked for nothing");
+    }
+
+    #[test]
+    fn the_adapters_tab_draws_every_word_the_tools_say_and_asks_nothing() {
+        use terrarium_adapters::ci::{KeychainError, Slug};
+        use terrarium_engine::{CiStatus, KnipStatus};
+
+        let ctx = egui::Context::default();
+        let mut form = form();
+        form.show(Tab::Adapters);
+        let slug = Slug::parse("example-garden/moss-bed").unwrap();
+        let knip = [
+            KnipStatus::Off,
+            KnipStatus::Waiting,
+            KnipStatus::Running,
+            KnipStatus::Ran { unused: 1 },
+            KnipStatus::NoNode,
+            KnipStatus::NotInstalled,
+            KnipStatus::Before6("5.66.0".into()),
+            KnipStatus::Outside,
+            KnipStatus::TimedOut,
+            KnipStatus::Failed {
+                code: Some(2),
+                stderr: "ERROR: knip.json is not valid\n".into(),
+            },
+            KnipStatus::Failed {
+                code: None,
+                stderr: String::new(),
+            },
+            KnipStatus::NotAReport,
+            KnipStatus::TooLarge,
+            KnipStatus::CannotRun,
+        ];
+        let ci = [
+            CiStatus::Quiet,
+            CiStatus::NoRepository,
+            CiStatus::NoToken,
+            CiStatus::Reading(slug.clone()),
+            CiStatus::Refused(slug.clone()),
+            CiStatus::NotFound(slug.clone()),
+            CiStatus::Unreachable(slug.clone()),
+            CiStatus::Waiting(slug),
+            CiStatus::Keychain(KeychainError::Refused),
+        ];
+        for (i, knip) in knip.iter().enumerate() {
+            form.set_tools(Tools {
+                knip: knip.clone(),
+                ci: ci[i % ci.len()].clone(),
+            });
+            draw(&ctx, &mut form);
+        }
+        form.token_saved(Some(KeychainError::Failed));
         draw(&ctx, &mut form);
         assert!(form.take_intents().is_empty(), "drawing asked for nothing");
     }

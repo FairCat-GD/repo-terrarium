@@ -1735,7 +1735,10 @@ fn a_knip_report_is_weighed_against_the_exports_at_heads_commit_once() {
         &["knip-report.json".to_owned()],
     );
     assert_eq!(record.content_hash, report.known().unwrap().content_hash);
-    assert!(followed.snapshot.unwrap().details.found.dead_code);
+    assert_eq!(
+        followed.snapshot.unwrap().details.found.dead_code,
+        terrarium_engine::DeadCodeFrom::Report
+    );
     // The same report: not weighed again.
     refresh(&mut live, Cause::Request, true);
     assert_eq!(fx.rows(ObservationKind::DeadCode).len(), 1);

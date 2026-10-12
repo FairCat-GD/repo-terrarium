@@ -34,8 +34,13 @@ confidence-threshold = 0.93
 # egui's bundled fonts, approved for this crate alone: Ubuntu under the Ubuntu Font Licence, and
 # Hack and the emoji fonts under OFL-1.1. Both free font licences allow bundling, with
 # attribution in the release notices.
+#
+# Mozilla's list of certificate authorities, compiled into the GitHub Actions client so a poll
+# reaches api.github.com and nothing else: CDLA-Permissive-2.0, a permissive data licence,
+# approved for this crate alone.
 exceptions = [
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
 ]
 # The allowlist is policy, not a record of what is linked today.
 unused-allowed-license = "allow"

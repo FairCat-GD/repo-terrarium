@@ -18,9 +18,10 @@ use terrarium_compose::frame::GROUND_Y;
 use terrarium_compose::panel::{
     self, Freshness, Hover, Landmark, Layout, Page, Panel, Row, Shape, Tag, Target, Trend,
 };
-use terrarium_engine::{Details, Found};
+use terrarium_engine::{DeadCodeFrom, Details, Found};
 use terrarium_store::Contributor;
-use terrarium_truth::climate::Trend as TruthTrend;
+use terrarium_truth::climate::{ClimateReport, Trend as TruthTrend};
+use terrarium_truth::domain::WeatherSource;
 use terrarium_truth::{Q16, Reading};
 
 use crate::copy::panel as words;
@@ -387,6 +388,36 @@ fn causes(facts: &PanelFacts) -> Page {
     }
 }
 
+/// The weather page's title, and what it says with nothing listed: GitHub's runs name the
+/// workflows that failed, local results the tests.
+fn weather_words(report: &ClimateReport, found: Found) -> (&'static str, &'static str) {
+    let ci = matches!(
+        report.climate.weather.source,
+        Some(WeatherSource::Ci { .. })
+    );
+    let (title, passing, unnamed) = if ci {
+        (
+            words::FAILING_WORKFLOWS,
+            words::NO_FAILING_WORKFLOWS,
+            words::WORKFLOWS_UNNAMED,
+        )
+    } else {
+        (
+            words::FAILING_TESTS,
+            words::NO_FAILING_TESTS,
+            words::FAILING_UNNAMED,
+        )
+    };
+    let empty = match report.climate.weather.state {
+        Reading::Known { value, .. } if value >= Q16::HALF => passing,
+        Reading::Known { .. } => unnamed,
+        Reading::Unknown if !found.enabled.weather => words::TESTS_OFF,
+        Reading::Unknown if found.test_report => words::TESTS_NOT_READ,
+        Reading::Unknown => words::NO_TEST_REPORT,
+    };
+    (title, empty)
+}
+
 fn files(source: Source, facts: &PanelFacts) -> Page {
     let PanelFacts { report, details } = facts;
     let files = &details.files;
@@ -406,17 +437,10 @@ fn files(source: Source, facts: &PanelFacts) -> Page {
                 words::NO_COVERAGE_REPORT
             },
         ),
-        Source::Weather => (
-            words::FAILING_TESTS,
-            &files.weather,
-            match report.climate.weather.state {
-                Reading::Known { value, .. } if value >= Q16::HALF => words::NO_FAILING_TESTS,
-                Reading::Known { .. } => words::FAILING_UNNAMED,
-                Reading::Unknown if !found.enabled.weather => words::TESTS_OFF,
-                Reading::Unknown if found.test_report => words::TESTS_NOT_READ,
-                Reading::Unknown => words::NO_TEST_REPORT,
-            },
-        ),
+        Source::Weather => {
+            let (title, empty) = weather_words(report, found);
+            (title, &files.weather, empty)
+        }
         Source::DeadCode => (
             words::DEAD_CODE,
             &files.dead_code,
@@ -424,7 +448,9 @@ fn files(source: Source, facts: &PanelFacts) -> Page {
                 words::NO_FILES
             } else if !found.enabled.dead_code {
                 words::DEAD_CODE_OFF
-            } else if found.dead_code {
+            } else if found.dead_code == DeadCodeFrom::KnipRun {
+                words::KNIP_NOT_RUN
+            } else if found.dead_code == DeadCodeFrom::Report {
                 words::DEAD_CODE_NOT_READ
             } else {
                 words::NO_KNIP_REPORT
@@ -506,7 +532,7 @@ mod tests {
     use terrarium_compose::variants::ArtTable;
     use terrarium_engine::details::BranchReading;
     use terrarium_engine::{Buried, Found, Raised};
-    use terrarium_truth::climate::{ClimateReport, SoilCauses, Trends};
+    use terrarium_truth::climate::{SoilCauses, Trends};
     use terrarium_truth::domain::{Climate, WeatherReading};
     use terrarium_truth::scene::{FossilForm, FossilView, MonumentAge, MonumentView, SceneInput};
     use terrarium_truth::{PresentationState, Tick};
@@ -604,7 +630,7 @@ mod tests {
             found: Found {
                 coverage: true,
                 test_report: true,
-                dead_code: true,
+                dead_code: DeadCodeFrom::Report,
                 source_code: Some(true),
                 enabled: Enabled::default(),
             },
@@ -979,7 +1005,7 @@ mod tests {
             assert_eq!(lines(source, &no_source), [words::NO_SOURCE]);
         }
         let mut found = bare.clone();
-        found.details.found.dead_code = true;
+        found.details.found.dead_code = DeadCodeFrom::Report;
         found.details.found.source_code = Some(true);
         assert_eq!(lines(Source::DeadCode, &found), [words::DEAD_CODE_NOT_READ]);
         assert_eq!(lines(Source::TodoDensity, &found), [words::NOT_MEASURED]);
@@ -1037,7 +1063,7 @@ mod tests {
         found.details.found = Found {
             coverage: true,
             test_report: true,
-            dead_code: true,
+            dead_code: DeadCodeFrom::Report,
             source_code: Some(true),
             enabled: Enabled::default(),
         };
@@ -1083,6 +1109,45 @@ mod tests {
         assert_eq!(
             lines(Level::Files(Source::Weather), &read),
             [words::NO_FAILING_TESTS]
+        );
+    }
+
+    #[test]
+    fn githubs_weather_lists_failing_workflows_and_a_knip_run_says_it_has_not_run() {
+        let lines = |level: Level, facts: &PanelFacts| -> Vec<String> {
+            page_of(level, facts)
+                .rows
+                .into_iter()
+                .map(|r| r.name)
+                .collect()
+        };
+        let mut ci = facts();
+        ci.report.climate.weather.source = Some(WeatherSource::Ci {
+            branch: "main".into(),
+        });
+        let page = page_of(Level::Files(Source::Weather), &ci);
+        assert_eq!(page.title, words::FAILING_WORKFLOWS);
+        ci.details.files = terrarium_engine::Files::default();
+        assert_eq!(
+            lines(Level::Files(Source::Weather), &ci),
+            [words::WORKFLOWS_UNNAMED]
+        );
+        ci.report.climate.weather.state = known(Q16::ONE, false);
+        assert_eq!(
+            lines(Level::Files(Source::Weather), &ci),
+            [words::NO_FAILING_WORKFLOWS]
+        );
+        // The local results keep their own words.
+        ci.report.climate.weather.source = Some(WeatherSource::Local);
+        assert_eq!(
+            page_of(Level::Files(Source::Weather), &ci).title,
+            words::FAILING_TESTS
+        );
+        let mut runs = bare();
+        runs.details.found.dead_code = DeadCodeFrom::KnipRun;
+        assert_eq!(
+            lines(Level::Files(Source::DeadCode), &runs),
+            [words::KNIP_NOT_RUN]
         );
     }
 

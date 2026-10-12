@@ -10,7 +10,13 @@ truth.
 - The source metrics (`metrics`): complexity, TODO density, lines of code and exported items,
   parsed with tree-sitter in process.
 - Discovery of what a repository has, and what it lacks.
-- The GitHub Actions client.
+- The GitHub Actions client (`ci`), the only code that names `ureq`: which repository
+  (`Slug`, typed or from `origin`), what a branch's runs say (`verdict`), the client behind
+  `Fetch` (`api.github.com` only, Mozilla's roots compiled in, no proxy, no redirect but one
+  back to the API, an `ETag` per branch), when to ask next (`Backoff`), and the token in the
+  OS keychain (`Keychain`, `Token`, which never shows itself).
+- The repository a setting was given for (`binding`): the Knip opt-in and the GitHub
+  repository typed hold for one repository at one folder.
 - The single `exec` module, the only place a process starts:
   - the command a person gives `record-tests` (on Windows, a bare name is looked up with
     `PATHEXT`, so `.cmd` scripts such as `npm` run);
@@ -19,7 +25,12 @@ truth.
     in `/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin`, since an app opened from
     Finder or at login gets only the system's `PATH`; never inside the repository, and on
     Windows only as an `.exe`;
-  - later, a tool behind its per-adapter opt-in.
+  - the Knip a repository installed, on the opt-in given for that repository
+    (`KnipRun::permitted`), run by the person's node (found as ffmpeg is, never inside the
+    repository) on the program Knip's manifest names, which `node_modules/.bin/knip` runs:
+    `--reporter json --no-progress`, an environment of `PATH` alone, 3 minutes at most, stdout
+    kept up to 16 MiB. A Knip before 6 is never run. Knip's own cache writes in
+    `node_modules/.cache` are the one exemption from N-10.
 
 ## Why it is a crate of its own
 

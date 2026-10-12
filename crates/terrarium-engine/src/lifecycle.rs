@@ -11,12 +11,14 @@ use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
 
 use serde::de::DeserializeOwned;
+use terrarium_adapters::binding::{CiRepository, RepoBinding};
 use terrarium_adapters::discovery::{Enabled, Overrides};
 use terrarium_adapters::git::{GitError, GitRepo};
 use terrarium_store::identifiers::{
-    SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED, SETTING_COVERAGE_REPORT_PATH,
-    SETTING_DEAD_CODE_ENABLED, SETTING_DEAD_CODE_REPORT_PATH, SETTING_REPO_ACTIVE,
-    SETTING_TODO_DENSITY_ENABLED, SETTING_WEATHER_ENABLED, SETTING_WEATHER_REPORT_PATH,
+    SETTING_CI_GITHUB_REPO, SETTING_COMPLEXITY_ENABLED, SETTING_COVERAGE_ENABLED,
+    SETTING_COVERAGE_REPORT_PATH, SETTING_DEAD_CODE_ENABLED, SETTING_DEAD_CODE_REPORT_PATH,
+    SETTING_KNIP_RUN_OPT_IN, SETTING_REPO_ACTIVE, SETTING_TODO_DENSITY_ENABLED,
+    SETTING_WEATHER_ENABLED, SETTING_WEATHER_REPORT_PATH,
 };
 use terrarium_store::{
     DataDir, ImportError, ImportReport, InstallKey, RepoLocation, Store, StoreError, Terrarium,
@@ -103,11 +105,14 @@ pub fn disconnect(
 }
 
 /// What the settings say of each adapter: the report path configured for it, if any, and
-/// whether it is on.
+/// whether it is on; the repository Knip may run in, and the GitHub repository typed for one
+/// repository's CI weather, each for the repository it was given for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AdapterSettings {
     pub overrides: Overrides,
     pub enabled: Enabled,
+    pub knip_run: Option<RepoBinding>,
+    pub ci_repository: Option<CiRepository>,
 }
 
 /// The adapters' settings. A value this version cannot read counts as never set, so a setting
@@ -133,6 +138,8 @@ pub fn stored_adapters(store: &Store) -> Result<AdapterSettings, StoreError> {
             complexity: on(SETTING_COMPLEXITY_ENABLED)?,
             todo_density: on(SETTING_TODO_DENSITY_ENABLED)?,
         },
+        knip_run: read(store, SETTING_KNIP_RUN_OPT_IN)?,
+        ci_repository: read(store, SETTING_CI_GITHUB_REPO)?,
     })
 }
 

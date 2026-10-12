@@ -71,9 +71,10 @@ pub struct TodoDensityRaw {
 }
 
 /// `weather`: the run's outcome, which `normalized` repeats (pass 1, fail 0, unknown null), and
-/// what the run said beyond it, when it said: a test report's counts, or the exit code of a run
-/// `record-tests` recorded.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// what the run said beyond it, when it said: a test report's counts, the exit code of a run
+/// `record-tests` recorded, or, from GitHub Actions, the commit its runs judged and how many
+/// workflows ran and failed there. A CI weather that could not be read is unknown, with why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherRaw {
     pub state: WeatherState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +89,17 @@ pub struct WeatherRaw {
     /// error. Present only when there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite_failed: Option<bool>,
+    /// The commit GitHub's runs judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    /// How many workflows ran on it, and how many of them failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing_workflows: Option<u64>,
+    /// Why GitHub's runs could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<CiUnread>,
 }
 
 impl WeatherRaw {
@@ -100,8 +112,25 @@ impl WeatherRaw {
             skipped: None,
             exit_code: None,
             suite_failed: None,
+            sha: None,
+            workflows: None,
+            failing_workflows: None,
+            unread: None,
         }
     }
+}
+
+/// Why a CI weather is unknown: no longer read here (the token removed, the repository
+/// unnamed), refused by GitHub, not found by it, out of reach for a while, or a branch HEAD is
+/// on whose runs decide nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CiUnread {
+    Off,
+    Refused,
+    NotFound,
+    Unreachable,
+    NoRun,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +321,37 @@ pub(crate) fn from_json(
 mod tests {
     use super::*;
     use crate::test_support::commit;
+
+    #[test]
+    fn the_ci_weather_shapes_are_pinned() {
+        let run = WeatherRaw {
+            exit_code: Some(0),
+            ..WeatherRaw::of(WeatherState::Pass)
+        };
+        let ci = WeatherRaw {
+            sha: Some("a".repeat(40)),
+            workflows: Some(3),
+            failing_workflows: Some(1),
+            ..WeatherRaw::of(WeatherState::Fail)
+        };
+        assert_eq!(
+            ci.to_raw(),
+            format!(
+                r#"{{"state":"fail","sha":"{}","workflows":3,"failing_workflows":1}}"#,
+                "a".repeat(40)
+            )
+        );
+        let unread = WeatherRaw {
+            unread: Some(CiUnread::NotFound),
+            ..WeatherRaw::of(WeatherState::Unknown)
+        };
+        assert_eq!(
+            unread.to_raw(),
+            r#"{"state":"unknown","unread":"not_found"}"#
+        );
+        let old: WeatherRaw = serde_json::from_str(r#"{"state":"pass","exit_code":0}"#).unwrap();
+        assert_eq!(old, run, "a row written before the CI keys reads as it was");
+    }
 
     #[test]
     fn the_shapes_are_pinned() {

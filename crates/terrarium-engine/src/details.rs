@@ -76,12 +76,23 @@ pub struct BranchReading {
 pub struct Found {
     pub coverage: bool,
     pub test_report: bool,
-    /// A Knip report.
-    pub dead_code: bool,
+    pub dead_code: DeadCodeFrom,
     /// Whether the default tip, when it was last measured in this session, held a source file
     /// in a language the metrics read; `None` before it was.
     pub source_code: Option<bool>,
     pub enabled: Enabled,
+}
+
+/// Where dead code comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeadCodeFrom {
+    /// No Knip report was found.
+    #[default]
+    Nothing,
+    /// A Knip report in the worktree.
+    Report,
+    /// Knip runs here on its opt-in: its output is the report, and a report file is not read.
+    KnipRun,
 }
 
 /// What the details are read from.

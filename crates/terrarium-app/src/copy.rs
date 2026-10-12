@@ -469,6 +469,9 @@ fn report_rows(found: &Discovery, reads: &Reads, hints: Hints) -> String {
     } else {
         row(&mut out, "CI workflow", &found.ci_workflows.join(", "));
     }
+    if let Some(github) = &found.github {
+        row(&mut out, "GitHub", &format!("{github}, from origin"));
+    }
     if !found.runners.is_empty() {
         let runners: Vec<String> = found
             .runners
@@ -726,9 +729,12 @@ fn hint_text(hint: Hint, runner: Option<Runner>) -> String {
         }
         Hint::DeadCode => format!(
             "Knip prints its JSON report to stdout, and the report is read from \
-             {KNIP_REPORT_PATH}: npx knip --reporter json --no-progress > {KNIP_REPORT_PATH}"
+             {KNIP_REPORT_PATH}: npx knip --reporter json --no-progress > {KNIP_REPORT_PATH}. \
+             Or, with Run Knip from this repository in Adapters, the repository's own Knip runs \
+             and no file is written."
         ),
-        Hint::Ci => "Weather follows GitHub Actions runs when .github/workflows holds a workflow."
+        Hint::Ci => "Weather follows GitHub Actions runs when .github/workflows holds a \
+            workflow and a token is saved in Adapters."
             .to_owned(),
     }
 }
@@ -937,6 +943,9 @@ pub mod settings {
     use terrarium_platform::login::{LoginError, LoginStatus};
     use terrarium_store::{ImportError, ImportReport};
     use terrarium_truth::SIM_VERSION;
+
+    use terrarium_adapters::ci::KeychainError;
+    use terrarium_engine::{CiStatus, KnipStatus};
 
     use super::{PRODUCT_NAME, VERSION};
     use crate::hotkey::{Platform, Refusal};
@@ -1158,11 +1167,101 @@ pub mod settings {
     pub const MEASURED_FROM_SOURCE: &str = "Measured from the TypeScript, JavaScript, Python, \
         Rust and Go committed at the default branch's tip, while it is checked out.";
     pub const KNIP_RUN: &str = "Run Knip from this repository";
-    pub const KNIP_LATER: &str = "Running Knip comes with a later version.";
+    pub const KNIP_RUN_FACT: &str = "Knip then runs this repository's own code, its \
+        configuration and plugins, with node from this computer: once for each new commit on \
+        the default branch, while that branch is checked out. It may write its cache into \
+        node_modules. Its report file is not read meanwhile. The choice holds for this \
+        repository at this folder.";
     pub const CI: &str = "GitHub Actions";
     pub const CI_REPOSITORY: &str = "Repository";
+    pub const CI_REPOSITORY_HINT: &str = "as origin names it";
     pub const CI_TOKEN: &str = "Access token";
-    pub const CI_LATER: &str = "Weather from GitHub Actions comes with a later version.";
+    pub const SAVE: &str = "Save";
+    pub const REMOVE: &str = "Remove";
+    pub const CI_FACT: &str = "The weather follows this repository's GitHub Actions runs: the \
+        checked-out branch's, else the default branch's. A fine-grained token with read access \
+        to Actions is enough. It is kept in the keychain, for every repository, and only \
+        api.github.com is asked, once a minute. A repository named here holds for this \
+        repository at this folder.";
+    pub const CI_REPOSITORY_REFUSED: &str = "That is not a GitHub repository name: owner/name.";
+    pub const CI_TOKEN_REFUSED: &str = "A token holds no spaces.";
+
+    /// What the Knip run says of itself; nothing while it is off.
+    pub fn knip_status(status: &KnipStatus) -> Option<String> {
+        Some(match status {
+            KnipStatus::Off => return None,
+            KnipStatus::Waiting => {
+                "Knip runs at the default branch's tip, once for each new commit.".to_owned()
+            }
+            KnipStatus::Running => "Knip is running.".to_owned(),
+            KnipStatus::Ran { unused } => format!(
+                "Knip ran: {}.",
+                super::plural(*unused, "unused export", "unused exports")
+            ),
+            KnipStatus::NoNode => if cfg!(target_os = "macos") {
+                "node was not found on the PATH, or in /opt/homebrew/bin, /usr/local/bin or \
+                 /opt/local/bin."
+            } else {
+                "node was not found on the PATH."
+            }
+            .to_owned(),
+            KnipStatus::NotInstalled => {
+                "Knip is not installed in this repository's node_modules.".to_owned()
+            }
+            KnipStatus::Before6(version) => format!(
+                "Knip {version} is installed; its report is read from Knip 6 on, so it was not run."
+            ),
+            KnipStatus::Outside => {
+                "Knip's program is outside node_modules, so it was not run.".to_owned()
+            }
+            KnipStatus::TimedOut => "Knip was stopped after 3 minutes.".to_owned(),
+            KnipStatus::Failed { code, stderr } => {
+                let ended = match code {
+                    Some(code) => format!("Knip ended with code {code} and no report"),
+                    None => "Knip was stopped by a signal before its report".to_owned(),
+                };
+                match stderr.lines().rev().find(|line| !line.trim().is_empty()) {
+                    Some(why) => format!("{ended}: {}", why.trim()),
+                    None => format!("{ended}."),
+                }
+            }
+            KnipStatus::NotAReport => "What Knip printed is not a report this reads.".to_owned(),
+            KnipStatus::TooLarge => "Knip printed more than a report is read up to.".to_owned(),
+            KnipStatus::CannotRun => "Knip could not be started.".to_owned(),
+        })
+    }
+
+    /// What the GitHub Actions poll says of itself; nothing before it has said anything.
+    pub fn ci_status(status: &CiStatus) -> Option<String> {
+        Some(match status {
+            CiStatus::Quiet => return None,
+            CiStatus::NoRepository => {
+                "No GitHub repository: origin is not on GitHub, and none is named here.".to_owned()
+            }
+            CiStatus::NoToken => "No token is saved.".to_owned(),
+            CiStatus::Reading(slug) => format!("Reading the runs of {slug}."),
+            CiStatus::Refused(slug) => format!("GitHub refused the token for {slug}."),
+            CiStatus::NotFound(slug) => {
+                format!("GitHub has no repository {slug} this token can read.")
+            }
+            CiStatus::Unreachable(slug) => {
+                format!("GitHub could not be reached for {slug}; it is asked again later.")
+            }
+            CiStatus::Waiting(slug) => {
+                format!("GitHub asked to wait before the next look at {slug}.")
+            }
+            CiStatus::Keychain(err) => keychain_problem(*err).to_owned(),
+        })
+    }
+
+    /// Why the keychain could not be used.
+    pub fn keychain_problem(err: KeychainError) -> &'static str {
+        match err {
+            KeychainError::Unavailable => "This system has no keychain to keep the token in.",
+            KeychainError::Refused => "The keychain refused access to the token.",
+            KeychainError::Failed => "The keychain could not be used.",
+        }
+    }
 
     pub fn adapter(kind: AdapterKind) -> &'static str {
         match kind {
@@ -1286,6 +1385,7 @@ pub mod panel {
     /// The titles of the pages of files.
     pub const UNCOVERED_LINES: &str = "uncovered lines";
     pub const FAILING_TESTS: &str = "failing tests";
+    pub const FAILING_WORKFLOWS: &str = "failing workflows";
 
     pub const UNKNOWN: &str = "unknown";
     pub const PASS: &str = "pass";
@@ -1299,6 +1399,9 @@ pub mod panel {
     pub const TESTS_NOT_READ: &str = "no test run read yet";
     pub const NO_FAILING_TESTS: &str = "no failing tests";
     pub const FAILING_UNNAMED: &str = "the failing tests are not named";
+    pub const NO_FAILING_WORKFLOWS: &str = "no failing workflows";
+    pub const WORKFLOWS_UNNAMED: &str = "the failing workflows are not named";
+    pub const KNIP_NOT_RUN: &str = "Knip has not run here yet";
     pub const NOT_MEASURED: &str = "not measured yet";
     pub const NO_SOURCE: &str = "no code in the languages read";
     pub const NO_KNIP_REPORT: &str = "no Knip report found";
@@ -1971,6 +2074,48 @@ mod tests {
     }
 
     #[test]
+    fn the_knip_run_and_the_poll_each_say_what_happened_in_a_line() {
+        use terrarium_adapters::ci::Slug;
+        use terrarium_engine::{CiStatus, KnipStatus};
+
+        assert_eq!(settings::knip_status(&KnipStatus::Off), None);
+        assert_eq!(
+            settings::knip_status(&KnipStatus::Ran { unused: 1 }).as_deref(),
+            Some("Knip ran: 1 unused export.")
+        );
+        assert_eq!(
+            settings::knip_status(&KnipStatus::Ran { unused: 3 }).as_deref(),
+            Some("Knip ran: 3 unused exports.")
+        );
+        assert_eq!(
+            settings::knip_status(&KnipStatus::Failed {
+                code: Some(2),
+                stderr: "loading\nError: no knip.json\n\n".into(),
+            })
+            .as_deref(),
+            Some("Knip ended with code 2 and no report: Error: no knip.json")
+        );
+        assert_eq!(
+            settings::knip_status(&KnipStatus::Failed {
+                code: None,
+                stderr: String::new(),
+            })
+            .as_deref(),
+            Some("Knip was stopped by a signal before its report.")
+        );
+        let slug = Slug::parse("example-garden/moss-bed").unwrap();
+        assert_eq!(settings::ci_status(&CiStatus::Quiet), None);
+        assert_eq!(
+            settings::ci_status(&CiStatus::Reading(slug.clone())).as_deref(),
+            Some("Reading the runs of example-garden/moss-bed.")
+        );
+        assert_eq!(
+            settings::ci_status(&CiStatus::NotFound(slug)).as_deref(),
+            Some("GitHub has no repository example-garden/moss-bed this token can read.")
+        );
+    }
+
+    #[test]
     fn copy_has_no_exclamation_marks() {
         let mut literals = string_literals(include_str!("copy.rs"));
         literals.extend(string_literals(include_str!("copy/probe.rs")));
@@ -2135,6 +2280,7 @@ mod tests {
                 knip_config: None,
                 knip_installed: None,
                 ci_workflows: Vec::new(),
+                github: None,
                 runners: Vec::new(),
                 source_code: BTreeMap::new(),
             }
@@ -2168,6 +2314,7 @@ mod tests {
                 ),
                 local_tests: true,
                 ci_workflows: vec![".github/workflows/ci.yml".to_owned()],
+                github: terrarium_adapters::ci::Slug::parse("example-garden/moss"),
                 runners: vec![RunnerFound {
                     runner: Runner::Maven,
                     config: "pom.xml".to_owned(),
@@ -2212,13 +2359,15 @@ mod tests {
                  \x20 test runs         recorded by record-tests: the last run failed with exit \
                  code 101\n\
                  \x20 CI workflow       .github/workflows/ci.yml\n\
+                 \x20 GitHub            example-garden/moss, from origin\n\
                  \x20 test runner       Maven (pom.xml)\n\
                  Not found\n\
                  \x20 dead-code report\n\
                  To connect\n\
                  \x20 dead-code report  Knip prints its JSON report to stdout, and the report is \
                  read from knip-report.json: npx knip --reporter json --no-progress > \
-                 knip-report.json\n"
+                 knip-report.json. Or, with Run Knip from this repository in Adapters, the \
+                 repository's own Knip runs and no file is written.\n"
             );
         }
 
