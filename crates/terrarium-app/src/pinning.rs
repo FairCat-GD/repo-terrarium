@@ -5,8 +5,9 @@
 use serde::Serialize;
 
 pub use imp::{
-    AttachError, Monitor, Observers, Pinning, PreviousApp, ReopenHook, activate, app_is_active,
-    configure_event_loop, frontmost_app, on_reopen, os_version, separate_spaces, window_attributes,
+    AttachError, Monitor, Observers, Pinning, PreviousApp, ReopenHook, activate,
+    allow_foreground_for_running, app_is_active, configure_event_loop, frontmost_app, on_reopen,
+    os_version, separate_spaces, taskbar, window_attributes,
 };
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -68,6 +69,10 @@ pub struct PxRect {
 /// One `AppBar` placement: the rectangles asked for and granted, and the work area around it.
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts of one placement"
+)]
 pub struct AppBarPlaced {
     pub monitor: PxRect,
     pub work_before: PxRect,
@@ -84,8 +89,55 @@ pub struct AppBarPlaced {
     /// The granted band is not the strip's size: its height is not the scaled image's, or it
     /// is narrower than the 1× image. The surface and the window then differ.
     pub size_mismatch: bool,
+    /// The bar moved to another monitor or edge and was registered there afresh.
+    pub fresh: bool,
+    /// How many pixels the band stays off the edge for an auto-hide taskbar there.
+    pub autohide_inset: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale: Option<StaleReport>,
+}
+
+/// What a `TaskbarCreated` did to the bar (Windows).
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskbarReport {
+    pub action: TaskbarStep,
+    /// What `ABM_NEW` answered when the bar was asked for once.
+    pub answered: Option<bool>,
+    pub shell_hook: bool,
+}
+
+/// How the bar was asked for again.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskbarStep {
+    /// Asked for once: Explorer had forgotten it, or answered that it still knew it.
+    AskOnce,
+    /// Registered from the start, the stale check included.
+    RegisterAfresh,
+    /// Already given back.
+    Nothing,
+}
+
+/// A look at the full-screen apps that moved the strip behind one, or back (Windows).
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FullscreenReport {
+    pub yielded: bool,
+    pub apps: usize,
+    /// The class of the window in front, never its title.
+    pub front_class: Option<String>,
+}
+
+/// The taskbar as Explorer reports it, for the probe's header (Windows).
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskbarState {
+    /// Its `ABE_` value: 0 left, 1 top, 2 right, 3 bottom.
+    pub edge: u32,
+    pub rect: PxRect,
+    pub auto_hide: bool,
 }
 
 /// The startup check for a reservation a crashed strip left on the edge.
@@ -114,6 +166,10 @@ pub struct OsSnapshot {
     pub app_window: bool,
     pub topmost: bool,
     pub visible: bool,
+    /// Minimised, which the strip should never be.
+    pub iconic: bool,
+    /// Standing behind a full-screen app.
+    pub yielded: bool,
     /// How often each watched message reached the subclass and winit's message hook since the
     /// last snapshot.
     pub messages: Vec<MessageCount>,
@@ -145,7 +201,7 @@ mod imp {
     };
     use winit::window::{Window, WindowAttributes, WindowLevel};
 
-    use super::{LevelMode, OsSnapshot, Placed};
+    use super::{FullscreenReport, LevelMode, OsSnapshot, Placed, TaskbarReport, TaskbarState};
     use crate::copy;
     use crate::monitor::{MonitorId, MonitorInfo};
 
@@ -270,6 +326,24 @@ mod imp {
 
         /// Nothing is reserved on macOS, so there is nothing to give back.
         pub fn release(&self) {}
+
+        /// Explorer's restart is Windows' alone.
+        pub fn taskbar_created(&self) -> Option<TaskbarReport> {
+            None
+        }
+
+        /// The desktop-level strip is under every app already, full screen or not.
+        pub fn check_fullscreen(&self, _window: &Window) -> Option<FullscreenReport> {
+            None
+        }
+    }
+
+    /// A second launch of the installed app sends the running one a reopen event instead.
+    pub fn allow_foreground_for_running() {}
+
+    /// macOS has no taskbar.
+    pub fn taskbar() -> Option<TaskbarState> {
+        None
     }
 
     pub fn app_is_active() -> Option<bool> {
@@ -316,7 +390,7 @@ mod imp {
 mod imp {
     use terrarium_compose::scale::{SizeStep, StripScale};
     use terrarium_platform::SystemEvent;
-    use terrarium_platform::appbar::PixelRect;
+    use terrarium_platform::appbar::{PixelRect, TaskbarAction};
     use terrarium_platform::geometry::Edge;
     use terrarium_platform::windows::{self, Placement, StaleCheck, StripWindow};
     use winit::event_loop::EventLoopBuilder;
@@ -324,10 +398,14 @@ mod imp {
     use winit::platform::windows::{
         CornerPreference, MonitorHandleExtWindows, WindowAttributesExtWindows,
     };
-    use winit::window::{Window, WindowAttributes};
+    use winit::window::{Window, WindowAttributes, WindowButtons};
 
-    use super::{AppBarPlaced, LevelMode, MessageCount, OsSnapshot, Placed, PxRect, StaleReport};
+    use super::{
+        AppBarPlaced, FullscreenReport, LevelMode, MessageCount, OsSnapshot, Placed, PxRect,
+        StaleReport, TaskbarReport, TaskbarState, TaskbarStep,
+    };
     use crate::copy;
+    use crate::menu;
     use crate::monitor::{MonitorId, MonitorInfo};
 
     pub use windows::PlatformError as AttachError;
@@ -341,11 +419,14 @@ mod imp {
 
     /// Kept off the taskbar by winit as well as by the tool-window style: winit adds a taskbar
     /// tab itself unless told to skip it, at creation and again whenever Explorer restarts.
-    /// Square corners, since the window keeps a caption style Windows 11 would round.
+    /// Square corners, since the window keeps a caption style Windows 11 would round. No
+    /// minimise button: with no taskbar button and no Alt-Tab entry, a strip that Win+M
+    /// minimised could never be brought back.
     pub fn window_attributes() -> WindowAttributes {
         WindowAttributes::default()
             .with_skip_taskbar(true)
             .with_corner_preference(CornerPreference::DoNotRound)
+            .with_enabled_buttons(WindowButtons::CLOSE)
     }
 
     pub struct Monitor {
@@ -373,23 +454,35 @@ mod imp {
             })
         }
 
-        /// winit's monitors, each read through platform: its own `rcMonitor` and its device
-        /// name (`\\.\DISPLAY1`), which is the id. A monitor unplugged while the list is read
-        /// is left out, where winit's own `size` and `name` would panic.
+        /// winit's monitors, each read through platform: its own `rcMonitor`, its GDI name
+        /// (`\\.\DISPLAY1`), and its monitor's device path and own name from the display
+        /// configuration. The device path is the id, since the GDI name is renumbered as
+        /// displays come and go. A monitor unplugged while the list is read is left out, where
+        /// winit's own `size` and `name` would panic.
         pub fn monitors(&self, window: &Window) -> Vec<Monitor> {
+            let names = windows::display_names();
             window
                 .available_monitors()
                 .enumerate()
                 .filter_map(|(index, handle)| {
-                    let (rects, name) = windows::monitor_described(handle.hmonitor())?;
+                    let (rects, gdi) = windows::monitor_described(handle.hmonitor())?;
+                    let stable = windows::display_name(&gdi, &names);
                     let size = |length: i32| u32::try_from(length).unwrap_or(0);
-                    let detail = copy::monitor_detail(&px(rects.monitor), &px(rects.work));
+                    let detail = copy::monitor_detail(
+                        &px(rects.monitor),
+                        &px(rects.work),
+                        &gdi,
+                        stable.from_display_config,
+                    );
+                    let name = stable
+                        .friendly
+                        .unwrap_or_else(|| copy::display_fallback_name(&gdi, index));
                     Some(Monitor {
                         info: MonitorInfo {
-                            id: MonitorId(if name.is_empty() {
+                            id: MonitorId(if stable.id.is_empty() {
                                 copy::monitor_id(index)
                             } else {
-                                name.clone()
+                                stable.id
                             }),
                             name,
                             physical_width: size(rects.monitor.width()),
@@ -456,8 +549,15 @@ mod imp {
             None
         }
 
+        /// The menu brings the strip to the front; dismissed, the app the person was in gets
+        /// the front back. A choice keeps it, so a window the choice opens can come forward.
         pub fn show_menu(&self, window: &Window, menu: &muda::Menu) {
-            windows::show_context_menu(menu, window);
+            let chosen = menu::choices();
+            if let Some(shown) = windows::show_context_menu(menu, window)
+                && menu::choices() == chosen
+            {
+                windows::give_front_back(shown);
+            }
         }
 
         pub fn observe(&self, on_event: impl Fn(SystemEvent) + Send + Sync + 'static) -> Observers {
@@ -474,6 +574,8 @@ mod imp {
                 app_window: style.app_window,
                 topmost: style.topmost,
                 visible: style.visible,
+                iconic: style.iconic,
+                yielded: style.yielded,
                 messages: windows::take_message_counts()
                     .into_iter()
                     .map(|count| MessageCount {
@@ -489,6 +591,56 @@ mod imp {
         pub fn release(&self) {
             self.strip.release();
         }
+
+        /// Explorer started again, or a login started the strip before the taskbar: the bar is
+        /// asked for again. A placement follows.
+        pub fn taskbar_created(&self) -> Option<TaskbarReport> {
+            let done = self.strip.taskbar_created();
+            Some(TaskbarReport {
+                action: match done.action {
+                    TaskbarAction::AskOnce => TaskbarStep::AskOnce,
+                    TaskbarAction::RegisterAfresh => TaskbarStep::RegisterAfresh,
+                    TaskbarAction::Nothing => TaskbarStep::Nothing,
+                },
+                answered: done.answered,
+                shell_hook: done.shell_hook,
+            })
+        }
+
+        /// Looks at the full-screen apps, and puts the strip behind the one on its monitor or
+        /// back on top. Reported only when that changed.
+        pub fn check_fullscreen(&self, window: &Window) -> Option<FullscreenReport> {
+            let strip_monitor = window
+                .current_monitor()
+                .and_then(|handle| windows::monitor_rects(handle.hmonitor()))?
+                .monitor;
+            let monitors: Vec<PixelRect> = window
+                .available_monitors()
+                .filter_map(|handle| windows::monitor_rects(handle.hmonitor()))
+                .map(|rects| rects.monitor)
+                .collect();
+            let check = self.strip.check_fullscreen(strip_monitor, &monitors);
+            check.changed.then_some(FullscreenReport {
+                yielded: check.yielded,
+                apps: check.apps,
+                front_class: check.front_class,
+            })
+        }
+    }
+
+    /// A second launch, which the person started, lets the running app bring its window to the
+    /// front.
+    pub fn allow_foreground_for_running() {
+        windows::allow_any_foreground();
+    }
+
+    /// The taskbar's edge, rectangle and auto-hide setting, for the probe's header.
+    pub fn taskbar() -> Option<TaskbarState> {
+        windows::taskbar_state().map(|state| TaskbarState {
+            edge: state.edge,
+            rect: px(state.rect),
+            auto_hide: state.auto_hide,
+        })
     }
 
     fn px(rect: PixelRect) -> PxRect {
@@ -513,6 +665,8 @@ mod imp {
             unchanged: placement.unchanged,
             size_mismatch: u32::try_from(placement.set.width()) != Ok(scale.width)
                 || u32::try_from(placement.set.height()) != Ok(scale.height),
+            fresh: placement.fresh,
+            autohide_inset: placement.autohide_inset,
             stale: placement.stale.as_ref().map(stale_report),
         }
     }

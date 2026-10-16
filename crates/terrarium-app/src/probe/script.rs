@@ -1,5 +1,7 @@
 //! The pinning probe's steps, in order. The texts live in the copy module.
 
+use terrarium_platform::geometry::Edge;
+
 use crate::copy::{self, StepText};
 use crate::pinning::{DEFAULT_LEVEL, LevelMode};
 
@@ -21,17 +23,42 @@ pub struct Step {
     pub id: String,
     pub phase: Phase,
     pub level: LevelMode,
+    /// The edge the strip is on for this step: the top for the one step that moves it there,
+    /// so the bar is registered afresh on a new edge, and the bottom otherwise.
+    pub edge: Edge,
+    /// The step runs the checks of the keychain, node and TLS (`probe::tools`).
+    pub tools: bool,
     pub text: String,
 }
 
-pub fn pinning() -> Vec<Step> {
-    let step = |prefix: &str, phase, level, item: &StepText| Step {
+fn step(prefix: &str, phase: Phase, level: LevelMode, item: &StepText) -> Step {
+    Step {
         id: format!("{prefix}{}", item.key),
         phase,
         level,
+        edge: if item.key == copy::TOP_EDGE_STEP {
+            Edge::Top
+        } else {
+            Edge::Bottom
+        },
+        tools: item.key == copy::TOOLS_STEP,
         text: copy::with_hotkey(item.text),
-    };
-    let mut steps = vec![step("", Phase::Launch, DEFAULT_LEVEL, &copy::PROBE_LAUNCH)];
+    }
+}
+
+/// The launch, then each of `once`, at the default level.
+fn launch_and_once(launch: &StepText, once: &[StepText]) -> (Step, Vec<Step>) {
+    (
+        step("", Phase::Launch, DEFAULT_LEVEL, launch),
+        once.iter()
+            .map(|item| step("c.", Phase::C, DEFAULT_LEVEL, item))
+            .collect(),
+    )
+}
+
+pub fn pinning() -> Vec<Step> {
+    let (launch, once) = launch_and_once(&copy::PROBE_LAUNCH, copy::PROBE_ONCE_STEPS);
+    let mut steps = vec![launch];
     #[cfg(target_os = "macos")]
     for (prefix, phase, level) in [
         ("a.", Phase::A, LevelMode::DesktopIconPlusOne),
@@ -43,12 +70,16 @@ pub fn pinning() -> Vec<Step> {
                 .map(|item| step(prefix, phase, level, item)),
         );
     }
-    steps.extend(
-        copy::PROBE_ONCE_STEPS
-            .iter()
-            .map(|item| step("c.", Phase::C, DEFAULT_LEVEL, item)),
-    );
+    steps.extend(once);
     steps
+}
+
+/// The Windows walk-through, built on any OS for its tests.
+#[cfg(test)]
+pub(crate) fn windows_steps() -> Vec<Step> {
+    let (launch, once) =
+        launch_and_once(&copy::WINDOWS_PROBE_LAUNCH, copy::WINDOWS_PROBE_ONCE_STEPS);
+    std::iter::once(launch).chain(once).collect()
 }
 
 #[cfg(test)]
@@ -60,10 +91,55 @@ mod tests {
 
     #[test]
     fn step_ids_are_unique_and_every_step_has_text() {
-        let steps = pinning();
-        let ids: BTreeSet<&str> = steps.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids.len(), steps.len());
-        assert!(steps.iter().all(|s| !s.text.trim().is_empty()));
+        for steps in [pinning(), windows_steps()] {
+            let ids: BTreeSet<&str> = steps.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids.len(), steps.len());
+            assert!(steps.iter().all(|s| !s.text.trim().is_empty()));
+        }
+    }
+
+    #[test]
+    fn the_windows_walk_through_opens_at_launch_and_ends_with_the_taskkill() {
+        let steps = windows_steps();
+        assert_eq!(steps.first().map(|s| s.phase), Some(Phase::Launch));
+        assert_eq!(steps.last().map(|s| s.id.as_str()), Some("c.taskkill"));
+        for id in [
+            "c.peek",
+            "c.fullscreen",
+            "c.auto-hide",
+            "c.explorer-restart",
+            "c.hot-plug",
+            "c.connect",
+        ] {
+            assert!(steps.iter().any(|s| s.id == id), "{id}");
+        }
+    }
+
+    #[test]
+    fn only_the_top_edge_step_moves_the_edge_and_the_next_one_returns_it() {
+        for steps in [pinning(), windows_steps()] {
+            let top: Vec<usize> = (0..steps.len())
+                .filter(|&i| steps[i].edge == Edge::Top)
+                .collect();
+            assert!(top.len() <= 1, "{top:?}");
+            if let Some(&i) = top.first() {
+                assert_eq!(steps[i].id, format!("c.{}", copy::TOP_EDGE_STEP));
+                assert_eq!(steps.get(i + 1).map(|s| s.edge), Some(Edge::Bottom));
+            }
+        }
+        assert!(windows_steps().iter().any(|s| s.edge == Edge::Top));
+    }
+
+    #[test]
+    fn the_tools_step_runs_on_both_platforms() {
+        for steps in [pinning(), windows_steps()] {
+            let tools: Vec<&str> = steps
+                .iter()
+                .filter(|s| s.tools)
+                .map(|s| s.id.as_str())
+                .collect();
+            assert_eq!(tools, [format!("c.{}", copy::TOOLS_STEP)]);
+        }
     }
 
     #[test]

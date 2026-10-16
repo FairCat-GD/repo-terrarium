@@ -56,8 +56,16 @@ const USAGE_EXIT: u8 = 2;
 
 fn main() -> ExitCode {
     match cli::parse(std::env::args_os().skip(1)) {
-        Ok(Command::Run(repo)) => live::run(repo),
-        Ok(Command::Demo) => run(&Mode::Live(Feed::Demo), None),
+        // The strip lets go of a console Windows opened for this launch alone (Explorer, the
+        // Start menu, the login item); one shared with a terminal stays.
+        Ok(Command::Run(repo)) => {
+            terrarium_platform::console::release_if_alone();
+            live::run(repo)
+        }
+        Ok(Command::Demo) => {
+            terrarium_platform::console::release_if_alone();
+            run(&Mode::Live(Feed::Demo), None)
+        }
         Ok(Command::Probe(kind)) => run(&Mode::Probe(kind), None),
         Ok(Command::Version) => {
             output::print(&format!("{}\n", copy::version_line()), copy::print_failed)

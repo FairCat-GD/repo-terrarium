@@ -23,7 +23,7 @@ use std::io::{self, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -235,9 +235,28 @@ const TAIL_GRACE: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// What a started tool keeps of this process's environment on Windows: `SystemRoot`, which its
+/// system libraries need, and the temporary folder, which Windows otherwise puts in its own
+/// folder, where a person cannot write.
+const WINDOWS_KEPT_ENV: &[&str] = &["SystemRoot", "TEMP", "TMP"];
+
+/// What it keeps elsewhere: nothing.
+const KEPT_ENV: &[&str] = if cfg!(windows) { WINDOWS_KEPT_ENV } else { &[] };
+
+/// Each of `names` that `get` finds set, with its value.
+fn kept_env(
+    names: &[&'static str],
+    get: impl Fn(&str) -> Option<OsString>,
+) -> Vec<(&'static str, OsString)> {
+    names
+        .iter()
+        .filter_map(|&name| get(name).map(|value| (name, value)))
+        .collect()
+}
+
 /// Runs `tool` with `args` in `cwd`, writing its stdin through `feed`, and waits for it to end.
 /// Its stdout is discarded and the end of its stderr kept for the error; its environment is
-/// empty (Windows keeps `SystemRoot`, which its system libraries need). Past `limit` it is
+/// empty but for what Windows needs ([`WINDOWS_KEPT_ENV`]). Past `limit` it is
 /// stopped, even while `feed` is writing. It is always waited for, so none outlives the run;
 /// a panic in `feed` stops it, then carries on.
 pub fn run_fed(
@@ -284,19 +303,72 @@ pub fn run_fed(
 }
 
 /// `tool` with `args` in `cwd`, executed directly, with an empty environment but for what
-/// Windows' system libraries need, and on Windows no console window.
+/// Windows needs ([`WINDOWS_KEPT_ENV`]), and on Windows no console window.
 fn bare(tool: &Tool, args: &[OsString], cwd: &Path) -> Command {
     let mut command = Command::new(&tool.0);
-    command.args(args).current_dir(cwd).env_clear();
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(kept_env(KEPT_ENV, |name| std::env::var_os(name)));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
-        if let Some(root) = std::env::var_os("SystemRoot") {
-            command.env("SystemRoot", root);
-        }
         command.creation_flags(CREATE_NO_WINDOW);
     }
     command
+}
+
+/// `path` as a program run from here should be given it. On Windows a canonical path is
+/// verbatim (`\\?\C:\…`), which node's module loader and the working directory a program sees
+/// do not take as a plain path; it is given plain when the plain form names the same file.
+fn plain_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(plain) = path.to_str().and_then(plain_windows_path) {
+        return PathBuf::from(plain);
+    }
+    path.to_path_buf()
+}
+
+/// The plain form of a verbatim Windows path, when it names the same file: `\\?\C:\a` is
+/// `C:\a`, and `\\?\UNC\server\share\a` is `\\server\share\a`. `None` for any other form, and
+/// for a verbatim path whose plain form Windows would read otherwise: one holding `/`, a
+/// component ending in a dot (`.` and `..` among them) or a space, a device name, or longer than
+/// `MAX_PATH`.
+#[cfg(any(windows, test))]
+fn plain_windows_path(text: &str) -> Option<String> {
+    const MAX_PATH: usize = 260;
+    const DEVICES: &[&str] = &["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    let rest = text.strip_prefix(r"\\?\")?;
+    let (plain, components) = if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        (format!(r"\\{unc}"), unc)
+    } else {
+        let mut chars = rest.chars();
+        let drive = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.next() == Some(':')
+            && chars.next() == Some('\\');
+        if !drive {
+            return None;
+        }
+        (rest.to_owned(), rest.get(3..)?)
+    };
+    let device = |name: &str| {
+        let stem = name.split('.').next().unwrap_or(name).trim_end();
+        let numbered = |prefix: &str| {
+            stem.len() == 4
+                && stem
+                    .get(..3)
+                    .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+                && stem[3..].chars().all(|c| matches!(c, '1'..='9'))
+        };
+        DEVICES.iter().any(|d| stem.eq_ignore_ascii_case(d)) || numbered("COM") || numbered("LPT")
+    };
+    let reads_otherwise = plain.contains('/')
+        || plain.encode_utf16().count() >= MAX_PATH
+        || components
+            .split('\\')
+            .any(|part| part.ends_with(['.', ' ']) || device(part));
+    (!reads_otherwise).then_some(plain)
 }
 
 /// A started tool, watched until it ends: the end of its stderr is read on a thread of its
@@ -587,14 +659,11 @@ impl KnipRun {
             return Err(KnipError::Before6(version));
         }
         let script = knip_program(&self.root)?;
-        let mut args = vec![script.into_os_string()];
+        let mut args = vec![plain_path(&script).into_os_string()];
         args.extend(KNIP_ARGS.iter().map(OsString::from));
-        let path = node
-            .path()
-            .parent()
-            .map_or_else(OsString::new, |dir| dir.as_os_str().to_owned());
         let cap = Format::Knip.max_file_bytes();
-        match run_captured(node, &args, &self.root, &path, KNIP_LIMIT, cap, stop) {
+        let cwd = plain_path(&self.root);
+        match run_captured(node, &args, &cwd, &node_path(node), KNIP_LIMIT, cap, stop) {
             Ok(captured) => {
                 let printed = captured.stdout.iter().any(|b| !b.is_ascii_whitespace());
                 match captured.ended {
@@ -614,6 +683,131 @@ impl KnipRun {
             Err(CaptureError::TooLarge) => Err(KnipError::TooLarge),
         }
     }
+}
+
+/// The `PATH` node runs with: its own folder alone, so a program it starts by name is one
+/// beside it.
+fn node_path(node: &Tool) -> OsString {
+    node.path()
+        .parent()
+        .map_or_else(OsString::new, |dir| dir.as_os_str().to_owned())
+}
+
+/// How one run of the probe's node check went.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunCheck {
+    /// It ran and printed what was asked: node's version, or the script's answer.
+    Answered(String),
+    /// It ended well but printed something else.
+    Unexpected,
+    /// It ended with this, without the answer.
+    Failed(Finished),
+    /// It could not be started, or its output could not be read.
+    CannotRun,
+    TimedOut,
+}
+
+/// What the probe learns about running node the way Knip is run: with its own folder as `PATH`,
+/// the kept environment, no console window, and a script whose canonical path and folder are
+/// given plain. It carries no path and nothing node wrote to stderr, which name the person's
+/// folders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeCheck {
+    /// `node --version`.
+    pub version: RunCheck,
+    /// A module script in a folder of its own, in the temporary folder.
+    pub script: RunCheck,
+    /// Whether node's temporary folder was under Windows' own folder, where a person cannot
+    /// write; `None` when the script did not say.
+    pub temp_in_system_root: Option<bool>,
+}
+
+/// How long each run of the node check may take.
+const CHECK_LIMIT: Duration = Duration::from_secs(30);
+/// The most either run of the node check may print.
+const CHECK_CAP: u64 = 4096;
+
+/// The probe's script: it answers `ok`, and whether `os.tmpdir()` lies under `SystemRoot`.
+const NODE_CHECK_SCRIPT: &str = "import os from 'node:os';
+const root = (process.env.SystemRoot || '').toLowerCase();
+const under = root !== '' && os.tmpdir().toLowerCase().startsWith(root);
+console.log('ok ' + under);
+";
+
+/// Runs `node` as Knip's run does, twice: for its version, then on a module script written to a
+/// folder of its own in the temporary folder, which is removed after.
+pub fn check_node(node: &Tool) -> NodeCheck {
+    check_runs(
+        node,
+        &["--version".into()],
+        "repo-terrarium-check.mjs",
+        NODE_CHECK_SCRIPT,
+    )
+}
+
+fn check_runs(node: &Tool, version: &[OsString], file: &str, script: &str) -> NodeCheck {
+    // Each check has its own folder, even two at once.
+    static CHECKS: AtomicU32 = AtomicU32::new(0);
+    let stop = AtomicBool::new(false);
+    let path = node_path(node);
+    let temp = std::env::temp_dir();
+    let run = |args: &[OsString], cwd: &Path| match run_captured(
+        node,
+        args,
+        cwd,
+        &path,
+        CHECK_LIMIT,
+        CHECK_CAP,
+        &stop,
+    ) {
+        Ok(captured) => match captured.ended {
+            Finished::Code(0) => Ok(String::from_utf8_lossy(&captured.stdout).trim().to_owned()),
+            ended => Err(RunCheck::Failed(ended)),
+        },
+        Err(CaptureError::TimedOut) => Err(RunCheck::TimedOut),
+        Err(_) => Err(RunCheck::CannotRun),
+    };
+    let version = match run(version, &temp) {
+        Ok(printed) if looks_like_a_version(&printed) => RunCheck::Answered(printed),
+        Ok(_) => RunCheck::Unexpected,
+        Err(check) => check,
+    };
+    let dir = temp.join(format!(
+        "repo-terrarium-check-{}-{}",
+        std::process::id(),
+        CHECKS.fetch_add(1, Ordering::Relaxed)
+    ));
+    let ran = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join(file), script))
+        .and_then(|()| dir.canonicalize());
+    let (script, temp_in_system_root) = match ran {
+        Err(_) => (RunCheck::CannotRun, None),
+        Ok(canonical) => {
+            let args = [plain_path(&canonical.join(file)).into_os_string()];
+            match run(&args, &plain_path(&canonical)) {
+                Ok(printed) => match printed.as_str() {
+                    "ok true" => (RunCheck::Answered("ok".to_owned()), Some(true)),
+                    "ok false" => (RunCheck::Answered("ok".to_owned()), Some(false)),
+                    _ => (RunCheck::Unexpected, None),
+                },
+                Err(check) => (check, None),
+            }
+        }
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    NodeCheck {
+        version,
+        script,
+        temp_in_system_root,
+    }
+}
+
+/// `v` and a dotted number, as `node --version` prints it: anything else is not kept.
+fn looks_like_a_version(text: &str) -> bool {
+    text.len() <= 32
+        && text.strip_prefix('v').is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
 }
 
 /// The program Knip's manifest names (`bin`, a path or a map holding `knip`), which must be a
@@ -1201,6 +1395,136 @@ mod tests {
             Err(KnipError::NotInstalled)
         ));
         assert!(!root.join("called").exists(), "nothing ran");
+    }
+
+    #[test]
+    fn a_verbatim_drive_path_loses_its_prefix() {
+        assert_eq!(
+            plain_windows_path(r"\\?\C:\work\garden\node_modules\knip\bin\knip.js").as_deref(),
+            Some(r"C:\work\garden\node_modules\knip\bin\knip.js")
+        );
+        assert_eq!(plain_windows_path(r"\\?\d:\").as_deref(), Some(r"d:\"));
+    }
+
+    #[test]
+    fn a_verbatim_unc_path_becomes_plain_unc() {
+        assert_eq!(
+            plain_windows_path(r"\\?\UNC\fileserver\share\garden").as_deref(),
+            Some(r"\\fileserver\share\garden")
+        );
+    }
+
+    #[test]
+    fn a_path_verbatim_would_read_differently_keeps_its_prefix() {
+        let long = format!(r"\\?\C:\{}", "a".repeat(260));
+        for path in [
+            r"\\?\C:\work/garden",
+            r"\\?\C:\work\..\garden",
+            r"\\?\C:\work\.\garden",
+            r"\\?\C:\work\garden.",
+            r"\\?\C:\work\garden ",
+            r"\\?\C:\work\nul",
+            r"\\?\C:\work\Con.txt",
+            r"\\?\C:\work\com7",
+            r"\\?\C:\work\LPT1.log",
+            r"\\?\UNC\server\share\aux",
+            &long,
+        ] {
+            assert_eq!(plain_windows_path(path), None, "{path}");
+        }
+        // Near-misses of a device name are ordinary names.
+        for name in ["console", "com0", "com10", "nulls"] {
+            let path = format!(r"\\?\C:\work\{name}");
+            assert!(plain_windows_path(&path).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn other_forms_are_left_alone() {
+        for path in [
+            r"C:\work\garden",
+            r"\\server\share\garden",
+            r"\\?\Volume{0b3c5a0e-0000-0000-0000-100000000000}\garden",
+            r"\\.\C:\work",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume3\work",
+            "/work/garden",
+            "",
+        ] {
+            assert_eq!(plain_windows_path(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn windows_keeps_systemroot_temp_and_tmp_and_nothing_else() {
+        let set = |name: &str| {
+            [
+                ("SystemRoot", r"C:\Windows"),
+                ("TEMP", r"C:\Temp"),
+                ("TMP", r"C:\Temp"),
+                ("PATH", r"C:\tools"),
+                ("USERPROFILE", r"C:\Users\robin"),
+                ("NODE_OPTIONS", "--require evil.js"),
+            ]
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| OsString::from(v))
+        };
+        let kept: Vec<&str> = kept_env(WINDOWS_KEPT_ENV, set)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(kept, ["SystemRoot", "TEMP", "TMP"]);
+        assert_eq!(kept_env(WINDOWS_KEPT_ENV, |_| None), []);
+        if !cfg!(windows) {
+            assert!(KEPT_ENV.is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_node_check_runs_it_for_its_version_and_on_a_script_of_its_own() {
+        let sh = sh_as_node();
+        // `sh` stands in for node: `-c` prints a version; the script is a shell script.
+        let check = check_runs(
+            &sh,
+            &["-c".into(), "echo v22.11.0".into()],
+            "check.sh",
+            "echo ok false\n",
+        );
+        assert_eq!(check.version, RunCheck::Answered("v22.11.0".to_owned()));
+        assert_eq!(check.script, RunCheck::Answered("ok".to_owned()));
+        assert_eq!(check.temp_in_system_root, Some(false));
+        let ours = format!("repo-terrarium-check-{}-", std::process::id());
+        let leftover = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(&ours));
+        assert!(!leftover, "the script's folder is removed");
+        // A version line that is not one, a script that says something else, and failures.
+        let odd = check_runs(
+            &sh,
+            &["-c".into(), "echo /home/robin/node".into()],
+            "check.sh",
+            "echo hello\n",
+        );
+        assert_eq!(odd.version, RunCheck::Unexpected);
+        assert_eq!(odd.script, RunCheck::Unexpected);
+        assert_eq!(odd.temp_in_system_root, None);
+        let failed = check_runs(&sh, &["-c".into(), "exit 4".into()], "check.sh", "exit 9\n");
+        assert_eq!(failed.version, RunCheck::Failed(Finished::Code(4)));
+        assert_eq!(failed.script, RunCheck::Failed(Finished::Code(9)));
+        let missing = check_node(&Tool(PathBuf::from("/no/such/node")));
+        assert_eq!(missing.version, RunCheck::CannotRun);
+        assert_eq!(missing.script, RunCheck::CannotRun);
+    }
+
+    #[test]
+    fn only_a_version_is_kept_from_node_s_version_line() {
+        assert!(looks_like_a_version("v22.11.0"));
+        assert!(!looks_like_a_version("v"));
+        assert!(!looks_like_a_version("22.11.0"));
+        assert!(!looks_like_a_version("v22.11.0 C:\\Users\\robin"));
+        assert!(!looks_like_a_version(&format!("v{}", "1".repeat(40))));
     }
 
     #[cfg(unix)]

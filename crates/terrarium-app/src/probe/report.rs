@@ -6,7 +6,10 @@ use terrarium_compose::scale::StripScale;
 
 use crate::hover::NativePoint;
 use crate::monitor::{MonitorId, MonitorInfo};
-use crate::pinning::{LevelMode, OsSnapshot, Placed};
+use crate::pinning::{
+    FullscreenReport, LevelMode, OsSnapshot, Placed, TaskbarReport, TaskbarState,
+};
+use crate::probe::tools::ToolsReport;
 
 /// Events kept per step; a step that produces more counts the rest as dropped.
 pub const EVENTS_PER_STEP: usize = 200;
@@ -20,6 +23,9 @@ pub struct Report {
     pub separate_spaces: Option<bool>,
     pub monitors: Vec<MonitorInfo>,
     pub chosen: Option<MonitorId>,
+    /// The taskbar at launch (Windows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taskbar: Option<TaskbarState>,
     pub strip: Option<ScaleReport>,
     pub steps: Vec<StepReport>,
     pub ended: Option<EndReason>,
@@ -127,7 +133,8 @@ pub enum ProbeEvent {
     Placed {
         monitor: MonitorId,
         strip: ScaleReport,
-        frame: Placed,
+        /// Boxed: with its `AppBar` record it is by far the largest event.
+        frame: Box<Placed>,
     },
     Level {
         mode: LevelMode,
@@ -173,6 +180,12 @@ pub enum ProbeEvent {
     },
     /// What the OS says about the strip (Windows): at launch and whenever a step closes.
     Os(OsSnapshot),
+    /// What Explorer starting again did to the bar (Windows).
+    Taskbar(TaskbarReport),
+    /// The strip went behind a full-screen app, or came back (Windows).
+    Fullscreen(FullscreenReport),
+    /// What the tools step found.
+    Tools(Box<ToolsReport>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -214,6 +227,7 @@ mod tests {
             separate_spaces: Some(true),
             monitors: Vec::new(),
             chosen: Some(MonitorId("ABC".to_owned())),
+            taskbar: None,
             strip: None,
             steps: vec![step],
             ended: Some(EndReason::InputClosed),
@@ -264,14 +278,14 @@ mod tests {
                 height: 296,
                 image_x: 0,
             },
-            frame: Placed {
+            frame: Box::new(Placed {
                 x: 0.0,
                 y: 1096.0,
                 width: 2560.0,
                 height: 296.0,
                 unit: "px",
                 appbar,
-            },
+            }),
         }
     }
 
@@ -295,6 +309,8 @@ mod tests {
             work_after: None,
             unchanged: false,
             size_mismatch: false,
+            fresh: false,
+            autohide_inset: 0,
             stale: None,
         };
         let json = serde_json::to_value(placed(Some(appbar))).unwrap();
@@ -314,6 +330,8 @@ mod tests {
             app_window: false,
             topmost: true,
             visible: true,
+            iconic: false,
+            yielded: false,
             messages: vec![MessageCount {
                 name: "WM_ACTIVATE",
                 subclass: 2,

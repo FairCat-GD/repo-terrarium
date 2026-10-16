@@ -4,6 +4,9 @@
 
 pub mod appbar;
 pub mod clock;
+pub mod console;
+pub mod display;
+pub mod fullscreen;
 pub mod geometry;
 pub mod idle;
 pub mod interrupt;
@@ -11,6 +14,7 @@ pub mod login;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod memory;
+pub mod power;
 #[cfg(windows)]
 pub mod windows;
 
@@ -29,8 +33,10 @@ pub enum SystemEvent {
     AppBarPosChanged,
     /// The taskbar's auto-hide or always-on-top setting changed (Windows).
     AppBarStateChanged,
-    /// A hint that a full-screen app opened (`true`) or closed on some monitor (Windows).
-    FullscreenApp(bool),
+    /// Something that can change whether a full-screen app has the strip's monitor: a window
+    /// activated or gone, the shell's or the `AppBar`'s word (Windows). Only a hint: the strip
+    /// looks for itself.
+    FullscreenHint(fullscreen::Hint),
     /// Some monitor's work area changed (Windows).
     WorkAreaChanged,
     /// Explorer started again, and forgot every `AppBar` (Windows).

@@ -3779,9 +3779,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -4180,13 +4180,15 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "gix",
  "keyring",
+ "keyring-core",
  "percent-encoding",
  "proptest",
  "quick-xml 0.42.0",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -4199,11 +4201,12 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "ureq",
+ "webpki-roots",
 ]
 
 [[package]]
 name = "terrarium-app"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -4232,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "gif",
  "insta",
@@ -4246,7 +4249,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "getrandom 0.4.3",
  "notify",
@@ -4262,7 +4265,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "block2 0.6.2",
  "libc",
@@ -4280,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "directories",
  "proptest",
@@ -4295,7 +4298,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-truth"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -5499,7 +5502,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "cargo_metadata",
  "png",

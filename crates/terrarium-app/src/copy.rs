@@ -1877,7 +1877,7 @@ pub mod debug {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pinning::DEFAULT_LEVEL;
+    use crate::pinning::{DEFAULT_LEVEL, PxRect};
     use crate::probe::report::{EndReason, Report, StepReport};
 
     /// Every string literal in a source file, tests included, so a string anywhere in this module
@@ -2203,6 +2203,7 @@ mod tests {
             separate_spaces: Some(false),
             monitors: Vec::new(),
             chosen: None,
+            taskbar: None,
             strip: None,
             steps: vec![step, StepReport::new("c.dock", DEFAULT_LEVEL)],
             ended: Some(EndReason::Quit),
@@ -2223,6 +2224,26 @@ mod tests {
     }
 
     #[test]
+    fn a_display_without_a_name_is_called_by_windows_number_or_its_place() {
+        assert_eq!(display_fallback_name(r"\\.\DISPLAY2", 0), "Display 2");
+        assert_eq!(display_fallback_name(r"\\.\DISPLAY12", 0), "Display 12");
+        assert_eq!(display_fallback_name("", 2), "Display 3");
+        assert_eq!(display_fallback_name(r"\\.\DISPLAY", 0), "Display 1");
+        assert_eq!(display_fallback_name(r"\\.\DISPLAYx", 1), "Display 2");
+        let rect = PxRect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        assert!(
+            monitor_detail(&rect, &rect, r"\\.\DISPLAY1", true)
+                .ends_with(r"\\.\DISPLAY1, id from the display configuration")
+        );
+        assert!(monitor_detail(&rect, &rect, r"\\.\DISPLAY1", false).ends_with("id its GDI name"));
+    }
+
+    #[test]
     fn the_probe_readme_names_the_launcher_the_reports_and_the_steps_it_asks_for() {
         for needle in [
             "run-probe.cmd",
@@ -2231,6 +2252,10 @@ mod tests {
             "Ctrl-C",
             "Terminate batch job",
             "Ctrl-Z",
+            "run-connect.cmd",
+            "Credential Manager",
+            "node --version",
+            "never a path",
         ] {
             assert!(PROBE_README.contains(needle), "{needle}");
         }

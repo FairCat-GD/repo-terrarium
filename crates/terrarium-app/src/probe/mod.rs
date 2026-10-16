@@ -4,17 +4,19 @@
 
 pub mod report;
 pub mod script;
+pub mod tools;
 
 use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use terrarium_platform::geometry::Edge;
 use winit::event_loop::EventLoopProxy;
 
 use crate::copy;
 use crate::hover::NativePoint;
 use crate::monitor::{MonitorId, MonitorInfo};
-use crate::pinning::LevelMode;
+use crate::pinning::{LevelMode, TaskbarState};
 use crate::strip::UserEvent;
 use report::{EndReason, ProbeEvent, Report, StepReport, Timed};
 use script::Step;
@@ -22,10 +24,19 @@ use script::Step;
 /// What the strip does after an answer.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Advance {
-    /// The next step runs at this level.
-    Next(LevelMode),
+    /// The next step runs so.
+    Next(Setup),
     /// The last step was answered and the report is final.
     Done,
+}
+
+/// How a step runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Setup {
+    pub level: LevelMode,
+    pub edge: Edge,
+    /// The tool checks run as the step opens.
+    pub tools: bool,
 }
 
 /// What the probe learns once the strip is up.
@@ -34,6 +45,7 @@ pub struct Launch {
     pub separate_spaces: Option<bool>,
     pub monitors: Vec<MonitorInfo>,
     pub chosen: Option<MonitorId>,
+    pub taskbar: Option<TaskbarState>,
 }
 
 pub struct Probe {
@@ -84,6 +96,7 @@ impl Probe {
                 separate_spaces: None,
                 monitors: Vec::new(),
                 chosen: None,
+                taskbar: None,
                 strip: None,
                 steps: vec![first],
                 ended: None,
@@ -109,6 +122,7 @@ impl Probe {
         self.report.separate_spaces = launch.separate_spaces;
         self.report.monitors = launch.monitors;
         self.report.chosen = launch.chosen;
+        self.report.taskbar = launch.taskbar;
         println!("{}", copy::probe_header(&self.report));
         self.print_step();
         self.write();
@@ -141,12 +155,17 @@ impl Probe {
             self.end(EndReason::Completed, frames);
             return Advance::Done;
         };
-        let (id, level) = (step.id.clone(), step.level);
-        self.report.steps.push(StepReport::new(&id, level));
+        let setup = Setup {
+            level: step.level,
+            edge: step.edge,
+            tools: step.tools,
+        };
+        let id = step.id.clone();
+        self.report.steps.push(StepReport::new(&id, setup.level));
         self.frames_at_step_start = frames;
         self.print_step();
         self.write();
-        Advance::Next(level)
+        Advance::Next(setup)
     }
 
     /// Writes the final report once, whatever ended the run.
@@ -249,14 +268,44 @@ mod tests {
     fn answers_advance_the_steps_and_count_frames_per_step() {
         let dir = tempfile::tempdir().unwrap();
         let mut probe = probe(dir.path());
-        let second_level = probe.steps[1].level;
-        assert_eq!(probe.answer("first note", 5), Advance::Next(second_level));
-        assert_eq!(probe.answer("  ", 12), Advance::Next(probe.steps[2].level));
+        let setup = |step: &Step| Setup {
+            level: step.level,
+            edge: step.edge,
+            tools: step.tools,
+        };
+        let second = setup(&probe.steps[1]);
+        assert_eq!(probe.answer("first note", 5), Advance::Next(second));
+        let third = setup(&probe.steps[2]);
+        assert_eq!(probe.answer("  ", 12), Advance::Next(third));
         let steps = &probe.report.steps;
         assert_eq!(steps.len(), 3);
         assert_eq!((steps[0].note.as_str(), steps[0].frames), ("first note", 5));
         assert_eq!((steps[1].note.as_str(), steps[1].frames), ("", 7));
         assert_eq!(steps[2].id, probe.steps[2].id);
+    }
+
+    #[test]
+    fn the_answer_says_each_step_s_edge_and_whether_its_tools_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = probe(dir.path());
+        probe.steps = script::windows_steps();
+        probe.report.steps = vec![StepReport::new(&probe.steps[0].id, probe.steps[0].level)];
+        let mut setups = Vec::new();
+        while let Advance::Next(setup) = probe.answer("", 0) {
+            setups.push((probe.steps[probe.current].id.clone(), setup));
+        }
+        let top: Vec<&str> = setups
+            .iter()
+            .filter(|(_, setup)| setup.edge == Edge::Top)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(top, ["c.top-edge"]);
+        let tools: Vec<&str> = setups
+            .iter()
+            .filter(|(_, setup)| setup.tools)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(tools, ["c.tools"]);
     }
 
     #[test]
@@ -315,14 +364,14 @@ mod tests {
                 height: 74 * scale,
                 image_x: 0,
             },
-            frame: Placed {
+            frame: Box::new(Placed {
                 x: 0.0,
                 y: 0.0,
                 width: 2560.0,
                 height: f64::from(74 * scale),
                 unit: "px",
                 appbar: None,
-            },
+            }),
         };
         assert_eq!(probe.report.strip, None);
         probe.record(placed(4));

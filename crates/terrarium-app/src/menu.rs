@@ -1,18 +1,31 @@
 //! The strip's right-click menu: Settings, Time-lapse, Pause or Resume, and Quit; in dev builds
 //! the debug window too. Time-lapse and Pause are off while no repository is connected.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use winit::event_loop::EventLoopProxy;
 
 use crate::copy;
 use crate::strip::UserEvent;
 
+/// How many choices the menu has sent, so whoever showed it can tell a choice from a dismissal.
+/// muda sends a choice before showing the menu returns.
+static CHOICES: AtomicU64 = AtomicU64::new(0);
+
 /// Sends menu choices to the event loop. muda keeps the first handler it is given, so this runs
 /// before any menu exists.
 pub fn forward_events(proxy: EventLoopProxy<UserEvent>) {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        CHOICES.fetch_add(1, Ordering::Relaxed);
         let _ = proxy.send_event(UserEvent::Menu(event.id));
     }));
+}
+
+/// The choices sent so far.
+#[cfg(windows)]
+pub fn choices() -> u64 {
+    CHOICES.load(Ordering::Relaxed)
 }
 
 /// What a menu item asks for.

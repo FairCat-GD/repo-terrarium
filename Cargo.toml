@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.27.0"
+version = "0.28.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -70,11 +70,19 @@ tree-sitter-go = "0.25.0"
 # poll reaches api.github.com and nothing else; the OS's certificate store could also ask a
 # certificate's issuer about revocation. No gzip, json or cookies.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+# The probe's offline check of that client's TLS (`terrarium-adapters::ci::selfcheck`): the same
+# rustls on ring and the same root list ureq links, with ureq's own features, so nothing new is
+# built.
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+webpki-roots = { version = "1.0.9", default-features = false }
 # The runs URL's branch and repository names.
 percent-encoding = "2.3.2"
 # The CI token, in the OS keychain (keyring 4.x, pinned exactly). Its `v1` mode picks the
 # platform's store: the macOS keychain, the Windows credential manager.
 keyring = "=4.2.0"
+# The store keyring's `v1` mode makes, asked for an entry with modifiers: on Windows the token's
+# credential is kept on this computer (`Local`), where `v1` alone would let it roam.
+keyring-core = "=1.0.0"
 
 # macOS FFI, used only by terrarium-platform. winit links objc2 0.5; these are 0.6, and the two
 # never exchange types. The framework crates enable every framework by default.
@@ -134,14 +142,18 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # Windows FFI, used only by terrarium-platform. Only the API families it calls.
 windows = { version = "0.62.2", features = [
     "Wdk_System_SystemServices",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
+    "Win32_System_Power",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

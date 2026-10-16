@@ -5,6 +5,61 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-16
+
+The Windows strip is hardened: it steps behind full-screen apps, keeps its edge through
+Explorer restarts, display changes and sleep, and remembers its display by the monitor itself.
+None of it has run on Windows yet; the new probe asks testers to try each part.
+
+### Added
+
+- **Full-screen apps on Windows.** A video, game or browser in full screen on the strip's
+  display covers it: the strip steps behind the app, and comes back when the app leaves full
+  screen, closes, or another window comes in front of it on that display. Full screen on
+  another display leaves the strip as it is.
+- **Aero Peek** leaves the strip in view, as it leaves the taskbar.
+- **The probe covers every part of the Windows strip:** Win+M, Peek, full screen on its own and
+  another display, the top edge, the auto-hide taskbar, an Explorer restart, sleep, a display
+  unplugged and back, and the app's own connect window started as Explorer starts it. Its
+  tools step tries the keychain (saved on one thread, read on another), node run as Knip is run,
+  and the TLS the GitHub weather speaks, without connecting; it runs on the Mac too. The report
+  names the taskbar's edge and the monitors' model codes, never a path.
+
+### Changed
+
+- **The strip takes its edge back after Explorer restarts**, and registers it when the taskbar
+  appears after a login that started the strip first. Before, the edge stayed free until the
+  app was restarted.
+- **A display chosen in Settings is remembered by its monitor** (its device path), not by
+  Windows' number for it, which changes as displays come and go. Settings name a display by the
+  monitor's own name, or "Display 2" where it gives none.
+- **Moving the strip to the other edge or another display** clears a band a crashed strip left
+  there, as the first placement does.
+- **A display-scale change no longer moves the strip off its edge**: every move is held to the
+  band Windows granted, so winit's resize for the new scale cannot start a back-and-forth.
+- **Waking from sleep, and screens coming back on, refresh the strip at once** on Windows, as
+  on macOS: the clock is taken again and the engine looks at the repository.
+- **An auto-hide taskbar on the strip's edge can still be revealed**: the strip leaves its line
+  at the screen's edge free.
+- **No console window on Windows** beside the strip when it starts from the Start menu, a
+  double-click or Open at login; started from a terminal, it keeps the terminal, and every
+  command there works as before.
+- **The strip can no longer be minimised** (Win+M), which left it with no way back.
+- **Closing the right-click menu without a choice** gives the keyboard back to the app that had
+  it.
+- **A second launch brings the running app's window to the front** on Windows, where it could
+  open behind other windows.
+- **Knip runs on Windows** with a plain path to its program and its folder (node's module
+  loader misreads the `\\?\` form) and the temporary folder in its environment.
+- **The GitHub token stays on this computer** on Windows (Credential Manager's local
+  persistence); before, a roaming profile would carry it to other computers.
+
+### Security
+
+- **rustls 0.23.46**, the TLS the GitHub weather speaks: it fixes four advisories published
+  after 0.27.0 (RUSTSEC-2026-0346 to 0349). The worst of them let a network attacker push later
+  connections down to a classical key exchange.
+
 ## [0.27.0] - 2026-10-12
 
 The weather can follow GitHub Actions, and Knip can run on its own in the repository that

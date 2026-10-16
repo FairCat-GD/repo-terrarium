@@ -37,6 +37,7 @@ use terrarium_adapters::binding::RepoBinding;
 use terrarium_adapters::ci::{Keychain, NativeKeychain};
 use terrarium_engine::{ConnectError, Engine, Start, Tools, Update};
 use terrarium_platform::SystemEvent;
+use terrarium_platform::geometry::Edge;
 use terrarium_store::identifiers::{BUNDLE_ID, KEYCHAIN_ACCOUNT_GITHUB, KEYCHAIN_SERVICE};
 use terrarium_store::{DataDir, Store, Terrarium};
 use winit::application::ApplicationHandler;
@@ -70,7 +71,8 @@ use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Obser
 use crate::prefs::{Pref, Prefs, Saved, Writer};
 use crate::present::{FrameGate, PresentError, Presenter, SoftbufferPresenter};
 use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
-use crate::probe::{Advance, Launch as ProbeLaunch, Probe};
+use crate::probe::tools::ToolsReport;
+use crate::probe::{self, Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
 use crate::settings::{MonitorChoice, RepoFacts, SettingsForm};
 use crate::shell::{DataFile, Export, Intent, Picking, Shell};
@@ -457,6 +459,8 @@ pub enum UserEvent {
     System(SystemEvent),
     ProbeLine(String),
     ProbeEnd,
+    /// What the probe's tools step found.
+    ProbeTools(Box<ToolsReport>),
     /// An update from the engine of that generation.
     Engine(u64, Update),
     /// A second launch asked for the settings.
@@ -777,6 +781,10 @@ impl Repo {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags the event loop takes up in turn"
+)]
 struct Strip {
     /// Cloned for each sender: the system observers, an engine's sink, a picker, a lifecycle
     /// change.
@@ -793,6 +801,10 @@ struct Strip {
     hover: HoverTracker,
     gate: FrameGate,
     placement_pending: bool,
+    /// Whether to look at the full-screen apps once the events in hand are handled (Windows).
+    fullscreen_pending: bool,
+    /// The edge the probe's step puts the strip on, over the setting's.
+    probe_edge: Option<Edge>,
     idle_seen: bool,
     failed: Option<StripError>,
     /// Made with the first strip window, and kept while the app runs.
@@ -860,6 +872,8 @@ impl Strip {
             hover: HoverTracker::default(),
             gate: FrameGate::default(),
             placement_pending: false,
+            fullscreen_pending: false,
+            probe_edge: None,
             idle_seen: false,
             failed: None,
             menu: None,
@@ -933,6 +947,7 @@ impl Strip {
                 separate_spaces: pinning::separate_spaces(),
                 monitors: reported.unwrap_or_default(),
                 chosen: Some(monitor.info.id.clone()),
+                taskbar: pinning::taskbar(),
             });
         }
         let mut view = View {
@@ -948,6 +963,8 @@ impl Strip {
         };
         self.place(&mut view, &monitor);
         self.apply_level(&view);
+        // A strip opened over a full-screen app steps behind it at once.
+        self.fullscreen_pending = true;
         view.pinning.show(&view.window);
         view.window.request_redraw();
         let active = pinning::app_is_active();
@@ -970,7 +987,10 @@ impl Strip {
 
     /// Moves the strip onto `monitor`, and takes the scale the placement gives.
     fn place(&mut self, view: &mut View, monitor: &Monitor) {
-        let (step, edge) = (self.prefs.size_step, self.prefs.edge);
+        let (step, edge) = (
+            self.prefs.size_step,
+            self.probe_edge.unwrap_or(self.prefs.edge),
+        );
         let Some((scale, frame)) = view.pinning.place(&view.window, monitor, step, edge) else {
             return;
         };
@@ -978,7 +998,7 @@ impl Strip {
         self.record(ProbeEvent::Placed {
             monitor: monitor.info.id.clone(),
             strip: ScaleReport::from(&view.scale),
-            frame,
+            frame: Box::new(frame),
         });
     }
 
@@ -1078,16 +1098,26 @@ impl Strip {
         let Some(probe) = &mut self.probe else {
             return;
         };
-        match probe.answer(note, frames) {
-            Advance::Done => event_loop.exit(),
-            Advance::Next(level) if level != self.level => {
-                self.level = level;
-                // A raise in progress keeps the strip up; the restore applies the new level.
-                if self.raise.deadline().is_none() {
-                    self.apply_level(view);
-                }
+        let setup = match probe.answer(note, frames) {
+            Advance::Done => {
+                event_loop.exit();
+                return;
             }
-            Advance::Next(_) => {}
+            Advance::Next(setup) => setup,
+        };
+        if setup.tools {
+            probe::tools::start(self.proxy.clone());
+        }
+        if setup.edge != self.probe_edge.unwrap_or(self.prefs.edge) {
+            self.probe_edge = Some(setup.edge);
+            self.placement_pending = true;
+        }
+        if setup.level != self.level {
+            self.level = setup.level;
+            // A raise in progress keeps the strip up; the restore applies the new level.
+            if self.raise.deadline().is_none() {
+                self.apply_level(view);
+            }
         }
     }
 
@@ -1260,6 +1290,7 @@ impl Strip {
         self.hover = HoverTracker::default();
         self.gate = FrameGate::default();
         self.placement_pending = false;
+        self.fullscreen_pending = false;
     }
 
     /// Opens the strip's window for the scene now shown; a failure ends the app.
@@ -1987,13 +2018,25 @@ impl ApplicationHandler<UserEvent> for Strip {
                         | SystemEvent::ScreensWoke
                         | SystemEvent::AppBarPosChanged
                         | SystemEvent::AppBarStateChanged
+                        | SystemEvent::TaskbarCreated
                 ) {
                     self.placement_pending = true;
                 }
+                if matches!(event, SystemEvent::FullscreenHint(_)) {
+                    self.fullscreen_pending = true;
+                }
+                if event == SystemEvent::TaskbarCreated {
+                    self.with_view(|strip, view| {
+                        if let Some(report) = view.pinning.taskbar_created() {
+                            strip.record(ProbeEvent::Taskbar(report));
+                        }
+                    });
+                }
                 // The composer carried the clock on through the sleep, but on macOS the
                 // monotonic clock stops while asleep: the feed takes the local time again, and
-                // the engine catches truth up.
-                if event == SystemEvent::Woke {
+                // the engine catches truth up. Screens coming back on are taken the same way,
+                // since a Windows machine in Modern Standby sends no wake of its own.
+                if matches!(event, SystemEvent::Woke | SystemEvent::ScreensWoke) {
                     if let Some(scene) = &mut self.scene {
                         scene.look(Instant::now(), true);
                     }
@@ -2009,6 +2052,7 @@ impl ApplicationHandler<UserEvent> for Strip {
                 self.end_probe(EndReason::InputClosed);
                 event_loop.exit();
             }
+            UserEvent::ProbeTools(report) => self.record(ProbeEvent::Tools(report)),
             UserEvent::Engine(generation, update) => self.engine_update(generation, update),
             UserEvent::ShowSettings => self.show_settings(event_loop),
             UserEvent::Picked(picking, path) => self.picked(picking, path),
@@ -2062,8 +2106,18 @@ impl ApplicationHandler<UserEvent> for Strip {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if std::mem::take(&mut self.placement_pending) {
+        // A placement can move the strip to another display, so the full-screen apps are
+        // looked at after it.
+        let placed = std::mem::take(&mut self.placement_pending);
+        if placed {
             self.with_view(Self::replace);
+        }
+        if std::mem::take(&mut self.fullscreen_pending) || placed {
+            self.with_view(|strip, view| {
+                if let Some(report) = view.pinning.check_fullscreen(&view.window) {
+                    strip.record(ProbeEvent::Fullscreen(report));
+                }
+            });
         }
         if !self.idle_seen && self.view.is_some() {
             self.idle_seen = true;

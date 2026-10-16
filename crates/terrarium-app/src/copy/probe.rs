@@ -8,9 +8,13 @@ use std::path::Path;
 use super::{BINARY_NAME, VERSION, hotkey};
 use crate::hotkey::{Platform, Which};
 use crate::hover::NativePoint;
-use crate::pinning::{AppBarPlaced, LevelMode, OsSnapshot, PxRect};
+use crate::pinning::{
+    AppBarPlaced, FullscreenReport, LevelMode, OsSnapshot, PxRect, TaskbarReport, TaskbarState,
+    TaskbarStep,
+};
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
 use crate::probe::script::{Phase, Step};
+use crate::probe::tools::{Outcome, RunReport, ToolsReport};
 
 /// The key that ends input in the terminal the probe runs in.
 #[cfg(windows)]
@@ -44,7 +48,11 @@ pub const PROBE_LAUNCH: StepText = StepText {
 };
 
 #[cfg(windows)]
-pub const PROBE_LAUNCH: StepText = StepText {
+pub const PROBE_LAUNCH: StepText = WINDOWS_PROBE_LAUNCH;
+
+/// Compiled on every OS, so the tests check the Windows walk-through on the Mac too.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const WINDOWS_PROBE_LAUNCH: StepText = StepText {
     key: "launch",
     text: "The strip should now lie along the bottom of the display marked with * above, just \
            above the taskbar if the taskbar is on that display: sky over a band of soil. No \
@@ -140,6 +148,14 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
                Otherwise press Enter.",
     },
     StepText {
+        key: TOOLS_STEP,
+        text: "The probe now checks the parts that reach outside the strip, and prints what it \
+               finds: it saves a made-up entry in the login keychain, reads it back and \
+               removes it; asks node for its version and runs a small script with it, if node \
+               is installed; and starts the encryption the GitHub weather uses, without \
+               connecting to anything. Note whether macOS asked about the keychain.",
+    },
+    StepText {
         key: "separate-spaces",
         text: "The header shows this run's \"Displays have separate Spaces\" setting. The other \
                setting takes effect only after logging out, so it needs a second run of this \
@@ -152,10 +168,19 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
     },
 ];
 
-/// Windows has one level, the topmost `AppBar`, so every step runs once. The last one ends the
-/// process the way a crash does, so it must stay last.
+/// The step that runs the probe's checks of the keychain, node and TLS.
+pub const TOOLS_STEP: &str = "tools";
+/// The step the probe moves the strip to the top edge for.
+pub const TOP_EDGE_STEP: &str = "top-edge";
+
 #[cfg(windows)]
-pub const PROBE_ONCE_STEPS: &[StepText] = &[
+pub const PROBE_ONCE_STEPS: &[StepText] = WINDOWS_PROBE_ONCE_STEPS;
+
+/// Windows has one level, the topmost `AppBar`, so every step runs once. The last one ends the
+/// process the way a crash does, so it must stay last. Compiled on every OS, so the tests check
+/// it on the Mac too.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const WINDOWS_PROBE_ONCE_STEPS: &[StepText] = &[
     StepText {
         key: "hover-clicks",
         text: "Click a window of another app so that app has focus. Move the pointer onto the \
@@ -177,19 +202,69 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
     StepText {
         key: "win-d",
         text: "Press Win+D to show the desktop. Note whether the strip stays visible, then press \
-               Win+D again to bring the windows back.",
+               Win+D again to bring the windows back. Then press Win+M, which minimises every \
+               window, and note whether the strip stays; Win+Shift+M brings the windows back.",
+    },
+    StepText {
+        key: "peek",
+        text: "Rest the pointer on the far right end of the taskbar, past the clock. Other \
+               windows turn see-through or step aside to show the desktop. Note whether the \
+               strip stays as it was. If nothing happens, the setting is off: on Windows 11 it \
+               is \"Select the far corner of the taskbar to show the desktop\" under Settings > \
+               Personalization > Taskbar > Taskbar behaviours; on Windows 10, right-click that \
+               spot and choose \"Peek at desktop\".",
     },
     StepText {
         key: "fullscreen",
-        text: "On the strip's display, play a video full screen, or press F11 in a browser. \
-               Note whether the strip covers the bottom of it, then leave full screen. This \
-               build keeps the strip on top on purpose; the report records what Windows says.",
+        text: "On the strip's display, play a video full screen, or press F11 in a browser. The \
+               strip should go behind it. Note whether it did, then leave full screen and note \
+               whether the strip came back.",
+    },
+    StepText {
+        key: "fullscreen-other-display",
+        text: "With a second display: play a video full screen on the display without the \
+               strip, and note whether the strip stays as it is. Then, with the video still \
+               playing, click a window on the strip's display and note the strip again. With \
+               one display, press Enter.",
     },
     StepText {
         key: "display-scale",
         text: "In Settings > System > Display, change the scale of the strip's display (for \
                example from 100% to 125%), then change it back. Note whether the strip refitted \
-               both times.",
+               both times, and whether it jumped about or flickered on the way.",
+    },
+    StepText {
+        key: TOP_EDGE_STEP,
+        text: "The probe has moved the strip to the top of its display. Note whether it lies \
+               along the top edge, and whether a maximised window now stops below it. After \
+               this step the strip goes back to the bottom.",
+    },
+    StepText {
+        key: "auto-hide",
+        text: "In Settings > Personalization > Taskbar > Taskbar behaviours, turn on \
+               \"Automatically hide the taskbar\". Note whether the strip moves down to the \
+               bottom edge, and whether pushing the pointer to the very bottom still brings the \
+               taskbar up. Turn the setting off again, and note whether the strip moves back \
+               above the taskbar.",
+    },
+    StepText {
+        key: "explorer-restart",
+        text: "Open Task Manager (Ctrl+Shift+Esc), find Windows Explorer under Processes, \
+               right-click it and choose Restart. The taskbar disappears for a moment. When it \
+               is back, maximise a window on the strip's display and note whether it still \
+               stops at the strip.",
+    },
+    StepText {
+        key: "sleep-wake",
+        text: "Optional: put the computer to sleep (Start > Power > Sleep), wake it and sign \
+               in. Note whether the strip is in place. To skip, press Enter.",
+    },
+    StepText {
+        key: "hot-plug",
+        text: "With a second display: press Win+P and choose \"PC screen only\", wait for the \
+               screens to settle, then press Win+P again and choose \"Extend\". (Unplugging a \
+               display and plugging it back does the same.) Note which display the strip is \
+               on before and after. With one display, press Enter.",
     },
     StepText {
         key: "hotkey",
@@ -203,9 +278,21 @@ pub const PROBE_ONCE_STEPS: &[StepText] = &[
                still strip draws none.",
     },
     StepText {
-        key: "second-display",
-        text: "If a second display is connected, note which display the strip chose. \
-               Otherwise press Enter.",
+        key: TOOLS_STEP,
+        text: "The probe now checks the parts that reach outside the strip, and prints what it \
+               finds: it saves a made-up entry in Windows Credential Manager, reads it back and \
+               removes it; asks node for its version and runs a small script with it, if node \
+               is installed; and starts the encryption the GitHub weather uses, without \
+               connecting to anything. Note whether a black console window flashed up while it \
+               ran.",
+    },
+    StepText {
+        key: "connect",
+        text: "Double-click run-connect.cmd in the probe's folder. A window to connect a \
+               repository should open. Note whether a black console window, or an empty \
+               Windows Terminal window, stayed open beside it. Double-click run-connect.cmd \
+               once more and note whether the open window came to the front. Then close the \
+               window.",
     },
     StepText {
         key: "taskkill",
@@ -277,6 +364,9 @@ pub fn probe_header(report: &Report) -> String {
             monitor.scale,
             monitor.detail
         );
+    }
+    if let Some(taskbar) = &report.taskbar {
+        out.push_str(&taskbar_text(taskbar));
     }
     if let Some(strip) = &report.strip {
         let _ = write!(
@@ -356,6 +446,126 @@ fn probe_event(event: &ProbeEvent) -> String {
         ProbeEvent::Occluded { occluded: false } => "visible again".to_owned(),
         ProbeEvent::HotkeyUnavailable { error } => format!("no raise hotkey: {error}"),
         ProbeEvent::Os(snapshot) => os_text(snapshot),
+        ProbeEvent::Taskbar(report) => taskbar_created_text(report),
+        ProbeEvent::Fullscreen(report) => fullscreen_text(report),
+        ProbeEvent::Tools(report) => tools_text(report),
+    }
+}
+
+fn tools_text(report: &ToolsReport) -> String {
+    let keychain = &report.keychain;
+    let again = keychain
+        .read_again
+        .map_or_else(String::new, |again| format!(", then {}", outcome(again)));
+    let node = report.node.as_ref().map_or_else(
+        || "node not found".to_owned(),
+        |node| {
+            let temp = match node.temp_in_system_root {
+                Some(true) => "; its temporary folder is Windows' own",
+                Some(false) => "; its temporary folder is the person's",
+                None => "",
+            };
+            format!(
+                "node {}; a module script {}{temp}",
+                run_text(&node.version),
+                run_text(&node.script)
+            )
+        },
+    );
+    let tls = &report.tls;
+    format!(
+        "tools: keychain saved {}, read on another thread {}{again}, removed {}, read after \
+         {}; {node}; TLS {} (random {}, key exchange {}, client set up {}, {} roots)",
+        outcome(keychain.saved),
+        outcome(keychain.read),
+        outcome(keychain.removed),
+        outcome(keychain.gone),
+        if tls.passed { "works" } else { "failed" },
+        yes_no(Some(tls.random)),
+        yes_no(Some(tls.exchange)),
+        yes_no(Some(tls.config)),
+        tls.roots
+    )
+}
+
+fn outcome(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Done => "done",
+        Outcome::Matched => "found it",
+        Outcome::Missing => "found nothing",
+        Outcome::Different => "found something else",
+        Outcome::Unavailable => "unavailable",
+        Outcome::Refused => "refused",
+        Outcome::Failed => "failed",
+        Outcome::Panicked => "stopped by a panic",
+    }
+}
+
+fn run_text(run: &RunReport) -> String {
+    match run {
+        RunReport::Answered { answer } => format!("answered {answer}"),
+        RunReport::Unexpected => "printed something else".to_owned(),
+        RunReport::Failed { code } => format!("ended with code {code}"),
+        RunReport::CannotRun => "could not be run".to_owned(),
+        RunReport::TimedOut => "ran out of time".to_owned(),
+    }
+}
+
+fn taskbar_created_text(report: &TaskbarReport) -> String {
+    let answered = match report.answered {
+        Some(true) => ", Explorer took it again",
+        Some(false) => ", Explorer still had it or refused it",
+        None => "",
+    };
+    format!(
+        "Explorer started again: the bar {}{answered}; shell hook {}",
+        match report.action {
+            TaskbarStep::AskOnce => "was asked for once",
+            TaskbarStep::RegisterAfresh => "is registered from the start",
+            TaskbarStep::Nothing => "is left as it was",
+        },
+        if report.shell_hook {
+            "taken"
+        } else {
+            "not taken"
+        }
+    )
+}
+
+fn fullscreen_text(report: &FullscreenReport) -> String {
+    format!(
+        "{}; {} full-screen apps known; in front: {}",
+        if report.yielded {
+            "behind a full-screen app on its display"
+        } else {
+            "back on top"
+        },
+        report.apps,
+        report.front_class.as_deref().unwrap_or("nothing")
+    )
+}
+
+fn taskbar_text(taskbar: &TaskbarState) -> String {
+    format!(
+        "\nTaskbar: {} edge, {}, {}",
+        taskbar_edge(taskbar.edge),
+        rect_text(&taskbar.rect),
+        if taskbar.auto_hide {
+            "hides itself"
+        } else {
+            "always shown"
+        }
+    )
+}
+
+/// The taskbar's edge, by its `ABE_` value.
+fn taskbar_edge(edge: u32) -> &'static str {
+    match edge {
+        0 => "left",
+        1 => "top",
+        2 => "right",
+        3 => "bottom",
+        _ => "unknown",
     }
 }
 
@@ -390,6 +600,16 @@ fn appbar_text(appbar: &AppBarPlaced) -> String {
     if appbar.unchanged {
         out.push_str("; unchanged, nothing sent");
     }
+    if appbar.fresh {
+        out.push_str("; registered afresh on a new display or edge");
+    }
+    if appbar.autohide_inset > 0 {
+        let _ = write!(
+            out,
+            "; {} px left free for an auto-hide taskbar",
+            appbar.autohide_inset
+        );
+    }
     if appbar.size_mismatch {
         out.push_str("; the granted band is not the strip's size");
     }
@@ -418,12 +638,14 @@ fn appbar_text(appbar: &AppBarPlaced) -> String {
 fn os_text(snapshot: &OsSnapshot) -> String {
     let flag = |on: bool, name: &str| format!("{}{name}", if on { "" } else { "not " });
     let mut out = format!(
-        "window: {}, {}, {}, {}, {}; work area {}",
+        "window: {}, {}, {}, {}, {}, {}, {}; work area {}",
         flag(snapshot.tool_window, "tool window"),
         flag(snapshot.no_activate, "no-activate"),
         flag(snapshot.app_window, "app window"),
         flag(snapshot.topmost, "topmost"),
         flag(snapshot.visible, "visible"),
+        flag(snapshot.iconic, "minimised"),
+        flag(snapshot.yielded, "behind a full-screen app"),
         maybe_rect(snapshot.work_area.as_ref())
     );
     if !snapshot.messages.is_empty() {
@@ -489,18 +711,39 @@ pub fn display_detail(
 }
 
 /// A monitor's id in the report when Windows gives it no name.
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn monitor_id(index: usize) -> String {
     format!("monitor-{index}")
 }
 
-#[cfg(windows)]
-pub fn monitor_detail(monitor: &PxRect, work: &PxRect) -> String {
+/// A Windows monitor's detail for the report: its rectangles, its GDI name, and whether its id
+/// is the monitor's device path, which survives restarts, or that GDI name.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn monitor_detail(monitor: &PxRect, work: &PxRect, gdi: &str, stable: bool) -> String {
     format!(
-        "monitor {}, work area {} (px)",
+        "monitor {}, work area {} (px); {gdi}, id {}",
         rect_text(monitor),
-        rect_text(work)
+        rect_text(work),
+        if stable {
+            "from the display configuration"
+        } else {
+            "its GDI name"
+        }
     )
+}
+
+/// A display's name where its monitor gives none (an internal panel, a remote display):
+/// Windows' number for it, as Settings shows it, or its place in the list.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn display_fallback_name(gdi: &str, index: usize) -> String {
+    let number = gdi
+        .rsplit_once("DISPLAY")
+        .map(|(_, number)| number)
+        .filter(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()));
+    match number {
+        Some(number) => format!("Display {number}"),
+        None => format!("Display {}", index + 1),
+    }
 }
 
 /// The unit a placement is reported in: points on macOS, pixels on Windows.
@@ -619,11 +862,19 @@ pub const PROBE_README: &str = "Repo Terrarium: the Windows pinning probe
 
 Thank you for testing. Repo Terrarium is a thin pixel-art strip that sits along
 the bottom edge of a monitor. On Windows it reserves that edge, the way the
-taskbar does, so maximised windows stop above it. Nobody on this project has a
-Windows machine, so this probe is how we find out whether that works.
+taskbar does, so maximised windows stop above it, and it steps behind
+full-screen video on its display. Nobody on this project has a Windows machine,
+so this probe is how we find out whether that works.
 
-It takes about ten minutes. It changes nothing on your machine: there is no
-installer, and it writes only its report files, into this folder.
+It takes about twenty minutes; the steps marked optional can be skipped. There
+is no installer. Besides its report files, it does three small things you
+should know about, all on the tools and connect steps:
+
+- it saves a made-up entry in Windows Credential Manager and removes it at once;
+- if node is installed, it runs node --version and a two-line script with it;
+- run-connect.cmd keeps the app's files in a folder named data, in this folder.
+
+Deleting this folder removes everything the probe made.
 
 
 Before you start
@@ -633,8 +884,6 @@ Before you start
    inside the zip does not work.
 2. Windows may say \"Windows protected your PC\", because the app is not signed.
    Choose \"More info\", then \"Run anyway\".
-3. In this build the strip stays on top of full-screen video on its display.
-   That is expected; the probe measures it.
 
 
 Run 1: the walk-through
@@ -644,7 +893,10 @@ Double-click run-probe.cmd. A console window opens and the strip appears.
 
 The console describes one thing to try at a time. Try it, then come back to the
 console: type a short note if something is worth saying, and press Enter to go
-on. Enter alone is fine too.
+on. Enter alone is fine too, and it skips a step you cannot do.
+
+One step asks you to double-click run-connect.cmd, which opens the app's own
+window to connect a repository; close that window when the step says so.
 
 The last step asks you to end the probe from a second terminal with:
 
@@ -674,9 +926,11 @@ Sending the results
 
 Each run writes two files into this folder, named
 repo-terrarium-probe-pinning-<numbers>.json and .txt. Please send all of the
-repo-terrarium-probe- files back. They hold the display sizes, what Windows
+repo-terrarium-probe- files back. They hold the display sizes and the model
+codes Windows gives your monitors, the taskbar's position, what Windows
 reported about the strip, the names of window classes (never window titles),
-and your notes. Nothing else.
+whether the tools worked (never a path or a file name), and your notes. Nothing
+else.
 
 If the strip ever gets stuck on screen, or the bottom of the screen stays
 reserved after the probe has ended, signing out and back in clears it.

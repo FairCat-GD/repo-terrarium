@@ -24,6 +24,11 @@ tree-sitter-go.workspace = true
 ureq.workspace = true
 percent-encoding.workspace = true
 keyring.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+keyring-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

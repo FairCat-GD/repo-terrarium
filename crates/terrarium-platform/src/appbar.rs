@@ -93,6 +93,131 @@ pub fn stale_suspected(
     }
 }
 
+/// How deep an auto-hide taskbar's sliver on the strip's edge is taken to be when it cannot be
+/// read: Windows leaves a hidden taskbar a line or two on screen, where the pointer reveals it.
+pub const AUTOHIDE_SLIVER: i32 = 2;
+/// The deepest on-screen part of an auto-hide taskbar still read as its hidden sliver. Deeper,
+/// the taskbar is showing, and its height is not what the strip must leave free.
+pub const AUTOHIDE_SLIVER_MAX: i32 = 8;
+
+/// How far the strip stays off `edge` of `monitor` for an auto-hide taskbar there (`bar`, its
+/// window rectangle), so the pointer can still reach the taskbar's sliver and reveal it. An
+/// auto-hide taskbar reserves nothing, so the strip would otherwise cover it.
+pub fn autohide_inset(monitor: PixelRect, edge: Edge, bar: Option<PixelRect>) -> i32 {
+    let Some(bar) = bar else {
+        return 0;
+    };
+    if bar.right <= monitor.left || bar.left >= monitor.right {
+        return 0;
+    }
+    let on_screen = match edge {
+        Edge::Bottom if bar.bottom >= monitor.bottom => {
+            monitor.bottom.saturating_sub(bar.top.max(monitor.top))
+        }
+        Edge::Top if bar.top <= monitor.top => {
+            bar.bottom.min(monitor.bottom).saturating_sub(monitor.top)
+        }
+        _ => return 0,
+    };
+    if (1..=AUTOHIDE_SLIVER_MAX).contains(&on_screen) {
+        on_screen
+    } else {
+        AUTOHIDE_SLIVER
+    }
+}
+
+/// `area` with `by` pixels taken off its `edge` side.
+pub fn inset(area: PixelRect, edge: Edge, by: i32) -> PixelRect {
+    match edge {
+        Edge::Bottom => PixelRect {
+            bottom: area.bottom.saturating_sub(by),
+            ..area
+        },
+        Edge::Top => PixelRect {
+            top: area.top.saturating_add(by),
+            ..area
+        },
+    }
+}
+
+/// A `WINDOWPOS` as `WM_WINDOWPOSCHANGING` carries it: where the window is about to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowPos {
+    pub x: i32,
+    pub y: i32,
+    pub cx: i32,
+    pub cy: i32,
+    pub flags: u32,
+}
+
+/// Where Windows parks a minimised window.
+const MINIMISED_PARK: i32 = -32000;
+
+/// The move `pos` corrected onto `pinned`, the rectangle the strip's edge was granted, or `None`
+/// when it needs no correction. Whoever moves or sizes the strip (winit's handling of a DPI
+/// change, a snap, another app) lands on the granted rectangle, so no move can start a
+/// back-and-forth of moves and placements. A change of order or visibility alone, and a
+/// minimise, pass as they are.
+pub fn pin_window_pos(pos: WindowPos, pinned: PixelRect) -> Option<WindowPos> {
+    if pos.x == MINIMISED_PARK && pos.y == MINIMISED_PARK {
+        return None;
+    }
+    let mut pinned_pos = pos;
+    if pos.flags & SWP_NOMOVE == 0 {
+        pinned_pos.x = pinned.left;
+        pinned_pos.y = pinned.top;
+    }
+    if pos.flags & SWP_NOSIZE == 0 {
+        pinned_pos.cx = pinned.width();
+        pinned_pos.cy = pinned.height();
+    }
+    (pinned_pos != pos).then_some(pinned_pos)
+}
+
+/// Where the strip's bar is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarState {
+    /// Not registered yet; the next placement registers it.
+    New,
+    /// Registered: the edge is reserved.
+    Reserved,
+    /// Registration failed: a plain topmost window inside the work area.
+    Unreserved,
+    /// Given back on exit. Nothing is placed any more, so a placement racing an exit handler
+    /// cannot reserve the edge again.
+    Released,
+}
+
+/// What Explorer starting again asks of the bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskbarAction {
+    /// Ask for the bar once (`ABM_NEW`). A new Explorer has forgotten it; one that has not
+    /// answers FALSE, which also means an error, so there is no removing and asking again.
+    AskOnce,
+    /// Register from the start, the stale check included: there was no taskbar to register
+    /// with (a login that started the strip first), or there is no bar yet.
+    RegisterAfresh,
+    Nothing,
+}
+
+/// What a `TaskbarCreated` asks of a bar in `state`. Either way the next placement sends its
+/// rectangle again, since the one Explorer knew may be gone with it.
+pub fn on_taskbar_created(state: BarState) -> TaskbarAction {
+    match state {
+        BarState::Reserved => TaskbarAction::AskOnce,
+        BarState::New | BarState::Unreserved => TaskbarAction::RegisterAfresh,
+        BarState::Released => TaskbarAction::Nothing,
+    }
+}
+
+/// Whether a placement on `now` (a monitor's device name and an edge) registers the bar afresh:
+/// it moved to another monitor or edge than the one it was registered on, where a strip that
+/// crashed may have left its own. The device name, not the `HMONITOR`, which Windows makes
+/// anew on every change of displays.
+pub fn fresh_registration(last: Option<(&str, Edge)>, now: (&str, Edge)) -> bool {
+    last.is_some_and(|last| last != now)
+}
+
 /// The `ABE_` value for an edge.
 pub fn abe(edge: Edge) -> u32 {
     match edge {
@@ -128,6 +253,8 @@ pub struct Registered {
     pub appbar: u32,
     /// Broadcast when Explorer starts, and restarts.
     pub taskbar_created: u32,
+    /// The shell hook's message: which window was activated, created or destroyed.
+    pub shellhook: u32,
 }
 
 /// The name of a message the probe counts, or `None` for one it does not. A registered id of 0
@@ -145,15 +272,41 @@ pub fn message_name(msg: u32, wparam: usize, registered: Registered) -> Option<&
     if msg != 0 && msg == registered.taskbar_created {
         return Some("TaskbarCreated");
     }
+    if msg != 0 && msg == registered.shellhook {
+        let rude = wparam & HSHELL_HIGHBIT != 0;
+        return Some(match (wparam & !HSHELL_HIGHBIT, rude) {
+            (HSHELL_WINDOWCREATED, _) => "HSHELL_WINDOWCREATED",
+            (HSHELL_WINDOWDESTROYED, _) => "HSHELL_WINDOWDESTROYED",
+            (HSHELL_WINDOWACTIVATED, false) => "HSHELL_WINDOWACTIVATED",
+            (HSHELL_WINDOWACTIVATED, true) => "HSHELL_RUDEAPPACTIVATED",
+            (HSHELL_REDRAW, false) => "HSHELL_REDRAW",
+            (HSHELL_REDRAW, true) => "HSHELL_FLASH",
+            (HSHELL_MONITORCHANGED, _) => "HSHELL_MONITORCHANGED",
+            (HSHELL_FULLSCREENENTER, _) => "HSHELL_FULLSCREENENTER",
+            (HSHELL_FULLSCREENEXIT, _) => "HSHELL_FULLSCREENEXIT",
+            _ => "HSHELL_other",
+        });
+    }
+    if msg == WM_POWERBROADCAST {
+        return Some(match wparam {
+            PBT_APMSUSPEND => "PBT_APMSUSPEND",
+            PBT_APMRESUMESUSPEND => "PBT_APMRESUMESUSPEND",
+            PBT_APMPOWERSTATUSCHANGE => "PBT_APMPOWERSTATUSCHANGE",
+            PBT_APMRESUMEAUTOMATIC => "PBT_APMRESUMEAUTOMATIC",
+            PBT_POWERSETTINGCHANGE => "PBT_POWERSETTINGCHANGE",
+            _ => "PBT_other",
+        });
+    }
     WATCHED
         .iter()
         .find(|(id, _)| *id == msg)
         .map(|(_, name)| *name)
 }
 
-/// The fixed messages the probe counts: activation, placement, style, display and power
-/// changes, and the two button presses. Whether each arrives sent (the subclass sees it) or
-/// posted (winit's message hook sees it too) is what the probe compares.
+/// The fixed messages the probe counts: activation, placement, style, display and session
+/// changes, and the two button presses (power changes are named by their event above). Whether
+/// each arrives sent (the subclass sees it) or posted (winit's message hook sees it too) is what
+/// the probe compares.
 const WATCHED: &[(u32, &str)] = &[
     (WM_SHOWWINDOW, "WM_SHOWWINDOW"),
     (WM_ACTIVATE, "WM_ACTIVATE"),
@@ -167,8 +320,8 @@ const WATCHED: &[(u32, &str)] = &[
     (WM_NCACTIVATE, "WM_NCACTIVATE"),
     (WM_LBUTTONDOWN, "WM_LBUTTONDOWN"),
     (WM_RBUTTONDOWN, "WM_RBUTTONDOWN"),
-    (WM_POWERBROADCAST, "WM_POWERBROADCAST"),
     (WM_DPICHANGED, "WM_DPICHANGED"),
+    (WM_ENDSESSION, "WM_ENDSESSION"),
 ];
 
 // Win32 values, checked against the `windows` crate in `windows::constants`.
@@ -200,6 +353,30 @@ pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_RBUTTONDOWN: u32 = 0x0204;
 pub const WM_POWERBROADCAST: u32 = 0x0218;
 pub const WM_DPICHANGED: u32 = 0x02E0;
+pub const WM_ENDSESSION: u32 = 0x0016;
+pub const SWP_NOSIZE: u32 = 0x0001;
+pub const SWP_NOMOVE: u32 = 0x0002;
+pub const PBT_APMSUSPEND: usize = 0x0004;
+pub const PBT_APMRESUMESUSPEND: usize = 0x0007;
+pub const PBT_APMPOWERSTATUSCHANGE: usize = 0x000A;
+pub const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
+pub const PBT_POWERSETTINGCHANGE: usize = 0x8013;
+pub const WS_BORDER: u32 = 0x0080_0000;
+pub const WS_CAPTION: u32 = 0x00C0_0000;
+pub const WS_THICKFRAME: u32 = 0x0004_0000;
+pub const WS_POPUP: u32 = 0x8000_0000;
+pub const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
+pub const WS_EX_LAYERED: u32 = 0x0008_0000;
+pub const HSHELL_WINDOWCREATED: usize = 1;
+pub const HSHELL_WINDOWDESTROYED: usize = 2;
+pub const HSHELL_WINDOWACTIVATED: usize = 4;
+pub const HSHELL_REDRAW: usize = 6;
+pub const HSHELL_MONITORCHANGED: usize = 16;
+pub const HSHELL_HIGHBIT: usize = 0x8000;
+// Not in Windows' headers: what the shell hook has been seen to send as a window enters and
+// leaves full screen in place. The probe counts whether they arrive.
+pub const HSHELL_FULLSCREENENTER: usize = 53;
+pub const HSHELL_FULLSCREENEXIT: usize = 54;
 
 #[cfg(test)]
 mod tests {
@@ -369,6 +546,7 @@ mod tests {
         let registered = Registered {
             appbar: 0xC100,
             taskbar_created: 0xC101,
+            shellhook: 0xC102,
         };
         assert_eq!(
             message_name(WM_ACTIVATE, 0, registered),
@@ -391,6 +569,7 @@ mod tests {
         let registered = Registered {
             appbar: 0xC100,
             taskbar_created: 0xC101,
+            shellhook: 0xC102,
         };
         let names: Vec<_> = [
             ABN_STATECHANGE,
@@ -419,8 +598,194 @@ mod tests {
         let failed = Registered {
             appbar: 0,
             taskbar_created: 0,
+            shellhook: 0,
         };
         assert_eq!(message_name(0, 0, failed), None);
+    }
+
+    #[test]
+    fn shell_hook_codes_are_named_with_and_without_the_high_bit() {
+        let registered = Registered {
+            appbar: 0xC100,
+            taskbar_created: 0xC101,
+            shellhook: 0xC102,
+        };
+        let name = |code| message_name(0xC102, code, registered);
+        assert_eq!(name(4), Some("HSHELL_WINDOWACTIVATED"));
+        assert_eq!(name(0x8004), Some("HSHELL_RUDEAPPACTIVATED"));
+        assert_eq!(name(6), Some("HSHELL_REDRAW"));
+        assert_eq!(name(0x8006), Some("HSHELL_FLASH"));
+        assert_eq!(name(16), Some("HSHELL_MONITORCHANGED"));
+        assert_eq!(name(53), Some("HSHELL_FULLSCREENENTER"));
+        assert_eq!(name(54), Some("HSHELL_FULLSCREENEXIT"));
+        assert_eq!(name(2), Some("HSHELL_WINDOWDESTROYED"));
+        assert_eq!(name(9), Some("HSHELL_other"));
+    }
+
+    #[test]
+    fn power_broadcasts_are_named_by_their_event() {
+        let none = Registered {
+            appbar: 0,
+            taskbar_created: 0,
+            shellhook: 0,
+        };
+        let name = |code| message_name(WM_POWERBROADCAST, code, none);
+        assert_eq!(name(0x12), Some("PBT_APMRESUMEAUTOMATIC"));
+        assert_eq!(name(0x7), Some("PBT_APMRESUMESUSPEND"));
+        assert_eq!(name(0x4), Some("PBT_APMSUSPEND"));
+        assert_eq!(name(0x8013), Some("PBT_POWERSETTINGCHANGE"));
+        assert_eq!(name(0x99), Some("PBT_other"));
+        assert_eq!(message_name(WM_ENDSESSION, 1, none), Some("WM_ENDSESSION"));
+    }
+
+    const GRANTED: PixelRect = rect(0, 1096, 2560, 1392);
+
+    fn pos(x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> WindowPos {
+        WindowPos {
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+        }
+    }
+
+    #[test]
+    fn a_move_and_resize_off_the_granted_rect_is_put_back() {
+        // winit's DPI handling: the suggested top-left, the old logical size.
+        let moved = pos(0, 1000, 3200, 370, 0);
+        assert_eq!(
+            pin_window_pos(moved, GRANTED),
+            Some(pos(0, 1096, 2560, 296, 0))
+        );
+    }
+
+    #[test]
+    fn a_size_only_change_gets_the_granted_size_and_keeps_its_flags() {
+        let sized = pos(0, 0, 3200, 370, SWP_NOMOVE);
+        assert_eq!(
+            pin_window_pos(sized, GRANTED),
+            Some(pos(0, 0, 2560, 296, SWP_NOMOVE))
+        );
+    }
+
+    #[test]
+    fn a_move_only_change_gets_the_granted_position() {
+        let moved = pos(40, 40, 0, 0, SWP_NOSIZE);
+        assert_eq!(
+            pin_window_pos(moved, GRANTED),
+            Some(pos(0, 1096, 0, 0, SWP_NOSIZE))
+        );
+    }
+
+    #[test]
+    fn a_change_of_order_alone_is_left_alone() {
+        let ordered = pos(5, 5, 9, 9, SWP_NOMOVE | SWP_NOSIZE);
+        assert_eq!(pin_window_pos(ordered, GRANTED), None);
+    }
+
+    #[test]
+    fn a_minimise_is_left_alone() {
+        let parked = pos(-32000, -32000, 160, 28, 0);
+        assert_eq!(pin_window_pos(parked, GRANTED), None);
+    }
+
+    #[test]
+    fn a_move_onto_the_granted_rect_needs_no_correction() {
+        let ours = pos(0, 1096, 2560, 296, 0);
+        assert_eq!(pin_window_pos(ours, GRANTED), None);
+    }
+
+    #[test]
+    fn without_an_autohide_taskbar_there_is_no_inset() {
+        assert_eq!(autohide_inset(MONITOR, Edge::Bottom, None), 0);
+    }
+
+    #[test]
+    fn a_hidden_taskbar_keeps_its_sliver_free() {
+        let hidden = rect(0, 1438, 2560, 1486);
+        assert_eq!(autohide_inset(MONITOR, Edge::Bottom, Some(hidden)), 2);
+        let deeper = rect(0, 1435, 2560, 1483);
+        assert_eq!(autohide_inset(MONITOR, Edge::Bottom, Some(deeper)), 5);
+        let gone = rect(0, 1440, 2560, 1488);
+        assert_eq!(
+            autohide_inset(MONITOR, Edge::Bottom, Some(gone)),
+            AUTOHIDE_SLIVER
+        );
+    }
+
+    #[test]
+    fn a_showing_taskbar_insets_by_the_sliver_not_its_height() {
+        assert_eq!(
+            autohide_inset(MONITOR, Edge::Bottom, Some(TASKBAR)),
+            AUTOHIDE_SLIVER
+        );
+    }
+
+    #[test]
+    fn a_taskbar_beside_the_monitor_or_on_another_edge_insets_nothing() {
+        let beside = rect(2560, 1438, 5120, 1486);
+        assert_eq!(autohide_inset(MONITOR, Edge::Bottom, Some(beside)), 0);
+        assert_eq!(autohide_inset(MONITOR, Edge::Top, Some(TASKBAR)), 0);
+    }
+
+    #[test]
+    fn the_top_edge_insets_downward() {
+        let hidden = rect(0, -46, 2560, 2);
+        assert_eq!(autohide_inset(MONITOR, Edge::Top, Some(hidden)), 2);
+        assert_eq!(inset(MONITOR, Edge::Top, 2), rect(0, 2, 2560, 1440));
+        assert_eq!(inset(MONITOR, Edge::Bottom, 2), rect(0, 0, 2560, 1438));
+        assert_eq!(
+            band(inset(MONITOR, Edge::Bottom, 2), Edge::Bottom, 296),
+            rect(0, 1142, 2560, 1438)
+        );
+    }
+
+    #[test]
+    fn a_reserved_bar_asks_explorer_once() {
+        assert_eq!(
+            on_taskbar_created(BarState::Reserved),
+            TaskbarAction::AskOnce
+        );
+    }
+
+    #[test]
+    fn an_unreserved_or_new_bar_registers_from_the_start() {
+        assert_eq!(
+            on_taskbar_created(BarState::Unreserved),
+            TaskbarAction::RegisterAfresh
+        );
+        assert_eq!(
+            on_taskbar_created(BarState::New),
+            TaskbarAction::RegisterAfresh
+        );
+    }
+
+    #[test]
+    fn a_released_bar_stays_released() {
+        assert_eq!(
+            on_taskbar_created(BarState::Released),
+            TaskbarAction::Nothing
+        );
+    }
+
+    #[test]
+    fn a_new_monitor_or_edge_registers_afresh_and_the_same_one_does_not() {
+        let one = r"\\.\DISPLAY1";
+        let two = r"\\.\DISPLAY2";
+        assert!(!fresh_registration(None, (one, Edge::Bottom)));
+        assert!(!fresh_registration(
+            Some((one, Edge::Bottom)),
+            (one, Edge::Bottom)
+        ));
+        assert!(fresh_registration(
+            Some((one, Edge::Bottom)),
+            (two, Edge::Bottom)
+        ));
+        assert!(fresh_registration(
+            Some((one, Edge::Bottom)),
+            (one, Edge::Top)
+        ));
     }
 
     #[test]

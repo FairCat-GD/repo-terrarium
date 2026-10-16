@@ -6,12 +6,21 @@ Operating-system integration that needs FFI.
 
 - `geometry`: where the strip sits on a macOS screen, as pure arithmetic tested on every OS.
 - `appbar`: the Windows `AppBar`'s pure half, compiled and tested on every OS:
-  - the band on an edge, before and after Windows adjusts it;
-  - the check for a reservation a crashed strip left;
+  - the band on an edge, before and after Windows adjusts it, and the line an auto-hide
+    taskbar keeps free;
+  - the check for a reservation a crashed strip left, and when a move to another monitor or
+    edge registers the bar afresh;
+  - what Explorer starting again asks of the bar;
+  - the pin that holds every move of the strip to its granted band;
   - the extended-style guard;
   - the names of the window messages the probe counts.
 
   Its Win32 numbers are checked against the `windows` crate when the Windows build compiles.
+- `fullscreen`: when the strip steps behind a full-screen app, as `ManagedShell` decides it,
+  tested on every OS.
+- `display`: a Windows display's id from its monitor's device path, tested on every OS.
+- `power`: Windows' resume and display-state notifications read as a wake, tested on every OS.
+- `console`: letting go of a console Windows opened for this launch alone.
 - `macos`:
   - the strip's window level (desktop-icon + 1, or floating while raised);
   - its collection behaviour (every Space, fixed in Mission Control, out of the window
@@ -25,12 +34,13 @@ Operating-system integration that needs FFI.
   - The strip reserves its edge, is topmost, stays out of the taskbar and Alt-Tab, and is
     never activated by a click.
   - A `SetWindowSubclass` procedure sees the sent messages winit's hook cannot.
-  - The edge is given back on a normal exit, a panic, Ctrl-C and an unhandled exception, and a
-    reservation left by a crash is cleared at the next launch.
-  - Also: the probe's message counts, the foreground window, the OS version, and the context
-    menu.
-  - Later, with Windows hardening: fullscreen yield, `TaskbarCreated` re-registration and
-    Peek exclusion.
+  - The edge is given back on a normal exit, a panic, Ctrl-C, an unhandled exception and the
+    end of a session, and a reservation left by a crash is cleared when the bar registers.
+  - It is asked for again when Explorer restarts, stays out of Aero Peek, steps behind a
+    full-screen app on its monitor, and hears sleep, wake and the screens' power.
+  - Also: the display configuration's device paths, the taskbar's state, the probe's message
+    counts, the foreground window, the OS version, and the context menu, which gives the front
+    back when dismissed.
 - `clock`: the local date and time of day, for day and night (`localtime_r` on macOS,
   `GetLocalTime` on Windows).
 - `idle`: how long the machine has gone without input, for dim mode (`CGEventSource` on macOS,
@@ -47,7 +57,6 @@ Operating-system integration that needs FFI.
   application delegate).
 - `login`: opening at login, through `SMAppService` on macOS (only in an app bundle; any other
   build says so and touches nothing) and the per-user `Run` key on Windows.
-- Later: power notifications on Windows.
 
 ## Why it is a crate of its own
 

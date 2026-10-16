@@ -26,6 +26,7 @@ use terrarium_truth::scene::{SceneInput, Weather};
 use crate::copy;
 use crate::feed::Feed;
 use crate::instance::{self, Claim, Instance};
+use crate::pinning;
 use crate::strip::Mode;
 
 /// What a run with a data directory starts from: the repository `--repo` names, if one, and
@@ -276,6 +277,7 @@ pub fn run(repo: Option<PathBuf>) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Ok(Claim::Running) => {
+            pinning::allow_foreground_for_running();
             return match instance::ask_to_show(&data) {
                 Ok(()) => {
                     eprintln!("{}", copy::shown_in_running());

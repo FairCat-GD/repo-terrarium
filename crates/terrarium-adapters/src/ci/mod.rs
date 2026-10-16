@@ -6,6 +6,7 @@
 //! - [`GitHub`]: the client, behind [`Fetch`] so the engine's tests ask a stand-in.
 //! - [`Backoff`]: when the next poll may ask.
 //! - [`Keychain`]: where the token is kept; [`Token`] never shows itself.
+//! - [`tls_check`]: the probe's offline look at the client's TLS.
 //!
 //! Nothing here runs unless a token is saved and a repository is known; with neither, the app
 //! makes no connection (N-09).
@@ -14,6 +15,7 @@ mod client;
 mod keychain;
 mod request;
 mod runs;
+mod selfcheck;
 mod slug;
 #[cfg(test)]
 mod tests;
@@ -24,4 +26,5 @@ pub use keychain::MemoryKeychain;
 pub use keychain::{Keychain, KeychainError, NativeKeychain, Token};
 pub use request::{API_HOST, Backoff, CiError, runs_path, user_agent};
 pub use runs::{Run, Runs, Verdict, verdict};
+pub use selfcheck::{TlsCheck, tls_check};
 pub use slug::Slug;

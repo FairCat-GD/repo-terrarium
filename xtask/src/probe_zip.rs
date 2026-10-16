@@ -163,6 +163,20 @@ fn run_probe_cmd() -> String {
     .concat()
 }
 
+/// The probe's connect step: it starts the app as Explorer would, in a console of its own (which
+/// the app lets go of), with its files in a `data` folder beside it, so nothing is written
+/// outside the probe's folder. `start` returns at once, so this window closes by itself.
+fn run_connect_cmd() -> String {
+    [
+        "@echo off",
+        "cd /d \"%~dp0\"",
+        "set \"TERRARIUM_DATA_DIR=%~dp0data\"",
+        "start \"\" repo-terrarium.exe",
+    ]
+    .map(|line| format!("{line}\r\n"))
+    .concat()
+}
+
 /// The exe must import comctl32 by ordinal only. The `comctl32.dll` Windows loads for an app
 /// without a Common Controls 6 manifest may export its subclass functions by ordinal only, and a
 /// name it lacks stops the exe before it starts, which no test here would see.
@@ -248,7 +262,7 @@ fn named_imports(image: &[u8], dll: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Zips the exe, the README and the launcher into `target/probe/`.
+/// Zips the exe, the README and the two launchers into `target/probe/`.
 fn package(root: &Path, build_dir: &Path, readme: &str) -> Result<PathBuf, String> {
     let exe = build_dir.join(TARGET).join("release/repo-terrarium.exe");
     if !exe.is_file() {
@@ -265,6 +279,7 @@ fn package(root: &Path, build_dir: &Path, readme: &str) -> Result<PathBuf, Strin
             Some(readme.replace('\n', "\r\n")),
         ),
         (staging.join("run-probe.cmd"), Some(run_probe_cmd())),
+        (staging.join("run-connect.cmd"), Some(run_connect_cmd())),
     ];
     for (path, text) in &files {
         let written = match text {
@@ -375,6 +390,19 @@ mod tests {
             "{cmd:?}"
         );
         assert!(cmd.contains("cd /d \"%~dp0\"\r\nrepo-terrarium.exe --probe pinning\r\n"));
+    }
+
+    #[test]
+    fn the_connect_launcher_starts_the_app_alone_with_its_data_beside_it() {
+        let cmd = run_connect_cmd();
+        assert!(
+            cmd.split_inclusive('\n').all(|line| line.ends_with("\r\n")),
+            "{cmd:?}"
+        );
+        assert!(cmd.contains("set \"TERRARIUM_DATA_DIR=%~dp0data\"\r\n"));
+        // `start` gives the app a console of its own, as a double-click in Explorer does.
+        assert!(cmd.ends_with("start \"\" repo-terrarium.exe\r\n"));
+        assert!(!cmd.contains("--probe"));
     }
 
     #[test]

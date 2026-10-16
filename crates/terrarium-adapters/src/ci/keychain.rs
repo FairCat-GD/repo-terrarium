@@ -63,8 +63,26 @@ impl NativeKeychain {
         }
     }
 
+    #[cfg(not(windows))]
     fn entry(&self) -> Result<keyring::v1::Entry, KeychainError> {
         keyring::v1::Entry::new(&self.service, &self.account).map_err(|err| failure(&err))
+    }
+
+    /// On Windows the credential is kept on this computer (`Local`). The store keyring makes
+    /// would keep it `Enterprise`, which a roaming profile carries to every computer the
+    /// person signs in to; git's own credential helper keeps its tokens `Local` too. The
+    /// persistence is the store's to apply as the secret is written.
+    #[cfg(windows)]
+    fn entry(&self) -> Result<keyring::v1::Entry, KeychainError> {
+        // `v1` makes the default store the first time it is asked; the entry is then built
+        // from that store with the persistence asked for.
+        if let Err(err) = keyring::v1::Entry::store_status() {
+            return Err(failure(err));
+        }
+        let modifiers = std::collections::HashMap::from([("persistence", "Local")]);
+        keyring_core::Entry::new_with_modifiers(&self.service, &self.account, &modifiers)
+            .map(|inner| keyring::v1::Entry { inner })
+            .map_err(|err| failure(&err))
     }
 }
 

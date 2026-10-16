@@ -2,7 +2,9 @@
 
 use serde::Serialize;
 
-/// A monitor identity that survives reconnects and restarts: the display UUID on macOS.
+/// A monitor identity that survives reconnects and restarts: the display UUID on macOS, and on
+/// Windows the monitor's device path, which names it on its connector (its GDI name when the
+/// display configuration gives none).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct MonitorId(pub String);
 

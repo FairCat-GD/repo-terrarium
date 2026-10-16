@@ -7,20 +7,27 @@
 //! re-enter it, and nothing in it can panic: a panic cannot unwind out of an `extern "system"`
 //! function, and would abort the process.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
+use std::mem::offset_of;
 use std::rc::Rc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::System::Power::POWERBROADCAST_SETTING;
+use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows::Win32::UI::Shell::{
     ABM_ACTIVATE, ABM_WINDOWPOSCHANGED, APPBARDATA, SHAppBarMessage, SUBCLASSPROC,
 };
-use windows::Win32::UI::WindowsAndMessaging::STYLESTRUCT;
+use windows::Win32::UI::WindowsAndMessaging::{
+    DeregisterShellHookWindow, STYLESTRUCT, SWP_NOMOVE, WINDOWPOS,
+};
 use windows::core::BOOL;
 
 use super::exit;
 use crate::SystemEvent;
-use crate::appbar::{self, Registered};
+use crate::appbar::{self, PixelRect, Registered, WindowPos};
+use crate::fullscreen::{self, Hint};
+use crate::power::{self, DisplayPower};
 
 // The subclass functions are imported by ordinal, as a program built with the Windows SDK
 // imports them: Microsoft's own `comctl32.lib` names them 410, 412 and 413. The `comctl32.dll`
@@ -47,6 +54,10 @@ type Observer = Rc<dyn Fn(SystemEvent)>;
 pub(super) struct Subclass {
     registered: Registered,
     on_event: RefCell<Option<Observer>>,
+    /// The rectangle the strip's edge was granted: every move is held to it.
+    pinned: Cell<Option<PixelRect>>,
+    /// The console display's state as last heard, on or off.
+    display: Cell<Option<DisplayPower>>,
 }
 
 impl Subclass {
@@ -64,6 +75,11 @@ impl Subclass {
             *slot = Some(on_event);
         }
     }
+
+    /// Holds every move of the window to `rect`, or lets them be with `None`.
+    pub(super) fn pin(&self, rect: Option<PixelRect>) {
+        self.pinned.set(rect);
+    }
 }
 
 /// The installed subclass. Dropping it does not remove it; `remove` does, from the window's
@@ -80,6 +96,8 @@ pub(super) fn install(hwnd: HWND, registered: Registered) -> Option<Installed> {
     let state = Rc::new(Subclass {
         registered,
         on_event: RefCell::new(None),
+        pinned: Cell::new(None),
+        display: Cell::new(None),
     });
     let data = Rc::into_raw(Rc::clone(&state)).expose_provenance();
     // SAFETY: `hwnd` belongs to this thread (checked by the caller), `proc` has the subclass
@@ -147,15 +165,23 @@ unsafe extern "system" fn proc(
         match wparam.0 {
             appbar::ABN_POSCHANGED => state.emit(SystemEvent::AppBarPosChanged),
             appbar::ABN_STATECHANGE => state.emit(SystemEvent::AppBarStateChanged),
-            // Only a hint. The whole answer is in `lParam`; Microsoft's sample reads an
-            // uninitialised variable here and falls through.
-            appbar::ABN_FULLSCREENAPP => state.emit(SystemEvent::FullscreenApp(lparam.0 != 0)),
+            // Only a hint, and not for a monitor. The whole answer is in `lParam`; Microsoft's
+            // sample reads an uninitialised variable here and falls through.
+            appbar::ABN_FULLSCREENAPP => {
+                state.emit(SystemEvent::FullscreenHint(Hint::AppBar(lparam.0 != 0)));
+            }
             _ => {}
         }
         return LRESULT(0);
     }
     if msg != 0 && msg == state.registered.taskbar_created {
         state.emit(SystemEvent::TaskbarCreated);
+    }
+    if msg != 0
+        && msg == state.registered.shellhook
+        && let Some(hint) = fullscreen::shell_hint(wparam.0)
+    {
+        state.emit(SystemEvent::FullscreenHint(hint));
     }
 
     match msg {
@@ -174,12 +200,36 @@ unsafe extern "system" fn proc(
         appbar::WM_WINDOWPOSCHANGED if exit::is_registered(hwnd) => {
             notify(hwnd, ABM_WINDOWPOSCHANGED, 0);
         }
+        appbar::WM_WINDOWPOSCHANGING => {
+            if let Some(pinned) = state.pinned.get() {
+                hold(lparam, pinned);
+            }
+        }
         appbar::WM_DISPLAYCHANGE => state.emit(SystemEvent::ScreensChanged),
         appbar::WM_SETTINGCHANGE if wparam.0 == appbar::SPI_SETWORKAREA => {
             state.emit(SystemEvent::WorkAreaChanged);
         }
+        appbar::WM_POWERBROADCAST => {
+            if power::resumed(wparam.0) {
+                state.emit(SystemEvent::Woke);
+            } else if wparam.0 == appbar::PBT_POWERSETTINGCHANGE
+                && let Some(now) = display_state(lparam)
+            {
+                let (last, woke) = power::next_display(state.display.get(), now);
+                state.display.set(last);
+                if woke {
+                    state.emit(SystemEvent::ScreensWoke);
+                }
+            }
+        }
+        // Windows is ending the session. A process that loaded user32 gets no console event
+        // for a logoff or a shutdown, so the bar is removed here.
+        appbar::WM_ENDSESSION if wparam.0 != 0 => exit::remove_registered(),
         appbar::WM_NCDESTROY => {
             exit::remove_if_registered(hwnd);
+            // SAFETY: deregisters this window, which is being destroyed; one that never
+            // registered makes the call return FALSE.
+            let _ = unsafe { DeregisterShellHookWindow(hwnd) };
             remove(hwnd, data);
         }
         _ => {}
@@ -187,6 +237,65 @@ unsafe extern "system" fn proc(
     // SAFETY: passing the message on down the window's subclass chain, from inside this
     // subclass's procedure, with the arguments it came with.
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// Holds the move `WM_WINDOWPOSCHANGING` carries in `lparam` to `pinned`
+/// (`appbar::pin_window_pos`).
+fn hold(lparam: LPARAM, pinned: PixelRect) {
+    let pos = std::ptr::with_exposed_provenance_mut::<WINDOWPOS>(lparam.0.cast_unsigned());
+    // SAFETY: for `WM_WINDOWPOSCHANGING`, `lParam` points to a `WINDOWPOS` the system owns for
+    // the length of the message, which the window may change.
+    let Some(pos) = (unsafe { pos.as_mut() }) else {
+        return;
+    };
+    let asked = WindowPos {
+        x: pos.x,
+        y: pos.y,
+        cx: pos.cx,
+        cy: pos.cy,
+        flags: pos.flags.0,
+    };
+    if let Some(held) = appbar::pin_window_pos(asked, pinned) {
+        pos.x = held.x;
+        pos.y = held.y;
+        pos.cx = held.cx;
+        pos.cy = held.cy;
+        if counting() {
+            count(
+                if asked.flags & SWP_NOMOVE.0 == 0 {
+                    "WINDOWPOS_HELD"
+                } else {
+                    "WINDOWPOS_SIZE_HELD"
+                },
+                Seen::Subclass,
+            );
+        }
+    }
+}
+
+/// The console display's state a `PBT_POWERSETTINGCHANGE` carries in `lparam`, if that is the
+/// setting it reports.
+fn display_state(lparam: LPARAM) -> Option<DisplayPower> {
+    let setting =
+        std::ptr::with_exposed_provenance::<POWERBROADCAST_SETTING>(lparam.0.cast_unsigned());
+    if setting.is_null() {
+        return None;
+    }
+    // SAFETY: for `PBT_POWERSETTINGCHANGE`, `lParam` points to a `POWERBROADCAST_SETTING` the
+    // system owns for the length of the message: its header, then `DataLength` bytes. The
+    // header is read whole, without assuming its alignment.
+    let header = unsafe { setting.read_unaligned() };
+    if header.PowerSetting != GUID_CONSOLE_DISPLAY_STATE || header.DataLength < 4 {
+        return None;
+    }
+    let data = setting
+        .cast::<u8>()
+        .wrapping_add(offset_of!(POWERBROADCAST_SETTING, Data))
+        .cast::<[u8; 4]>();
+    // SAFETY: the setting's data holds at least the four bytes of a `DWORD`, checked above,
+    // read as bytes, so without assuming their alignment.
+    let value = unsafe { data.read_unaligned() };
+    DisplayPower::from_setting(u32::from_ne_bytes(value))
 }
 
 /// Tells Explorer about the bar's activation or move, as the `AppBar` protocol asks.

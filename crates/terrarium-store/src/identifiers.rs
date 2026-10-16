@@ -16,6 +16,9 @@ pub const LOCAL_TESTS_DIR: &str = "local-tests";
 pub const KEYCHAIN_SERVICE: &str = BUNDLE_ID;
 /// The keychain account the GitHub token is stored under: one for every repository.
 pub const KEYCHAIN_ACCOUNT_GITHUB: &str = "github-token";
+/// The keychain account the probe saves a made-up secret under, reads back and removes, so it
+/// never touches the token.
+pub const KEYCHAIN_ACCOUNT_PROBE: &str = "probe-check";
 /// The environment variable that points tests and harnesses at a data directory they own.
 pub const DATA_DIR_ENV: &str = "TERRARIUM_DATA_DIR";
 /// The file inside the data directory the running app holds a lock on, so a second launch
@@ -86,6 +89,7 @@ mod tests {
         assert_eq!(LOCAL_TESTS_DIR, "local-tests");
         assert_eq!(KEYCHAIN_SERVICE, "io.github.faircat-gd.repo-terrarium");
         assert_eq!(KEYCHAIN_ACCOUNT_GITHUB, "github-token");
+        assert_eq!(KEYCHAIN_ACCOUNT_PROBE, "probe-check");
         assert_eq!(DATA_DIR_ENV, "TERRARIUM_DATA_DIR");
         assert_eq!(INSTANCE_LOCK_FILE, "instance.lock");
         assert_eq!(REQUESTS_DIR, "requests");
