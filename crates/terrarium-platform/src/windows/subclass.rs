@@ -13,6 +13,7 @@ use std::mem::offset_of;
 use std::rc::Rc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect};
 use windows::Win32::System::Power::POWERBROADCAST_SETTING;
 use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows::Win32::UI::Shell::{
@@ -240,8 +241,20 @@ unsafe extern "system" fn proc(
 }
 
 /// Holds the move `WM_WINDOWPOSCHANGING` carries in `lparam` to `pinned`
-/// (`appbar::pin_window_pos`).
+/// (`appbar::pin_window_pos`). A rectangle on no monitor any more (its monitor was unplugged) is
+/// not held to: Windows' move onto a monitor that is there wins until the next placement.
 fn hold(lparam: LPARAM, pinned: PixelRect) {
+    let rect = RECT {
+        left: pinned.left,
+        top: pinned.top,
+        right: pinned.right,
+        bottom: pinned.bottom,
+    };
+    // SAFETY: only looks up the monitor a rectangle lies on; `rect` outlives the call, and a
+    // rectangle on none gives a null handle.
+    if unsafe { MonitorFromRect(&raw const rect, MONITOR_DEFAULTTONULL) }.is_invalid() {
+        return;
+    }
     let pos = std::ptr::with_exposed_provenance_mut::<WINDOWPOS>(lparam.0.cast_unsigned());
     // SAFETY: for `WM_WINDOWPOSCHANGING`, `lParam` points to a `WINDOWPOS` the system owns for
     // the length of the message, which the window may change.

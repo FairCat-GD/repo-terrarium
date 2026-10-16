@@ -208,6 +208,14 @@ pub fn yields(tracked: &[Tracked], strip_monitor: PixelRect) -> Option<isize> {
         .map(|app| app.handle)
 }
 
+/// Where the strip goes after a look, from where it stands (`applied`: behind that app, or on
+/// top with `None`) and where it belongs (`wanted`): `None` when it is where it belongs, else the
+/// place to move to. Behind one app and wanted behind another, it moves, so it is never left
+/// where an app that closed or stepped back held it.
+pub fn restack(applied: Option<isize>, wanted: Option<isize>) -> Option<Option<isize>> {
+    (applied != wanted).then_some(wanted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +435,15 @@ mod tests {
             tracked = update(&tracked, Some(&front), &now, &BOTH);
         }
         assert_eq!(tracked.len(), TRACKED_MAX);
+    }
+
+    #[test]
+    fn a_new_app_to_stand_behind_moves_the_strip_and_the_same_one_does_not() {
+        assert_eq!(restack(None, Some(10)), Some(Some(10)));
+        assert_eq!(restack(Some(10), Some(11)), Some(Some(11)));
+        assert_eq!(restack(Some(10), None), Some(None));
+        assert_eq!(restack(Some(10), Some(10)), None);
+        assert_eq!(restack(None, None), None);
     }
 
     #[test]

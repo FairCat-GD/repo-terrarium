@@ -37,8 +37,8 @@ None of it has run on Windows yet; the new probe asks testers to try each part.
   there, as the first placement does.
 - **A display-scale change no longer moves the strip off its edge**: every move is held to the
   band Windows granted, so winit's resize for the new scale cannot start a back-and-forth.
-- **Waking from sleep, and screens coming back on, refresh the strip at once** on Windows, as
-  on macOS: the clock is taken again and the engine looks at the repository.
+- **Waking from sleep refreshes the strip at once** on Windows, as on macOS: the clock is taken
+  again and the engine looks at the repository. Screens coming back on take the clock again.
 - **An auto-hide taskbar on the strip's edge can still be revealed**: the strip leaves its line
   at the screen's edge free.
 - **No console window on Windows** beside the strip when it starts from the Start menu, a

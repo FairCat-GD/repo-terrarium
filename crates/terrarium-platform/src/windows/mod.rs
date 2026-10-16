@@ -56,7 +56,7 @@ use winit::platform::windows::EventLoopBuilderExtWindows;
 
 use crate::SystemEvent;
 use crate::appbar::{self, BarState, PixelRect, Registered, TaskbarAction, band};
-use crate::display::{StableName, stable_name, stable_names};
+use crate::display::{StableName, stable_names};
 use crate::fullscreen::{self, Tracked};
 use crate::geometry::Edge;
 use subclass::Seen;
@@ -159,8 +159,8 @@ pub struct StripWindow {
     registered_on: RefCell<Option<(String, Edge)>>,
     /// The full-screen apps the strip knows of (`crate::fullscreen`).
     tracked: RefCell<Vec<Tracked>>,
-    /// Whether the strip stands behind a full-screen app, as it was last put.
-    yielded: Cell<bool>,
+    /// The full-screen app the strip stands behind, as it was last put; `None` on top.
+    behind: Cell<Option<isize>>,
     /// The display-state subscription, while it lasts.
     power: Cell<Option<HPOWERNOTIFY>>,
     /// Whether the window receives the shell hook's messages.
@@ -196,7 +196,7 @@ impl StripWindow {
             last: Cell::new(None),
             registered_on: RefCell::new(None),
             tracked: RefCell::new(Vec::new()),
-            yielded: Cell::new(false),
+            behind: Cell::new(None),
             power: Cell::new(subscribe_display_state(hwnd)),
             shell_hook: Cell::new(hook_shell(hwnd)),
         })
@@ -216,24 +216,27 @@ impl StripWindow {
     ///
     /// The first call registers the bar, and so does the first on another monitor or edge,
     /// after giving the old one back. Before registering, it clears a reservation a crashed
-    /// strip left on that edge. `None` when the monitor is gone, or the bar was released.
+    /// strip left on that edge. `display` is the monitor's stable id (its device path,
+    /// [`display_names`]), which tells another monitor from the same one renumbered. `None`
+    /// when the monitor is gone, or the bar was released.
     pub fn place(
         &self,
         monitor: isize,
+        display: &str,
         edge: Edge,
         thickness_for_width: impl Fn(u32) -> u32,
     ) -> Option<Placement> {
         // From the check that the bar is still registered to the move, an exit handler waits.
         let _placing = exit::placing();
-        let (rects, device) = monitor_described(monitor)?;
+        let rects = monitor_rects(monitor)?;
         let thickness = |area: PixelRect| thickness_for_width(area.width().max(0).cast_unsigned());
         let fresh = matches!(self.bar.get(), BarState::Reserved | BarState::Unreserved)
             && appbar::fresh_registration(
                 self.registered_on
                     .borrow()
                     .as_ref()
-                    .map(|(device, edge)| (device.as_str(), *edge)),
-                (device.as_str(), edge),
+                    .map(|(display, edge)| (display.as_str(), *edge)),
+                (display, edge),
             );
         if fresh {
             exit::remove_if_registered(self.hwnd);
@@ -250,7 +253,7 @@ impl StripWindow {
             } else {
                 BarState::Unreserved
             });
-            *self.registered_on.borrow_mut() = Some((device, edge));
+            *self.registered_on.borrow_mut() = Some((display.to_owned(), edge));
         }
         if self.bar.get() == BarState::Reserved && !exit::is_registered(self.hwnd) {
             // An exit handler gave the edge back; placing now would take it once more.
@@ -360,27 +363,28 @@ impl StripWindow {
             .map(|app| (app.handle, facts::of(hwnd_of(app.handle))))
             .collect();
         let next = fullscreen::update(&tracked, front.as_ref(), &now, monitors);
-        let behind = fullscreen::yields(&next, strip_monitor);
+        let wanted = fullscreen::yields(&next, strip_monitor);
+        let restack = fullscreen::restack(self.behind.get(), wanted);
         let check = FullscreenCheck {
-            yielded: behind.is_some(),
-            changed: behind.is_some() != self.yielded.get(),
+            yielded: wanted.is_some(),
+            changed: restack.is_some(),
             apps: next.len(),
             front_class: front.map(|facts| facts.class),
         };
         *self.tracked.borrow_mut() = next;
-        if check.changed {
-            match behind {
-                Some(app) => self.step_behind(hwnd_of(app)),
-                None => self.set_topmost(),
-            }
+        match restack {
+            Some(Some(app)) => self.step_behind(app),
+            Some(None) => self.set_topmost(),
+            None => {}
         }
         check
     }
 
-    /// Puts the strip right behind `app`, a full-screen window: no longer topmost, so the app
+    /// Puts the strip right behind `handle`, a full-screen window: no longer topmost, so the app
     /// and anything over it cover the strip, and the strip is where it was once the app goes.
-    fn step_behind(&self, app: HWND) {
-        self.yielded.set(true);
+    fn step_behind(&self, handle: isize) {
+        self.behind.set(Some(handle));
+        let app = hwnd_of(handle);
         let order = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
         // SAFETY: changes only the z-order of a window this thread owns.
         let _ = unsafe { SetWindowPos(self.hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, order) };
@@ -463,7 +467,7 @@ impl StripWindow {
     /// and any other is held to it.
     fn move_to(&self, rect: PixelRect) {
         self.subclass.state.pin(Some(rect));
-        let (after, flags): (Option<HWND>, SET_WINDOW_POS_FLAGS) = if self.yielded.get() {
+        let (after, flags): (Option<HWND>, SET_WINDOW_POS_FLAGS) = if self.behind.get().is_some() {
             (None, SWP_NOACTIVATE | SWP_NOZORDER)
         } else {
             (Some(HWND_TOPMOST), SWP_NOACTIVATE)
@@ -488,7 +492,7 @@ impl StripWindow {
     /// the launch and the raise hotkey, since doing it more often could cover the taskbar's
     /// flyouts, which open over the strip.
     pub fn set_topmost(&self) {
-        self.yielded.set(false);
+        self.behind.set(None);
         // SAFETY: changes only the z-order of a window this thread owns.
         let _ = unsafe {
             SetWindowPos(
@@ -541,7 +545,7 @@ impl StripWindow {
             topmost: ex & appbar::WS_EX_TOPMOST != 0,
             visible,
             iconic,
-            yielded: self.yielded.get(),
+            yielded: self.behind.get().is_some(),
         }
     }
 }
@@ -709,14 +713,6 @@ pub fn display_names() -> std::collections::BTreeMap<String, StableName> {
     stable_names(&display::paths())
 }
 
-/// The stable name of the display with GDI name `gdi`, among `names`.
-pub fn display_name(
-    gdi: &str,
-    names: &std::collections::BTreeMap<String, StableName>,
-) -> StableName {
-    stable_name(gdi, names)
-}
-
 /// The auto-hide taskbar on `edge` of `monitor`, if there is one: its window's rectangle.
 fn autohide_bar(monitor: PixelRect, edge: Edge) -> Option<PixelRect> {
     let mut data = APPBARDATA {
@@ -838,11 +834,11 @@ fn taskbar_rects() -> Vec<PixelRect> {
 }
 
 /// A window handle as the number it is.
-fn handle_of(hwnd: HWND) -> isize {
+pub(super) fn handle_of(hwnd: HWND) -> isize {
     hwnd.0.addr().cast_signed()
 }
 
-fn hwnd_of(handle: isize) -> HWND {
+pub(super) fn hwnd_of(handle: isize) -> HWND {
     HWND(std::ptr::without_provenance_mut(handle.cast_unsigned()))
 }
 

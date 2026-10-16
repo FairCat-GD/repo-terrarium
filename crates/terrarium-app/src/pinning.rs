@@ -3,6 +3,7 @@
 //! through `terrarium-platform::windows`. They are v1's only targets.
 
 use serde::Serialize;
+use terrarium_platform::appbar::TaskbarAction;
 
 pub use imp::{
     AttachError, Monitor, Observers, Pinning, PreviousApp, ReopenHook, activate,
@@ -101,23 +102,27 @@ pub struct AppBarPlaced {
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TaskbarReport {
-    pub action: TaskbarStep,
+    #[serde(serialize_with = "taskbar_action")]
+    pub action: TaskbarAction,
     /// What `ABM_NEW` answered when the bar was asked for once.
     pub answered: Option<bool>,
     pub shell_hook: bool,
 }
 
-/// How the bar was asked for again.
-#[cfg_attr(not(windows), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TaskbarStep {
-    /// Asked for once: Explorer had forgotten it, or answered that it still knew it.
-    AskOnce,
-    /// Registered from the start, the stale check included.
-    RegisterAfresh,
-    /// Already given back.
-    Nothing,
+/// The report's name for how the bar was asked for again.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `serialize_with` passes the field by reference"
+)]
+fn taskbar_action<S: serde::Serializer>(
+    action: &TaskbarAction,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(match action {
+        TaskbarAction::AskOnce => "ask-once",
+        TaskbarAction::RegisterAfresh => "register-afresh",
+        TaskbarAction::Nothing => "nothing",
+    })
 }
 
 /// A look at the full-screen apps that moved the strip behind one, or back (Windows).
@@ -390,7 +395,8 @@ mod imp {
 mod imp {
     use terrarium_compose::scale::{SizeStep, StripScale};
     use terrarium_platform::SystemEvent;
-    use terrarium_platform::appbar::{PixelRect, TaskbarAction};
+    use terrarium_platform::appbar::PixelRect;
+    use terrarium_platform::display;
     use terrarium_platform::geometry::Edge;
     use terrarium_platform::windows::{self, Placement, StaleCheck, StripWindow};
     use winit::event_loop::EventLoopBuilder;
@@ -402,7 +408,7 @@ mod imp {
 
     use super::{
         AppBarPlaced, FullscreenReport, LevelMode, MessageCount, OsSnapshot, Placed, PxRect,
-        StaleReport, TaskbarReport, TaskbarState, TaskbarStep,
+        StaleReport, TaskbarReport, TaskbarState,
     };
     use crate::copy;
     use crate::menu;
@@ -466,7 +472,7 @@ mod imp {
                 .enumerate()
                 .filter_map(|(index, handle)| {
                     let (rects, gdi) = windows::monitor_described(handle.hmonitor())?;
-                    let stable = windows::display_name(&gdi, &names);
+                    let stable = display::stable_name(&gdi, &names);
                     let size = |length: i32| u32::try_from(length).unwrap_or(0);
                     let detail = copy::monitor_detail(
                         &px(rects.monitor),
@@ -506,9 +512,12 @@ mod imp {
             step: SizeStep,
             edge: Edge,
         ) -> Option<(StripScale, Placed)> {
-            let placement = self.strip.place(monitor.handle.hmonitor(), edge, |width| {
-                StripScale::for_physical_width(width, step).height
-            })?;
+            let display = &monitor.info.id.0;
+            let placement =
+                self.strip
+                    .place(monitor.handle.hmonitor(), display, edge, |width| {
+                        StripScale::for_physical_width(width, step).height
+                    })?;
             // Said once, by the placement that tried to register the bar.
             if placement.stale.is_some() && !placement.reserved {
                 eprintln!("{}", copy::edge_not_reserved());
@@ -597,11 +606,7 @@ mod imp {
         pub fn taskbar_created(&self) -> Option<TaskbarReport> {
             let done = self.strip.taskbar_created();
             Some(TaskbarReport {
-                action: match done.action {
-                    TaskbarAction::AskOnce => TaskbarStep::AskOnce,
-                    TaskbarAction::RegisterAfresh => TaskbarStep::RegisterAfresh,
-                    TaskbarAction::Nothing => TaskbarStep::Nothing,
-                },
+                action: done.action,
                 answered: done.answered,
                 shell_hook: done.shell_hook,
             })

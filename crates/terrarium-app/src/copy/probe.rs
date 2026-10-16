@@ -5,12 +5,13 @@
 use std::fmt::{Display, Write as _};
 use std::path::Path;
 
+use terrarium_platform::appbar::TaskbarAction;
+
 use super::{BINARY_NAME, VERSION, hotkey};
 use crate::hotkey::{Platform, Which};
 use crate::hover::NativePoint;
 use crate::pinning::{
     AppBarPlaced, FullscreenReport, LevelMode, OsSnapshot, PxRect, TaskbarReport, TaskbarState,
-    TaskbarStep,
 };
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
 use crate::probe::script::{Phase, Step};
@@ -520,9 +521,9 @@ fn taskbar_created_text(report: &TaskbarReport) -> String {
     format!(
         "Explorer started again: the bar {}{answered}; shell hook {}",
         match report.action {
-            TaskbarStep::AskOnce => "was asked for once",
-            TaskbarStep::RegisterAfresh => "is registered from the start",
-            TaskbarStep::Nothing => "is left as it was",
+            TaskbarAction::AskOnce => "was asked for once",
+            TaskbarAction::RegisterAfresh => "is registered from the start",
+            TaskbarAction::Nothing => "is left as it was",
         },
         if report.shell_hook {
             "taken"

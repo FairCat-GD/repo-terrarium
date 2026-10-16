@@ -322,6 +322,26 @@ mod tests {
     }
 
     #[test]
+    fn a_taskbar_report_names_how_the_bar_was_asked_for() {
+        use terrarium_platform::appbar::TaskbarAction;
+        let event = |action| {
+            serde_json::to_value(ProbeEvent::Taskbar(TaskbarReport {
+                action,
+                answered: Some(true),
+                shell_hook: true,
+            }))
+            .unwrap()
+        };
+        assert_eq!(event(TaskbarAction::AskOnce)["action"], "ask-once");
+        assert_eq!(
+            event(TaskbarAction::RegisterAfresh)["action"],
+            "register-afresh"
+        );
+        assert_eq!(event(TaskbarAction::Nothing)["action"], "nothing");
+        assert_eq!(event(TaskbarAction::Nothing)["event"], "taskbar");
+    }
+
+    #[test]
     fn an_os_snapshot_is_tagged_and_lists_message_counts() {
         let event = ProbeEvent::Os(OsSnapshot {
             work_area: Some(RECT),

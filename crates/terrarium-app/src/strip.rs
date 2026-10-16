@@ -1910,6 +1910,28 @@ impl Strip {
     }
 }
 
+/// What a wake asks of the strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Waking {
+    /// The feed takes the local time again.
+    look: bool,
+    /// The engine looks at the repository at once.
+    engine: bool,
+}
+
+/// The composer carried the clock on through a sleep, but on macOS the monotonic clock stops
+/// while asleep, so after the machine wakes the feed takes the local time again and the engine
+/// catches truth up. Screens coming back on (a display that slept while the machine did not, or
+/// a Windows machine in Modern Standby, which sends no wake of its own) have the feed look
+/// again too, but leave the engine to its next minute's look: waking it restarts the GitHub
+/// poll's backoff, which every idle display would then reset.
+fn waking(event: SystemEvent) -> Waking {
+    Waking {
+        look: matches!(event, SystemEvent::Woke | SystemEvent::ScreensWoke),
+        engine: event == SystemEvent::Woke,
+    }
+}
+
 /// The monitor the strip belongs on: `preferred` when it is connected.
 fn choose(mut monitors: Vec<Monitor>, preferred: Option<&MonitorId>) -> Option<Monitor> {
     let index = monitor::choose(&monitors, preferred)?;
@@ -2008,9 +2030,12 @@ impl ApplicationHandler<UserEvent> for Strip {
                 None => {}
             },
             UserEvent::System(event) => {
-                self.record(ProbeEvent::System {
-                    what: format!("{event:?}"),
-                });
+                // Only a probe keeps it, and the shell hook sends one for every activation.
+                if self.probe.is_some() {
+                    self.record(ProbeEvent::System {
+                        what: format!("{event:?}"),
+                    });
+                }
                 if matches!(
                     event,
                     SystemEvent::ScreensChanged
@@ -2032,17 +2057,16 @@ impl ApplicationHandler<UserEvent> for Strip {
                         }
                     });
                 }
-                // The composer carried the clock on through the sleep, but on macOS the
-                // monotonic clock stops while asleep: the feed takes the local time again, and
-                // the engine catches truth up. Screens coming back on are taken the same way,
-                // since a Windows machine in Modern Standby sends no wake of its own.
-                if matches!(event, SystemEvent::Woke | SystemEvent::ScreensWoke) {
-                    if let Some(scene) = &mut self.scene {
-                        scene.look(Instant::now(), true);
-                    }
-                    if let Some(engine) = self.repo.as_ref().and_then(|r| r.engine.as_ref()) {
-                        engine.wake();
-                    }
+                let waking = waking(event);
+                if waking.look
+                    && let Some(scene) = &mut self.scene
+                {
+                    scene.look(Instant::now(), true);
+                }
+                if waking.engine
+                    && let Some(engine) = self.repo.as_ref().and_then(|r| r.engine.as_ref())
+                {
+                    engine.wake();
                 }
             }
             UserEvent::ProbeLine(line) => {
@@ -2256,6 +2280,31 @@ mod tests {
     use super::*;
     use crate::instance::Claim;
     use crate::shell::Intent;
+
+    #[test]
+    fn the_machine_waking_wakes_the_engine_and_the_screens_waking_only_takes_the_time() {
+        assert_eq!(
+            waking(SystemEvent::Woke),
+            Waking {
+                look: true,
+                engine: true
+            }
+        );
+        assert_eq!(
+            waking(SystemEvent::ScreensWoke),
+            Waking {
+                look: true,
+                engine: false
+            }
+        );
+        assert_eq!(
+            waking(SystemEvent::ScreensChanged),
+            Waking {
+                look: false,
+                engine: false
+            }
+        );
+    }
 
     /// A login item that records what it is asked.
     #[derive(Default)]

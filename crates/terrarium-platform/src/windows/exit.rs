@@ -8,6 +8,9 @@
 //! - a normal exit, through the strip window's `release` and `Drop`;
 //! - a panic on the thread that registered the bar, through the panic hook;
 //! - Ctrl-C, Ctrl-Break and a closed console, through the console control handler;
+//! - the end of the session (a logoff, a shutdown), through the strip window's
+//!   `WM_ENDSESSION`: a process that loaded user32, as the strip has, gets no console event for
+//!   either;
 //! - an unhandled structured exception, through the unhandled-exception filter.
 //!
 //! Nothing runs for `taskkill /f`, or for a fast-fail abort (a double panic, a stack overflow).
@@ -26,6 +29,8 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{ABM_REMOVE, APPBARDATA, SHAppBarMessage};
 use windows::core::BOOL;
 
+use super::{handle_of, hwnd_of};
+
 /// The registered bar's window handle, or 0 when no bar is registered.
 static REGISTERED: AtomicIsize = AtomicIsize::new(0);
 /// The Win32 id of the thread that registers the bar, the event loop's. A panic there ends the
@@ -40,10 +45,6 @@ static PLACING: Mutex<()> = Mutex::new(());
 /// The filter that was installed before ours, which ours hands on to.
 static PREVIOUS_FILTER: OnceLock<LPTOP_LEVEL_EXCEPTION_FILTER> = OnceLock::new();
 
-fn handle_value(hwnd: HWND) -> isize {
-    hwnd.0.addr().cast_signed()
-}
-
 /// Held while the bar is registered or placed; see `PLACING`.
 pub(super) fn placing() -> MutexGuard<'static, ()> {
     PLACING.lock().unwrap_or_else(PoisonError::into_inner)
@@ -52,11 +53,11 @@ pub(super) fn placing() -> MutexGuard<'static, ()> {
 /// Records `hwnd` as the registered bar. Called before every `ABM_NEW`, so an exit between the
 /// registration and this record cannot leave the edge reserved.
 pub(super) fn mark_registered(hwnd: HWND) {
-    REGISTERED.store(handle_value(hwnd), Ordering::SeqCst);
+    REGISTERED.store(handle_of(hwnd), Ordering::SeqCst);
 }
 
 pub(super) fn is_registered(hwnd: HWND) -> bool {
-    REGISTERED.load(Ordering::SeqCst) == handle_value(hwnd)
+    REGISTERED.load(Ordering::SeqCst) == handle_of(hwnd)
 }
 
 /// Removes the registered bar, if there is one. Safe from any thread and any exit path: it
@@ -68,7 +69,7 @@ pub(super) fn remove_registered() {
 /// Removes the bar only if it is `hwnd`'s, in one atomic step, so a window being destroyed
 /// never removes another window's bar.
 pub(super) fn remove_if_registered(hwnd: HWND) {
-    let hwnd = handle_value(hwnd);
+    let hwnd = handle_of(hwnd);
     if REGISTERED
         .compare_exchange(hwnd, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
@@ -83,7 +84,7 @@ fn send_remove(hwnd: isize) {
     }
     let mut data = APPBARDATA {
         cbSize: super::struct_size::<APPBARDATA>(),
-        hWnd: HWND(std::ptr::without_provenance_mut(hwnd.cast_unsigned())),
+        hWnd: hwnd_of(hwnd),
         uCallbackMessage: 0,
         uEdge: 0,
         rc: RECT::default(),
@@ -123,8 +124,8 @@ pub(super) fn install_handlers() {
     });
 }
 
-/// Ctrl-C, Ctrl-Break, a closed console, logoff or shutdown. The bar is removed, and FALSE
-/// passes the event on, so the default handler still ends the process.
+/// Ctrl-C, Ctrl-Break or a closed console. The bar is removed, and FALSE passes the event on, so
+/// the default handler still ends the process.
 extern "system" fn on_console_control(_control: u32) -> BOOL {
     // This runs on a thread of its own, so it can wait for a placement in progress.
     let _placing = placing();
