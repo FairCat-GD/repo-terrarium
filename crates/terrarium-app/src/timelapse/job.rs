@@ -26,7 +26,7 @@ use super::{Film, write_gif, write_postcard};
 use crate::copy;
 
 /// Where a session's answers go, with the generation of the session that sends them.
-pub type Answer = Arc<dyn Fn(u64, Msg) + Send + Sync>;
+pub type Answer = crate::strip::Forward<Msg>;
 
 /// What a time-lapse job says.
 pub enum Msg {
@@ -235,19 +235,69 @@ fn in_steps(answer: Answer, generation: u64) -> impl FnMut(u8) {
     }
 }
 
-/// Runs `job` on a named thread and sends what it says; a panic sends `halted` with the
-/// words for it.
+/// Runs `job` on a named thread and sends what it says; a panic, or a thread that cannot
+/// start, sends `halted` with the words for it, so the window is never left waiting.
 fn spawn(
     answer: &Answer,
     generation: u64,
     name: &str,
-    halted: impl FnOnce(String) -> Msg + Send + 'static,
+    halted: impl Fn(String) -> Msg + Send + Sync + 'static,
     job: impl FnOnce() -> Msg + Send + 'static,
 ) {
-    let answer = Arc::clone(answer);
-    let _ = thread::Builder::new().name(name.into()).spawn(move || {
+    run_on(
+        thread::Builder::new().name(name.into()),
+        answer,
+        generation,
+        halted,
+        job,
+    );
+}
+
+/// [`spawn`] on the thread `builder` makes.
+fn run_on(
+    builder: thread::Builder,
+    answer: &Answer,
+    generation: u64,
+    halted: impl Fn(String) -> Msg + Send + Sync + 'static,
+    job: impl FnOnce() -> Msg + Send + 'static,
+) {
+    let halted = Arc::new(halted);
+    let (on_thread, on_failure) = (Arc::clone(&halted), halted);
+    let to_thread = Arc::clone(answer);
+    let started = builder.spawn(move || {
         let msg = panic::catch_unwind(AssertUnwindSafe(job))
-            .unwrap_or_else(|_| halted(copy::timelapse::HALTED.to_owned()));
-        answer(generation, msg);
+            .unwrap_or_else(|_| on_thread(copy::timelapse::HALTED.to_owned()));
+        to_thread(generation, msg);
     });
+    if started.is_err() {
+        answer(generation, on_failure(copy::timelapse::HALTED.to_owned()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn a_job_whose_thread_cannot_start_still_answers() {
+        let (tx, rx) = mpsc::channel();
+        let answer: Answer = Arc::new(move |generation, msg| {
+            let _ = tx.send((generation, msg));
+        });
+        // A stack no thread can have: the spawn fails before the job runs.
+        let builder = thread::Builder::new().stack_size(usize::MAX);
+        run_on(
+            builder,
+            &answer,
+            4,
+            |why| Msg::Written(Err(why)),
+            || Msg::Reading(1),
+        );
+        assert!(matches!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok((4, Msg::Written(Err(_))))
+        ));
+    }
 }

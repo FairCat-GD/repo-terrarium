@@ -147,8 +147,6 @@ The feature writes, so only xtask and dev-dependencies may turn it on.
 - `std::process::Command` appears only in `exec` among the `src/` files of the code that ships
   (`cargo xtask verify`'s graph stage); integration tests, benches and xtask may start
   processes, never git.
-- A worktree the repository's own config places elsewhere (`core.worktree`) counts as none,
-  so reports are read only from the folder connected.
 
 ## Requirements
 

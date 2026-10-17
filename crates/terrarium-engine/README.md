@@ -11,8 +11,9 @@ The headless live pipeline, run on a worker thread.
   same repository), re-seeding (a new install salt, the cache dropped, the observations kept),
   importing an observations export, and disconnecting, with or without deleting the
   observations. The app runs each with the engine stopped.
-- **Refresh** (`live`): git, then the reports, then replay. A report is read only once it has
-  been still for 500 ms, and recorded only when its content changed since its format's last
+- **Refresh** (`live`): git, then the reports, then replay. Reports are read from the folder
+  connected, never from where the repository's own config places its worktree
+  (`core.worktree`). A report is read only once it has been still for 500 ms, and recorded only when its content changed since its format's last
   observation. A default branch moved without fast-forwarding is recorded as a `ref_rewrite`, with what git
   read of the commits it took off the chain; a move made while the app was closed is read back
   from the object database at the next start.

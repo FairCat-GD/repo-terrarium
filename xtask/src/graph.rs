@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::purity;
@@ -183,9 +183,10 @@ pub fn check(ws: &Workspace) -> Vec<String> {
         }
     }
     check_truth_sources(&ws.truth_sources, &mut violations);
-    check_process_spawning(&ws.product_sources, &mut violations);
-    check_network(&ws.product_sources, &mut violations);
-    check_git_runs(&ws.all_sources, &mut violations);
+    let lexed = Lexed::of(ws.product_sources.iter().chain(&ws.all_sources));
+    check_process_spawning(&ws.product_sources, &lexed, &mut violations);
+    check_network(&ws.product_sources, &lexed, &mut violations);
+    check_git_runs(&ws.all_sources, &lexed, &mut violations);
     check_http_client(ws, &mut violations);
     check_msrv(ws, &mut violations);
     violations
@@ -366,14 +367,36 @@ fn check_truth_sources(sources: &[SourceFile], out: &mut Vec<String>) {
     }
 }
 
+/// Each source file's tokens, lexed once for every scan, or why it does not lex.
+struct Lexed<'a>(BTreeMap<&'a str, Result<TokenStream, String>>);
+
+impl<'a> Lexed<'a> {
+    fn of(sources: impl Iterator<Item = &'a SourceFile>) -> Lexed<'a> {
+        let mut lexed = BTreeMap::new();
+        for source in sources {
+            lexed.entry(source.path.as_str()).or_insert_with(|| {
+                TokenStream::from_str(&source.text).map_err(|err| err.to_string())
+            });
+        }
+        Lexed(lexed)
+    }
+
+    fn tokens(&self, source: &SourceFile) -> Result<TokenStream, String> {
+        self.0
+            .get(source.path.as_str())
+            .cloned()
+            .unwrap_or_else(|| Err("not lexed".to_owned()))
+    }
+}
+
 /// Only the exec module names `std::process::Command`. Tests and xtask may start processes; the
 /// code that ships may not, outside that module.
-fn check_process_spawning(sources: &[SourceFile], out: &mut Vec<String>) {
+fn check_process_spawning(sources: &[SourceFile], lexed: &Lexed, out: &mut Vec<String>) {
     for source in sources
         .iter()
         .filter(|s| s.path.replace('\\', "/") != EXEC_MODULE)
     {
-        match TokenStream::from_str(&source.text) {
+        match lexed.tokens(source) {
             Ok(tokens) => {
                 let aliases = process_aliases(tokens.clone());
                 out.extend(command_lines(tokens, &aliases).into_iter().map(|line| {
@@ -476,9 +499,9 @@ fn imports_command(tokens: TokenStream) -> bool {
 /// Nothing in the workspace runs the git command line, not a test, a bench or xtask:
 /// `Command::new("git")` in any form a literal names it. A file that does not lex is reported
 /// by the scan of the code that ships, or compiled by cargo.
-fn check_git_runs(sources: &[SourceFile], out: &mut Vec<String>) {
+fn check_git_runs(sources: &[SourceFile], lexed: &Lexed, out: &mut Vec<String>) {
     for source in sources {
-        let Ok(tokens) = TokenStream::from_str(&source.text) else {
+        let Ok(tokens) = lexed.tokens(source) else {
             continue;
         };
         out.extend(git_run_lines(tokens).into_iter().map(|line| {
@@ -491,7 +514,7 @@ fn check_git_runs(sources: &[SourceFile], out: &mut Vec<String>) {
 }
 
 /// The lines where `Command::new` is called with a literal naming git: `"git"`, `"git.exe"` or
-/// a path ending in either.
+/// a path ending in either, in any case, as the Mac's and Windows' file systems find it.
 fn git_run_lines(tokens: TokenStream) -> Vec<usize> {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     let mut lines = Vec::new();
@@ -526,18 +549,18 @@ fn names_git(literal: &str) -> bool {
         .trim_matches('#')
         .trim_matches('"');
     let program = text.rsplit(['/', '\\']).next().unwrap_or(text);
-    program == "git" || program.eq_ignore_ascii_case("git.exe")
+    program.eq_ignore_ascii_case("git") || program.eq_ignore_ascii_case("git.exe")
 }
 
 /// Only the CI module names the HTTP client, a socket or `std::net`: the graph keeps `ureq` out
 /// of every crate but adapters, and this keeps it, and every connection, inside one module of
 /// it (I-6, N-09). A file that does not lex is already reported.
-fn check_network(sources: &[SourceFile], out: &mut Vec<String>) {
+fn check_network(sources: &[SourceFile], lexed: &Lexed, out: &mut Vec<String>) {
     for source in sources
         .iter()
         .filter(|s| !s.path.replace('\\', "/").starts_with(CI_MODULE))
     {
-        let Ok(tokens) = TokenStream::from_str(&source.text) else {
+        let Ok(tokens) = lexed.tokens(source) else {
             continue;
         };
         out.extend(network_lines(tokens).into_iter().map(|(line, name)| {
@@ -679,18 +702,12 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         .into_iter()
         .map(member_from)
         .collect::<Result<Vec<_>, _>>()?;
-    let truth_dir = metadata
-        .workspace_packages()
-        .into_iter()
-        .find(|p| p.name.as_str() == TRUTH)
-        .and_then(|p| p.manifest_path.parent())
-        .ok_or("cargo metadata has no terrarium-truth")?
-        .as_std_path()
-        .to_path_buf();
-    let mut truth_sources = Vec::new();
-    collect_sources(root, &truth_dir, &mut truth_sources)?;
-    let mut product_sources = Vec::new();
+    // Every member's files are read once; truth's, and those of the code that ships (each
+    // member's `src/` but xtask's), are among them.
+    let relative = |dir: &Path| dir.strip_prefix(root).unwrap_or(dir).to_path_buf();
     let mut all_sources = Vec::new();
+    let mut truth_dir = None;
+    let mut shipped_dirs = Vec::new();
     for package in metadata.workspace_packages() {
         let dir = package
             .manifest_path
@@ -698,10 +715,26 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
             .ok_or("a member manifest has no directory")?
             .as_std_path();
         collect_sources(root, dir, &mut all_sources)?;
+        if package.name.as_str() == TRUTH {
+            truth_dir = Some(relative(dir));
+        }
         if package.name.as_str() != XTASK {
-            collect_sources(root, &dir.join("src"), &mut product_sources)?;
+            shipped_dirs.push(relative(dir).join("src"));
         }
     }
+    let truth_dir = truth_dir.ok_or("cargo metadata has no terrarium-truth")?;
+    let under = |dirs: &[PathBuf]| -> Vec<SourceFile> {
+        all_sources
+            .iter()
+            .filter(|source| {
+                dirs.iter()
+                    .any(|dir| Path::new(&source.path).starts_with(dir))
+            })
+            .cloned()
+            .collect()
+    };
+    let truth_sources = under(std::slice::from_ref(&truth_dir));
+    let product_sources = under(&shipped_dirs);
     Ok(Workspace {
         members,
         packages: resolved_packages(&metadata)?,
@@ -1261,6 +1294,7 @@ mod tests {
                 2,
             ),
             ("fn f() { Command::new(\"/usr/bin/git\"); }\n", 1),
+            ("fn f() { Command::new(\"Git\"); }\n", 1),
         ] {
             let mut ws = workspace();
             ws.all_sources.push(SourceFile {

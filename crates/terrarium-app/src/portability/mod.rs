@@ -10,18 +10,18 @@ pub mod climate;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 
 use terrarium_engine::timelapse::Lapse;
 use terrarium_store::{DataDir, Store, Terrarium};
-use winit::event_loop::EventLoopProxy;
 
 use self::climate::ClimateError;
 use crate::copy;
 use crate::files::write_beside;
 use crate::shell::DataFile;
-use crate::strip::UserEvent;
+use crate::strip::Forward;
 
 /// What an export says.
 #[derive(Debug, PartialEq, Eq)]
@@ -82,10 +82,10 @@ pub fn export_climate(
     Ok(days)
 }
 
-/// Exports `file` of `terrarium` to `path` on a thread of its own, answering as
-/// [`UserEvent::Portability`] of `generation`.
+/// Exports `file` of `terrarium` to `path` on a thread of its own, answering through `answer`
+/// as the export of `generation`.
 pub fn spawn(
-    proxy: &EventLoopProxy<UserEvent>,
+    answer: &Forward<Msg>,
     generation: u64,
     data: DataDir,
     terrarium: Terrarium,
@@ -93,14 +93,11 @@ pub fn spawn(
     path: PathBuf,
     at_secs: i64,
 ) {
-    let proxy = proxy.clone();
-    let sent = proxy.clone();
+    let (on_thread, sent) = (Arc::clone(answer), Arc::clone(answer));
     let ran = thread::Builder::new()
         .name("terrarium-export".into())
         .spawn(move || {
-            let say = |msg| {
-                let _ = proxy.send_event(UserEvent::Portability(generation, msg));
-            };
+            let say = |msg| on_thread(generation, msg);
             let written = panic::catch_unwind(AssertUnwindSafe(|| match file {
                 DataFile::Observations => export_observations(&data, &terrarium, &path),
                 DataFile::Climate => {
@@ -111,8 +108,7 @@ pub fn spawn(
             say(Msg::Written(written.map(|_| path)));
         });
     if let Err(err) = ran {
-        let msg = Msg::Written(Err(err.to_string()));
-        let _ = sent.send_event(UserEvent::Portability(generation, msg));
+        sent(generation, Msg::Written(Err(err.to_string())));
     }
 }
 

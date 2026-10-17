@@ -99,25 +99,29 @@ impl Poller {
                             client.forget();
                         }
                         Job::Ask(ask) => {
-                            let read =
-                                match held.get_or_insert_with(|| read_token(keychain.as_ref())) {
-                                    Err(err) => Read::Keychain(*err),
-                                    Ok(None) => Read::NoToken {
-                                        removed: std::mem::take(&mut had_token),
-                                    },
-                                    Ok(Some(token)) => {
-                                        had_token = true;
-                                        // A panic in the client answers as GitHub not reached, and
-                                        // the next poll asks with a client made afresh.
-                                        let asked = panic::catch_unwind(AssertUnwindSafe(|| {
-                                            ask_branches(client.as_mut(), &ask, token)
-                                        }));
-                                        asked.unwrap_or_else(|_| {
-                                            client = fetch();
-                                            Read::Failed(CiError::Unreachable)
-                                        })
-                                    }
-                                };
+                            if held.is_none() {
+                                held = read_token(keychain.as_ref());
+                            }
+                            let unread: Result<Option<Token>, KeychainError> =
+                                Err(KeychainError::Failed);
+                            let read = match held.as_ref().unwrap_or(&unread) {
+                                Err(err) => Read::Keychain(*err),
+                                Ok(None) => Read::NoToken {
+                                    removed: std::mem::take(&mut had_token),
+                                },
+                                Ok(Some(token)) => {
+                                    had_token = true;
+                                    // A panic in the client answers as GitHub not reached, and
+                                    // the next poll asks with a client made afresh.
+                                    let asked = panic::catch_unwind(AssertUnwindSafe(|| {
+                                        ask_branches(client.as_mut(), &ask, token)
+                                    }));
+                                    asked.unwrap_or_else(|_| {
+                                        client = fetch();
+                                        Read::Failed(CiError::Unreachable)
+                                    })
+                                }
+                            };
                             answer(Answered {
                                 slug: ask.slug,
                                 read,
@@ -278,10 +282,10 @@ impl CiStatus {
     }
 }
 
-/// The token the keychain holds. A panic in the keychain is answered as a keychain that
-/// failed, so the poller lives on and says so.
-fn read_token(keychain: &dyn Keychain) -> Result<Option<Token>, KeychainError> {
-    panic::catch_unwind(AssertUnwindSafe(|| keychain.token())).unwrap_or(Err(KeychainError::Failed))
+/// What the keychain answered, or `None` when it panicked: the poll then says the keychain
+/// failed, and the next poll asks it again rather than keeping that answer.
+fn read_token(keychain: &dyn Keychain) -> Option<Result<Option<Token>, KeychainError>> {
+    panic::catch_unwind(AssertUnwindSafe(|| keychain.token())).ok()
 }
 
 #[cfg(test)]
@@ -305,8 +309,12 @@ mod tests {
     }
 
     #[test]
-    fn a_keychain_that_panics_reads_as_one_that_failed() {
-        assert!(matches!(read_token(&Panicking), Err(KeychainError::Failed)));
+    fn a_keychain_that_panics_is_not_taken_as_its_answer() {
+        assert!(read_token(&Panicking).is_none());
+        assert!(matches!(
+            read_token(&terrarium_adapters::ci::MemoryKeychain::default()),
+            Some(Ok(None))
+        ));
     }
 
     fn failed() -> Read {

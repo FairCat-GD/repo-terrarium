@@ -34,7 +34,8 @@ pub struct KnipDone {
     pub outcome: Result<Vec<u8>, KnipError>,
 }
 
-/// A run going, owned by the worker: stopping it kills Knip and waits for its thread.
+/// A run going, owned by the worker: stopping it, or dropping it however the worker ends, kills
+/// Knip and waits for its thread.
 pub(crate) struct Running {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -88,7 +89,13 @@ impl Running {
     /// Stops the run and waits for it: Knip is killed within moments. A process Knip itself
     /// started may outlive it; stopping a whole process group would need code this crate
     /// cannot hold (I-9).
-    pub(crate) fn stop(mut self) {
+    pub(crate) fn stop(self) {
+        drop(self);
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -191,6 +198,38 @@ mod tests {
             heard.as_slice(),
             [KnipDone {
                 outcome: Err(KnipError::CannotRun(_)),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn a_run_dropped_with_its_worker_is_stopped_and_waited_for() {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&heard);
+        let running = Running::start_with(
+            head(),
+            |stop| {
+                while !stop.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(KnipError::Stopped)
+            },
+            move |done| into.lock().unwrap().push(done),
+        );
+        // As a worker unwinding drops its jobs; a drop that never stopped the run would wait
+        // for it for good.
+        let (dropped, gone) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(running);
+            let _ = dropped.send(());
+        });
+        gone.recv_timeout(Duration::from_secs(10))
+            .expect("the drop stops the run and returns");
+        assert!(matches!(
+            heard.lock().unwrap().as_slice(),
+            [KnipDone {
+                outcome: Err(KnipError::Stopped),
                 ..
             }]
         ));

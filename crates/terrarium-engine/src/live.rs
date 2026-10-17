@@ -681,7 +681,7 @@ impl Live {
         if cancel.load(Ordering::Relaxed) {
             return Err(Fault::Cancelled);
         }
-        let root = git.workdir().map(Path::to_path_buf);
+        let root = report_root(&git, &path);
         let observed = self.observe(&git, root.as_deref(), &head, refresh.reports, cancel)?;
         recorded |= observed.recorded;
         recorded |= self.record_ci(&head)?;
@@ -1758,8 +1758,16 @@ fn unsettled(files: impl Iterator<Item = PathBuf>) -> Option<Duration> {
     DEBOUNCE.checked_sub(age).filter(|left| !left.is_zero())
 }
 
+/// Where the reports are read: the folder the person connected, when the repository has a
+/// worktree. Never where the repository's own config places its worktree (`core.worktree`),
+/// which can name any folder on the disk; discovery and the Knip run take the same folder.
+fn report_root(git: &GitRepo, connected: &Path) -> Option<PathBuf> {
+    git.workdir().map(|_| connected.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Mutex;
     use std::thread;
 
@@ -1781,6 +1789,30 @@ mod tests {
         fn watch_set(&self) -> Option<&WatchSet> {
             None
         }
+    }
+
+    #[test]
+    fn the_reports_are_read_from_the_folder_connected_wherever_the_config_puts_the_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let fixture = FixtureRepo::init(&repo).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let config = fixture.git_dir().join("config");
+        let text = fs::read_to_string(&config).unwrap();
+        let placed = format!("{text}[core]\n\tworktree = {}\n", elsewhere.display());
+        fs::write(&config, placed).unwrap();
+        let git = GitRepo::open(&repo).unwrap();
+        assert_eq!(
+            git.workdir().map(fs::canonicalize).transpose().unwrap(),
+            Some(fs::canonicalize(&elsewhere).unwrap()),
+            "the config does move the worktree"
+        );
+        assert_eq!(report_root(&git, &repo), Some(repo.clone()));
+
+        let bare = dir.path().join("bare");
+        FixtureRepo::init_bare(&bare).unwrap();
+        assert_eq!(report_root(&GitRepo::open(&bare).unwrap(), &bare), None);
     }
 
     #[test]

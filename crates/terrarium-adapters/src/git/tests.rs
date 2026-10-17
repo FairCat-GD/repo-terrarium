@@ -1388,19 +1388,3 @@ fn the_git_directories_are_where_refs_and_head_live() {
         std::fs::canonicalize(repo.path()).unwrap()
     );
 }
-
-#[test]
-fn a_worktree_the_repository_s_config_places_elsewhere_is_not_read() {
-    let dir = temp();
-    let mut repo = new_repo(&dir);
-    repo.commit("main", at(0), "seed", &[Edit::write("a.txt", "a\n")])
-        .unwrap();
-    let elsewhere = dir.path().join("elsewhere");
-    std::fs::create_dir(&elsewhere).unwrap();
-    let config = repo.git_dir().join("config");
-    let text = std::fs::read_to_string(&config).unwrap();
-    let placed = format!("{text}[core]\n\tworktree = {}\n", elsewhere.display());
-    std::fs::write(&config, placed).unwrap();
-    let git = open(&repo);
-    assert_eq!(git.workdir(), None);
-}

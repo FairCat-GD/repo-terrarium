@@ -480,6 +480,24 @@ pub enum UserEvent {
     Portability(u64, portability::Msg),
 }
 
+/// Where a job's answers go: each with the generation of the job that sends it.
+pub type Forward<M> = Arc<dyn Fn(u64, M) + Send + Sync>;
+
+/// Forwards a job's answers to the event loop as `wrap` makes them events: the one home of every
+/// thread's way back to the loop. The proxy is held under a lock, so the answer can be called
+/// from any thread whatever the platform's proxy allows.
+pub fn forward<M: 'static>(
+    proxy: &EventLoopProxy<UserEvent>,
+    wrap: fn(u64, M) -> UserEvent,
+) -> Forward<M> {
+    let proxy = Mutex::new(proxy.clone());
+    Arc::new(move |generation, msg| {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(wrap(generation, msg));
+        }
+    })
+}
+
 /// Why the strip could not run. Its wording is in the copy module.
 #[derive(Debug)]
 pub enum StripError {
@@ -614,7 +632,7 @@ impl Repo {
             }),
         );
         let config = lifecycle::engine_config(data.clone(), repo.clone(), &keychain);
-        let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy.clone(), 0))
+        let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy, 0))
             .map_err(|err| StripError::Connect(repo, err))?;
         let requests = proxy.clone();
         let requests = match instance.watch(move || {
@@ -1371,12 +1389,7 @@ impl Strip {
             InstallSalt::new(terrarium.install_salt),
             strip_scale,
         ));
-        let proxy = Mutex::new(self.proxy.clone());
-        let answer: Answer = Arc::new(move |generation, msg| {
-            if let Ok(proxy) = proxy.lock() {
-                let _ = proxy.send_event(UserEvent::TimeLapse(generation, msg));
-            }
-        });
+        let answer: Answer = forward(&self.proxy, UserEvent::TimeLapse);
         self.timelapse = Some(Session::start(
             self.lapses,
             &answer,
@@ -1451,7 +1464,7 @@ impl Strip {
         };
         self.exports += 1;
         portability::spawn(
-            &self.proxy,
+            &forward(&self.proxy, UserEvent::Portability),
             self.exports,
             data,
             terrarium,

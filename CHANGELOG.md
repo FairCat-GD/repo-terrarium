@@ -26,6 +26,7 @@ the same history grows the same world.
   the newer window's film under the old name.
 - **A quiet strip wakes less often** after a creature leaves.
 - **A very long Knip version** in a repository's settings is shortened in Settings.
+- **A time-lapse window no longer waits forever** when its work cannot start.
 
 ## [0.28.0] - 2026-10-16
 

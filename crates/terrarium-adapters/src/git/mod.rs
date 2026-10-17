@@ -188,18 +188,9 @@ impl GitRepo {
         self.repo.common_dir()
     }
 
-    /// The worktree's root, or `None` for a bare repository. A worktree the repository's own
-    /// config places elsewhere (`core.worktree`) is none too: that can name any folder on the
-    /// disk, and the reports are read only from the folder the person connected.
+    /// The worktree's root, or `None` for a bare repository. The repository's own config can
+    /// place it anywhere (`core.worktree`, which git also writes for every submodule).
     pub fn workdir(&self) -> Option<&Path> {
-        if self
-            .repo
-            .config_snapshot()
-            .string("core.worktree")
-            .is_some()
-        {
-            return None;
-        }
         self.repo.workdir()
     }
 

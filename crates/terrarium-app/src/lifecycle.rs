@@ -21,7 +21,7 @@ use terrarium_store::{
 use terrarium_truth::scene::SceneInput;
 use winit::event_loop::EventLoopProxy;
 
-use crate::strip::UserEvent;
+use crate::strip::{UserEvent, forward};
 use crate::{copy, discover};
 
 /// What to change.
@@ -102,10 +102,9 @@ pub enum Refused {
 }
 
 /// A sink for the engine of `generation`: its updates go to the event loop, tagged.
-pub fn sink(proxy: EventLoopProxy<UserEvent>, generation: u64) -> Sink {
-    Box::new(move |update| {
-        let _ = proxy.send_event(UserEvent::Engine(generation, update));
-    })
+pub fn sink(proxy: &EventLoopProxy<UserEvent>, generation: u64) -> Sink {
+    let forward = forward(proxy, UserEvent::Engine);
+    Box::new(move |update| forward(generation, update))
 }
 
 /// The engine the app runs on `repo`: it polls GitHub Actions with the token in `keychain`,
@@ -180,7 +179,7 @@ fn run(
     type Started = (Engine, Box<Terrarium>, Option<SceneInput>);
     let start = |repo: Option<PathBuf>| -> Result<Started, ConnectError> {
         let config = engine_config(data.clone(), repo, keychain);
-        match Engine::spawn(config, sink(proxy.clone(), generation))? {
+        match Engine::spawn(config, sink(proxy, generation))? {
             (engine, Start::Connected { terrarium, scene }) => Ok((engine, terrarium, scene)),
             (_, Start::NotConnected) => Err(ConnectError::Halted),
         }
@@ -195,9 +194,13 @@ fn run(
     };
     match job {
         Job::Connect { path, first_run } => match start(Some(path)) {
+            // Connected from here on, whatever follows: the store and the engine say so.
             Ok((engine, terrarium, scene)) => {
                 if let Some(open_at_login) = first_run
-                    && let Err(err) = first_run_done(data, open_at_login)
+                    && let Err(err) = panic::catch_unwind(AssertUnwindSafe(|| {
+                        first_run_done(data, open_at_login)
+                    }))
+                    .unwrap_or(Err(ConnectError::Halted))
                 {
                     eprintln!("{}", copy::connect_failed(None, &err));
                 }
