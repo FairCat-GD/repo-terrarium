@@ -4180,7 +4180,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "gix",
  "keyring",
@@ -4206,7 +4206,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-app"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -4235,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "gif",
  "insta",
@@ -4249,7 +4249,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "getrandom 0.4.3",
  "notify",
@@ -4265,7 +4265,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "block2 0.6.2",
  "libc",
@@ -4283,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "directories",
  "proptest",
@@ -4298,7 +4298,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-truth"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "postcard",
  "proptest",
@@ -5502,7 +5502,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "cargo_metadata",
  "png",

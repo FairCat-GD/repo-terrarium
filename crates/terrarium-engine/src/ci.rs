@@ -99,24 +99,25 @@ impl Poller {
                             client.forget();
                         }
                         Job::Ask(ask) => {
-                            let read = match held.get_or_insert_with(|| keychain.token()) {
-                                Err(err) => Read::Keychain(*err),
-                                Ok(None) => Read::NoToken {
-                                    removed: std::mem::take(&mut had_token),
-                                },
-                                Ok(Some(token)) => {
-                                    had_token = true;
-                                    // A panic in the client answers as GitHub not reached, and
-                                    // the next poll asks with a client made afresh.
-                                    let asked = panic::catch_unwind(AssertUnwindSafe(|| {
-                                        ask_branches(client.as_mut(), &ask, token)
-                                    }));
-                                    asked.unwrap_or_else(|_| {
-                                        client = fetch();
-                                        Read::Failed(CiError::Unreachable)
-                                    })
-                                }
-                            };
+                            let read =
+                                match held.get_or_insert_with(|| read_token(keychain.as_ref())) {
+                                    Err(err) => Read::Keychain(*err),
+                                    Ok(None) => Read::NoToken {
+                                        removed: std::mem::take(&mut had_token),
+                                    },
+                                    Ok(Some(token)) => {
+                                        had_token = true;
+                                        // A panic in the client answers as GitHub not reached, and
+                                        // the next poll asks with a client made afresh.
+                                        let asked = panic::catch_unwind(AssertUnwindSafe(|| {
+                                            ask_branches(client.as_mut(), &ask, token)
+                                        }));
+                                        asked.unwrap_or_else(|_| {
+                                            client = fetch();
+                                            Read::Failed(CiError::Unreachable)
+                                        })
+                                    }
+                                };
                             answer(Answered {
                                 slug: ask.slug,
                                 read,
@@ -277,9 +278,36 @@ impl CiStatus {
     }
 }
 
+/// The token the keychain holds. A panic in the keychain is answered as a keychain that
+/// failed, so the poller lives on and says so.
+fn read_token(keychain: &dyn Keychain) -> Result<Option<Token>, KeychainError> {
+    panic::catch_unwind(AssertUnwindSafe(|| keychain.token())).unwrap_or(Err(KeychainError::Failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Panicking;
+
+    impl Keychain for Panicking {
+        fn token(&self) -> Result<Option<Token>, KeychainError> {
+            panic!("an injected keychain panic")
+        }
+
+        fn save(&self, _: &Token) -> Result<(), KeychainError> {
+            Ok(())
+        }
+
+        fn remove(&self) -> Result<(), KeychainError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_keychain_that_panics_reads_as_one_that_failed() {
+        assert!(matches!(read_token(&Panicking), Err(KeychainError::Failed)));
+    }
 
     fn failed() -> Read {
         Read::Failed(CiError::Unreachable)

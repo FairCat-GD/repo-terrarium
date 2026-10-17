@@ -22,7 +22,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     DeregisterShellHookWindow, STYLESTRUCT, SWP_NOMOVE, WINDOWPOS,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, GUID};
 
 use super::exit;
 use crate::SystemEvent;
@@ -35,6 +35,8 @@ use crate::power::{self, DisplayPower};
 // an app without a Common Controls 6 manifest loads may export them by ordinal only, and a name
 // it lacks would stop the program from starting at all. `cargo xtask probe-zip` checks the
 // built exe for this.
+// SAFETY: the signatures are comctl32's own for these ordinals (`SUBCLASSPROC` as the windows
+// crate declares it), and each is called only on the window's thread.
 #[link(name = "comctl32.dll", kind = "raw-dylib", modifiers = "+verbatim")]
 unsafe extern "system" {
     #[link_ordinal(410)]
@@ -150,12 +152,12 @@ unsafe extern "system" fn proc(
 ) -> LRESULT {
     let ptr = std::ptr::with_exposed_provenance::<Subclass>(data);
     // SAFETY: `data` is the strong reference `install` made, which lives until the subclass is
-    // removed, and the procedure runs only while it is installed. This call takes its own
-    // reference, so the state outlives the call even if the strip window is dropped during it.
-    let state = unsafe {
-        Rc::increment_strong_count(ptr);
-        Rc::from_raw(ptr)
-    };
+    // removed, and the procedure runs only while it is installed. This call takes a reference
+    // of its own, so the state outlives the call even if the strip window is dropped during it.
+    unsafe { Rc::increment_strong_count(ptr) };
+    // SAFETY: owns the reference just taken, released when `state` drops at the end of the
+    // call; comctl32's own reference stays as it was.
+    let state = unsafe { Rc::from_raw(ptr) };
     if counting()
         && let Some(name) = appbar::message_name(msg, wparam.0, state.registered)
     {
@@ -294,21 +296,35 @@ fn display_state(lparam: LPARAM) -> Option<DisplayPower> {
     if setting.is_null() {
         return None;
     }
-    // SAFETY: for `PBT_POWERSETTINGCHANGE`, `lParam` points to a `POWERBROADCAST_SETTING` the
-    // system owns for the length of the message: its header, then `DataLength` bytes. The
-    // header is read whole, without assuming its alignment.
-    let header = unsafe { setting.read_unaligned() };
-    if header.PowerSetting != GUID_CONSOLE_DISPLAY_STATE || header.DataLength < 4 {
+    // For `PBT_POWERSETTINGCHANGE`, `lParam` points to a `POWERBROADCAST_SETTING` the system
+    // owns for the length of the message: the setting's GUID and `DataLength`, then that many
+    // bytes. Each field is read on its own, as bytes, so without assuming its alignment.
+    let field = |offset: usize| setting.cast::<u8>().wrapping_add(offset);
+    let guid = field(offset_of!(POWERBROADCAST_SETTING, PowerSetting)).cast::<[u8; 16]>();
+    // SAFETY: the GUID's 16 bytes that start the structure, as above.
+    let power_setting = guid_of(unsafe { guid.read_unaligned() });
+    let length = field(offset_of!(POWERBROADCAST_SETTING, DataLength)).cast::<[u8; 4]>();
+    // SAFETY: the 4 bytes of `DataLength` after it, as above.
+    let data_length = u32::from_ne_bytes(unsafe { length.read_unaligned() });
+    if power_setting != GUID_CONSOLE_DISPLAY_STATE || data_length < 4 {
         return None;
     }
-    let data = setting
-        .cast::<u8>()
-        .wrapping_add(offset_of!(POWERBROADCAST_SETTING, Data))
-        .cast::<[u8; 4]>();
+    let data = field(offset_of!(POWERBROADCAST_SETTING, Data)).cast::<[u8; 4]>();
     // SAFETY: the setting's data holds at least the four bytes of a `DWORD`, checked above,
     // read as bytes, so without assuming their alignment.
     let value = unsafe { data.read_unaligned() };
     DisplayPower::from_setting(u32::from_ne_bytes(value))
+}
+
+/// A GUID from its bytes as it lies in memory.
+fn guid_of(bytes: [u8; 16]) -> GUID {
+    let (data1, data2, data3, data4) = power::guid_fields(bytes);
+    GUID {
+        data1,
+        data2,
+        data3,
+        data4,
+    }
 }
 
 /// Tells Explorer about the bar's activation or move, as the `AppBar` protocol asks.

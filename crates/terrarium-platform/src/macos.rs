@@ -222,6 +222,8 @@ pub fn screens() -> Vec<Screen> {
         .collect()
 }
 
+// SAFETY: the signature is the framework's own: a display id in, a `CFUUIDRef` the caller owns
+// (the Create rule) or null out.
 #[link(name = "ColorSync", kind = "framework")]
 unsafe extern "C" {
     /// Returns a new `CFUUIDRef` the caller owns, or null when no display has this id.
@@ -279,6 +281,8 @@ define_class!(
     struct ReopenHandler;
 
     impl ReopenHandler {
+        // SAFETY: the selector takes two objects and returns nothing, as the Apple Event
+        // manager calls it; the method reads neither.
         #[unsafe(method(handleReopen:withReplyEvent:))]
         fn handle_reopen(&self, _event: *mut AnyObject, _reply: *mut AnyObject) {
             (self.ivars().on_reopen)();

@@ -226,7 +226,7 @@ pub struct Conditions {
 /// What a plant grows toward, and what limits it: health scaled by 4/3, health being the lower
 /// of light and soil with an unknown one at neutral (I-3). Light limits when it is the lower;
 /// soil otherwise.
-pub fn vigor_target(light: Option<Q16>, soil: Option<Q16>) -> (Q16, Limit) {
+pub(crate) fn vigor_target(light: Option<Q16>, soil: Option<Q16>) -> (Q16, Limit) {
     let limit = if light.unwrap_or(NEUTRAL) < soil.unwrap_or(NEUTRAL) {
         Limit::Light
     } else {
@@ -240,13 +240,13 @@ pub fn vigor_target(light: Option<Q16>, soil: Option<Q16>) -> (Q16, Limit) {
 
 /// Tempo: the rain ratio held within `[1/4, 2]`. A silent repository still changes, slowly, and
 /// a burst cannot rush it; rain is pace, never health.
-pub fn tempo(rain: Q16) -> Q16 {
+pub(crate) fn tempo(rain: Q16) -> Q16 {
     rain.clamp(TEMPO_MIN, TEMPO_MAX)
 }
 
 /// The share of the way to its target vigor moves in a day, and of free capacity that
 /// germinates: `tempo / 7`. Residents' energy moves at the same pace.
-pub fn daily_rate(rain: Q16) -> Q16 {
+pub(crate) fn daily_rate(rain: Q16) -> Q16 {
     tempo(rain).saturating_mul(GROWTH_RATE)
 }
 

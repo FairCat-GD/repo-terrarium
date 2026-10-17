@@ -104,7 +104,11 @@ pub enum Kind {
 
 #[derive(Debug, Clone)]
 pub struct Dep {
+    /// The package's name.
     pub name: String,
+    /// What the member's manifest calls it, which its features name: its rename, if it has
+    /// one, else its name.
+    pub key: String,
     pub kind: Kind,
     /// The features the member turns on in it.
     pub features: Vec<String>,
@@ -159,6 +163,8 @@ pub struct Workspace {
     pub truth_sources: Vec<SourceFile>,
     /// Every `.rs` file under the `src/` of each member but xtask: the code that ships.
     pub product_sources: Vec<SourceFile>,
+    /// Every `.rs` file of every member, xtask, tests and benches included.
+    pub all_sources: Vec<SourceFile>,
 }
 
 /// Every rule the workspace breaks, one line each. Empty means the check passes.
@@ -179,6 +185,7 @@ pub fn check(ws: &Workspace) -> Vec<String> {
     check_truth_sources(&ws.truth_sources, &mut violations);
     check_process_spawning(&ws.product_sources, &mut violations);
     check_network(&ws.product_sources, &mut violations);
+    check_git_runs(&ws.all_sources, &mut violations);
     check_http_client(ws, &mut violations);
     check_msrv(ws, &mut violations);
     violations
@@ -253,9 +260,17 @@ fn check_fixture(member: &Member, out: &mut Vec<String>) {
     if member.name == XTASK {
         return;
     }
+    // A feature names a dependency by its key, which a rename makes other than the package's
+    // name.
+    let adapters_keys: BTreeSet<&str> = member
+        .deps
+        .iter()
+        .filter(|dep| dep.name == ADAPTERS)
+        .map(|dep| dep.key.as_str())
+        .collect();
     let names_fixture = |entry: &String| {
         entry.split_once('/').is_some_and(|(krate, feature)| {
-            krate.trim_end_matches('?') == ADAPTERS && feature == FIXTURE_FEATURE
+            adapters_keys.contains(krate.trim_end_matches('?')) && feature == FIXTURE_FEATURE
         })
     };
     if member.features.values().flatten().any(names_fixture) {
@@ -359,36 +374,78 @@ fn check_process_spawning(sources: &[SourceFile], out: &mut Vec<String>) {
         .filter(|s| s.path.replace('\\', "/") != EXEC_MODULE)
     {
         match TokenStream::from_str(&source.text) {
-            Ok(tokens) => out.extend(command_lines(tokens).into_iter().map(|line| {
-                format!(
-                    "{}:{line} names process::Command; processes start only in {EXEC_MODULE} \
+            Ok(tokens) => {
+                let aliases = process_aliases(tokens.clone());
+                out.extend(command_lines(tokens, &aliases).into_iter().map(|line| {
+                    format!(
+                        "{}:{line} names process::Command; processes start only in {EXEC_MODULE} \
                      (I-5)",
-                    source.path
-                )
-            })),
+                        source.path
+                    )
+                }));
+            }
             Err(err) => out.push(format!("{} does not lex: {err}", source.path)),
         }
     }
 }
 
-/// The lines where a path `process::Command`, `process::{…, Command, …}` or `process::*` stands.
-fn command_lines(tokens: TokenStream) -> Vec<usize> {
+/// Whether `tokens[i]` and `tokens[i + 1]` are a path's `::`.
+fn path_sep_at(tokens: &[TokenTree], i: usize) -> bool {
+    matches!(
+        (tokens.get(i), tokens.get(i + 1)),
+        (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
+            if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':'
+    )
+}
+
+/// The other names a file gives `std::process`: `process as p` and `process::{self as p}`.
+fn process_aliases(tokens: TokenStream) -> BTreeSet<String> {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut aliases = BTreeSet::new();
+    let renamed = |tokens: &[TokenTree], i: usize| match (tokens.get(i), tokens.get(i + 1)) {
+        (Some(TokenTree::Ident(word)), Some(TokenTree::Ident(alias))) if word == "as" => {
+            Some(alias.to_string())
+        }
+        _ => None,
+    };
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Group(group) => aliases.extend(process_aliases(group.stream())),
+            TokenTree::Ident(ident) if ident == "process" => {
+                aliases.extend(renamed(&tokens, i + 1));
+                if path_sep_at(&tokens, i + 1)
+                    && let Some(TokenTree::Group(group)) = tokens.get(i + 3)
+                    && group.delimiter() == Delimiter::Brace
+                {
+                    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                    for (j, token) in inner.iter().enumerate() {
+                        if matches!(token, TokenTree::Ident(word) if word == "self") {
+                            aliases.extend(renamed(&inner, j + 1));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    aliases
+}
+
+/// The lines where a path `process::Command`, `process::{…, Command, …}` or `process::*` stands,
+/// `process` also by any of the file's `aliases` for it.
+fn command_lines(tokens: TokenStream, aliases: &BTreeSet<String>) -> Vec<usize> {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     let mut lines = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
         if let TokenTree::Group(group) = token {
-            lines.extend(command_lines(group.stream()));
+            lines.extend(command_lines(group.stream(), aliases));
             continue;
         }
         let TokenTree::Ident(ident) = token else {
             continue;
         };
-        let path_sep = matches!(
-            (tokens.get(i + 1), tokens.get(i + 2)),
-            (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
-                if a.as_char() == ':' && a.spacing() == Spacing::Joint && b.as_char() == ':'
-        );
-        if ident != "process" || !path_sep {
+        let names_process = ident == "process" || aliases.contains(&ident.to_string());
+        if !names_process || !path_sep_at(&tokens, i + 1) {
             continue;
         }
         let names_command = match tokens.get(i + 3) {
@@ -414,6 +471,62 @@ fn imports_command(tokens: TokenStream) -> bool {
         TokenTree::Group(group) => imports_command(group.stream()),
         TokenTree::Literal(_) => false,
     })
+}
+
+/// Nothing in the workspace runs the git command line, not a test, a bench or xtask:
+/// `Command::new("git")` in any form a literal names it. A file that does not lex is reported
+/// by the scan of the code that ships, or compiled by cargo.
+fn check_git_runs(sources: &[SourceFile], out: &mut Vec<String>) {
+    for source in sources {
+        let Ok(tokens) = TokenStream::from_str(&source.text) else {
+            continue;
+        };
+        out.extend(git_run_lines(tokens).into_iter().map(|line| {
+            format!(
+                "{}:{line} runs git; history is read through gix, tests included",
+                source.path
+            )
+        }));
+    }
+}
+
+/// The lines where `Command::new` is called with a literal naming git: `"git"`, `"git.exe"` or
+/// a path ending in either.
+fn git_run_lines(tokens: TokenStream) -> Vec<usize> {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut lines = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        if let TokenTree::Group(group) = token {
+            lines.extend(git_run_lines(group.stream()));
+            continue;
+        }
+        let TokenTree::Ident(ident) = token else {
+            continue;
+        };
+        let new_call = ident == "Command"
+            && path_sep_at(&tokens, i + 1)
+            && matches!(tokens.get(i + 3), Some(TokenTree::Ident(new)) if new == "new");
+        let Some(TokenTree::Group(args)) = tokens.get(i + 4).filter(|_| new_call) else {
+            continue;
+        };
+        let first = args.stream().into_iter().next();
+        if let Some(TokenTree::Literal(literal)) = first
+            && names_git(&literal.to_string())
+        {
+            lines.push(ident.span().start().line);
+        }
+    }
+    lines
+}
+
+/// Whether a string literal's text, quotes included, names the git program.
+fn names_git(literal: &str) -> bool {
+    let text = literal
+        .trim_start_matches('r')
+        .trim_matches('#')
+        .trim_matches('"');
+    let program = text.rsplit(['/', '\\']).next().unwrap_or(text);
+    program == "git" || program.eq_ignore_ascii_case("git.exe")
 }
 
 /// Only the CI module names the HTTP client, a socket or `std::net`: the graph keeps `ureq` out
@@ -577,17 +690,17 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
     let mut truth_sources = Vec::new();
     collect_sources(root, &truth_dir, &mut truth_sources)?;
     let mut product_sources = Vec::new();
+    let mut all_sources = Vec::new();
     for package in metadata.workspace_packages() {
-        if package.name.as_str() == XTASK {
-            continue;
-        }
-        let src = package
+        let dir = package
             .manifest_path
             .parent()
             .ok_or("a member manifest has no directory")?
-            .as_std_path()
-            .join("src");
-        collect_sources(root, &src, &mut product_sources)?;
+            .as_std_path();
+        collect_sources(root, dir, &mut all_sources)?;
+        if package.name.as_str() != XTASK {
+            collect_sources(root, &dir.join("src"), &mut product_sources)?;
+        }
     }
     Ok(Workspace {
         members,
@@ -595,6 +708,7 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         msrv,
         truth_sources,
         product_sources,
+        all_sources,
     })
 }
 
@@ -649,6 +763,7 @@ fn member_from(package: &cargo_metadata::Package) -> Result<Member, String> {
         .iter()
         .map(|d| Dep {
             name: d.name.clone(),
+            key: d.rename.clone().unwrap_or_else(|| d.name.clone()),
             kind: match d.kind {
                 DependencyKind::Development => Kind::Dev,
                 DependencyKind::Build => Kind::Build,
@@ -796,6 +911,7 @@ mod tests {
                 .iter()
                 .map(|(n, k)| Dep {
                     name: (*n).to_owned(),
+                    key: (*n).to_owned(),
                     kind: *k,
                     features: Vec::new(),
                 })
@@ -847,6 +963,7 @@ mod tests {
                 text: "#![deny(clippy::float_arithmetic)]\npub fn half(x: u32) -> u32 { x / 2 }\n"
                     .into(),
             }],
+            all_sources: Vec::new(),
             product_sources: vec![
                 SourceFile {
                     path: EXEC_MODULE.into(),
@@ -918,6 +1035,7 @@ mod tests {
         let mut ws = workspace();
         member_mut(&mut ws, TRUTH).deps.push(Dep {
             name: COMPOSE.into(),
+            key: COMPOSE.into(),
             kind: Kind::Dev,
             features: Vec::new(),
         });
@@ -929,6 +1047,7 @@ mod tests {
         let mut ws = workspace();
         member_mut(&mut ws, COMPOSE).deps.push(Dep {
             name: STORE.into(),
+            key: STORE.into(),
             kind: Kind::Normal,
             features: Vec::new(),
         });
@@ -948,11 +1067,13 @@ mod tests {
         member_mut(&mut ws, TRUTH).deps.extend([
             Dep {
                 name: "serde".into(),
+                key: "serde".into(),
                 kind: Kind::Normal,
                 features: Vec::new(),
             },
             Dep {
                 name: "proptest".into(),
+                key: "proptest".into(),
                 kind: Kind::Dev,
                 features: Vec::new(),
             },
@@ -960,6 +1081,7 @@ mod tests {
         assert_eq!(check(&ws), Vec::<String>::new());
         member_mut(&mut ws, TRUTH).deps.push(Dep {
             name: "rand".into(),
+            key: "rand".into(),
             kind: Kind::Normal,
             features: Vec::new(),
         });
@@ -1098,6 +1220,15 @@ mod tests {
             ("use std::{io, process::{self, Command}};\n", 1),
             ("use std::process::*;\n", 1),
             (
+                "use std::process as p;\nfn f() { p::Command::new(\"git\"); }\n",
+                2,
+            ),
+            (
+                "use std::process::{self as q};\nfn f() { q::Command::new(\"sh\"); }\n",
+                2,
+            ),
+            ("use std::{process as p};\nuse p::{Command};\n", 2),
+            (
                 "mod m {\n    fn f() { let _ = ::std::process::Command::new(\"sh\"); }\n}\n",
                 2,
             ),
@@ -1118,6 +1249,37 @@ mod tests {
             text: "fn f() { \"unterminated }".into(),
         });
         fails_with(&ws, "crates/terrarium-app/src/broken.rs does not lex");
+    }
+
+    #[test]
+    fn nothing_in_the_workspace_runs_git() {
+        for (text, line) in [
+            ("fn f() { Command::new(\"git\").arg(\"log\"); }\n", 1),
+            ("\nfn f() { std::process::Command::new(\"git\"); }\n", 2),
+            (
+                "fn f() {\n    let _ = Command::new(r\"C:\\Git\\bin\\git.exe\");\n}\n",
+                2,
+            ),
+            ("fn f() { Command::new(\"/usr/bin/git\"); }\n", 1),
+        ] {
+            let mut ws = workspace();
+            ws.all_sources.push(SourceFile {
+                path: "crates/terrarium-engine/tests/live.rs".into(),
+                text: text.into(),
+            });
+            fails_with(
+                &ws,
+                &format!("crates/terrarium-engine/tests/live.rs:{line} runs git"),
+            );
+        }
+        let mut ws = workspace();
+        ws.all_sources.push(SourceFile {
+            path: "xtask/src/windows.rs".into(),
+            text: "fn f() { Command::new(\"rustc\"); Command::new(\"gitk\"); }\n\
+                   const S: &str = \"Command::new(\\\"git\\\")\";\n"
+                .into(),
+        });
+        assert_eq!(check(&ws), Vec::<String>::new());
     }
 
     #[test]
@@ -1225,6 +1387,7 @@ mod tests {
         let mut ws = workspace();
         member_mut(&mut ws, XTASK).deps.push(Dep {
             name: APP.to_owned(),
+            key: APP.to_owned(),
             kind: Kind::Normal,
             features: vec!["dev".to_owned()],
         });
@@ -1238,6 +1401,7 @@ mod tests {
     fn adapters_dep(kind: Kind, features: &[&str]) -> Dep {
         Dep {
             name: ADAPTERS.to_owned(),
+            key: ADAPTERS.to_owned(),
             kind,
             features: features.iter().map(|f| (*f).to_owned()).collect(),
         }
@@ -1278,6 +1442,23 @@ mod tests {
             features(&[("default", &[]), ("dev", &["terrarium-adapters?/fixture"])]);
         fails_with(
             &app,
+            "terrarium-app must not name `terrarium-adapters/fixture` in a feature",
+        );
+    }
+
+    #[test]
+    fn a_renamed_adapters_dependency_cannot_turn_on_the_fixture_through_a_feature() {
+        let mut ws = workspace();
+        let app = member_mut(&mut ws, APP);
+        let adapters = app
+            .deps
+            .iter_mut()
+            .find(|dep| dep.name == ADAPTERS)
+            .unwrap();
+        adapters.key = "repo-reader".into();
+        app.features = features(&[("default", &[]), ("dev", &["repo-reader/fixture"])]);
+        fails_with(
+            &ws,
             "terrarium-app must not name `terrarium-adapters/fixture` in a feature",
         );
     }

@@ -500,7 +500,7 @@ enum CaptureError {
 }
 
 /// Runs `tool` with `args` in `cwd`, with nothing on stdin and an environment holding only
-/// `PATH` (and Windows' `SystemRoot`), and keeps what it prints to stdout, up to `cap` bytes:
+/// `PATH` (and Windows' `SystemRoot`, `TEMP` and `TMP`), and keeps what it prints to stdout, up to `cap` bytes:
 /// past that it is stopped. Past `limit`, or once `stop` is set, it is stopped too. It is
 /// always waited for; a process it started that holds stdout open is not waited for past
 /// [`TAIL_GRACE`].

@@ -189,7 +189,7 @@ pub fn gust(lines: u64, days: &[u64]) -> Option<u64> {
 }
 
 /// `log2(1 + n)`.
-pub fn daily_sample(n: u64) -> Q16 {
+pub(crate) fn daily_sample(n: u64) -> Q16 {
     log2_int(n.saturating_add(1)).unwrap_or(Q16::ZERO)
 }
 

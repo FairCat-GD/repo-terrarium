@@ -131,7 +131,7 @@ canonical_struct!(Fauna {
 
 /// Whether a cast of these species may share a terrarium: one about by day, one about by night,
 /// and at most one that flies.
-pub fn admissible(cast: &[ResidentSpecies]) -> bool {
+pub(crate) fn admissible(cast: &[ResidentSpecies]) -> bool {
     cast.iter().any(|species| species.about_by_day())
         && cast.iter().any(|species| species.about_by_night())
         && cast.iter().filter(|species| species.flies()).count() <= 1
@@ -139,7 +139,7 @@ pub fn admissible(cast: &[ResidentSpecies]) -> bool {
 
 /// Every pool the rules admit: each set of five species, ordered by its bitmask over
 /// `ResidentSpecies::ALL`, each in species order.
-pub fn admissible_pools() -> Vec<Vec<ResidentSpecies>> {
+pub(crate) fn admissible_pools() -> Vec<Vec<ResidentSpecies>> {
     let species = u32::try_from(ResidentSpecies::ALL.len()).unwrap_or(0);
     (0_u32..1 << species)
         .filter(|mask| mask.count_ones() == RESIDENT_POOL)
@@ -156,7 +156,7 @@ pub fn admissible_pools() -> Vec<Vec<ResidentSpecies>> {
 }
 
 /// What the plants give: the living plants' vigor, summed over at least `⌈P / 2⌉` of them.
-pub fn plant_food(vegetation: &Vegetation, capacity: u32) -> Q16 {
+pub(crate) fn plant_food(vegetation: &Vegetation, capacity: u32) -> Q16 {
     let (living, vigor) = vegetation
         .plants
         .iter()
@@ -169,14 +169,14 @@ pub fn plant_food(vegetation: &Vegetation, capacity: u32) -> Q16 {
 }
 
 /// Whether anything decays for decomposers to feed on: a dead plant, litter or fungus.
-pub fn decaying(vegetation: &Vegetation) -> bool {
+pub(crate) fn decaying(vegetation: &Vegetation) -> bool {
     vegetation.plants.iter().any(|plant| !plant.alive())
         || !vegetation.litter.is_empty()
         || !vegetation.fungus.is_empty()
 }
 
 /// Energy as the composer is shown it: vigor's bands.
-pub fn energy_band(energy: Q16) -> Energy {
+pub(crate) fn energy_band(energy: Q16) -> Energy {
     if energy >= ENERGY_HIGH_FROM {
         Energy::High
     } else if energy < ENERGY_LOW_BELOW {

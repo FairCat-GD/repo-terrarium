@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyEvent;
 use muda::MenuId;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite;
 use terrarium_compose::frame::{NativeImage, Viewport};
@@ -78,8 +78,8 @@ use crate::settings::{MonitorChoice, RepoFacts, SettingsForm};
 use crate::shell::{DataFile, Export, Intent, Picking, Shell};
 use crate::soil::{Hits, SoilPanel};
 use crate::timelapse::form::TimeLapseForm;
-use crate::timelapse::job::{Msg, Session};
-use crate::{crash, discover, now_secs, portability};
+use crate::timelapse::job::{Answer, Msg, Session};
+use crate::{crash, discover, now_secs, portability, timelapse};
 
 /// What the strip runs as.
 pub enum Mode {
@@ -466,7 +466,8 @@ pub enum UserEvent {
     /// A second launch asked for the settings.
     ShowSettings,
     /// The folder picker closed, with the folder chosen, if one was.
-    Picked(Picking, Option<PathBuf>),
+    /// A dialog's answer, with the time-lapse window open when it was asked (`lapses`).
+    Picked(Picking, Option<PathBuf>, u64),
     /// A lifecycle change of that generation is done.
     Lifecycle(u64, Box<Outcome>),
     /// The settings' writer saved a change, or asked the OS about opening at login.
@@ -1370,9 +1371,15 @@ impl Strip {
             InstallSalt::new(terrarium.install_salt),
             strip_scale,
         ));
+        let proxy = Mutex::new(self.proxy.clone());
+        let answer: Answer = Arc::new(move |generation, msg| {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(UserEvent::TimeLapse(generation, msg));
+            }
+        });
         self.timelapse = Some(Session::start(
             self.lapses,
-            &self.proxy,
+            &answer,
             data,
             terrarium,
             now_secs(),
@@ -1391,8 +1398,9 @@ impl Strip {
         }
     }
 
-    /// A dialog answered: the window that asked takes the path picked, if one was.
-    fn picked(&mut self, picking: Picking, path: Option<PathBuf>) {
+    /// A dialog answered: the window that asked takes the path picked, if one was. A save asked
+    /// by a time-lapse window since closed writes nothing, though another is open now.
+    fn picked(&mut self, picking: Picking, path: Option<PathBuf>, lapse: u64) {
         match picking {
             Picking::Repository => {
                 if let Some(form) = &mut self.shell.connect {
@@ -1407,7 +1415,9 @@ impl Strip {
                 self.shell.redraw(WindowKind::Settings);
             }
             Picking::Save(export) => {
-                if let Some(form) = &mut self.shell.timelapse {
+                if lapse == self.lapses
+                    && let Some(form) = &mut self.shell.timelapse
+                {
                     form.picked(export, path);
                     let intents = form.take_intents();
                     self.carry_out(intents);
@@ -1464,57 +1474,17 @@ impl Strip {
 
     /// What a time-lapse job said, if it is the open window's.
     fn time_lapse_said(&mut self, generation: u64, msg: Msg) {
-        let (Some(session), Some(form)) = (&mut self.timelapse, &mut self.shell.timelapse) else {
-            return;
-        };
-        if session.generation != generation {
-            return;
+        if let (Some(session), Some(form)) = (&mut self.timelapse, &mut self.shell.timelapse)
+            && timelapse::said(session, form, generation, msg, Instant::now())
+        {
+            self.shell.redraw(WindowKind::TimeLapse);
         }
-        match msg {
-            Msg::Ffmpeg(ffmpeg) => form.ffmpeg(ffmpeg),
-            Msg::Reading(percent) => form.reading(percent),
-            Msg::Read(Ok(lapse)) => {
-                session.read(lapse);
-                if let Some(Intent::Film { from, to, night }) = form.read(&session.days()) {
-                    session.film(from, to, night);
-                }
-            }
-            Msg::Read(Err(why)) => form.failed(why),
-            Msg::Filmed { asked, film } => {
-                if session.is_latest(asked) {
-                    match film {
-                        Ok(film) => form.filmed(film, Instant::now()),
-                        Err(why) => form.film_failed(why),
-                    }
-                }
-            }
-            Msg::Writing(percent) => form.writing(percent),
-            Msg::Written(written) => form.written(written),
-        }
-        self.shell.redraw(WindowKind::TimeLapse);
     }
 
     /// Writes the time-lapse window's `export` to `path`.
     fn write(&mut self, export: Export, path: PathBuf) {
-        let (Some(session), Some(form)) = (&self.timelapse, &self.shell.timelapse) else {
-            return;
-        };
-        match export {
-            Export::Gif => {
-                if let Some((film, scale)) = form.gif() {
-                    session.write_gif(film, scale, path);
-                }
-            }
-            Export::Postcard => {
-                if let Some((shot, scale)) = form.postcard() {
-                    session.write_postcard(shot, scale, path);
-                }
-            }
-            Export::Mp4 => {
-                if let Some((film, scale, ffmpeg)) = form.mp4() {
-                    session.write_mp4(film, scale, ffmpeg, path);
-                }
-            }
+        if let (Some(session), Some(form)) = (&self.timelapse, &self.shell.timelapse) {
+            timelapse::write(session, form, export, path);
         }
     }
 
@@ -1787,11 +1757,12 @@ impl Strip {
             Picking::Import => Box::pin(dialog.pick_file()),
         };
         let proxy = self.proxy.clone();
+        let lapse = self.lapses;
         let _ = thread::Builder::new()
             .name("terrarium-picker".into())
             .spawn(move || {
                 let path = pollster::block_on(chosen).map(|handle| handle.path().to_path_buf());
-                let _ = proxy.send_event(UserEvent::Picked(picking, path));
+                let _ = proxy.send_event(UserEvent::Picked(picking, path, lapse));
             });
     }
 
@@ -2079,7 +2050,7 @@ impl ApplicationHandler<UserEvent> for Strip {
             UserEvent::ProbeTools(report) => self.record(ProbeEvent::Tools(report)),
             UserEvent::Engine(generation, update) => self.engine_update(generation, update),
             UserEvent::ShowSettings => self.show_settings(event_loop),
-            UserEvent::Picked(picking, path) => self.picked(picking, path),
+            UserEvent::Picked(picking, path, lapse) => self.picked(picking, path, lapse),
             UserEvent::Lifecycle(generation, outcome) => {
                 self.changed(event_loop, generation, *outcome);
             }

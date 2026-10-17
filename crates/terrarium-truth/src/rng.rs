@@ -157,14 +157,14 @@ impl Pcg32 {
 }
 
 /// The first 8 bytes of a SHA-256 digest, little-endian: how truth turns a hash into a number.
-pub fn digest_u64(digest: &[u8; 32]) -> u64 {
+pub(crate) fn digest_u64(digest: &[u8; 32]) -> u64 {
     let mut first = [0; 8];
     first.copy_from_slice(&digest[..8]);
     u64::from_le_bytes(first)
 }
 
 /// The low 32 bits of [`digest_u64`]: how truth turns a hash into an id.
-pub fn digest_u32(digest: &[u8; 32]) -> u32 {
+pub(crate) fn digest_u32(digest: &[u8; 32]) -> u32 {
     low_u32(digest_u64(digest))
 }
 

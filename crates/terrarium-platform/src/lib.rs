@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![allow(unsafe_code)]
 #![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(clippy::multiple_unsafe_ops_per_block)]
 
 pub mod appbar;
 pub mod clock;

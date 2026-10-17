@@ -2,6 +2,8 @@
 //! minutes never holds a refresh, and what comes back. Whether it may run is decided by
 //! [`KnipRun::permitted`] alone, from the opt-in the settings hold for this repository.
 
+use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -42,19 +44,31 @@ impl Running {
     /// Starts `job`; its outcome goes to `done`, which hears that it could not run when its
     /// thread cannot start.
     pub(crate) fn start(job: KnipJob, done: impl Fn(KnipDone) + Send + Sync + 'static) -> Running {
+        let KnipJob { run, node, head } = job;
+        Running::start_with(head, move |stop| run.run(&node, stop), done)
+    }
+
+    /// Runs `run` for the HEAD `head` was at. A panic in it is heard as a run that could not
+    /// start, so the worker never waits on a run that is gone.
+    fn start_with(
+        head: ObservationHead,
+        run: impl FnOnce(&AtomicBool) -> Result<Vec<u8>, KnipError> + Send + 'static,
+        done: impl Fn(KnipDone) + Send + Sync + 'static,
+    ) -> Running {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
-        let head = job.head.clone();
         let (done, failed) = {
             let done = Arc::new(done);
             (Arc::clone(&done), done)
         };
+        let ran_for = head.clone();
         let thread = thread::Builder::new()
             .name("terrarium-knip".into())
             .spawn(move || {
-                let outcome = job.run.run(&job.node, &flag);
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run(&flag)))
+                    .unwrap_or_else(|_| Err(KnipError::CannotRun(io::Error::other("panicked"))));
                 done(KnipDone {
-                    head: job.head,
+                    head: ran_for,
                     outcome,
                 });
             });
@@ -80,6 +94,14 @@ impl Running {
             let _ = thread.join();
         }
     }
+}
+
+/// The most of a version the repository's `package.json` names that the settings window shows.
+const VERSION_SHOWN: usize = 32;
+
+/// `text` cut to at most `most` characters.
+fn capped(text: &str, most: usize) -> String {
+    text.chars().take(most).collect()
 }
 
 /// What the settings window says of the Knip run; its wording is the app's.
@@ -116,7 +138,7 @@ impl KnipStatus {
     pub(crate) fn of(err: &KnipError) -> KnipStatus {
         match err {
             KnipError::NotInstalled => KnipStatus::NotInstalled,
-            KnipError::Before6(version) => KnipStatus::Before6(version.clone()),
+            KnipError::Before6(version) => KnipStatus::Before6(capped(version, VERSION_SHOWN)),
             KnipError::Outside => KnipStatus::Outside,
             KnipError::CannotRun(_) => KnipStatus::CannotRun,
             KnipError::TimedOut => KnipStatus::TimedOut,
@@ -130,5 +152,56 @@ impl KnipStatus {
                 stderr: stderr.clone(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use terrarium_truth::CommitId;
+
+    use super::*;
+
+    fn head() -> ObservationHead {
+        ObservationHead {
+            commit: CommitId::from_hex(&"a".repeat(40)).unwrap(),
+            branch: Some("main".into()),
+            at_default_tip: true,
+        }
+    }
+
+    #[test]
+    fn a_run_that_panics_is_heard_as_one_that_could_not_run() {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&heard);
+        let running = Running::start_with(
+            head(),
+            |_| panic!("an injected Knip panic"),
+            move |done| into.lock().unwrap().push(done),
+        );
+        let until = Instant::now() + Duration::from_secs(10);
+        while heard.lock().unwrap().is_empty() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        running.stop();
+        let heard = heard.lock().unwrap();
+        assert!(matches!(
+            heard.as_slice(),
+            [KnipDone {
+                outcome: Err(KnipError::CannotRun(_)),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn a_version_the_repository_names_is_shown_capped() {
+        let long = "6".repeat(4096);
+        assert_eq!(
+            KnipStatus::of(&KnipError::Before6(long)),
+            KnipStatus::Before6("6".repeat(VERSION_SHOWN))
+        );
     }
 }

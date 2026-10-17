@@ -9,8 +9,8 @@ The headless live pipeline, run on a worker thread.
   `repo.active` names, with its recorded default branch, unless it was disconnected.
 - **The lifecycle** (`lifecycle`): relinking a terrarium to a repository that moved (only the
   same repository), re-seeding (a new install salt, the cache dropped, the observations kept),
-  and disconnecting, with or without deleting the observations. The app runs each with the
-  engine stopped.
+  importing an observations export, and disconnecting, with or without deleting the
+  observations. The app runs each with the engine stopped.
 - **Refresh** (`live`): git, then the reports, then replay. A report is read only once it has
   been still for 500 ms, and recorded only when its content changed since its format's last
   observation. A default branch moved without fast-forwarding is recorded as a `ref_rewrite`, with what git

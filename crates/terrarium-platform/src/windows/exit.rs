@@ -106,7 +106,8 @@ pub(super) fn install_handlers() {
         std::panic::set_hook(Box::new(move |info| {
             // Removed before the previous hook prints, since a full stderr pipe can block the
             // print. Panics on other threads are contained (I-16), so the strip keeps its edge
-            // through them. SAFETY: as above.
+            // through them. SAFETY: reads the calling thread's id; it cannot fail, and needs no
+            // thread-local storage.
             if OWNER.load(Ordering::SeqCst) == unsafe { GetCurrentThreadId() } {
                 let _placing = PLACING.try_lock();
                 remove_registered();

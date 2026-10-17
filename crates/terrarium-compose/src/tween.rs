@@ -154,8 +154,10 @@ mod tests {
 
     #[test]
     fn every_millisecond_moves_at_most_one_step_and_never_backwards() {
-        // Exhaustive over every duration the composer uses, rising and falling: the slowest
-        // ramp moves at most one unit in a millisecond, so no frame can ever see a cut.
+        // Every duration of the scene's own fades and dim mode's, rising and falling: each
+        // ramp moves at most one unit in a millisecond, so no frame can ever see a cut. The
+        // hover layer's quicker fades and a time-lapse's label step further, and the continuity
+        // property bounds them by their own pace.
         for ms in [
             durations::APPEAR_MS,
             durations::VANISH_MS,
@@ -164,6 +166,7 @@ mod tests {
             durations::SKY_MS,
             durations::LABEL_FADE_MS,
             durations::DIM_UP_MS,
+            durations::DIM_DOWN_MS,
             durations::CLOCK_FIX_MS,
             // The light overlays' delivered crossfade.
             1200,

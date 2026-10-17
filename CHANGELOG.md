@@ -5,6 +5,28 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-10-17
+
+A review of the whole app, with what it found fixed. Nothing about the terrarium itself moved:
+the same history grows the same world.
+
+### Fixed
+
+- **A failure inside the app's engine now stops it with the `halted` note** wherever it
+  happens. Before, a failure outside a refresh (in the GitHub weather or Knip hand-offs) froze
+  the strip with no word.
+- **Settings no longer stays busy for good** when connecting, relinking, re-seeding, importing
+  or disconnecting fails unexpectedly: the strip says it halted and the buttons come back.
+- **A Knip run that fails unexpectedly no longer stops every later run** until a restart.
+- **A keychain that fails unexpectedly no longer ends the GitHub weather** for the session.
+- **Reports are read only from the folder you connected.** A repository whose own settings
+  name another folder as its working copy no longer has its coverage, test and Knip reports
+  read from there.
+- **A time-lapse save picked after its window was closed writes nothing,** rather than writing
+  the newer window's film under the old name.
+- **A quiet strip wakes less often** after a creature leaves.
+- **A very long Knip version** in a repository's settings is shortened in Settings.
+
 ## [0.28.0] - 2026-10-16
 
 The Windows strip is hardened: it steps behind full-screen apps, keeps its edge through

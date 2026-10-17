@@ -30,8 +30,6 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use sha2::{Digest, Sha256};
-
 use crate::fixed::{Q16, Q32};
 use crate::identity::{CommitId, RepoSeed, SimVersion};
 use crate::time::{Tick, TickGrid};
@@ -92,14 +90,17 @@ pub fn from_canonical_dump<T: Canonical>(text: &str) -> Result<T, DumpError> {
     Ok(value)
 }
 
-/// SHA-256 of the canonical dump of `value`.
-pub fn canonical_sha256<T: Canonical>(value: &T) -> [u8; 32] {
+/// SHA-256 of the canonical dump of `value`. The golden check hashes the committed text
+/// instead, so only tests hash a value in hand.
+#[cfg(test)]
+pub(crate) fn canonical_sha256<T: Canonical>(value: &T) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
     Sha256::digest(canonical_dump(value).as_bytes()).into()
 }
 
 /// A count as dumped state holds it: `Canonical` has no impl for `usize`, so counts are `u32`,
 /// saturated.
-pub fn count_of(n: usize) -> u32 {
+pub(crate) fn count_of(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 

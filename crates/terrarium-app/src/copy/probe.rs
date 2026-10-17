@@ -1,6 +1,6 @@
-//! The pinning probe's words. The probe is a tester's tool, so its steps and its README give
-//! instructions, in the same plain tone as the rest of `copy`: the scan for banned words leaves
-//! this file out, and the scan for exclamation marks does not.
+//! The pinning probe's words: its walk-throughs and its README. The probe is a tester's tool,
+//! so its steps and its README give instructions, in the same plain tone as the rest of `copy`:
+//! the scan for banned words leaves this file out, and the scan for exclamation marks does not.
 
 use std::fmt::{Display, Write as _};
 use std::path::Path;

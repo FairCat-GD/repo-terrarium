@@ -11,54 +11,54 @@ pub const SECONDS_PER_DAY: i64 = 86_400;
 
 /// The window every smoothed climate averages over, as an exponential moving average whose
 /// weight is `2 / (14 + 1)`.
-pub const SMOOTHING_ALPHA: Q32 = Q32::from_ratio(2, 15);
+pub(crate) const SMOOTHING_ALPHA: Q32 = Q32::from_ratio(2, 15);
 
 /// How many daily levels the rain and wind baselines take their median over.
-pub const BASELINE_DAYS: usize = 90;
+pub(crate) const BASELINE_DAYS: usize = 90;
 
 /// The lowest baseline rain and wind are compared with: `log2(1 + 1/7)`, one commit a week. A
 /// test pins it to the logarithm it stands for.
-pub const BASELINE_FLOOR: Q32 = Q32::from_raw(12_625 << 16);
+pub(crate) const BASELINE_FLOOR: Q32 = Q32::from_raw(12_625 << 16);
 
 /// History shorter than this (14 days) uses a neutral rain and wind ratio of 1, so activity is
 /// a typical 0.5 while the baselines settle.
-pub const SETTLING_TICKS: u32 = 14 * 24;
+pub(crate) const SETTLING_TICKS: u32 = 14 * 24;
 
 /// Activity is `0.5 × (0.75 × rain + 0.25 × wind)`, that is `(3 × rain + wind) / 8`.
-pub const ACTIVITY_RAIN_WEIGHT: i64 = 3;
-pub const ACTIVITY_WIND_WEIGHT: i64 = 1;
-pub const ACTIVITY_DIVISOR: i64 = 8;
+pub(crate) const ACTIVITY_RAIN_WEIGHT: i64 = 3;
+pub(crate) const ACTIVITY_WIND_WEIGHT: i64 = 1;
+pub(crate) const ACTIVITY_DIVISOR: i64 = 8;
 
 /// What an unknown light or soil counts as in health.
-pub const NEUTRAL: Q16 = Q16::HALF;
+pub(crate) const NEUTRAL: Q16 = Q16::HALF;
 
 /// Health from which the terrarium turns healthy, and below which it turns unhealthy; in
 /// between, the previous class holds.
 pub const HEALTHY_FROM: Q16 = Q16::from_ratio(55, 100);
-pub const UNHEALTHY_BELOW: Q16 = Q16::from_ratio(45, 100);
+pub(crate) const UNHEALTHY_BELOW: Q16 = Q16::from_ratio(45, 100);
 
 /// Activity from which a repository that is not inactive counts as active, and below which it
 /// counts as quiet; in between, the previous class holds, as health's does, so activity
 /// hovering at the threshold never flickers the presentation.
 pub const ACTIVE_FROM: Q16 = Q16::from_ratio(35, 100);
-pub const QUIET_BELOW: Q16 = Q16::from_ratio(30, 100);
+pub(crate) const QUIET_BELOW: Q16 = Q16::from_ratio(30, 100);
 
 /// Thirty days without a commit on any branch is inactive.
-pub const INACTIVE_TICKS: u32 = 30 * 24;
+pub(crate) const INACTIVE_TICKS: u32 = 30 * 24;
 
 /// Recovering looks back 14 days, and needs health to have risen by 0.10 over them.
-pub const RECOVERY_WINDOW_TICKS: u32 = 14 * 24;
-pub const RECOVERY_GAIN: Q16 = Q16::from_ratio(10, 100);
+pub(crate) const RECOVERY_WINDOW_TICKS: u32 = 14 * 24;
+pub(crate) const RECOVERY_GAIN: Q16 = Q16::from_ratio(10, 100);
 
 /// The daily records kept: enough to reach 14 days back from anywhere in the newest day.
-pub const DAILY_RECORDS: usize = 15;
+pub(crate) const DAILY_RECORDS: usize = 15;
 
 /// A trend compares a reading with its value at least 7 days earlier; a change smaller than
 /// 0.02 is flat.
-pub const TREND_TICKS: u32 = 7 * 24;
-pub const TREND_STEP: Q16 = Q16::from_ratio(2, 100);
+pub(crate) const TREND_TICKS: u32 = 7 * 24;
+pub(crate) const TREND_STEP: Q16 = Q16::from_ratio(2, 100);
 /// Terrain's trend: a change of less than this percent of its lines over the week is flat.
-pub const TERRAIN_TREND_PERCENT: u64 = 2;
+pub(crate) const TERRAIN_TREND_PERCENT: u64 = 2;
 
 /// Days in the dormant state at which condensation reaches levels 1, 2 and 3.
 pub const CONDENSATION_DAYS: [u32; 3] = [0, 30, 90];
@@ -72,79 +72,80 @@ pub const GALE_FROM: Q16 = Q16::from_int(3);
 
 /// A coverage report that moved by at least 0.02 from the one before it (the sunburst and the
 /// dusk) colours the sky for a week after it was recorded.
-pub const LIGHT_SHIFT_STEP: Q16 = Q16::from_ratio(2, 100);
-pub const LIGHT_SHIFT_TICKS: u32 = 7 * 24;
+pub(crate) const LIGHT_SHIFT_STEP: Q16 = Q16::from_ratio(2, 100);
+pub(crate) const LIGHT_SHIFT_TICKS: u32 = 7 * 24;
 
 /// A weather reading at or above this is a pass.
-pub const PASS_FROM: Q16 = Q16::HALF;
+pub(crate) const PASS_FROM: Q16 = Q16::HALF;
 
 /// Vigor's bands: the foliage is thriving from 0.60; below 0.35 a plant is failing, and after
 /// `DYING_DAYS` there it dies.
 pub const THRIVING_FROM: Q16 = Q16::from_ratio(60, 100);
-pub const FAILING_BELOW: Q16 = Q16::from_ratio(35, 100);
-pub const DYING_DAYS: u32 = 21;
+pub(crate) const FAILING_BELOW: Q16 = Q16::from_ratio(35, 100);
+pub(crate) const DYING_DAYS: u32 = 21;
 
 /// A plant's vigor target is health scaled by 4/3, so the foliage
 /// is thriving from health 0.45, where the terrarium turns unhealthy, and a repository
 /// with no light or soil tool (health 0.5, I-3) grows thriving plants. Plants fail below health
 /// 0.2625. It is the ratio of the two thresholds as stored, which is 4/3 to within 2⁻¹⁴, so that
 /// health 0.45 reaches vigor 0.60 exactly rather than one step short.
-pub const VIGOR_PER_HEALTH: Q16 = Q16::from_ratio(THRIVING_FROM.raw(), UNHEALTHY_BELOW.raw());
+pub(crate) const VIGOR_PER_HEALTH: Q16 =
+    Q16::from_ratio(THRIVING_FROM.raw(), UNHEALTHY_BELOW.raw());
 
 /// Tempo is the rain ratio held within `[1/4, 2]`: a silent repository still changes, slowly,
 /// and a burst cannot rush it. Each day vigor moves `tempo × GROWTH_RATE` of the way to its
 /// target, and that share of the free capacity germinates, rounded up.
-pub const TEMPO_MIN: Q16 = Q16::from_ratio(1, 4);
-pub const TEMPO_MAX: Q16 = Q16::from_int(2);
-pub const GROWTH_RATE: Q16 = Q16::from_ratio(1, 7);
+pub(crate) const TEMPO_MIN: Q16 = Q16::from_ratio(1, 4);
+pub(crate) const TEMPO_MAX: Q16 = Q16::from_int(2);
+pub(crate) const GROWTH_RATE: Q16 = Q16::from_ratio(1, 7);
 
 /// Plant capacity: `clamp(6 + 4 × log2(1 + KLOC), 6, 24)`, rounded down.
-pub const PLANTS_MIN: i32 = 6;
-pub const PLANTS_MAX: i32 = 24;
-pub const PLANTS_PER_DOUBLING: Q16 = Q16::from_int(4);
-pub const LINES_PER_KLOC: i64 = 1_000;
+pub(crate) const PLANTS_MIN: i32 = 6;
+pub(crate) const PLANTS_MAX: i32 = 24;
+pub(crate) const PLANTS_PER_DOUBLING: Q16 = Q16::from_int(4);
+pub(crate) const LINES_PER_KLOC: i64 = 1_000;
 
 /// Weed capacity: `clamp(P / 3, 2, 8)`.
-pub const WEEDS_PER_PLANTS: u32 = 3;
-pub const WEEDS_MIN: u32 = 2;
-pub const WEEDS_MAX: u32 = 8;
+pub(crate) const WEEDS_PER_PLANTS: u32 = 3;
+pub(crate) const WEEDS_MIN: u32 = 2;
+pub(crate) const WEEDS_MAX: u32 = 8;
 
 /// Weeds germinate, one a day, while the soil is below 0.45, and wither, one a day, while it is
 /// unknown or at least 0.55; in between they hold.
 pub const WEEDS_BELOW: Q16 = Q16::from_ratio(45, 100);
-pub const WEEDS_WITHER_FROM: Q16 = Q16::from_ratio(55, 100);
+pub(crate) const WEEDS_WITHER_FROM: Q16 = Q16::from_ratio(55, 100);
 
 /// Days grown (at vigor 0.35 or more, while the repository is not inactive) at which a plant
 /// turns young and mature, by layer: trees grow slowest.
-pub const FAR_STAGE_DAYS: [u32; 2] = [14, 60];
-pub const MID_STAGE_DAYS: [u32; 2] = [10, 30];
-pub const NEAR_STAGE_DAYS: [u32; 2] = [7, 21];
+pub(crate) const FAR_STAGE_DAYS: [u32; 2] = [14, 60];
+pub(crate) const MID_STAGE_DAYS: [u32; 2] = [10, 30];
+pub(crate) const NEAR_STAGE_DAYS: [u32; 2] = [7, 21];
 
 /// A dead plant stands this long, then falls into litter and frees its slot.
-pub const DEAD_STANDING_DAYS: u32 = 30;
+pub(crate) const DEAD_STANDING_DAYS: u32 = 30;
 /// Litter becomes fungus after 14 days; fungus is gone after 60 more.
-pub const LITTER_DAYS: u32 = 14;
-pub const FUNGUS_DAYS: u32 = 60;
+pub(crate) const LITTER_DAYS: u32 = 14;
+pub(crate) const FUNGUS_DAYS: u32 = 60;
 
 /// The seed bank: each pool species starts with 4 seeds, never has fewer than 2, gains one a
 /// day while a mature plant of it thrives, and holds at most 12.
-pub const SEED_BANK_START: u32 = 4;
-pub const SEED_BANK_FLOOR: u32 = 2;
-pub const SEED_BANK_CAP: u32 = 12;
+pub(crate) const SEED_BANK_START: u32 = 4;
+pub(crate) const SEED_BANK_FLOOR: u32 = 2;
+pub(crate) const SEED_BANK_CAP: u32 = 12;
 
 /// Resident capacity: `clamp(1 + log2(1 + KLOC), 1, 6)`, rounded down. The composer draws at
 /// most six.
-pub const RESIDENTS_MIN: i32 = 1;
-pub const RESIDENTS_MAX: i32 = 6;
+pub(crate) const RESIDENTS_MIN: i32 = 1;
+pub(crate) const RESIDENTS_MAX: i32 = 6;
 
 /// The seed picks five of the eight resident species.
-pub const RESIDENT_POOL: u32 = 5;
+pub(crate) const RESIDENT_POOL: u32 = 5;
 
 /// The days a resident spends in each stage while the repository is not inactive: egg (the
 /// woodlouse's brood, the earthworm's cocoon), juvenile, pupa (none where the species has no
 /// pupa) and adult. Adults live about 3 to 12 months, and egg to adult takes 3 to 8 weeks: the
 /// springtail and the firefly live shortest, the earthworm and the beetle longest.
-pub const fn life_days(species: ResidentSpecies) -> [u32; 4] {
+pub(crate) const fn life_days(species: ResidentSpecies) -> [u32; 4] {
     match species {
         ResidentSpecies::Snail => [14, 35, 0, 240],
         ResidentSpecies::Ladybird => [5, 14, 7, 150],
@@ -158,47 +159,47 @@ pub const fn life_days(species: ResidentSpecies) -> [u32; 4] {
 }
 
 /// Energy reads in vigor's bands: high from 0.60, low below 0.35.
-pub const ENERGY_HIGH_FROM: Q16 = THRIVING_FROM;
-pub const ENERGY_LOW_BELOW: Q16 = FAILING_BELOW;
+pub(crate) const ENERGY_HIGH_FROM: Q16 = THRIVING_FROM;
+pub(crate) const ENERGY_LOW_BELOW: Q16 = FAILING_BELOW;
 
 /// A resident whose energy stays low this long leaves: an egg or pupa fails.
-pub const RETREAT_DAYS: u32 = 14;
+pub(crate) const RETREAT_DAYS: u32 = 14;
 
 /// An adult at high energy lays an egg every 14 days at the usual pace: its brood grows by the
 /// day's tempo, and an egg is due at `BROOD_DAYS`.
-pub const BROOD_DAYS: Q16 = Q16::from_int(14);
+pub(crate) const BROOD_DAYS: Q16 = Q16::from_int(14);
 
 /// Arrivals bank the day's tempo while the plants feed well, up to `ARRIVAL_DAYS` for each
 /// resident the terrarium holds; each arrival spends `ARRIVAL_DAYS`, so one comes every two
 /// days at the usual pace.
-pub const ARRIVAL_DAYS: Q16 = Q16::from_int(2);
+pub(crate) const ARRIVAL_DAYS: Q16 = Q16::from_int(2);
 
 /// A species lays or arrives only while it has fewer living members than this. The pool's
 /// species at this cap always outnumber the most residents, so it never keeps a cast short.
-pub const KIN_MAX: u32 = 2;
+pub(crate) const KIN_MAX: u32 = 2;
 
 /// Plant food is the living plants' vigor summed over at least `⌈P / FOOD_SHARE⌉` of them: a
 /// full terrarium feeds at its mean vigor, a sparse one less.
-pub const FOOD_SHARE: u32 = 2;
+pub(crate) const FOOD_SHARE: u32 = 2;
 
 /// What decay (dead plants, litter, fungus) feeds a decomposer: enough to stay, never enough
 /// to breed.
-pub const DETRITUS_FOOD: Q16 = Q16::HALF;
+pub(crate) const DETRITUS_FOOD: Q16 = Q16::HALF;
 
 /// One monument for each full 365 days of age, at most 3. Each weathers by its own age:
 /// lichened from 2 years, ancient from 5.
-pub const MONUMENT_DAYS: u32 = 365;
-pub const MONUMENTS_MAX: usize = 3;
-pub const LICHENED_FROM_YEARS: u32 = 2;
-pub const ANCIENT_FROM_YEARS: u32 = 5;
+pub(crate) const MONUMENT_DAYS: u32 = 365;
+pub(crate) const MONUMENTS_MAX: usize = 3;
+pub(crate) const LICHENED_FROM_YEARS: u32 = 2;
+pub(crate) const ANCIENT_FROM_YEARS: u32 = 5;
 
 /// A commit that deletes a whole directory of at least 500 lines leaves a fossil (a sinkhole);
 /// at most 5 are kept, the oldest leaving first.
-pub const FOSSIL_MIN_LINES: u64 = 500;
-pub const FOSSILS_MAX: usize = 5;
+pub(crate) const FOSSIL_MIN_LINES: u64 = 500;
+pub(crate) const FOSSILS_MAX: usize = 5;
 
 /// An event's rank: the lower wins arbitration.
-pub const fn event_rank(kind: EventKind) -> u8 {
+pub(crate) const fn event_rank(kind: EventKind) -> u8 {
     match kind {
         EventKind::Earthquake => 1,
         EventKind::Sinkhole => 2,
@@ -215,7 +216,7 @@ pub const fn event_rank(kind: EventKind) -> u8 {
 
 /// An event's cooldown in ticks, counted from the last time it qualified, whether it played or
 /// not.
-pub const fn event_cooldown(kind: EventKind) -> u32 {
+pub(crate) const fn event_cooldown(kind: EventKind) -> u32 {
     match kind {
         EventKind::Earthquake
         | EventKind::Sinkhole
@@ -232,57 +233,57 @@ pub const fn event_cooldown(kind: EventKind) -> u32 {
 
 /// How long truth remembers an event that could play: the longest absence whose strongest
 /// event still plays on return.
-pub const EVENT_RECALL_TICKS: u32 = 7 * 24;
+pub(crate) const EVENT_RECALL_TICKS: u32 = 7 * 24;
 
 /// Strength bands: the value from which an event is of middling strength, and from which it is
 /// strong, in the measure each event has.
 /// - earthquake: commits taken off the default chain;
-pub const EARTHQUAKE_BANDS: [u32; 2] = [3, 10];
+pub(crate) const EARTHQUAKE_BANDS: [u32; 2] = [3, 10];
 /// - sinkhole: lines in the deleted directory that names its fossil;
-pub const SINKHOLE_BANDS: [u64; 2] = [2_000, 10_000];
+pub(crate) const SINKHOLE_BANDS: [u64; 2] = [2_000, 10_000];
 /// - lightning: whole days the weather in effect has been failing;
-pub const LIGHTNING_BANDS: [u32; 2] = [4, 7];
+pub(crate) const LIGHTNING_BANDS: [u32; 2] = [4, 7];
 /// - clearing burn: the share of unused items cleared, in percent;
-pub const CLEARING_BURN_BANDS: [u64; 2] = [40, 60];
+pub(crate) const CLEARING_BURN_BANDS: [u64; 2] = [40, 60];
 /// - rain after drought: whole days without a commit;
-pub const DROUGHT_BANDS: [u32; 2] = [30, 90];
+pub(crate) const DROUGHT_BANDS: [u32; 2] = [30, 90];
 /// - windstorm: the day's changed lines over the usual active day's;
-pub const WINDSTORM_BANDS: [u64; 2] = [6, 12];
+pub(crate) const WINDSTORM_BANDS: [u64; 2] = [6, 12];
 /// - sunburst and dusk: how far coverage moved.
-pub const LIGHT_SHIFT_BANDS: [Q16; 2] = [Q16::from_ratio(5, 100), Q16::from_ratio(10, 100)];
+pub(crate) const LIGHT_SHIFT_BANDS: [Q16; 2] = [Q16::from_ratio(5, 100), Q16::from_ratio(10, 100)];
 
 /// Lightning strikes on each whole day the weather in effect has failed, from the third.
-pub const LIGHTNING_FROM_DAYS: u32 = 3;
+pub(crate) const LIGHTNING_FROM_DAYS: u32 = 3;
 /// A strike lowers its plant's vigor by this, never below `FAILING_BELOW`: lightning marks a
 /// plant, it never kills one.
-pub const LIGHTNING_DIP: Q16 = Q16::from_ratio(15, 100);
+pub(crate) const LIGHTNING_DIP: Q16 = Q16::from_ratio(15, 100);
 
 /// A flowering's bloom lasts a day.
-pub const BLOOM_TICKS: u32 = 24;
+pub(crate) const BLOOM_TICKS: u32 = 24;
 
 /// A clearing burn needs at least this many unused items cleared, and this share of them, in
 /// percent.
-pub const CLEARING_BURN_ITEMS: u32 = 5;
-pub const CLEARING_BURN_PERCENT: u64 = 20;
+pub(crate) const CLEARING_BURN_ITEMS: u32 = 5;
+pub(crate) const CLEARING_BURN_PERCENT: u64 = 20;
 
 /// A silence this many days long is a drought. Rain after drought plays for the first commit
 /// after one, counted in hours since any commit. The rain and wind baselines count it in each
 /// tempo's own closed days without a sample: they leave out the days past it, and the first day
 /// back restarts the average.
-pub const DROUGHT_DAYS: u32 = 14;
+pub(crate) const DROUGHT_DAYS: u32 = 14;
 
 /// A windstorm is a day whose changed lines are at least this many times the median of the
 /// active days among the last `WINDSTORM_DAYS`, once `WINDSTORM_ACTIVE_DAYS` of them were
 /// active.
-pub const WINDSTORM_RATIO: u64 = 3;
-pub const WINDSTORM_DAYS: usize = 90;
-pub const WINDSTORM_ACTIVE_DAYS: usize = 7;
+pub(crate) const WINDSTORM_RATIO: u64 = 3;
+pub(crate) const WINDSTORM_DAYS: usize = 90;
+pub(crate) const WINDSTORM_ACTIVE_DAYS: usize = 7;
 
 /// Ground marks: a settled crack or sinkhole stays until the next rain after drought or for 30
 /// days; fresh soil for 14; at most 3 at once, the oldest leaving first.
-pub const SETTLED_MARK_DAYS: u32 = 30;
-pub const FRESH_SOIL_DAYS: u32 = 14;
-pub const MARKS_MAX: usize = 3;
+pub(crate) const SETTLED_MARK_DAYS: u32 = 30;
+pub(crate) const FRESH_SOIL_DAYS: u32 = 14;
+pub(crate) const MARKS_MAX: usize = 3;
 
 #[cfg(test)]
 mod tests {

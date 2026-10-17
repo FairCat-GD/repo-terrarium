@@ -137,11 +137,6 @@ impl Eras {
     pub fn latest(&self) -> Option<&Snapshot> {
         self.eras.last().map(|(_, snapshot)| snapshot)
     }
-
-    /// The first turn any record stands for.
-    pub fn first(&self) -> Option<u64> {
-        self.eras.first().map(|&(first, _)| first)
-    }
 }
 
 #[cfg(test)]

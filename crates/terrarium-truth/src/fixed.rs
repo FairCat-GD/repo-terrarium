@@ -262,7 +262,7 @@ impl Q32 {
 }
 
 /// `log2(n)`, rounded to the nearest `Q16`. `None` for zero.
-pub fn log2_int(n: u64) -> Option<Q16> {
+pub(crate) fn log2_int(n: u64) -> Option<Q16> {
     (n > 0).then(|| log2_scaled(n, 0))
 }
 

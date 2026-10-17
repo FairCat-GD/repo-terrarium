@@ -69,7 +69,7 @@ pub fn activity(rain: Q32, wind: Q32) -> Q16 {
 }
 
 /// Health as it stood at `tick`: the newest record in effect then, or neutral before any.
-pub fn health_at(daily: &[DailyClimate], tick: Tick) -> Q16 {
+pub(crate) fn health_at(daily: &[DailyClimate], tick: Tick) -> Q16 {
     daily
         .iter()
         .rev()

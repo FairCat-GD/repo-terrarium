@@ -231,7 +231,13 @@ impl Engine {
                         return;
                     }
                 };
-                worker.run(pipeline);
+                // A panic beside a refresh (a job's word, the schedule) halts the engine as one
+                // inside it does, rather than ending the thread with no note.
+                let mut worker = worker;
+                let ran = panic::catch_unwind(AssertUnwindSafe(|| worker.run(pipeline)));
+                if ran.is_err() && !worker.cancel.load(Ordering::Relaxed) {
+                    (worker.sink)(Update::Halted);
+                }
             })
             .map_err(ConnectError::Thread)?;
         let engine = Engine {
@@ -331,7 +337,7 @@ impl Jobs {
 }
 
 impl Worker {
-    fn run<P: Pipeline>(mut self, pipeline: P) {
+    fn run<P: Pipeline>(&mut self, pipeline: P) {
         let mut pipeline = Some(pipeline);
         let started = Instant::now();
         let mut schedule = Schedule::new(self.clock.wall_secs());
@@ -761,6 +767,39 @@ mod tests {
         let stopped = Instant::now();
         engine.shutdown();
         assert!(stopped.elapsed() < SHUTDOWN_WAIT);
+    }
+
+    /// A pipeline whose refreshes reach the repository and whose word on its jobs panics.
+    struct ToolsPanic;
+
+    impl Pipeline for ToolsPanic {
+        fn refresh(&mut self, _: Refresh, _: &mut dyn FnMut(u8), _: &AtomicBool) -> Done {
+            Done {
+                reach: Some(Reach::Found),
+                ..Done::default()
+            }
+        }
+
+        fn watch_set(&self) -> Option<&WatchSet> {
+            None
+        }
+
+        fn tools(&self) -> Tools {
+            panic!("an injected panic beside the refresh")
+        }
+    }
+
+    #[test]
+    fn a_panic_beside_a_refresh_halts_the_engine() {
+        let (sink, heard) = recording();
+        let (engine, _) = Engine::spawn_pipeline(
+            || Ok(Some((ToolsPanic, Start::NotConnected))),
+            Arc::new(ManualClock::at(0)),
+            sink,
+        )
+        .unwrap();
+        wait_for(&heard, |u| matches!(u, [Update::Halted]));
+        engine.shutdown_and_join();
     }
 
     #[test]

@@ -142,13 +142,32 @@ pub fn spawn(
             if let Some(engine) = engine {
                 engine.shutdown_and_join();
             }
-            let outcome = run(job, &data, &keychain, &proxy, generation);
+            let connecting = matches!(job, Job::Connect { .. });
+            let outcome = contained(connecting, || {
+                run(job, &data, &keychain, &proxy, generation)
+            });
             let _ = proxy.send_event(UserEvent::Lifecycle(generation, Box::new(outcome)));
         });
     if let Err(err) = ran {
         let outcome = Outcome::NotConnected(ConnectError::Thread(err));
         let _ = send.send_event(UserEvent::Lifecycle(generation, Box::new(outcome)));
     }
+}
+
+/// Runs `job`, answering a panic as a halt, so the event loop always hears how a job ended:
+/// nothing connected for a connect, else the strip halted with no engine. The windows wait for
+/// that answer before they take another press.
+fn contained(connecting: bool, job: impl FnOnce() -> Outcome) -> Outcome {
+    panic::catch_unwind(AssertUnwindSafe(job)).unwrap_or_else(|_| {
+        if connecting {
+            Outcome::NotConnected(ConnectError::Halted)
+        } else {
+            Outcome::Restarted {
+                changed: Err(Refused::Connect(ConnectError::Halted)),
+                started: Err(ConnectError::Halted),
+            }
+        }
+    })
 }
 
 fn run(
@@ -222,7 +241,11 @@ fn run(
         Job::Disconnect {
             id,
             delete_observations,
-        } => match change::disconnect(data, id, delete_observations) {
+        } => match panic::catch_unwind(AssertUnwindSafe(|| {
+            change::disconnect(data, id, delete_observations)
+        }))
+        .unwrap_or(Err(ConnectError::Halted))
+        {
             Ok(()) => Outcome::Disconnected,
             Err(err) => restart(Err(Refused::Connect(err))),
         },
@@ -247,6 +270,26 @@ pub fn first_run(data: &DataDir) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_job_that_panics_still_answers() {
+        let panicking = || -> Outcome { panic!("an injected lifecycle panic") };
+        assert!(matches!(
+            contained(true, panicking),
+            Outcome::NotConnected(ConnectError::Halted)
+        ));
+        assert!(matches!(
+            contained(false, panicking),
+            Outcome::Restarted {
+                changed: Err(Refused::Connect(ConnectError::Halted)),
+                started: Err(ConnectError::Halted),
+            }
+        ));
+        assert!(matches!(
+            contained(false, || Outcome::Disconnected),
+            Outcome::Disconnected
+        ));
+    }
 
     #[test]
     fn the_first_run_is_done_once_and_keeps_the_login_choice() {

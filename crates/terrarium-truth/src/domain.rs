@@ -183,41 +183,21 @@ pub struct CommitFacts {
     pub tags: Vec<TagFact>,
 }
 
-canonical_struct!(CommitFacts {
-    id,
-    tick,
-    parents,
-    on_default_first_parent,
-    added,
-    removed,
-    deleted_dirs,
-    renames,
-    tags,
-});
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletedDir {
     pub path: String,
     pub lines: u64,
 }
 
-canonical_struct!(DeletedDir { path, lines });
-
 /// A commit a rewrite took off the default branch's first-parent chain, as git said it was: its
 /// committer time and the directories it deleted entirely.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeftCommit {
     pub commit: CommitId,
-    /// Unix seconds, UTC: the committer's, unclamped.
+    /// Unix seconds, UTC: the committer's, clamped as the history clamps it.
     pub time: i64,
     pub deleted_dirs: Vec<DeletedDir>,
 }
-
-canonical_struct!(LeftCommit {
-    commit,
-    time,
-    deleted_dirs,
-});
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rename {
@@ -225,16 +205,12 @@ pub struct Rename {
     pub to: String,
 }
 
-canonical_struct!(Rename { from, to });
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagFact {
     pub name: String,
     /// The tag's date.
     pub tick: Tick,
 }
-
-canonical_struct!(TagFact { name, tick });
 
 /// The observation kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -335,65 +311,6 @@ impl ObservationValue {
     }
 }
 
-impl Canonical for ObservationValue {
-    fn write(&self, w: &mut Writer) {
-        w.leaf(self.kind().name());
-        match self {
-            ObservationValue::Coverage
-            | ObservationValue::Complexity
-            | ObservationValue::TodoDensity => {}
-            ObservationValue::DeadCode {
-                unused_items,
-                exported_items,
-            } => {
-                w.field("unused_items", unused_items);
-                w.field("exported_items", exported_items);
-            }
-            ObservationValue::Weather { source } => w.field("source", source),
-            ObservationValue::RefRewrite {
-                reference,
-                old,
-                new,
-                rewritten,
-                fossils,
-                left,
-            } => {
-                w.field("reference", reference);
-                w.field("old", old);
-                w.field("new", new);
-                w.field("rewritten", rewritten);
-                w.field("fossils", fossils);
-                w.field("left", left);
-            }
-        }
-    }
-
-    fn read(r: &mut Reader<'_>) -> Result<Self, DumpError> {
-        let text = r.leaf()?;
-        let kind = ObservationKind::from_name(text).ok_or_else(|| r.bad_value(text))?;
-        Ok(match kind {
-            ObservationKind::Coverage => ObservationValue::Coverage,
-            ObservationKind::DeadCode => ObservationValue::DeadCode {
-                unused_items: r.field("unused_items")?,
-                exported_items: r.field("exported_items")?,
-            },
-            ObservationKind::Complexity => ObservationValue::Complexity,
-            ObservationKind::TodoDensity => ObservationValue::TodoDensity,
-            ObservationKind::Weather => ObservationValue::Weather {
-                source: r.field("source")?,
-            },
-            ObservationKind::RefRewrite => ObservationValue::RefRewrite {
-                reference: r.field("reference")?,
-                old: r.field("old")?,
-                new: r.field("new")?,
-                rewritten: r.field("rewritten")?,
-                fossils: r.field("fossils")?,
-                left: r.field("left")?,
-            },
-        })
-    }
-}
-
 /// One recorded observation, as replay reads it (I-4). The store's other columns (the raw
 /// report, its hash and mtime, the contributors) serve the store and the soil panel, not truth.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -409,15 +326,6 @@ pub struct Observation {
     pub confidence: Q16,
     pub value: ObservationValue,
 }
-
-canonical_struct!(Observation {
-    id,
-    recorded_at,
-    head,
-    normalized,
-    confidence,
-    value,
-});
 
 impl Observation {
     pub fn merge_key(&self) -> MergeKey<'_> {
@@ -462,12 +370,6 @@ pub struct ObservationHead {
     pub branch: Option<String>,
     pub at_default_tip: bool,
 }
-
-canonical_struct!(ObservationHead {
-    commit,
-    branch,
-    at_default_tip
-});
 
 /// What the terrarium shows as a whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -516,10 +418,6 @@ canonical_enum!(ActivityClass {
 mod tests {
     use super::*;
     use crate::canon::{canonical_dump, from_canonical_dump};
-
-    fn commit(hex_digit: char) -> CommitId {
-        CommitId::from_hex(&hex_digit.to_string().repeat(40)).expect("valid id")
-    }
 
     fn round_trips<T>(value: &T)
     where
@@ -590,101 +488,8 @@ mod tests {
             terrain: 120_000,
             age: Tick::new(9_000),
         });
-        round_trips(&CommitFacts {
-            id: commit('a'),
-            tick: Tick::new(12),
-            parents: 2,
-            on_default_first_parent: true,
-            added: 40,
-            removed: 7,
-            deleted_dirs: vec![DeletedDir {
-                path: "src/old".to_owned(),
-                lines: 600,
-            }],
-            renames: vec![Rename {
-                from: "a.rs".to_owned(),
-                to: "b.rs".to_owned(),
-            }],
-            tags: vec![TagFact {
-                name: "v1.0.0".to_owned(),
-                tick: Tick::new(12),
-            }],
-        });
-        let values = [
-            ObservationValue::Coverage,
-            ObservationValue::DeadCode {
-                unused_items: 3,
-                exported_items: 90,
-            },
-            ObservationValue::Complexity,
-            ObservationValue::TodoDensity,
-            ObservationValue::Weather {
-                source: WeatherSource::Local,
-            },
-            ObservationValue::RefRewrite {
-                reference: "refs/heads/main".to_owned(),
-                old: commit('b'),
-                new: commit('c'),
-                rewritten: None,
-                fossils: Vec::new(),
-                left: Vec::new(),
-            },
-            ObservationValue::RefRewrite {
-                reference: "refs/heads/main".to_owned(),
-                old: commit('b'),
-                new: commit('c'),
-                rewritten: Some(3),
-                fossils: vec![commit('f'), commit('0')],
-                left: vec![LeftCommit {
-                    commit: commit('e'),
-                    time: 1_700_000_000,
-                    deleted_dirs: vec![DeletedDir {
-                        path: "src/old".to_owned(),
-                        lines: 640,
-                    }],
-                }],
-            },
-        ];
-        for (value, id) in values.into_iter().zip(1..) {
-            round_trips(&Observation {
-                id,
-                recorded_at: 1_700_000_000,
-                head: ObservationHead {
-                    commit: commit('d'),
-                    branch: None,
-                    at_default_tip: false,
-                },
-                normalized: Some(Q16::ONE),
-                confidence: Q16::HALF,
-                value,
-            });
-        }
         for kind in ObservationKind::ALL {
             round_trips(kind);
         }
-    }
-
-    #[test]
-    fn an_observation_value_names_its_kind() {
-        let dump = canonical_dump(&Observation {
-            id: 1,
-            recorded_at: 0,
-            head: ObservationHead {
-                commit: commit('e'),
-                branch: Some("main".to_owned()),
-                at_default_tip: true,
-            },
-            normalized: None,
-            confidence: Q16::ONE,
-            value: ObservationValue::DeadCode {
-                unused_items: 1,
-                exported_items: 2,
-            },
-        });
-        assert!(dump.ends_with(
-            "normalized = None\nconfidence = 1\n\
-             value = DeadCode\nvalue.unused_items = 1\nvalue.exported_items = 2\n"
-        ));
-        assert!(dump.contains("head.branch.some = \"main\"\n"));
     }
 }

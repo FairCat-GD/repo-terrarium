@@ -190,7 +190,7 @@ pub fn side(seed: &RepoSeed, kind: EventKind, tick: Tick) -> Side {
 const MARK_DOMAIN: &[u8] = b"repo-terrarium ground mark v1\0";
 
 /// A mark's id: hashed from its kind, the tick it was made and the fossil it names.
-pub fn mark_id(kind: GroundMark, since: Tick, fossil: Option<u32>) -> u32 {
+pub(crate) fn mark_id(kind: GroundMark, since: Tick, fossil: Option<u32>) -> u32 {
     let kind_byte: u8 = match kind {
         GroundMark::Crack => 0,
         GroundMark::Sinkhole => 1,

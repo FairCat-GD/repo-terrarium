@@ -64,8 +64,10 @@ FFI is reviewed line by line, so all of it lives in one small crate (I-9).
 
 ## Rules
 
-- It is the only crate allowed `unsafe`, and every `unsafe` block carries a `SAFETY:` comment
-  (`clippy::undocumented_unsafe_blocks` is denied).
+- It is the only crate allowed `unsafe`, and every `unsafe` block holds one operation and
+  carries a `SAFETY:` comment (`clippy::undocumented_unsafe_blocks` and
+  `clippy::multiple_unsafe_ops_per_block` are denied); `unsafe extern` blocks and unsafe
+  attributes, which no lint reaches, carry one too.
 - Every public function is safe to call. Main-thread requirements are checked, not assumed.
 - It depends on no other workspace crate. On Windows it links winit, but only to install
   winit's message hook, so the raw `MSG` pointer is read here and nowhere else.

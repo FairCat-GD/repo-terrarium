@@ -49,9 +49,13 @@ targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the 
   `indexmap` and `sha2`. It uses all but `indexmap` today.
 - `ureq` is reachable only through `terrarium-adapters`.
 - Among the `src/` files of the crates that ship, only `terrarium-adapters`' `exec` module names
-  `std::process::Command` (I-5). Integration tests, benches and xtask may start processes.
+  `std::process::Command` (I-5), by any name a `use` gives `std::process`. Integration tests,
+  benches and xtask may start processes.
+- Nothing in the workspace, tests, benches and xtask included, calls `Command::new` with a
+  literal naming git.
 - Every target root outside `terrarium-platform` carries `#![forbid(unsafe_code)]`. Platform
-  denies `clippy::undocumented_unsafe_blocks`, and truth denies `clippy::float_arithmetic`,
+  denies `clippy::undocumented_unsafe_blocks` and `clippy::multiple_unsafe_ops_per_block`, and
+  truth denies `clippy::float_arithmetic`,
   `clippy::as_conversions`, `clippy::disallowed_types` and `clippy::disallowed_methods`.
 - Truth is a single library target. A test, bench, example or build script would be a crate of
   its own, outside the lint walls on truth's root.

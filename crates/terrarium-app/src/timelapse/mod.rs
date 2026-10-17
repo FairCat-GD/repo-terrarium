@@ -14,7 +14,8 @@ pub mod mp4;
 pub mod player;
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use terrarium_compose::catalog::Art;
 use terrarium_compose::clock::LocalClock;
@@ -29,6 +30,9 @@ use terrarium_truth::{ReplayError, Tick};
 
 use crate::copy;
 use crate::files::write_beside;
+use crate::shell::{Export, Intent};
+use form::TimeLapseForm;
+use job::{Msg, Session};
 
 /// The longest range whose label names each day; a longer one plays its days too quickly to
 /// read, and names the month.
@@ -157,6 +161,64 @@ pub fn write_postcard(shot: &Shot, salt: InstallSalt, scale: u32, path: &Path) -
     })
 }
 
+/// Takes in what a job of `generation` said, if `session` is the window's: an answer from a
+/// window since closed is dropped, and so is a film a later request outran. Whether it was the
+/// window's, so it is drawn again. `now` starts a film that comes.
+pub fn said(
+    session: &mut Session,
+    form: &mut TimeLapseForm,
+    generation: u64,
+    msg: Msg,
+    now: Instant,
+) -> bool {
+    if session.generation != generation {
+        return false;
+    }
+    match msg {
+        Msg::Ffmpeg(ffmpeg) => form.ffmpeg(ffmpeg),
+        Msg::Reading(percent) => form.reading(percent),
+        Msg::Read(Ok(lapse)) => {
+            session.read(lapse);
+            if let Some(Intent::Film { from, to, night }) = form.read(&session.days()) {
+                session.film(from, to, night);
+            }
+        }
+        Msg::Read(Err(why)) => form.failed(why),
+        Msg::Filmed { asked, film } => {
+            if session.is_latest(asked) {
+                match film {
+                    Ok(film) => form.filmed(film, now),
+                    Err(why) => form.film_failed(why),
+                }
+            }
+        }
+        Msg::Writing(percent) => form.writing(percent),
+        Msg::Written(written) => form.written(written),
+    }
+    true
+}
+
+/// Writes the window's `export` to `path`, if it has one to write.
+pub fn write(session: &Session, form: &TimeLapseForm, export: Export, path: PathBuf) {
+    match export {
+        Export::Gif => {
+            if let Some((film, scale)) = form.gif() {
+                session.write_gif(film, scale, path);
+            }
+        }
+        Export::Postcard => {
+            if let Some((shot, scale)) = form.postcard() {
+                session.write_postcard(shot, scale, path);
+            }
+        }
+        Export::Mp4 => {
+            if let Some((film, scale, ffmpeg)) = form.mp4() {
+                session.write_mp4(film, scale, ffmpeg, path);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
@@ -170,6 +232,8 @@ pub(crate) mod tests {
     use terrarium_store::DataDir;
     use terrarium_truth::canon::to_hex;
     use terrarium_truth::scene::EventKind;
+
+    use std::sync::mpsc;
 
     use super::*;
     use crate::files::beside;
@@ -269,5 +333,93 @@ pub(crate) mod tests {
         let mut expected = vec![[0; 4]; size.pixel_count()];
         upscale_into(&settled, &size, |rgba| rgba, &mut expected).unwrap();
         assert_eq!(pixels, expected);
+    }
+
+    /// A session answering into a channel, as the strip's answers go to its event loop.
+    fn session(generation: u64) -> (Session, mpsc::Receiver<(u64, Msg)>) {
+        let (tx, rx) = mpsc::channel();
+        let answer: job::Answer = std::sync::Arc::new(move |generation, msg| {
+            let _ = tx.send((generation, msg));
+        });
+        (Session::new(generation, &answer, preset::SALT), rx)
+    }
+
+    fn next(rx: &mpsc::Receiver<(u64, Msg)>) -> (u64, Msg) {
+        rx.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("the job answers")
+    }
+
+    /// The next film made, by the request it answers.
+    fn filmed(rx: &mpsc::Receiver<(u64, Msg)>) -> (u64, Msg) {
+        loop {
+            let said = next(rx);
+            if matches!(said.1, Msg::Filmed { .. }) {
+                return said;
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_takes_only_its_own_answers_and_the_latest_film() {
+        let (_dir, lapse) = arc();
+        let lapse = std::sync::Arc::new(lapse);
+        let (mut session, rx) = session(7);
+        let mut form = TimeLapseForm::new("fern".into(), preset::SALT, 4);
+        let now = Instant::now();
+
+        // A window since closed: nothing is taken.
+        let read = || Msg::Read(Ok(std::sync::Arc::clone(&lapse)));
+        assert!(!said(&mut session, &mut form, 6, read(), now));
+        assert!(session.days().is_empty());
+
+        // Its own: the history is taken, and the whole range asked for by day.
+        assert!(said(&mut session, &mut form, 7, read(), now));
+        assert_eq!(session.days().len(), lapse.closes().len());
+        // A later request outruns it.
+        session.film(0, 1, false);
+        let (first, second) = (filmed(&rx), filmed(&rx));
+        let (latest, outrun) = match (&first.1, &second.1) {
+            (Msg::Filmed { asked: 2, .. }, _) => (first, second),
+            _ => (second, first),
+        };
+        assert!(said(&mut session, &mut form, outrun.0, outrun.1, now));
+        assert!(form.gif().is_none(), "an outrun film is dropped");
+        assert!(said(&mut session, &mut form, latest.0, latest.1, now));
+        let (film, _) = form.gif().expect("the latest film is taken");
+        assert_eq!(film.shots.len(), 2);
+    }
+
+    #[test]
+    fn a_picked_path_is_written_and_the_end_of_the_window_stops_the_read() {
+        let (dir, lapse) = arc();
+        let (mut session, rx) = session(3);
+        let mut form = TimeLapseForm::new("fern".into(), preset::SALT, 4);
+        let now = Instant::now();
+        let read = Msg::Read(Ok(std::sync::Arc::new(lapse)));
+        assert!(said(&mut session, &mut form, 3, read, now));
+        let (generation, film) = filmed(&rx);
+        assert!(said(&mut session, &mut form, generation, film, now));
+
+        let path = dir.path().join("fern.gif");
+        form.picked(Export::Gif, Some(path.clone()));
+        let intents = form.take_intents();
+        let [Intent::Write { export, path: to }] = intents.as_slice() else {
+            panic!("a write is asked for, got {intents:?}");
+        };
+        write(&session, &form, *export, to.clone());
+        let written = loop {
+            match next(&rx) {
+                (3, Msg::Written(written)) => break written,
+                (3, Msg::Writing(_)) => {}
+                (_, _) => panic!("only the write answers"),
+            }
+        };
+        assert_eq!(written, Ok(path.clone()));
+        assert!(path.is_file());
+
+        let cancel = session.cancel();
+        assert!(!cancel.load(std::sync::atomic::Ordering::Relaxed));
+        drop(session);
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

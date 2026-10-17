@@ -54,9 +54,11 @@ mod imp {
             cb: size,
             ..Default::default()
         };
-        // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no closing, and
-        // `counters` is a live structure of the size passed, which the call fills.
-        unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, size) }.ok()?;
+        // SAFETY: takes nothing and returns this process's pseudo-handle, which needs no
+        // closing.
+        let process = unsafe { GetCurrentProcess() };
+        // SAFETY: `counters` is a live structure of the size passed, which the call fills.
+        unsafe { GetProcessMemoryInfo(process, &raw mut counters, size) }.ok()?;
         Some(Memory {
             resident: u64::try_from(counters.WorkingSetSize).ok()?,
             footprint: None,

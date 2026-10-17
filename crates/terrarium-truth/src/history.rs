@@ -6,7 +6,7 @@
 
 /// Directories whose files never count toward terrain, matched as any directory component of a
 /// path.
-pub const TERRAIN_EXCLUDED_DIRS: &[&[u8]] = &[
+pub(crate) const TERRAIN_EXCLUDED_DIRS: &[&[u8]] = &[
     b"node_modules",
     b"vendor",
     b"dist",
@@ -18,7 +18,7 @@ pub const TERRAIN_EXCLUDED_DIRS: &[&[u8]] = &[
 
 /// Lockfiles whose names never count, at any depth. `*.lock` and `*.min.*` are matched by
 /// [`counts_toward_terrain`] itself.
-pub const TERRAIN_EXCLUDED_FILES: &[&[u8]] = &[
+pub(crate) const TERRAIN_EXCLUDED_FILES: &[&[u8]] = &[
     b"package-lock.json",
     b"pnpm-lock.yaml",
     b"yarn.lock",
@@ -33,7 +33,7 @@ pub const RENAME_SIMILARITY_PERCENT: u8 = 50;
 pub const RENAME_LIMIT: usize = 1000;
 
 /// How far into a blob a NUL byte marks it as binary, as git sniffs.
-pub const BINARY_SNIFF_BYTES: usize = 8000;
+pub(crate) const BINARY_SNIFF_BYTES: usize = 8000;
 
 /// A blob larger than this is binary whatever it holds, as git's `core.bigFileThreshold`
 /// default.

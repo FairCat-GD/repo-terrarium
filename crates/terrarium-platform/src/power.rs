@@ -41,9 +41,41 @@ pub fn next_display(last: Option<DisplayPower>, now: DisplayPower) -> (Option<Di
     }
 }
 
+/// A GUID's fields from its 16 bytes as Windows lays them in memory: the first three in the
+/// machine's byte order, then the last eight bytes as they are.
+pub fn guid_fields(bytes: [u8; 16]) -> (u32, u16, u16, [u8; 8]) {
+    let [_, _, _, _, _, _, _, _, last @ ..] = bytes;
+    (
+        u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        u16::from_ne_bytes([bytes[4], bytes[5]]),
+        u16::from_ne_bytes([bytes[6], bytes[7]]),
+        last,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_endian = "little")]
+    fn the_display_state_guid_reads_from_its_bytes_in_memory() {
+        // GUID_CONSOLE_DISPLAY_STATE, 6FE69556-704A-47A0-8F24-C28D936FDA47, as it lies in a
+        // little-endian machine's memory.
+        let bytes = [
+            0x56, 0x95, 0xE6, 0x6F, 0x4A, 0x70, 0xA0, 0x47, 0x8F, 0x24, 0xC2, 0x8D, 0x93, 0x6F,
+            0xDA, 0x47,
+        ];
+        assert_eq!(
+            guid_fields(bytes),
+            (
+                0x6FE6_9556,
+                0x704A,
+                0x47A0,
+                [0x8F, 0x24, 0xC2, 0x8D, 0x93, 0x6F, 0xDA, 0x47]
+            )
+        );
+    }
 
     #[test]
     fn only_the_automatic_resume_is_a_wake() {

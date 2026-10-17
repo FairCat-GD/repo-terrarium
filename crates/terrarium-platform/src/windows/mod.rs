@@ -173,9 +173,11 @@ impl StripWindow {
     /// a shown window keeps its taskbar button until it is hidden again.
     pub fn attach(window: &impl HasWindowHandle) -> Result<Self, PlatformError> {
         let hwnd = win32_hwnd(window)?;
-        // SAFETY: both calls only read. An unknown window yields thread 0, which is never the
-        // current thread.
-        let owned_here = unsafe { GetWindowThreadProcessId(hwnd, None) == GetCurrentThreadId() };
+        // SAFETY: only reads the window's thread; an unknown window yields thread 0, which is
+        // never a running thread's id.
+        let owner = unsafe { GetWindowThreadProcessId(hwnd, None) };
+        // SAFETY: reads the calling thread's id; it cannot fail.
+        let owned_here = owner == unsafe { GetCurrentThreadId() };
         if !owned_here {
             return Err(PlatformError::NotOwnerThread);
         }
@@ -529,13 +531,10 @@ impl StripWindow {
 
     /// The window's style as Windows reports it, to show whether winit changed it.
     pub fn style(&self) -> StyleFlags {
-        // SAFETY: both calls only read the style of a window this thread owns.
-        let (ex, visible) = unsafe {
-            (
-                GetWindowLongW(self.hwnd, GWL_EXSTYLE).cast_unsigned(),
-                IsWindowVisible(self.hwnd).as_bool(),
-            )
-        };
+        // SAFETY: only reads the extended style of a window this thread owns.
+        let ex = unsafe { GetWindowLongW(self.hwnd, GWL_EXSTYLE) }.cast_unsigned();
+        // SAFETY: only reads whether a window this thread owns is shown.
+        let visible = unsafe { IsWindowVisible(self.hwnd) }.as_bool();
         // SAFETY: only reads whether a window this thread owns is minimised.
         let iconic = unsafe { IsIconic(self.hwnd) }.as_bool();
         StyleFlags {
@@ -880,16 +879,21 @@ fn win32_hwnd(window: &impl HasWindowHandle) -> Result<HWND, PlatformError> {
 /// Out of the taskbar and Alt-Tab, and never activated by a click. The subclass is already in
 /// place, so this write, like every later one winit makes, passes through its guard.
 fn set_tool_window(hwnd: HWND) {
-    // SAFETY: reads and writes the extended style of a window this thread owns, then applies it
-    // with a frame change that neither moves, sizes, orders nor activates the window.
+    // SAFETY: only reads the extended style of a window this thread owns.
+    let old = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) }.cast_unsigned();
+    // SAFETY: writes the extended style of a window this thread owns; the subclass's guard sees
+    // the change.
     unsafe {
-        let old = GetWindowLongW(hwnd, GWL_EXSTYLE).cast_unsigned();
         SetWindowLongW(
             hwnd,
             GWL_EXSTYLE,
             appbar::guard_ex_style(old, old).cast_signed(),
-        );
-        let _ = SetWindowPos(
+        )
+    };
+    // SAFETY: applies the style with a frame change that neither moves, sizes, orders nor
+    // activates a window this thread owns.
+    let _ = unsafe {
+        SetWindowPos(
             hwnd,
             None,
             0,
@@ -897,8 +901,8 @@ fn set_tool_window(hwnd: HWND) {
             0,
             0,
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-    }
+        )
+    };
 }
 
 /// Lets the `AppBar` callback, `TaskbarCreated` and the shell hook through the message filter
@@ -939,16 +943,15 @@ fn instance_mutex() -> (Option<HANDLE>, bool) {
 /// shell hook's.
 fn registered_messages() -> Registered {
     static REGISTERED: OnceLock<Registered> = OnceLock::new();
-    *REGISTERED.get_or_init(|| {
-        // SAFETY: registers message names from static strings; a failure returns 0, which is
-        // never matched.
-        unsafe {
-            Registered {
-                appbar: RegisterWindowMessageW(w!("io.github.faircat-gd.repo-terrarium.AppBar")),
-                taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
-                shellhook: RegisterWindowMessageW(w!("SHELLHOOK")),
-            }
-        }
+    // Each name is a static, NUL-terminated string; a failure returns 0, which is never matched.
+    let register = |name: PCWSTR| {
+        // SAFETY: registers a message name from a static string, as above.
+        unsafe { RegisterWindowMessageW(name) }
+    };
+    *REGISTERED.get_or_init(|| Registered {
+        appbar: register(w!("io.github.faircat-gd.repo-terrarium.AppBar")),
+        taskbar_created: register(w!("TaskbarCreated")),
+        shellhook: register(w!("SHELLHOOK")),
     })
 }
 
@@ -984,11 +987,13 @@ pub fn take_message_counts() -> Vec<MessageCount> {
 /// Whether the window the user is working in belongs to this process.
 pub fn foreground_is_this_process() -> bool {
     let mut process = 0;
-    // SAFETY: all three only read; with no foreground window the process id stays 0.
-    unsafe {
-        GetWindowThreadProcessId(GetForegroundWindow(), Some(&raw mut process));
-        process != 0 && process == GetCurrentProcessId()
-    }
+    // SAFETY: only reads which window is in front; none gives a null handle.
+    let front = unsafe { GetForegroundWindow() };
+    // SAFETY: only reads the window's process into `process`, which outlives the call; a null
+    // or unknown window leaves it 0.
+    unsafe { GetWindowThreadProcessId(front, Some(&raw mut process)) };
+    // SAFETY: reads this process's id; it cannot fail.
+    process != 0 && process == unsafe { GetCurrentProcessId() }
 }
 
 /// The window class of the window the user is working in. The class, not the title: a title

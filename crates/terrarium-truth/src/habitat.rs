@@ -51,7 +51,7 @@ pub fn resident_capacity(terrain: u64) -> u32 {
 }
 
 /// How many weeds a terrarium of `plants` capacity holds: `clamp(P / 3, 2, 8)`.
-pub fn weed_capacity(plants: u32) -> u32 {
+pub(crate) fn weed_capacity(plants: u32) -> u32 {
     (plants / WEEDS_PER_PLANTS).clamp(WEEDS_MIN, WEEDS_MAX)
 }
 

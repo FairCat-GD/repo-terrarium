@@ -118,13 +118,13 @@ pub fn fossil_id(commit: &CommitId) -> u32 {
 }
 
 /// The commit id's bytes, hashed: the key of the streams drawn for one commit.
-pub fn commit_key(commit: &CommitId) -> u64 {
+pub(crate) fn commit_key(commit: &CommitId) -> u64 {
     hashed(&commit.to_bytes())
 }
 
 /// The form the seed draws for a fossil left by `commit`. The stream is keyed by a hash of the
 /// commit id's bytes, so every commit draws its own, whatever else applies in its tick.
-pub fn fossil_form(seed: &RepoSeed, commit: &CommitId) -> FossilForm {
+pub(crate) fn fossil_form(seed: &RepoSeed, commit: &CommitId) -> FossilForm {
     let key = commit_key(commit);
     let forms = FossilForm::ALL;
     Pcg32::stream(seed, StreamTag::Fossil, key)
