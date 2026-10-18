@@ -82,6 +82,83 @@ pub fn composite_area(art: &Art, frame: &Frame, out: &mut NativeImage, area: Are
     }
 }
 
+/// What `after` changes of the picture `before` was composited from: an area outside which
+/// the two composites hold the same pixels, or `None` when they hold the same everywhere. The
+/// draws are compared in order: a pixel outside every draw that differs has the same draws over
+/// it, in the same order, so it is painted the same. Another viewport, palette, dimming or
+/// number of draws can change every pixel.
+pub fn damage(art: &Art, before: &Frame, after: &Frame) -> Option<Area> {
+    let whole = Area {
+        x: 0,
+        y: 0,
+        w: i32::try_from(after.viewport.width()).unwrap_or(i32::MAX),
+        h: FRAME_HEIGHT,
+    };
+    if before.viewport != after.viewport
+        || before.palette_mix != after.palette_mix
+        || before.dim != after.dim
+        || before.draws.len() != after.draws.len()
+    {
+        return Some(whole);
+    }
+    before
+        .draws
+        .iter()
+        .zip(&after.draws)
+        .filter(|(a, b)| a != b)
+        .flat_map(|(a, b)| [reach(art, a), reach(art, b)])
+        .flatten()
+        .reduce(union)
+}
+
+/// The pixels `draw` can paint: its sprite's rectangle where it stands, widened by its shear
+/// and cut by its clip; none when it paints nothing.
+fn reach(art: &Art, draw: &Draw) -> Option<Area> {
+    if draw.opacity == 0 {
+        return None;
+    }
+    let rect = art.catalog.sprite(draw.sprite).rect;
+    let (width, height) = (i32::from(rect.w), i32::from(rect.h));
+    // A row's slide is monotonic in the row, so the first and last rows slide farthest.
+    let (first, last) = (draw.shear.offset(0), draw.shear.offset(height - 1));
+    let left = draw.x + first.min(last);
+    let area = Area {
+        x: left,
+        y: draw.y,
+        w: draw.x + width + first.max(last) - left,
+        h: height,
+    };
+    let area = match draw.clip {
+        Some(clip) => intersection(area, clip)?,
+        None => area,
+    };
+    (area.w > 0 && area.h > 0).then_some(area)
+}
+
+fn union(a: Area, b: Area) -> Area {
+    let (left, top) = (a.x.min(b.x), a.y.min(b.y));
+    let right = (a.x + a.w).max(b.x + b.w);
+    let bottom = (a.y + a.h).max(b.y + b.h);
+    Area {
+        x: left,
+        y: top,
+        w: right - left,
+        h: bottom - top,
+    }
+}
+
+fn intersection(a: Area, b: Area) -> Option<Area> {
+    let (left, top) = (a.x.max(b.x), a.y.max(b.y));
+    let right = (a.x + a.w).min(b.x + b.w);
+    let bottom = (a.y + a.h).min(b.y + b.h);
+    (right > left && bottom > top).then_some(Area {
+        x: left,
+        y: top,
+        w: right - left,
+        h: bottom - top,
+    })
+}
+
 fn paint(art: &Art, lut: &Lut, draw: &Draw, region: &Visible, out: &mut NativeImage) {
     let opacity = draw.opacity;
     if opacity == 0 {

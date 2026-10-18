@@ -2,7 +2,7 @@
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
 The tasks are `verify`, `arc`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `hero`,
-`probe-zip`, `render` and `size`.
+`probe-zip`, `render`, `size` and `soak`.
 
 ## `verify`
 
@@ -221,6 +221,13 @@ profile, so the timings are those of a shipped build.
 - `terrarium-engine` `replay` (N-05): reading the same kind of 10,000-commit history and
   replaying it in full, sim and events included, takes under 30 s, the first connect's budget.
   Observations of every kind are generated beside it, so every detector runs.
+- `terrarium-engine` `live`: the same history through `Live`, as the app runs it, with the
+  store's writes, the replay cache and the source metrics, in a data directory the bench owns
+  and on a clock it sets. The first connect and its refresh take under 30 s (N-05); connecting
+  again from the cache it wrote, which the app waits for before its strip opens, under 250 ms,
+  and that connect's refresh, under 5 s; a refresh after one commit, under 1 s; and one after
+  a release tag on a commit already read, which replays in full but reads no commit again,
+  under 2 s.
 
 ## `fixture`
 
@@ -295,12 +302,39 @@ The Windows probe build for testers. There is no CI, so it is cross-built on the
   - `repo-terrarium.exe`;
   - `README.txt`, the tester's instructions. They are app copy, so the task takes them from
     `repo-terrarium --probe-readme`;
-  - `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder.
+  - `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder;
+  - `run-connect.cmd`, which starts the app with its data in a `data` folder beside it;
+  - `run-soak.cmd` and `run-soak-gpu.cmd`, an hour's `--probe soak` with the default presenter
+    and with wgpu.
 
 ## `size`
 
 `cargo xtask size` builds the app for release as it ships (`cargo build --release --locked -p
 terrarium-app`, the app alone, as `probe-zip` builds it) and fails unless the binary is under
-25,000,000 bytes (N-08's "< 25 MB", read in decimal megabytes). A fat-LTO build takes minutes, so
-it runs like `bench`, when a change could move the size (a dependency, a grammar, the art), not
-as a `verify` stage. It measures the binary of the machine it runs on.
+25,000,000 bytes (N-08's "< 25 MB", read in decimal megabytes). On the Mac it also cross-builds
+the Windows exe as `probe-zip` does, into the same `target/probe-build`, and holds it to the
+same budget; on Windows the binary it builds is that exe. A fat-LTO build takes minutes, so it
+runs like `bench`, when a change could move the size (a dependency, a grammar, the art, a
+profile), not as a `verify` stage.
+
+## `soak`
+
+`cargo xtask soak` (N-01..N-03) runs the release app for an hour on a busy repository, measured
+by the app's own `--probe soak`, and judges what it measured.
+
+- **The repository:** the synthetic history (5,000 commits over 3,000 files, so the strip holds
+  every plant and resident it can), ending an hour before the run so the strip is active, in a
+  temporary directory the task owns. A commit goes into it every ten minutes, so the engine
+  refreshes as in a working day.
+- **The app:** the release build, copied out first, so a build during the hour cannot replace
+  it. The soak connects the repository in a data directory of its own and holds dim mode off.
+- **The judgement:** the stricter processor budget on Apple silicon (under 0.5% of one core) and
+  N-01's elsewhere (1%), averaged after a five-minute warm-up; N-02's memory in each OS's fair
+  measure (the footprint on macOS; private bytes and the working set on Windows), under 80 MB
+  once settled and 150 MB at the OS's own peak; N-03's 15 changed frames in any second; and a
+  strip in view, covered for no more than 5% of the time. The reports go to `target/soak/`.
+- **Options:** `--minutes <n>`; `--presenter layer | softbuffer | wgpu | both` (`both` runs
+  softbuffer on the bottom edge and wgpu on the top, at once); `--report <file>` judges a report
+  from another machine, such as a Windows soak, against N-01 and N-02.
+- **Nothing should be built while it runs:** the processor time of the same work changes with
+  the cores it lands on.

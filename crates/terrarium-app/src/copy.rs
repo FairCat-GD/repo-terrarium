@@ -27,6 +27,7 @@ use crate::cli::UsageError;
 use crate::crash::Crash;
 use crate::discover::Reads;
 use crate::egui_host::{HostError, WindowKind};
+use crate::gpu::GpuError;
 use crate::hotkey::{Binding, Platform, Which, key_name};
 use crate::live::{LabelFacts, Note, Once};
 use crate::pinning::AttachError;
@@ -82,19 +83,36 @@ pub fn usage_error(err: &UsageError) -> String {
             "'{}' is not a time in whole Unix seconds",
             value.to_string_lossy()
         ),
+        UsageError::BadMinutes(value) => format!(
+            "'{}' is not a length in whole minutes from 1 to {}",
+            value.to_string_lossy(),
+            crate::cli::MAX_SOAK_MINUTES
+        ),
+        UsageError::BadPresenter(value) => format!(
+            "'{}' is no presenter: layer, softbuffer or wgpu",
+            value.to_string_lossy()
+        ),
+        UsageError::BadEdge(value) => {
+            format!("'{}' is no edge: top or bottom", value.to_string_lossy())
+        }
     };
+    // The soak has a line of its own, with its options.
     let probes: Vec<String> = PROBE_KINDS
         .iter()
+        .filter(|kind| **kind != "soak")
         .map(|kind| format!("--probe {kind}"))
         .collect();
     format!(
         "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--repo <path> | --version | --demo | \
-         {} | --probe-readme]\n       {BINARY_NAME} replay <path> (--dump | (--gif | --mp4) \
+         {} | --probe-readme]\n       {BINARY_NAME} --probe soak [--minutes <1-{soak}>] \
+         [--presenter layer | softbuffer | wgpu] [--edge top | bottom] [--repo <path>]\n       \
+         {BINARY_NAME} replay <path> (--dump | (--gif | --mp4) \
          <file> [--night] [--scale <1-{max}>]) [--observations <file>] [--at <unix-seconds>]\n       \
          {BINARY_NAME} discover <path>\n       \
          {BINARY_NAME} record-tests -- <command> [<argument>...]",
         probes.join(" | "),
         max = crate::cli::MAX_SCALE,
+        soak = crate::cli::MAX_SOAK_MINUTES,
     )
 }
 
@@ -762,9 +780,9 @@ fn junit_fact(runner: Runner) -> Option<&'static str> {
 
 /// The probes this build runs: the egui memory probe exists only in dev builds.
 const PROBE_KINDS: &[&str] = if cfg!(feature = "dev") {
-    &["pinning", "egui"]
+    &["pinning", "soak", "egui"]
 } else {
-    &["pinning"]
+    &["pinning", "soak"]
 };
 
 pub fn window_failed(err: &impl Display) -> String {
@@ -799,6 +817,7 @@ fn attach(err: &AttachError) -> String {
         AttachError::Handle(err) => format!("no window handle: {err}"),
         AttachError::NotAppKit => "the window handle is not an AppKit view".to_owned(),
         AttachError::NoWindow => "the view is not in a window".to_owned(),
+        AttachError::NoLayer => "the view's layer could not be set up".to_owned(),
     }
 }
 
@@ -821,8 +840,29 @@ impl Display for PresentError {
                 "the drawing surface holds {} pixels, not {}",
                 size.actual, size.expected
             ),
+            Self::Gpu(err) => write!(f, "{err}"),
+            Self::NoFormat => f.write_str("the GPU's surface cannot hold the pixels as they are"),
+            Self::Lost => f.write_str("the GPU device was lost"),
+            #[cfg(target_os = "macos")]
+            Self::NoLayer => f.write_str("the window could not take a layer for the picture"),
+            #[cfg(target_os = "macos")]
+            Self::NoImage => f.write_str("the picture could not be made into an image"),
         }
     }
+}
+
+impl Display for GpuError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Adapter(err) => write!(f, "no GPU to draw with: {err}"),
+            Self::Device(err) => write!(f, "the GPU could not be used: {err}"),
+        }
+    }
+}
+
+/// A presenter could not start, or stopped: the strip is drawn another way.
+pub fn presenter_fell_back(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: {err}; the strip is drawn another way")
 }
 
 impl std::error::Error for PresentError {}
@@ -2256,6 +2296,8 @@ mod tests {
             "Credential Manager",
             "node --version",
             "never a path",
+            "run-soak.cmd",
+            "run-soak-gpu.cmd",
         ] {
             assert!(PROBE_README.contains(needle), "{needle}");
         }

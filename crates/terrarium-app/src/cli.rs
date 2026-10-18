@@ -3,6 +3,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use terrarium_platform::geometry::Edge;
+
+use crate::present::Backend;
+
 /// What the process was asked to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -15,6 +19,9 @@ pub enum Command {
     Version,
     /// `--probe <kind>`: run the strip with a recorder and write a report.
     Probe(ProbeKind),
+    /// `--probe soak`: run the strip for a while, measuring what it costs, and write a report
+    /// (N-01..N-03).
+    Soak(SoakArgs),
     /// `--probe-readme`: print the Windows probe's tester instructions, which
     /// `cargo xtask probe-zip` puts in the zip beside the exe.
     ProbeReadme,
@@ -68,6 +75,24 @@ pub enum ReplayOutput {
 /// The largest scale `--scale` takes.
 pub const MAX_SCALE: u32 = 8;
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct SoakArgs {
+    /// `--minutes <n>`: how long it runs; an hour when absent.
+    pub minutes: u32,
+    /// `--presenter <name>`: how the strip is put on screen; the default when absent.
+    pub presenter: Option<Backend>,
+    /// `--edge <top|bottom>`: the edge the strip runs on; the bottom when absent.
+    pub edge: Option<Edge>,
+    /// `--repo <path>`: the repository it runs on, connected in a data directory the soak
+    /// owns; the thriving sample, with no repository, when absent.
+    pub repo: Option<PathBuf>,
+}
+
+/// A soak's length when none is asked for: N-01's hour.
+pub const SOAK_MINUTES: u32 = 60;
+/// The longest soak: a day.
+pub const MAX_SOAK_MINUTES: u32 = 24 * 60;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeKind {
     /// Window level, Spaces, hover, the hotkey and activation.
@@ -97,6 +122,12 @@ pub enum UsageError {
     MissingValue(&'static str),
     /// An `--at` that is not a whole number of seconds.
     BadTime(OsString),
+    /// A `--minutes` that is not a whole number from 1 to [`MAX_SOAK_MINUTES`].
+    BadMinutes(OsString),
+    /// A `--presenter` that names no presenter.
+    BadPresenter(OsString),
+    /// An `--edge` that is neither `top` nor `bottom`.
+    BadEdge(OsString),
 }
 
 /// macOS `LaunchServices` can append a process serial number (`-psn_0_12345`) when it launches
@@ -152,6 +183,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         match args.next() {
             None => return Err(UsageError::MissingProbeKind),
             Some(kind) if kind == "pinning" => Command::Probe(ProbeKind::Pinning),
+            Some(kind) if kind == "soak" => return parse_soak(&mut args),
             #[cfg(feature = "dev")]
             Some(kind) if kind == "egui" => Command::Probe(ProbeKind::Egui),
             Some(kind) => return Err(UsageError::Unexpected(kind)),
@@ -163,6 +195,49 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         None => Ok(command),
         Some(extra) => Err(UsageError::Unexpected(extra)),
     }
+}
+
+fn parse_soak(args: &mut impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
+    let (mut minutes, mut presenter, mut edge, mut repo) = (None, None, None, None);
+    while let Some(arg) = args.next() {
+        if arg == "--minutes" && minutes.is_none() {
+            let value = args.next().ok_or(UsageError::MissingValue("--minutes"))?;
+            let n = value
+                .to_str()
+                .and_then(|text| text.parse().ok())
+                .filter(|n| (1..=MAX_SOAK_MINUTES).contains(n));
+            minutes = Some(n.ok_or(UsageError::BadMinutes(value))?);
+        } else if arg == "--presenter" && presenter.is_none() {
+            let value = args.next().ok_or(UsageError::MissingValue("--presenter"))?;
+            presenter = Some(match value.to_str() {
+                Some("softbuffer") => Backend::Softbuffer,
+                Some("wgpu") => Backend::Wgpu,
+                Some("layer") => Backend::Layer,
+                _ => return Err(UsageError::BadPresenter(value)),
+            });
+        } else if arg == "--edge" && edge.is_none() {
+            let value = args.next().ok_or(UsageError::MissingValue("--edge"))?;
+            edge = Some(match value.to_str() {
+                Some("top") => Edge::Top,
+                Some("bottom") => Edge::Bottom,
+                _ => return Err(UsageError::BadEdge(value)),
+            });
+        } else if arg == "--repo" && repo.is_none() {
+            let path = args
+                .next()
+                .filter(|repo| !repo.to_string_lossy().starts_with("--"))
+                .ok_or(UsageError::MissingValue("--repo"))?;
+            repo = Some(PathBuf::from(path));
+        } else {
+            return Err(UsageError::Unexpected(arg));
+        }
+    }
+    Ok(Command::Soak(SoakArgs {
+        minutes: minutes.unwrap_or(SOAK_MINUTES),
+        presenter,
+        edge,
+        repo,
+    }))
 }
 
 fn parse_replay(args: &mut impl Iterator<Item = OsString>) -> Result<Command, UsageError> {
@@ -298,6 +373,93 @@ mod tests {
             parse_strs(&["--probe", "pinning"]),
             Ok(Command::Probe(ProbeKind::Pinning))
         );
+    }
+
+    #[test]
+    fn the_soak_runs_an_hour_by_default_and_takes_its_four_options() {
+        assert_eq!(
+            parse_strs(&["--probe", "soak"]),
+            Ok(Command::Soak(SoakArgs {
+                minutes: SOAK_MINUTES,
+                presenter: None,
+                edge: None,
+                repo: None,
+            }))
+        );
+        assert_eq!(
+            parse_strs(&[
+                "--probe",
+                "soak",
+                "--repo",
+                "moss",
+                "--minutes",
+                "10",
+                "--edge",
+                "top",
+                "--presenter",
+                "wgpu",
+            ]),
+            Ok(Command::Soak(SoakArgs {
+                minutes: 10,
+                presenter: Some(Backend::Wgpu),
+                edge: Some(Edge::Top),
+                repo: Some(PathBuf::from("moss")),
+            }))
+        );
+        assert_eq!(
+            parse_strs(&[
+                "--probe",
+                "soak",
+                "--presenter",
+                "softbuffer",
+                "--edge",
+                "bottom"
+            ]),
+            Ok(Command::Soak(SoakArgs {
+                minutes: SOAK_MINUTES,
+                presenter: Some(Backend::Softbuffer),
+                edge: Some(Edge::Bottom),
+                repo: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn a_soak_refuses_what_it_cannot_run() {
+        let soak = |rest: &[&str]| {
+            let mut args = vec!["--probe", "soak"];
+            args.extend_from_slice(rest);
+            parse_strs(&args)
+        };
+        for minutes in ["0", "1441", "an hour", "-5"] {
+            assert_eq!(
+                soak(&["--minutes", minutes]),
+                Err(UsageError::BadMinutes(minutes.into()))
+            );
+        }
+        assert_eq!(soak(&["--minutes", "1440"]).map(|_| ()), Ok(()));
+        assert_eq!(
+            soak(&["--presenter", "gl"]),
+            Err(UsageError::BadPresenter("gl".into()))
+        );
+        assert_eq!(
+            soak(&["--edge", "left"]),
+            Err(UsageError::BadEdge("left".into()))
+        );
+        assert_eq!(
+            soak(&["--minutes"]),
+            Err(UsageError::MissingValue("--minutes"))
+        );
+        assert_eq!(soak(&["--repo"]), Err(UsageError::MissingValue("--repo")));
+        assert_eq!(
+            soak(&["--repo", "--edge"]),
+            Err(UsageError::MissingValue("--repo"))
+        );
+        assert_eq!(
+            soak(&["--minutes", "5", "--minutes", "6"]),
+            unexpected("--minutes")
+        );
+        assert_eq!(soak(&["--night"]), unexpected("--night"));
     }
 
     #[test]

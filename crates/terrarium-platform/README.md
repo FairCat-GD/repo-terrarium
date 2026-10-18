@@ -48,8 +48,11 @@ Operating-system integration that needs FFI.
 - `interrupt`: Ctrl-C left to the command `record-tests` runs, so the wrapper keeps waiting
   for it instead of ending first (a do-nothing signal handler on macOS, which a started
   program does not inherit; a console control handler on Windows).
-- `memory`: the process's resident size, and on macOS its footprint, for the debug window and
-  the egui memory probe.
+- `memory`: the process's memory as each OS counts it fairly (on macOS its footprint, on Windows
+  its private bytes and working set) with the OS's own peaks, for the debug window, the egui
+  memory probe and the soak; `cpu`: the processor time it has used, for the soak.
+- `layer`: on macOS, a Core Animation layer over the strip's view, in an sRGB window, showing
+  the native image the window server scales nearest-pixel.
 - On macOS, the app the user was in, so an egui window that took the keyboard can give it back
   (`macos::PreviousApp`); bringing a window forward with the keyboard though the app is an
   accessory (`macos::bring_forward`); and the reopen event a second launch of the installed

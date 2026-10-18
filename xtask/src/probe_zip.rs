@@ -21,59 +21,19 @@ use crate::windows::{self, TARGET, XWIN_DIR_ENV, XWIN_VERSION, xwin_dir};
 pub const BUILD: [&str; 5] = ["build", "--release", "--locked", "-p", "terrarium-app"];
 
 pub fn run(root: &Path) -> ExitCode {
-    let Some(xwin_dir) = xwin_dir() else {
-        println!("probe-zip: HOME is not set, and neither is {XWIN_DIR_ENV}");
-        return ExitCode::FAILURE;
-    };
-    if !has_xwin() {
-        println!("probe-zip needs xwin {XWIN_VERSION}: cargo install --locked xwin@{XWIN_VERSION}");
-        return ExitCode::FAILURE;
-    }
-    if !lib_dirs(&xwin_dir).iter().all(|dir| dir.is_dir()) {
-        println!(
-            "{}",
-            windows::splat_needed(
-                &xwin_dir,
-                "probe-zip needs the Windows CRT and SDK libraries"
-            )
-        );
-        return ExitCode::FAILURE;
-    }
-
-    let Some(lld) = windows::toolchain_lld(root) else {
-        println!("probe-zip: the toolchain's rust-lld was not found");
-        return ExitCode::FAILURE;
-    };
-    let c_env = match windows::c_build_env(&xwin_dir, &lld, std::env::var_os("DYLD_LIBRARY_PATH")) {
-        Ok(env) => env,
+    let exe = match build_windows(root) {
+        Ok(exe) => exe,
         Err(err) => {
             println!("probe-zip: {err}");
             return ExitCode::FAILURE;
         }
     };
-
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let build_dir = sweep::target_dir(root).join("probe-build");
-    let built = Command::new(&cargo)
-        .args(BUILD)
-        .args(["--target", TARGET])
-        .arg("--target-dir")
-        .arg(&build_dir)
-        .env("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER", "rust-lld")
-        // With `--target`, these reach only the Windows artifacts, never the build scripts.
-        .env("CARGO_ENCODED_RUSTFLAGS", encoded_rustflags(&xwin_dir))
-        .envs(c_env)
-        .current_dir(root)
-        .status();
-    if !built.is_ok_and(|status| status.success()) {
-        println!("probe-zip: the Windows build failed");
-        return ExitCode::FAILURE;
-    }
-    let exe = build_dir.join(TARGET).join("release/repo-terrarium.exe");
     if let Err(err) = check_imports(&exe) {
         println!("probe-zip: {err}");
         return ExitCode::FAILURE;
     }
+    let build_dir = sweep::target_dir(root).join("probe-build");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
 
     // The tester's instructions are app copy, so the app prints them.
     let readme = Command::new(&cargo)
@@ -101,6 +61,45 @@ pub fn run(root: &Path) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Builds the app for Windows as it ships, into `target/probe-build`; the exe's path. `xtask
+/// size` measures the same exe the zip carries.
+pub fn build_windows(root: &Path) -> Result<PathBuf, String> {
+    let Some(xwin_dir) = xwin_dir() else {
+        return Err(format!("HOME is not set, and neither is {XWIN_DIR_ENV}"));
+    };
+    if !has_xwin() {
+        return Err(format!(
+            "the Windows build needs xwin {XWIN_VERSION}: cargo install --locked xwin@{XWIN_VERSION}"
+        ));
+    }
+    if !lib_dirs(&xwin_dir).iter().all(|dir| dir.is_dir()) {
+        return Err(windows::splat_needed(
+            &xwin_dir,
+            "the Windows build needs the Windows CRT and SDK libraries",
+        ));
+    }
+    let lld = windows::toolchain_lld(root)
+        .ok_or_else(|| "the toolchain's rust-lld was not found".to_owned())?;
+    let c_env = windows::c_build_env(&xwin_dir, &lld, std::env::var_os("DYLD_LIBRARY_PATH"))?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let build_dir = sweep::target_dir(root).join("probe-build");
+    let built = Command::new(&cargo)
+        .args(BUILD)
+        .args(["--target", TARGET])
+        .arg("--target-dir")
+        .arg(&build_dir)
+        .env("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER", "rust-lld")
+        // With `--target`, these reach only the Windows artifacts, never the build scripts.
+        .env("CARGO_ENCODED_RUSTFLAGS", encoded_rustflags(&xwin_dir))
+        .envs(c_env)
+        .current_dir(root)
+        .status();
+    if !built.is_ok_and(|status| status.success()) {
+        return Err("the Windows build failed".to_owned());
+    }
+    Ok(build_dir.join(TARGET).join("release/repo-terrarium.exe"))
 }
 
 /// `xwin --version` prints `xwin 0.10.0`.
@@ -161,6 +160,18 @@ fn run_probe_cmd() -> String {
     ]
     .map(|line| format!("{line}\r\n"))
     .concat()
+}
+
+/// The soak, an hour of the strip on the thriving sample measured, with `presenter` (the
+/// default when none), so a tester can measure both. It writes its reports beside it.
+fn run_soak_cmd(presenter: Option<&str>) -> String {
+    let soak = match presenter {
+        Some(presenter) => format!("repo-terrarium.exe --probe soak --presenter {presenter}"),
+        None => "repo-terrarium.exe --probe soak".to_owned(),
+    };
+    ["@echo off", "cd /d \"%~dp0\"", soak.as_str(), "pause"]
+        .map(|line| format!("{line}\r\n"))
+        .concat()
 }
 
 /// The probe's connect step: it starts the app as Explorer would, in a console of its own (which
@@ -280,6 +291,11 @@ fn package(root: &Path, build_dir: &Path, readme: &str) -> Result<PathBuf, Strin
         ),
         (staging.join("run-probe.cmd"), Some(run_probe_cmd())),
         (staging.join("run-connect.cmd"), Some(run_connect_cmd())),
+        (staging.join("run-soak.cmd"), Some(run_soak_cmd(None))),
+        (
+            staging.join("run-soak-gpu.cmd"),
+            Some(run_soak_cmd(Some("wgpu"))),
+        ),
     ];
     for (path, text) in &files {
         let written = match text {
@@ -390,6 +406,27 @@ mod tests {
             "{cmd:?}"
         );
         assert!(cmd.contains("cd /d \"%~dp0\"\r\nrepo-terrarium.exe --probe pinning\r\n"));
+    }
+
+    #[test]
+    fn the_soak_launchers_measure_the_default_presenter_and_the_gpu_s() {
+        for (cmd, line) in [
+            (run_soak_cmd(None), "repo-terrarium.exe --probe soak\r\n"),
+            (
+                run_soak_cmd(Some("wgpu")),
+                "repo-terrarium.exe --probe soak --presenter wgpu\r\n",
+            ),
+        ] {
+            assert!(
+                cmd.split_inclusive('\n').all(|line| line.ends_with("\r\n")),
+                "{cmd:?}"
+            );
+            assert!(
+                cmd.contains(&format!("cd /d \"%~dp0\"\r\n{line}")),
+                "{cmd:?}"
+            );
+            assert!(cmd.ends_with("pause\r\n"));
+        }
     }
 
     #[test]

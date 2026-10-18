@@ -15,6 +15,7 @@ use winit::window::{Window, WindowId};
 
 use crate::connect::ConnectForm;
 use crate::egui_host::{EguiHost, WindowKind};
+use crate::gpu::Gpu;
 use crate::prefs::{Pref, TokenChange};
 use crate::settings::SettingsForm;
 use crate::timelapse::form::TimeLapseForm;
@@ -89,8 +90,11 @@ pub enum Intent {
 
 #[derive(Default)]
 pub struct Shell {
-    /// Only while a window is open: dropping it drops the graphics device.
+    /// Only while a window is open: dropping it drops the graphics device, unless it is the
+    /// strip's.
     host: Option<EguiHost>,
+    /// The strip's device, while it draws with one: the windows draw with it too.
+    pub gpu: Option<Gpu>,
     /// The app the person was in when the first window opened.
     previous: Option<pinning::PreviousApp>,
     pub connect: Option<ConnectForm>,
@@ -106,7 +110,8 @@ impl Shell {
         if self.host.is_none() {
             self.previous = pinning::PreviousApp::frontmost();
         }
-        let host = self.host.get_or_insert_with(EguiHost::new);
+        let gpu = self.gpu.as_ref();
+        let host = self.host.get_or_insert_with(|| EguiHost::new(gpu));
         match host.open(event_loop, kind) {
             Ok(()) => true,
             Err(err) => {

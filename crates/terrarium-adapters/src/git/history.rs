@@ -231,17 +231,7 @@ fn facts(
         let changes = differ.changes(repo, parent_tree, node.tree)?;
         missing.extend(changes.missing);
         let tick = tick_of(graph.grid, placed.clamped);
-        let mut tags: Vec<TagFact> = graph
-            .tags
-            .get(id)
-            .into_iter()
-            .flatten()
-            .map(|(name, date)| TagFact {
-                name: name.clone(),
-                tick: tick_of(graph.grid, date.unwrap_or(placed.clamped)).max(tick),
-            })
-            .collect();
-        tags.sort_by(|a, b| a.name.cmp(&b.name));
+        let tags = tags_of(graph.tags, *id, graph.grid, placed.clamped, tick);
         out.push(CommitFacts {
             id: to_commit_id(*id),
             tick,
@@ -260,6 +250,28 @@ fn facts(
         total: ids.len(),
     });
     Ok(out)
+}
+
+/// The tags on commit `id`, sorted by name: each at its own date's tick, or the commit's
+/// (`clamped`, at `tick`) when it has none or an earlier one.
+fn tags_of(
+    tags: &TagsByCommit,
+    id: gix::ObjectId,
+    grid: TickGrid,
+    clamped: i64,
+    tick: Tick,
+) -> Vec<TagFact> {
+    let mut out: Vec<TagFact> = tags
+        .get(&id)
+        .into_iter()
+        .flatten()
+        .map(|(name, date)| TagFact {
+            name: name.clone(),
+            tick: tick_of(grid, date.unwrap_or(clamped)).max(tick),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 /// The tree of a commit already read, or read now (a first parent known from before).
@@ -382,19 +394,31 @@ pub(crate) fn read_since(
     } else if state == history.state {
         default_tip(&state, default_branch)?;
         return Ok(Change::Unchanged);
-    } else if state.tags != history.state.tags {
-        Some(RewriteReason::TagsChanged)
     } else if state.shallow != history.state.shallow {
         Some(RewriteReason::ShallowChanged)
     } else {
         None
     };
-    let reason = match reason {
-        Some(reason) => reason,
-        None => match grow(repo, history, state, progress)? {
+    // Tags change as releases are made: each commit takes its tags afresh, and no commit is
+    // read again for it. The history is the same as a whole read's (tested), and still says
+    // it was rewritten, so the replay starts over from the tags' facts.
+    let retagged = state.tags != history.state.tags;
+    let reason = if let Some(reason) = reason {
+        reason
+    } else {
+        if retagged {
+            retag(repo, history, &state.tags)?;
+        }
+        match grow(repo, history, state, progress)? {
+            Ok(Change::Unchanged) if retagged => {
+                return Ok(Change::Rewritten {
+                    reason: RewriteReason::TagsChanged,
+                    left_chain: Vec::new(),
+                });
+            }
             Ok(change) => return Ok(change),
             Err(reason) => reason,
-        },
+        }
     };
     let old = std::mem::replace(history, read(repo, default_branch, progress)?);
     let chain = history.default_chain();
@@ -496,6 +520,30 @@ pub(crate) fn left_between(
         total: ids.len(),
     });
     Ok(Some(left))
+}
+
+/// Gives every commit `history` holds its tags among `tags`, as a whole read gives them.
+fn retag(
+    repo: &gix::Repository,
+    history: &mut History,
+    tags: &BTreeMap<String, CommitId>,
+) -> Result<(), GitError> {
+    let resolved = resolve_tags(repo, tags)?;
+    for commit in &mut history.commits {
+        let id = to_object_id(&commit.id);
+        let Some(indexed) = history.index.get(&id) else {
+            continue;
+        };
+        commit.tags = tags_of(
+            &resolved,
+            id,
+            history.grid,
+            indexed.placed.clamped,
+            commit.tick,
+        );
+    }
+    history.state.tags.clone_from(tags);
+    Ok(())
 }
 
 /// Reads only the commits `history` lacks into it, or says why every earlier fact no longer

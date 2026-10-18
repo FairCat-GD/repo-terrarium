@@ -43,6 +43,8 @@ pub enum PlatformError {
     NotAppKit,
     /// The view is not in a window.
     NoWindow,
+    /// The view's layer, or the image layer on it, could not be set up.
+    NoLayer,
 }
 
 impl From<HandleError> for PlatformError {
@@ -140,7 +142,9 @@ impl StripWindow {
     }
 }
 
-fn appkit_view(window: &impl HasWindowHandle) -> Result<Retained<NSView>, PlatformError> {
+pub(crate) fn appkit_view(
+    window: &impl HasWindowHandle,
+) -> Result<Retained<NSView>, PlatformError> {
     MainThreadMarker::new().ok_or(PlatformError::NotMainThread)?;
     let RawWindowHandle::AppKit(handle) = window.window_handle()?.as_raw() else {
         return Err(PlatformError::NotAppKit);

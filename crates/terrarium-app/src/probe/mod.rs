@@ -4,6 +4,7 @@
 
 pub mod report;
 pub mod script;
+pub mod soak;
 pub mod tools;
 
 use std::io;
@@ -207,7 +208,7 @@ impl Probe {
     }
 
     fn file_name(&self, extension: &str) -> String {
-        copy::probe_file(self.report.started_unix, self.run_id, extension)
+        copy::probe_file("pinning", self.report.started_unix, self.run_id, extension)
     }
 
     fn json_path(&self) -> PathBuf {

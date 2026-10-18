@@ -54,6 +54,13 @@ fn lines(count: usize, line: impl Fn(usize) -> String) -> String {
 
 /// Builds a synthetic history of `commits` commits in `path`, which must be empty or absent.
 pub fn synthetic(path: &Path, commits: usize) -> FixtureResult<FixtureRepo> {
+    synthetic_until(path, commits, START_SECS + SPAN_SECS)
+}
+
+/// [`synthetic`], its three years ending at `end_secs` (UTC): the soak's busy repository ends
+/// just before it starts, so the strip it shows is active.
+pub fn synthetic_until(path: &Path, commits: usize, end_secs: i64) -> FixtureResult<FixtureRepo> {
+    let start_secs = end_secs - SPAN_SECS;
     let mut repo = FixtureRepo::init(path)?;
     let mut files = Files {
         rng: Pcg32::from_seed(0x7379_6e74_6865_7469),
@@ -90,7 +97,7 @@ pub fn synthetic(path: &Path, commits: usize) -> FixtureResult<FixtureRepo> {
     }
     let step = SPAN_SECS / i64::try_from(commits.max(1))?;
     let stamp = |n: usize| Stamp {
-        secs: START_SECS + step * i64::try_from(n).unwrap_or(i64::MAX / 2),
+        secs: start_secs + step * i64::try_from(n).unwrap_or(i64::MAX / 2),
         offset: 0,
         author: n % 4,
     };

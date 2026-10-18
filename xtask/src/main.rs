@@ -14,6 +14,7 @@ mod probe_zip;
 mod purity;
 mod render;
 mod size;
+mod soak;
 mod sweep;
 mod verify;
 mod windows;
@@ -62,6 +63,7 @@ fn main() -> ExitCode {
         }
         [task] if task == "probe-zip" => probe_zip::run(root),
         [task] if task == "size" => size::run(root),
+        [task, rest @ ..] if task == "soak" => soak::run(root, rest),
         [task, flag, out] if task == "render" && flag == "--demo" => {
             render::run(std::path::Path::new(out))
         }
@@ -72,7 +74,8 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: cargo xtask verify | arc | assets [--check] | bench | fixture <dir> | fixture \
                  --bless | gallery | golden [--check | --bless [--same-version]] | hero | \
-                 probe-zip | render --demo <out.png> | render --preset <name> <out.png> | size"
+                 probe-zip | render --demo <out.png> | render --preset <name> <out.png> | size | \
+                 soak [--minutes <n>] [--presenter layer | softbuffer | wgpu | both] | soak --report <file>"
             );
             ExitCode::from(2)
         }

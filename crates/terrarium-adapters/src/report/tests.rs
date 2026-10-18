@@ -679,6 +679,34 @@ fn only_regular_files_inside_the_repository_are_read() {
     ));
 }
 
+#[test]
+fn a_report_that_hashes_as_the_one_seen_is_not_read_again() {
+    let dir = stage(&[("lcov/jest.info", "coverage/lcov.info")]);
+    let files = vec!["coverage/lcov.info".to_owned()];
+    let read = Report::read(dir.path(), Format::Lcov, &files);
+    let seen = read.known().expect("the fixture parses").content_hash;
+    assert_eq!(
+        Report::read_unless(dir.path(), Format::Lcov, &files, Some(&seen)),
+        None
+    );
+    // Another hash, or none, reads it as `read` does.
+    assert_eq!(
+        Report::read_unless(dir.path(), Format::Lcov, &files, Some(&[0; 32])).as_ref(),
+        Some(&read)
+    );
+    assert_eq!(
+        Report::read_unless(dir.path(), Format::Lcov, &files, None).as_ref(),
+        Some(&read)
+    );
+    // Changed by a byte, it is read again.
+    let path = dir.path().join("coverage/lcov.info");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push('\n');
+    fs::write(&path, text).unwrap();
+    let changed = Report::read_unless(dir.path(), Format::Lcov, &files, Some(&seen));
+    assert!(changed.is_some_and(|report| report.known().is_some_and(|k| k.content_hash != seen)));
+}
+
 #[cfg(unix)]
 #[test]
 fn a_link_to_a_pipe_is_never_opened() {

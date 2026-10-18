@@ -73,6 +73,20 @@ pub enum Outcome {
     NotConnected(ConnectError),
 }
 
+impl Outcome {
+    /// The engine the job started, if it started one.
+    pub fn into_engine(self) -> Option<Engine> {
+        match self {
+            Outcome::Connected { engine, .. }
+            | Outcome::Restarted {
+                started: Ok((engine, _)),
+                ..
+            } => Some(engine),
+            Outcome::Restarted { .. } | Outcome::Disconnected | Outcome::NotConnected(_) => None,
+        }
+    }
+}
+
 /// What a change that restarts the engine did.
 #[derive(Debug)]
 pub enum Changed {

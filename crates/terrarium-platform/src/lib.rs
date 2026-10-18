@@ -6,11 +6,14 @@
 pub mod appbar;
 pub mod clock;
 pub mod console;
+pub mod cpu;
 pub mod display;
 pub mod fullscreen;
 pub mod geometry;
 pub mod idle;
 pub mod interrupt;
+#[cfg(target_os = "macos")]
+pub mod layer;
 pub mod login;
 #[cfg(target_os = "macos")]
 pub mod macos;

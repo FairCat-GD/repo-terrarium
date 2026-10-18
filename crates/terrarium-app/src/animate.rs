@@ -7,8 +7,8 @@
 use terrarium_compose::blend::blend;
 use terrarium_compose::catalog::{Art, Blend, Catalog};
 use terrarium_compose::composer::{Composer, OverlayInput};
-use terrarium_compose::compositor::composite_into;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NativeImage, Viewport};
+use terrarium_compose::compositor::{composite_area, damage};
+use terrarium_compose::frame::{Area, Frame, NATIVE_HEIGHT, NativeImage, Viewport};
 use terrarium_compose::panel::{Hover, Landmark};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::schedule::Pacer;
@@ -29,6 +29,9 @@ pub struct Living {
     image: NativeImage,
     /// A spare image to compose into, so a frame that changes nothing costs no allocation.
     spare: NativeImage,
+    /// The frame `image` was composited from, exactly: only what a new frame changes of it
+    /// is composited again. None while a handover's dissolve lies over the picture.
+    shown: Option<Frame>,
     /// When it next wants composing, worked out once per composition or update: the loop asks
     /// on every event it handles.
     due: Option<Millis>,
@@ -69,6 +72,7 @@ impl Living {
             at: now,
             image: blank.clone(),
             spare: blank,
+            shown: None,
             due: None,
             compositions: 0,
             handover: None,
@@ -201,34 +205,73 @@ impl Living {
     }
 
     /// Compositions since it was made, presented or not.
-    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     pub fn compositions(&self) -> u64 {
         self.compositions
     }
 
-    /// Composes `now`; true if any pixel changed.
+    /// Composes `now`; true if any pixel changed. Only the area the frame changes of the one
+    /// before is composited again, over a copy of the picture: the pixels are a whole
+    /// composite's.
     fn compose(&mut self, now: Millis) -> bool {
         let mix = self.composer.palette_mix(now);
         let frame = self
             .composer
             .frame(self.art, self.table, &self.scenery, mix, now);
-        composite_into(self.art, &frame, &mut self.spare);
-        if let Some(handover) = &self.handover {
-            let opacity = handover.fade.value(now);
-            if opacity == 0 {
-                self.handover = None;
-            } else {
-                dissolve(&mut self.spare, &handover.from, opacity);
+        let whole = Area {
+            x: 0,
+            y: 0,
+            w: i32::try_from(self.spare.width()).unwrap_or(i32::MAX),
+            h: i32::try_from(NATIVE_HEIGHT).unwrap_or(i32::MAX),
+        };
+        let area = match &self.shown {
+            Some(shown) if self.handover.is_none() => damage(self.art, shown, &frame),
+            _ => Some(whole),
+        };
+        let changed = area.is_some_and(|area| {
+            if area != whole {
+                for y in 0..NATIVE_HEIGHT {
+                    self.spare.row_mut(y).copy_from_slice(self.image.row(y));
+                }
             }
-        }
+            composite_area(self.art, &frame, &mut self.spare, area);
+            if let Some(handover) = &self.handover {
+                let opacity = handover.fade.value(now);
+                if opacity == 0 {
+                    self.handover = None;
+                } else {
+                    dissolve(&mut self.spare, &handover.from, opacity);
+                }
+            }
+            // Outside the area the two hold the same pixels, but at another width.
+            let changed = if area == whole || self.image.width() != self.spare.width() {
+                self.image != self.spare
+            } else {
+                let rows = area.y.max(0).cast_unsigned()
+                    ..area
+                        .y
+                        .saturating_add(area.h)
+                        .clamp(0, whole.h)
+                        .cast_unsigned();
+                let columns = area.x.clamp(0, whole.w).cast_unsigned() as usize
+                    ..area
+                        .x
+                        .saturating_add(area.w)
+                        .clamp(0, whole.w)
+                        .cast_unsigned() as usize;
+                rows.into_iter().any(|y| {
+                    self.image.row(y)[columns.clone()] != self.spare.row(y)[columns.clone()]
+                })
+            };
+            if changed {
+                std::mem::swap(&mut self.image, &mut self.spare);
+            }
+            changed
+        });
+        self.shown = self.handover.is_none().then_some(frame);
         self.at = now;
         self.compositions += 1;
         self.pacer.composed(now);
         self.due = self.pacer.wake(self.next_change(now));
-        let changed = self.image != self.spare;
-        if changed {
-            std::mem::swap(&mut self.image, &mut self.spare);
-        }
         changed
     }
 }
@@ -290,6 +333,41 @@ mod tests {
             living.compositions(),
             1 + u64::try_from(wakes.len()).unwrap()
         );
+    }
+
+    #[test]
+    fn each_picture_is_a_whole_composite_of_its_frame() {
+        // Four minutes of the thriving strip, composited only where each frame changed: at
+        // the scene's width, then at 735 columns, then through a re-seed's dissolve.
+        let mut living = thriving_at(LocalClock::noon(preset::DATE));
+        let mut checked = 0;
+        let mut reseeded = false;
+        while let Some(due) = living.due().filter(|due| due.0 <= 240_000) {
+            if due.0 >= 80_000 && living.columns() == 640 {
+                living.fit(Viewport::new(735), due);
+            }
+            if due.0 >= 160_000 && !reseeded {
+                reseeded = true;
+                let overlay = OverlayInput::new(
+                    vec![copy::sample_label().to_owned()],
+                    LocalClock::noon(preset::DATE),
+                );
+                let scene = preset::scene("thriving").unwrap();
+                living.reseed(&scene, &overlay, InstallSalt::new([9; 16]), due);
+            }
+            living.advance(due);
+            if living.handover.is_none() {
+                let mix = living.composer.palette_mix(due);
+                let frame =
+                    living
+                        .composer
+                        .frame(living.art, living.table, &living.scenery, mix, due);
+                let whole = terrarium_compose::compositor::composite(living.art, &frame);
+                assert!(living.image() == &whole, "at {due:?}");
+            }
+            checked += 1;
+        }
+        assert!(checked > 1000, "{checked} compositions");
     }
 
     #[test]
@@ -381,7 +459,7 @@ mod tests {
             .composer
             .frame(living.art, living.table, &living.scenery, mix, end);
         let mut alone = NativeImage::new(living.composer.viewport(), [0, 0, 0, u8::MAX]);
-        composite_into(living.art, &frame, &mut alone);
+        terrarium_compose::compositor::composite_into(living.art, &frame, &mut alone);
         assert_eq!(living.image(), &alone, "nothing of the old layout stays");
         assert_ne!(&alone, &before, "a new layout");
         let mid = mid.expect("a frame mid-way");

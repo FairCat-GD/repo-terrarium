@@ -5,6 +5,45 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-18
+
+The strip costs far less to run. On a Mac it is now shown the way macOS shows a picture, scaled
+by the system itself, and it redraws only the part of the scene that moved: about a tenth of the
+processor time it took, and about half the memory. The same history grows the same world.
+
+### Added
+
+- **A soak test for testers:** `repo-terrarium --probe soak` runs the strip for an hour (or
+  `--minutes`) and writes a report of the processor time, memory and frames it used. The
+  Windows probe kit has `run-soak.cmd` and `run-soak-gpu.cmd` for it, and its README a step for
+  each.
+- **Three ways to draw the strip:** the Mac's own layer (the default there), softbuffer (the
+  default on Windows) and the graphics card (wgpu), which a soak can ask for with `--presenter`.
+  When one cannot start, the strip falls back to another by itself.
+
+### Changed
+
+- **The strip on a Mac uses about a tenth of the processor time it did**, and about half the
+  memory. macOS no longer converts the colours of the whole picture on every frame, and
+  only the part of the scene that moved is drawn again.
+- **On a Mac the strip's colours now match the art files** as macOS shows them (sRGB). Before,
+  they were read as the display's own colours, a little off from the art.
+- **Windows redraws only the part of the strip that changed**, so a wide display costs less.
+- **Tagging a release no longer reads the whole history again:** at 10,000 commits the update
+  takes a quarter of a second rather than four.
+- **An unchanged coverage, test or Knip report is no longer read again** on every update.
+- **Settings and the other windows share the strip's graphics device** when it draws with one,
+  rather than making a second.
+
+### Fixed
+
+- **A strip resized or moved at the moment it was due to animate always redraws.** Before, the
+  OS's request could be folded into the animation's and draw nothing.
+- **The strip never draws more than 15 frames a second**, even when the OS asks for frames
+  sooner.
+- **A connection outrun by a later change in Settings is stopped and waited for**, so it can no
+  longer write after the newer change has started.
+
 ## [0.28.1] - 2026-10-17
 
 A review of the whole app, with what it found fixed. Nothing about the terrarium itself moved:

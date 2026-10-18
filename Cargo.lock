@@ -2926,6 +2926,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -4180,7 +4181,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-adapters"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "gix",
  "keyring",
@@ -4206,7 +4207,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-app"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -4235,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-compose"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "gif",
  "insta",
@@ -4249,7 +4250,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-engine"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "getrandom 0.4.3",
  "notify",
@@ -4265,7 +4266,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-platform"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "block2 0.6.2",
  "libc",
@@ -4275,6 +4276,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "objc2-service-management",
  "raw-window-handle",
  "windows",
@@ -4283,7 +4285,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-store"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "directories",
  "proptest",
@@ -4298,7 +4300,7 @@ dependencies = [
 
 [[package]]
 name = "terrarium-truth"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -5502,7 +5504,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "cargo_metadata",
  "png",

@@ -746,6 +746,69 @@ fn history_that_changed_is_read_again() {
     }
 }
 
+/// A tag change, and whether a commit comes with it.
+type TagCase = (&'static str, fn(&mut FixtureRepo, &[CommitId]), bool);
+
+#[test]
+fn a_tag_change_retags_the_history_as_a_whole_read_would() {
+    let dir = temp();
+    let cases: [TagCase; 5] = [
+        (
+            "lightweight on an old commit",
+            |repo, ids| repo.tag_lightweight("v1.0.0", &ids[0]).unwrap(),
+            false,
+        ),
+        (
+            "annotated on an old commit, dated later",
+            |repo, ids| {
+                repo.tag_annotated("v2.0.0", &ids[1], at(90), "a release")
+                    .unwrap();
+            },
+            false,
+        ),
+        (
+            "moved",
+            |repo, ids| repo.tag_lightweight("v0.1.0", &ids[2]).unwrap(),
+            false,
+        ),
+        (
+            "removed",
+            |repo, _| std::fs::remove_file(repo.git_dir().join("refs/tags/v0.1.0")).unwrap(),
+            false,
+        ),
+        (
+            "with a new commit",
+            |repo, ids| {
+                commit(repo, "main", 30, &[Edit::write("b.rs", "b\n")]);
+                repo.tag_lightweight("v3.0.0", &ids[1]).unwrap();
+            },
+            true,
+        ),
+    ];
+    for (name, change, appends) in cases {
+        let case_dir = TempDir::new_in(dir.path()).unwrap();
+        let (mut repo, ids) = base(&case_dir);
+        repo.tag_lightweight("v0.1.0", &ids[0]).unwrap();
+        let previous = read(&repo);
+        change(&mut repo, &ids);
+        let update = since(&repo, &previous);
+        if appends {
+            assert!(matches!(update.change, Change::Appended { .. }), "{name}");
+        } else {
+            assert!(
+                matches!(
+                    &update.change,
+                    Change::Rewritten { reason: RewriteReason::TagsChanged, left_chain }
+                        if left_chain.is_empty()
+                ),
+                "{name}: {:?}",
+                update.change
+            );
+        }
+        assert_full(&repo, &update);
+    }
+}
+
 /// The default chain's commits a change took off it, read in full each time from a fresh
 /// copy of three commits on `main`.
 fn left_chain(change: fn(&mut FixtureRepo, &[CommitId])) -> (Vec<CommitId>, Vec<CommitId>) {

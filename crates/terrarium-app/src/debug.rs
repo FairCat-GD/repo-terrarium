@@ -350,7 +350,11 @@ mod tests {
             compositions: 40,
             memory: Some(Memory {
                 resident: 53 << 20,
+                resident_peak: None,
                 footprint: Some(41 << 20),
+                footprint_peak: Some(44 << 20),
+                private: None,
+                private_peak: None,
             }),
             state: PresentationState::Thriving,
             clock: LocalClock::noon(LocalDate::new(2026, 10, 1)),

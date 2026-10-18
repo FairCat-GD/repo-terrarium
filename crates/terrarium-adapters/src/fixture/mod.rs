@@ -23,7 +23,7 @@ pub use arc::{
     ARC_BRANCHES, ARC_DELETED_DIR, ARC_END_SECS, ARC_RENAMED_FROM, ARC_RENAMED_TO,
     ARC_REPLAY_END_SECS, ARC_START_SECS, ARC_TAGS, Arc, ArcCommit, Phase, arc,
 };
-pub use synthetic::synthetic;
+pub use synthetic::{synthetic, synthetic_until};
 
 pub type FixtureError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type FixtureResult<T> = Result<T, FixtureError>;

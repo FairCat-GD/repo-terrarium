@@ -2,10 +2,11 @@
 //! event loop, never eframe.
 //!
 //! Every window shares one egui context and one painter, so they share one wgpu device and one
-//! texture namespace. The host exists only while a window is open: the first window creates it,
-//! and with it the device; the strip drops it when the last one closes, and the device goes
-//! with it. A wgpu device alone costs far more memory than the strip, so none is kept for a
-//! window that might open later.
+//! texture namespace: the strip's, when the strip draws with one, so the app never holds two.
+//! The host exists only while a window is open: the first window creates it, and with it a
+//! device of its own if the strip has none; the strip drops it when the last one closes, and
+//! that device goes with it. A wgpu device alone costs far more memory than the strip, so none
+//! is kept for a window that might open later.
 //!
 //! A window is painted only when egui asks: after input, and at the delay it names after each
 //! pass. The loop waits for the earliest such deadline and for nothing once none remains
@@ -17,12 +18,13 @@ use std::time::{Duration, Instant};
 
 use egui::{TexturesDelta, ViewportId, ViewportIdSet};
 use egui_wgpu::winit::Painter;
-use egui_wgpu::{RendererOptions, SurfaceConfig, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+use egui_wgpu::{RendererOptions, SurfaceConfig, WgpuConfiguration, WgpuSetup};
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
+use crate::gpu::{self, Gpu};
 use crate::repaint::{self, RepaintSchedule};
 use crate::{copy, pinning};
 
@@ -89,8 +91,9 @@ pub struct EguiHost {
 }
 
 impl EguiHost {
-    /// A host with no window yet, and so no device: only the wgpu instance exists.
-    pub fn new() -> EguiHost {
+    /// A host with no window yet: on the strip's device `gpu` when it has one, otherwise with
+    /// none until the first window opens, only the wgpu instance.
+    pub fn new(gpu: Option<&Gpu>) -> EguiHost {
         let ctx = egui::Context::default();
         let inbox: Inbox = Arc::default();
         let sink = Arc::clone(&inbox);
@@ -103,7 +106,7 @@ impl EguiHost {
         });
         let painter = pollster::block_on(Painter::new(
             ctx.clone(),
-            configuration(),
+            configuration(gpu),
             false,
             RendererOptions::default(),
         ));
@@ -324,25 +327,12 @@ impl Drop for EguiHost {
     }
 }
 
-/// The device the windows share: the one backend each OS needs, the integrated GPU where
-/// there are two (these windows are forms, not games), and allocations that favour memory over
-/// speed. One frame in flight keeps the fewest drawables alive.
-fn configuration() -> WgpuConfiguration {
-    let mut setup = WgpuSetupCreateNew::without_display_handle();
-    setup.instance_descriptor.backends = if cfg!(target_os = "macos") {
-        wgpu::Backends::METAL
-    } else {
-        wgpu::Backends::DX12
-    };
-    setup.power_preference = wgpu::PowerPreference::LowPower;
-    let device = Arc::clone(&setup.device_descriptor);
-    setup.device_descriptor = Arc::new(move |adapter| wgpu::DeviceDescriptor {
-        memory_hints: wgpu::MemoryHints::MemoryUsage,
-        ..device(adapter)
-    });
+/// The device the windows share: the strip's, or one made with the same settings
+/// ([`gpu::create_new`]). One frame in flight keeps the fewest drawables alive.
+fn configuration(gpu: Option<&Gpu>) -> WgpuConfiguration {
     WgpuConfiguration {
         surface: SurfaceConfig::LOW_LATENCY,
-        wgpu_setup: WgpuSetup::CreateNew(setup),
+        wgpu_setup: gpu.map_or_else(|| WgpuSetup::CreateNew(gpu::create_new()), Gpu::existing),
         ..WgpuConfiguration::default()
     }
 }

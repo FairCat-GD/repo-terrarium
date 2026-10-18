@@ -16,7 +16,6 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -59,6 +58,7 @@ use crate::egui_host::WindowKind;
 #[cfg(feature = "dev")]
 use crate::feed::Overrides;
 use crate::feed::{Feed, Feeder, Os};
+use crate::gpu::Gpu;
 use crate::hotkey::{self, Hotkeys, Which};
 use crate::hover::{self, HoverTracker, ViewportPoint};
 use crate::instance::{Instance, RequestWatch};
@@ -69,11 +69,16 @@ use crate::menu::{self, Choice, StripMenu};
 use crate::monitor::{self, MonitorId};
 use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
 use crate::prefs::{Pref, Prefs, Saved, Writer};
-use crate::present::{FrameGate, PresentError, Presenter, SoftbufferPresenter};
+use crate::present::gpu::WgpuPresenter;
+#[cfg(target_os = "macos")]
+use crate::present::layer::LayerPresenter;
+use crate::present::{Backend, FrameGate, PresentError, Presenter, Shown, SoftbufferPresenter};
 use crate::probe::report::{Activity, EndReason, ProbeEvent, ScaleReport};
+use crate::probe::soak::{self, Counts, Soak, SoakScene};
 use crate::probe::tools::ToolsReport;
 use crate::probe::{self, Advance, Launch as ProbeLaunch, Probe};
 use crate::raise::RaiseTimer;
+use crate::redraw::{Present, Redraws};
 use crate::settings::{MonitorChoice, RepoFacts, SettingsForm};
 use crate::shell::{DataFile, Export, Intent, Picking, Shell};
 use crate::soil::{Hits, SoilPanel};
@@ -86,6 +91,8 @@ pub enum Mode {
     /// The living strip, shown from this feed.
     Live(Feed),
     Probe(ProbeKind),
+    /// The living strip, measured: on the repository connected, or the thriving sample.
+    Soak(soak::Setup),
 }
 
 /// What the strip shows: the sample, composed once and still, for the pinning probe, whose
@@ -132,6 +139,7 @@ impl Scene {
             Mode::Live(feed) => feed.clone(),
             #[cfg(feature = "dev")]
             Mode::Probe(ProbeKind::Egui) => Feed::Thriving,
+            Mode::Soak(_) => Feed::Thriving,
             Mode::Probe(ProbeKind::Pinning) => return Scene::still(Viewport::SCENE),
         };
         let os = Os::read();
@@ -341,12 +349,17 @@ impl Scene {
         }
     }
 
-    /// Brings the scene to `now`; true if its pixels changed.
+    /// Brings the scene to `now` if the living strip is due to compose; true if its pixels
+    /// changed. The pace holds for every redraw, the OS's own included (I-10): one that comes
+    /// sooner shows the picture the strip holds.
     fn advance(&mut self, now: Instant) -> bool {
         self.look(now, false);
         match self {
             Scene::Still { .. } => false,
-            Scene::Living { living, origin, .. } => living.advance(Self::millis(*origin, now)),
+            Scene::Living { living, origin, .. } => {
+                let at = Self::millis(*origin, now);
+                living.due().is_some_and(|due| due <= at) && living.advance(at)
+            }
         }
     }
 
@@ -448,6 +461,14 @@ impl Scene {
         match self {
             Scene::Still { frame } => frame,
             Scene::Living { living, .. } => living.image(),
+        }
+    }
+
+    /// Compositions since the living strip was made, presented or not.
+    fn compositions(&self) -> u64 {
+        match self {
+            Scene::Still { .. } => 0,
+            Scene::Living { living, .. } => living.compositions(),
         }
     }
 }
@@ -678,8 +699,8 @@ impl Repo {
     /// Takes in a change of `generation` and its `outcome`: the engine it started, the
     /// connected repository, the windows' forms, and on a first connect the login choice,
     /// applied through `login`. Says what the strip is left to do. A change a later one
-    /// outran has nothing left to show: its engine stops on a thread of its own, so the loop
-    /// never waits for it.
+    /// outran has nothing left to show: its engine stops on a thread of its own, which waits
+    /// for it to end, so the loop never waits for it and nothing it writes is left running.
     fn changed(
         &mut self,
         generation: u64,
@@ -688,7 +709,7 @@ impl Repo {
         login: &mut dyn LoginItem,
     ) -> Effect {
         if generation != self.generation {
-            thread::spawn(move || drop(outcome));
+            thread::spawn(move || outcome.into_engine().map(Engine::shutdown_and_join));
             return Effect::Nothing;
         }
         match outcome {
@@ -809,17 +830,26 @@ struct Strip {
     /// change.
     proxy: EventLoopProxy<UserEvent>,
     probe: Option<Probe>,
+    /// The soak measuring the strip, apart from the probe: the probe's own recording would be
+    /// measured with it.
+    soak: Option<Soak>,
+    /// How the strip's window is put on screen.
+    backend: Backend,
+    /// The GPU device the strip draws with, kept while the app runs once made, and shared
+    /// with the egui windows. None while the strip draws on the CPU.
+    gpu: Option<Gpu>,
     view: Option<View>,
     /// What the strip shows; none while no repository is connected.
     scene: Option<Scene>,
-    /// The redraw on its way was asked for by the living strip's schedule, not by the OS: it
-    /// is presented only if the pixels changed.
-    scheduled: bool,
+    /// Why the redraw on its way was asked for.
+    redraws: Redraws,
     level: LevelMode,
     raise: RaiseTimer,
     hover: HoverTracker,
     gate: FrameGate,
     placement_pending: bool,
+    /// The GPU device was lost: the strip moves to the CPU once the events in hand are handled.
+    lost_gpu_pending: bool,
     /// Whether to look at the full-screen apps once the events in hand are handled (Windows).
     fullscreen_pending: bool,
     /// The edge the probe's step puts the strip on, over the setting's.
@@ -853,9 +883,9 @@ struct Strip {
 struct View {
     _observers: Observers,
     pinning: Pinning,
-    presenter: SoftbufferPresenter,
+    presenter: Box<dyn Presenter>,
     scale: StripScale,
-    window: Rc<Window>,
+    window: Arc<Window>,
 }
 
 impl Strip {
@@ -867,6 +897,15 @@ impl Strip {
         prefs: Prefs,
     ) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
+        let mut prefs = prefs;
+        let setup = match mode {
+            Mode::Soak(setup) => Some(*setup),
+            _ => None,
+        };
+        if setup.is_some() {
+            // Dim mode held off: the bright strip, which moves four times as much, is measured.
+            prefs.dim_after_minutes = u32::MAX;
+        }
         let scene = match repo.as_ref().map(|repo| repo.connected.as_ref()) {
             // A run with a data directory and nothing connected shows no strip.
             Some(None) => None,
@@ -880,19 +919,33 @@ impl Strip {
             )),
             None => Some(Scene::new(mode, None, &prefs)),
         };
+        let soak = setup.map(|setup| {
+            let shown = if repo.is_some() {
+                SoakScene::Repository
+            } else {
+                SoakScene::Sample
+            };
+            Soak::start(setup, shown, Instant::now())
+        });
         Self {
             proxy,
             probe,
+            soak,
+            backend: setup
+                .and_then(|setup| setup.presenter)
+                .unwrap_or(Backend::DEFAULT),
+            gpu: None,
             view: None,
             scene,
-            scheduled: false,
+            redraws: Redraws::default(),
             level,
             raise: RaiseTimer::default(),
             hover: HoverTracker::default(),
             gate: FrameGate::default(),
             placement_pending: false,
+            lost_gpu_pending: false,
             fullscreen_pending: false,
-            probe_edge: None,
+            probe_edge: setup.and_then(|setup| setup.edge),
             idle_seen: false,
             failed: None,
             menu: None,
@@ -917,13 +970,13 @@ impl Strip {
             .with_resizable(false)
             .with_visible(false)
             .with_active(false);
-        let window = Rc::new(
+        let window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .map_err(StripError::Window)?,
         );
         let pinning = Pinning::attach(&window).map_err(StripError::Attach)?;
-        let presenter = SoftbufferPresenter::new(&window).map_err(StripError::Present)?;
+        let presenter = self.presenter(&window)?;
         if self.menu.is_none() {
             self.menu = StripMenu::new()
                 .inspect_err(|err| eprintln!("{}", copy::menu_unavailable(err)))
@@ -985,6 +1038,7 @@ impl Strip {
         // A strip opened over a full-screen app steps behind it at once.
         self.fullscreen_pending = true;
         view.pinning.show(&view.window);
+        self.redraws.force();
         view.window.request_redraw();
         let active = pinning::app_is_active();
         self.record(ProbeEvent::AppActive {
@@ -993,6 +1047,52 @@ impl Strip {
         });
         self.record_snapshot(&view);
         Ok(view)
+    }
+
+    /// How `window` is put on screen: the way the strip is to be, if it can be; the default
+    /// way otherwise, and softbuffer as the last. A GPU device comes before its surface, so a
+    /// strip that cannot have one falls back before anything is attached to its window.
+    fn presenter(&mut self, window: &Arc<Window>) -> Result<Box<dyn Presenter>, StripError> {
+        if self.backend == Backend::Wgpu {
+            let gpu = match self.gpu.take() {
+                Some(gpu) => Ok(gpu),
+                None => Gpu::new().map_err(PresentError::Gpu),
+            };
+            match gpu.and_then(|gpu| WgpuPresenter::new(&gpu, window).map(|p| (gpu, p))) {
+                Ok((gpu, presenter)) => {
+                    self.shell.gpu = Some(gpu.clone());
+                    self.gpu = Some(gpu);
+                    return Ok(Box::new(presenter));
+                }
+                Err(err) => {
+                    eprintln!("{}", copy::presenter_fell_back(&err));
+                    self.backend = Backend::DEFAULT;
+                    self.shell.gpu = None;
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if self.backend == Backend::Layer {
+            match LayerPresenter::new(window) {
+                Ok(presenter) => return Ok(Box::new(presenter)),
+                Err(err) => eprintln!("{}", copy::presenter_fell_back(&err)),
+            }
+        }
+        self.backend = Backend::Softbuffer;
+        Ok(Box::new(
+            SoftbufferPresenter::new(window).map_err(StripError::Present)?,
+        ))
+    }
+
+    /// The GPU device was lost: the strip is drawn the default way from now on, in a window
+    /// of its own, so nothing the GPU's surface attached to the old one stays.
+    fn lost_gpu(&mut self, event_loop: &ActiveEventLoop) {
+        eprintln!("{}", copy::presenter_fell_back(&PresentError::Lost));
+        self.backend = Backend::DEFAULT;
+        self.gpu = None;
+        self.shell.gpu = None;
+        self.close_view();
+        self.open_view(event_loop);
     }
 
     /// Runs `f` with the view taken out of `self`, so it can record probe events while
@@ -1014,6 +1114,9 @@ impl Strip {
             return;
         };
         view.scale = scale;
+        if let Some(soak) = &mut self.soak {
+            soak.placed(&view.scale, view.presenter.backend());
+        }
         self.record(ProbeEvent::Placed {
             monitor: monitor.info.id.clone(),
             strip: ScaleReport::from(&view.scale),
@@ -1028,6 +1131,7 @@ impl Strip {
         self.show_monitors(&monitors);
         if let Some(monitor) = choose(monitors, self.prefs.monitor.as_ref()) {
             self.place(view, &monitor);
+            self.redraws.force();
             view.window.request_redraw();
         }
     }
@@ -1154,21 +1258,31 @@ impl Strip {
                 };
                 let fitted = scene.fit(view.scale.viewport(), now);
                 let changed = scene.advance(now) || fitted;
-                // The OS's own requests always present; the schedule's only on a change.
-                let wanted = changed || !std::mem::take(&mut self.scheduled);
-                if wanted && self.gate.should_present() {
-                    match view.presenter.present(scene.pixels(), &view.scale) {
-                        Ok(()) => {
-                            self.gate.presented();
+                let present = self.redraws.take(changed);
+                if present != Present::No && self.gate.should_present() {
+                    let whole = present != (Present::Changed { whole: false });
+                    match view.presenter.present(scene.pixels(), &view.scale, whole) {
+                        Ok(Shown::Presented) => {
+                            self.gate.presented(now, present != Present::Again);
                             #[cfg(feature = "dev")]
                             self.dev.fps.presented(now);
                         }
+                        Ok(Shown::Unchanged) => {}
+                        Ok(Shown::Skipped) => self.gate.skipped(),
+                        Err(PresentError::Lost) => self.lost_gpu_pending = true,
                         Err(err) => eprintln!("{}", copy::present_failed(&err)),
+                    }
+                    if let Some(soak) = &mut self.soak
+                        && soak.wants_pixels()
+                    {
+                        let equal = view.presenter.pixels_equal(scene.pixels(), &view.scale);
+                        soak.pixels(equal);
                     }
                 }
                 self.once_shown(now);
             }
             WindowEvent::Resized(size) => {
+                self.redraws.force();
                 view.window.request_redraw();
                 self.record(ProbeEvent::Resized {
                     width: size.width,
@@ -1205,9 +1319,13 @@ impl Strip {
                 });
             }
             WindowEvent::Occluded(occluded) => {
+                if let Some(soak) = &mut self.soak {
+                    soak.covered(occluded, Instant::now());
+                }
                 // Uncovered, the living strip catches up at once.
                 let living = matches!(self.scene, Some(Scene::Living { .. }));
                 if self.gate.set_occluded(occluded) || (!occluded && living) {
+                    self.redraws.force();
                     view.window.request_redraw();
                 }
                 self.record(ProbeEvent::Occluded { occluded });
@@ -1304,7 +1422,7 @@ impl Strip {
         if let Some(view) = self.view.take() {
             view.pinning.release();
         }
-        self.scheduled = false;
+        self.redraws = Redraws::default();
         self.raise = RaiseTimer::default();
         self.hover = HoverTracker::default();
         self.gate = FrameGate::default();
@@ -1928,8 +2046,7 @@ impl ApplicationHandler<UserEvent> for Strip {
         self.shell.woke(now);
         #[cfg(feature = "dev")]
         self.dev_woke(event_loop, now);
-        #[cfg(not(feature = "dev"))]
-        let _ = event_loop;
+        self.soak_woke(event_loop, now);
         let covered = self.gate.occluded();
         if let Some(scene) = self.scene.as_mut().filter(|_| !covered) {
             scene.look(now, false);
@@ -1943,7 +2060,7 @@ impl ApplicationHandler<UserEvent> for Strip {
                 .is_some_and(|due| due <= now)
             && let Some(view) = &self.view
         {
-            self.scheduled = true;
+            self.redraws.schedule();
             view.window.request_redraw();
         }
         if !self.raise.restore_due(now) {
@@ -2114,6 +2231,9 @@ impl ApplicationHandler<UserEvent> for Strip {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if std::mem::take(&mut self.lost_gpu_pending) {
+            self.lost_gpu(event_loop);
+        }
         // A placement can move the strip to another display, so the full-screen apps are
         // looked at after it.
         let placed = std::mem::take(&mut self.placement_pending);
@@ -2145,7 +2265,8 @@ impl ApplicationHandler<UserEvent> for Strip {
         let dev = self.dev.deadline();
         #[cfg(not(feature = "dev"))]
         let dev = None;
-        let deadline = [self.raise.deadline(), living, windows, dev]
+        let soak = self.soak.as_ref().and_then(Soak::due);
+        let deadline = [self.raise.deadline(), living, windows, dev, soak]
             .into_iter()
             .flatten()
             .min();
@@ -2157,6 +2278,10 @@ impl ApplicationHandler<UserEvent> for Strip {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.end_probe(EndReason::WindowClosed);
+        let counts = self.soak_counts();
+        if let Some(soak) = &mut self.soak {
+            soak.end(Instant::now(), counts);
+        }
         if let Some(engine) = self.repo.as_mut().and_then(|repo| repo.engine.take()) {
             engine.shutdown();
         }
@@ -2169,6 +2294,27 @@ impl ApplicationHandler<UserEvent> for Strip {
 }
 
 impl Strip {
+    /// The loop woke at `now`: the soak counts it, and takes its sample when one is due. Its
+    /// length run, the app ends.
+    fn soak_woke(&mut self, event_loop: &ActiveEventLoop, now: Instant) {
+        let counts = self.soak_counts();
+        if let Some(soak) = &mut self.soak {
+            soak.woke();
+            if soak.sample(now, counts) {
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// What the strip counts of itself, for the soak.
+    fn soak_counts(&self) -> Counts {
+        Counts {
+            frames: self.gate.counts(),
+            busiest_second: self.gate.busiest_second(),
+            compositions: self.scene.as_ref().map_or(0, Scene::compositions),
+        }
+    }
+
     /// Handles `event` for one of the shell's windows, and returns what they asked for.
     #[cfg(not(feature = "dev"))]
     fn shell_window_event(&mut self, id: WindowId, event: &WindowEvent) -> Vec<Intent> {

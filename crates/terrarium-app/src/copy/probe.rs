@@ -13,8 +13,10 @@ use crate::hover::NativePoint;
 use crate::pinning::{
     AppBarPlaced, FullscreenReport, LevelMode, OsSnapshot, PxRect, TaskbarReport, TaskbarState,
 };
+use crate::present::Backend;
 use crate::probe::report::{Activity, EndReason, MoveSummary, ProbeEvent, Report, StepReport};
 use crate::probe::script::{Phase, Step};
+use crate::probe::soak::{SoakEnd, SoakReport, SoakScene, Summary};
 use crate::probe::tools::{Outcome, RunReport, ToolsReport};
 
 /// The key that ends input in the terminal the probe runs in.
@@ -771,9 +773,9 @@ pub fn os_version(version: Option<(u32, u32, u32)>) -> String {
 pub const AT_WINDOW_SHOWN: &str = "window shown";
 pub const AT_FIRST_IDLE: &str = "first idle";
 
-/// The report's file: the run's start and id tell two runs apart in one directory.
-pub fn probe_file(started_unix: u64, run_id: u32, extension: &str) -> String {
-    format!("{BINARY_NAME}-probe-pinning-{started_unix}-{run_id}.{extension}")
+/// A `kind` probe's report file: the run's start and id tell two runs apart in one directory.
+pub fn probe_file(kind: &str, started_unix: u64, run_id: u32, extension: &str) -> String {
+    format!("{BINARY_NAME}-probe-{kind}-{started_unix}-{run_id}.{extension}")
 }
 
 pub fn probe_written(json: &Path, text: &Path) -> String {
@@ -922,17 +924,176 @@ saying whether a maximised window still stopped short of the bottom after run 2,
 then press Enter. End this run with Ctrl-Z and then Enter.
 
 
+Run 4 and run 5: an hour each, if you can spare it (optional)
+--------------------------------------------------------------
+
+These measure what the strip costs: how much of the processor and memory it
+uses, and how often it draws. Each takes an hour and asks nothing of you but to
+leave the strip in view.
+
+Run 4. Double-click run-soak.cmd. The strip appears and runs for an hour, then
+closes by itself. Use the computer as you normally would, but keep the strip
+uncovered: a window over it for long spoils the measurement. Do not dim or
+sleep the display during the hour.
+
+Run 5. Double-click run-soak-gpu.cmd, and do the same. It draws the strip with
+the graphics card instead, to compare the two.
+
+
 Sending the results
 -------------------
 
 Each run writes two files into this folder, named
-repo-terrarium-probe-pinning-<numbers>.json and .txt. Please send all of the
-repo-terrarium-probe- files back. They hold the display sizes and the model
-codes Windows gives your monitors, the taskbar's position, what Windows
-reported about the strip, the names of window classes (never window titles),
-whether the tools worked (never a path or a file name), and your notes. Nothing
-else.
+repo-terrarium-probe-pinning-<numbers>.json and .txt (runs 4 and 5:
+repo-terrarium-probe-soak-). Please send all of the repo-terrarium-probe- files
+back. They hold the display sizes and the model codes Windows gives your
+monitors, the taskbar's position, what Windows reported about the strip, the
+names of window classes (never window titles), whether the tools worked
+(never a path or a file name), how much processor time and memory the strip
+used, and your notes. Nothing else.
 
 If the strip ever gets stuck on screen, or the bottom of the screen stays
 reserved after the probe has ended, signing out and back in clears it.
 ";
+
+/// How the report names a presenter.
+pub fn presenter_name(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Softbuffer => "softbuffer",
+        Backend::Wgpu => "wgpu",
+        Backend::Layer => "layer",
+    }
+}
+
+pub fn soak_intro(minutes: u32, json: &Path, text: &Path) -> String {
+    format!(
+        "{BINARY_NAME} {VERSION}: soak\n\
+         The strip runs for {minutes} minutes and measures what it costs. Keep it in view, \
+         uncovered, until it closes. The report is rewritten every five minutes and at the \
+         end:\n  {}\n  {}",
+        json.display(),
+        text.display()
+    )
+}
+
+pub fn soak_data_unavailable(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the soak's own data folder could not be made: {err}")
+}
+
+/// Decimal megabytes, to a tenth, as N-02's budget reads them.
+fn megabytes(bytes: u64) -> String {
+    let tenths = bytes / 100_000;
+    format!("{}.{} MB", tenths / 10, tenths % 10)
+}
+
+fn soak_memory(name: &str, steady: Option<u64>, peak: Option<u64>) -> Option<String> {
+    let steady = steady?;
+    Some(match peak {
+        Some(peak) => format!(
+            "  {name}: {} at most once settled, {} at its peak\n",
+            megabytes(steady),
+            megabytes(peak)
+        ),
+        None => format!("  {name}: {} at most once settled\n", megabytes(steady)),
+    })
+}
+
+fn soak_summary(summary: &Summary) -> String {
+    let mut out = format!(
+        "Measured over {} s, after a warm-up of {} s.\n",
+        summary.measured_secs, summary.warm_up_secs
+    );
+    match summary.cpu_percent {
+        Some(cpu) => {
+            let _ = writeln!(out, "  processor: {cpu:.3}% of one core");
+        }
+        None => out.push_str("  processor: not measured\n"),
+    }
+    if let Some(warm_up) = summary.warm_up_cpu_secs {
+        let _ = writeln!(
+            out,
+            "  processor time by the end of the warm-up: {warm_up:.1} s"
+        );
+    }
+    for line in [
+        soak_memory(
+            "footprint",
+            summary.footprint_steady,
+            summary.footprint_peak,
+        ),
+        soak_memory(
+            "private bytes",
+            summary.private_steady,
+            summary.private_peak,
+        ),
+        soak_memory("resident", summary.resident_steady, summary.resident_peak),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        out.push_str(&line);
+    }
+    let _ = write!(
+        out,
+        "  frames: {} for a change, {:.2} a second, at most {} in any one second; {} again \
+         unchanged\n  \
+         compositions: {:.2} a second\n  loop wakes: {:.1} a minute\n  covered: {:.1}% of the \
+         time\n",
+        summary.frames_changed,
+        summary.frames_per_second,
+        summary.busiest_second,
+        summary.frames_again,
+        summary.compositions_per_second,
+        summary.wakes_per_minute,
+        summary.covered_percent
+    );
+    out
+}
+
+/// The soak's report for people: what ran, then what it measured.
+pub fn soak_report_text(report: &SoakReport) -> String {
+    let mut out = format!(
+        "{BINARY_NAME} {} soak, started at Unix time {}\nOS: {}\nLength: {} minutes, on {}\n",
+        report.version,
+        report.started_unix,
+        report.os,
+        report.minutes,
+        match report.scene {
+            SoakScene::Repository => "a repository",
+            SoakScene::Sample => "the thriving sample",
+        }
+    );
+    let _ = writeln!(
+        out,
+        "Presenter: {}",
+        report.presenter.unwrap_or("not yet open")
+    );
+    if let Some(strip) = report.strip {
+        let _ = writeln!(
+            out,
+            "Strip: {} by {} at {}x",
+            strip.width, strip.height, strip.scale
+        );
+    }
+    if let Some(equal) = report.pixels_equal {
+        let _ = writeln!(
+            out,
+            "The GPU's pixels {} the CPU's",
+            if equal { "equal" } else { "differ from" }
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Ended: {}\n",
+        match report.ended {
+            None => "still running",
+            Some(SoakEnd::Done) => "ran its length",
+            Some(SoakEnd::Quit) => "quit before its length",
+        }
+    );
+    match &report.summary {
+        Some(summary) => out.push_str(&soak_summary(summary)),
+        None => out.push_str("Not measured yet.\n"),
+    }
+    out
+}

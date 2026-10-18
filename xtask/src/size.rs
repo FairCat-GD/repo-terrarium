@@ -1,7 +1,8 @@
-//! `cargo xtask size` (N-08): the release binary, built as it ships, stays under 25 MB with the
-//! tier-one grammars in it. A fat-LTO build takes minutes, so it is run like `bench`, when a
-//! change could move the size (a dependency, a grammar, the art), not as a `verify` stage. It
-//! measures the binary this machine builds.
+//! `cargo xtask size` (N-08): the release binary of each platform, built as it ships, stays
+//! under 25 MB with the tier-one grammars in it. A fat-LTO build takes minutes, so it is run like
+//! `bench`, when a change could move the size (a dependency, a grammar, the art, a profile), not
+//! as a `verify` stage. On the Mac it measures the Mac's
+//! binary and the Windows exe cross-built as `probe-zip` builds it; on Windows, the one it builds.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -22,19 +23,34 @@ pub fn run(root: &Path) -> ExitCode {
         println!("size: the release build failed");
         return ExitCode::FAILURE;
     }
-    let binary = sweep::target_dir(root)
-        .join("release")
-        .join(format!("repo-terrarium{}", std::env::consts::EXE_SUFFIX));
-    let bytes = match std::fs::metadata(&binary) {
-        Ok(metadata) => metadata.len(),
-        Err(err) => {
-            println!("size: {}: {err}", binary.display());
-            return ExitCode::FAILURE;
+    let mut binaries = vec![
+        sweep::target_dir(root)
+            .join("release")
+            .join(format!("repo-terrarium{}", std::env::consts::EXE_SUFFIX)),
+    ];
+    if !cfg!(windows) {
+        match probe_zip::build_windows(root) {
+            Ok(exe) => binaries.push(exe),
+            Err(err) => {
+                println!("size: {err}");
+                return ExitCode::FAILURE;
+            }
         }
-    };
-    let (within, said) = verdict(bytes);
-    println!("size: {} {said}", binary.display());
-    if within {
+    }
+    let mut all_within = true;
+    for binary in binaries {
+        let bytes = match std::fs::metadata(&binary) {
+            Ok(metadata) => metadata.len(),
+            Err(err) => {
+                println!("size: {}: {err}", binary.display());
+                return ExitCode::FAILURE;
+            }
+        };
+        let (within, said) = verdict(bytes);
+        println!("size: {} {said}", binary.display());
+        all_within &= within;
+    }
+    if all_within {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

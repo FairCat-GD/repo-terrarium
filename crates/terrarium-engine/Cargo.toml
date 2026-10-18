@@ -28,5 +28,10 @@ tempfile.workspace = true
 name = "replay"
 harness = false
 
+# The live pipeline's budgets through `Live`, store and cache included, run the same way.
+[[bench]]
+name = "live"
+harness = false
+
 [lints]
 workspace = true

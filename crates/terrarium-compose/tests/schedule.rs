@@ -12,7 +12,7 @@ use terrarium_compose::catalog::Art;
 use terrarium_compose::clock::LocalClock;
 use terrarium_compose::composer::{Composer, OverlayInput};
 use terrarium_compose::compositor::composite;
-use terrarium_compose::frame::{Draw, NATIVE_HEIGHT, Viewport};
+use terrarium_compose::frame::{Draw, NATIVE_HEIGHT, Viewport, WIDEST};
 use terrarium_compose::order::{KeyedDraw, Subject};
 use terrarium_compose::preset;
 use terrarium_compose::schedule::Pacer;
@@ -199,8 +199,9 @@ fn no_region_holds_still_for_an_hour() {
     let mut scene = preset::bare(PresentationState::Dead, Vec::new());
     scene.weather = Weather::Storm;
     let lines = vec!["repo-terrarium".to_owned(), "main - storm".to_owned()];
-    // The scene alone, and the 735 columns a 2940 px screen shows at 4×.
-    let views = [Viewport::SCENE, Viewport::new(735)];
+    // The scene alone, the 735 columns a 2940 px screen shows at 4×, and the widest
+    // viewport the art covers.
+    let views = [Viewport::SCENE, Viewport::new(735), Viewport::new(WIDEST)];
     let cases = views.into_iter().flat_map(|viewport| {
         [
             LocalClock::noon(preset::DATE),

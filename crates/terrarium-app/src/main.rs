@@ -17,6 +17,7 @@ mod egui_host;
 mod egui_probe;
 mod feed;
 mod files;
+mod gpu;
 mod hotkey;
 mod hover;
 mod idle;
@@ -34,6 +35,7 @@ mod present;
 mod probe;
 mod raise;
 mod record_tests;
+mod redraw;
 mod repaint;
 mod replay;
 #[cfg(feature = "dev")]
@@ -67,6 +69,7 @@ fn main() -> ExitCode {
             run(&Mode::Live(Feed::Demo), None)
         }
         Ok(Command::Probe(kind)) => run(&Mode::Probe(kind), None),
+        Ok(Command::Soak(args)) => probe::soak::run(args),
         Ok(Command::Version) => {
             output::print(&format!("{}\n", copy::version_line()), copy::print_failed)
         }
@@ -93,7 +96,7 @@ pub(crate) fn now_secs() -> i64 {
         })
 }
 
-fn run(mode: &Mode, launch: Option<live::Launch>) -> ExitCode {
+pub(crate) fn run(mode: &Mode, launch: Option<live::Launch>) -> ExitCode {
     match strip::run(mode, launch) {
         Ok(()) => ExitCode::SUCCESS,
         Err(strip::StripError::Connect(repo, err)) => {

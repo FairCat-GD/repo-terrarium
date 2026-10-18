@@ -4,17 +4,20 @@ The headless live pipeline, run on a worker thread.
 
 ## Owns
 
-- **Connect** (`live`): `--repo <path>` creates the terrarium or relinks the one with the
+- **Connect** (`live::connect`): `--repo <path>` creates the terrarium or relinks the one with the
   repository's seed, derived as `record-tests` derives it; a plain run takes the one
   `repo.active` names, with its recorded default branch, unless it was disconnected.
 - **The lifecycle** (`lifecycle`): relinking a terrarium to a repository that moved (only the
   same repository), re-seeding (a new install salt, the cache dropped, the observations kept),
   importing an observations export, and disconnecting, with or without deleting the
   observations. The app runs each with the engine stopped.
-- **Refresh** (`live`): git, then the reports, then replay. Reports are read from the folder
-  connected, never from where the repository's own config places its worktree
-  (`core.worktree`). A report is read only once it has been still for 500 ms, and recorded only when its content changed since its format's last
-  observation. A default branch moved without fast-forwarding is recorded as a `ref_rewrite`, with what git
+- **Refresh** (`live`, with the reports in `live::reports`, the history and replay in
+  `live::replay`, and the jobs beside it in `live::events`): git, then the reports, then
+  replay. Reports are read from the folder connected, never from where the repository's own
+  config places its worktree (`core.worktree`). A report is read only once it has been still
+  for 500 ms, parsed only when its bytes differ from its format's last observation, and
+  recorded only then. A tag added, moved or removed retags the history read before rather than
+  reading it again. A default branch moved without fast-forwarding is recorded as a `ref_rewrite`, with what git
   read of the commits it took off the chain; a move made while the app was closed is read back
   from the object database at the next start.
   Replay resumes the cached state before the open hour when truth accepts it, and replays in

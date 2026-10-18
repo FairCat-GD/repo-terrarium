@@ -34,9 +34,13 @@ The `repo-terrarium` binary.
   path and takes the name once whole (`files`).
 - One app at a time (`instance`): a lock in the data directory, and the requests a second
   launch leaves there. Opening at login (`login`), through the platform's login item.
-- The `Presenter` that puts composed pixels on screen (`present`), with softbuffer as the first
-  backend. It presents on resize, re-placement and the OS's expose requests, and when the
-  living strip's pixels change; a still strip draws no frames.
+- The `Presenter` that puts composed pixels on screen (`present`): a Core Animation layer the
+  window server scales on macOS (`present::layer`, the default there), softbuffer with damage
+  rectangles (the default on Windows), and wgpu (`present::gpu`), whose device the egui
+  windows then share (`gpu`); a presenter that cannot start falls back to another. Why each
+  frame is asked for (`redraw`): on resize, re-placement, uncovering and the OS's own requests
+  it presents whole; for the living strip's schedule, only when its pixels change, so a still
+  strip draws no frames. `--probe soak` (`probe::soak`) measures what it all costs.
 - Hover in native pixels (`hover`), the hotkeys, their bindings and the raise's timer
   (`hotkey`, `raise`), and the right-click menu (`menu`).
 - The OS half of the strip (`pinning`): the level, placement and system events, through

@@ -38,6 +38,13 @@ const BENCHES: &[(&str, &str, &[&str], &str)] = &[
         &[],
         "reading and replaying a synthetic 10,000-commit history, events included, under 30 s",
     ),
+    (
+        "terrarium-engine",
+        "live",
+        &[],
+        "the same through the live pipeline: connecting under 30 s, again from the cache \
+         under 250 ms and its refresh under 5 s, a commit's refresh under 1 s, a tag's under 2 s",
+    ),
 ];
 
 pub fn run(root: &Path) -> ExitCode {

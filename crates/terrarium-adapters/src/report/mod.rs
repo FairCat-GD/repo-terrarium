@@ -213,6 +213,24 @@ impl Report {
         finish(root, format, files.to_vec(), load(root, format, files))
     }
 
+    /// [`Report::read`], unless its files hold exactly the bytes `seen` is the content hash of:
+    /// then none, and nothing is parsed. A report recorded once is never recorded again, so the
+    /// hash is all a refresh needs of an unchanged one.
+    pub fn read_unless(
+        root: &Path,
+        format: Format,
+        files: &[String],
+        seen: Option<&[u8; 32]>,
+    ) -> Option<Report> {
+        let loaded = load(root, format, files);
+        if let (Ok(loaded), Some(seen)) = (&loaded, seen)
+            && content_hash(loaded) == *seen
+        {
+            return None;
+        }
+        Some(finish(root, format, files.to_vec(), loaded))
+    }
+
     /// The report of `format` a tool printed rather than wrote, named `shown`, printed at `at`
     /// (Unix seconds): Knip's, when it runs. Its content hash covers `tag` as well, the commit
     /// it ran at, so the same output at another commit is another report.
