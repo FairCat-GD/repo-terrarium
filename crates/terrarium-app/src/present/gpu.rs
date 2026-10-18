@@ -103,9 +103,7 @@ impl Presenter for WgpuPresenter {
             | wgpu::CurrentSurfaceTexture::Occluded
             | wgpu::CurrentSurfaceTexture::Outdated => return Ok(Shown::Skipped),
             wgpu::CurrentSurfaceTexture::Lost => return Err(PresentError::Lost),
-            wgpu::CurrentSurfaceTexture::Validation => {
-                return Err(PresentError::Surface("validation".to_owned()));
-            }
+            wgpu::CurrentSurfaceTexture::Validation => return Err(PresentError::Validation),
         };
         let view = texture
             .texture

@@ -13,6 +13,7 @@ pub mod layer;
 use softbuffer::{Context, Rect, Surface};
 use terrarium_compose::frame::{NATIVE_HEIGHT, NativeImage, Rgba};
 use terrarium_compose::scale::{Damage, SizeMismatch, StripScale, upscale_damage_into};
+use terrarium_compose::schedule::MIN_FRAME_MS;
 use winit::window::Window;
 
 /// The ways the strip can be put on screen.
@@ -80,6 +81,8 @@ pub enum PresentError {
     NoFormat,
     /// The GPU device or its surface was lost, or reported an error.
     Lost,
+    /// The GPU's surface refused the frame it was asked for.
+    Validation,
     /// The window's view could not take a layer for the picture (macOS).
     #[cfg(target_os = "macos")]
     NoLayer,
@@ -213,10 +216,12 @@ pub struct FrameGate {
     changed: u64,
     /// Frames presented again, unchanged, because the OS or the strip's own move asked.
     again: u64,
-    /// When each changed frame of the last second went.
+    /// When each frame of the last second went.
     recent: VecDeque<Instant>,
-    /// The most changed frames that went in any one second: the rate I-10 caps.
+    /// The most frames that went in any one second, changed or again: the rate I-10 caps.
     busiest: u32,
+    /// When the last frame went.
+    last: Option<Instant>,
 }
 
 impl FrameGate {
@@ -230,11 +235,12 @@ impl FrameGate {
 
     /// A frame went at `now`: its pixels `changed`, or the same pixels again.
     pub fn presented(&mut self, now: Instant, changed: bool) {
-        if !changed {
+        self.last = Some(now);
+        if changed {
+            self.changed += 1;
+        } else {
             self.again += 1;
-            return;
         }
-        self.changed += 1;
         let second = Duration::from_secs(1);
         while self
             .recent
@@ -247,6 +253,13 @@ impl FrameGate {
         self.busiest = self
             .busiest
             .max(u32::try_from(self.recent.len()).unwrap_or(u32::MAX));
+    }
+
+    /// When a frame asked for at `now` may go, if not now: a fifteenth of a second after the
+    /// last (I-10).
+    pub fn paced(&self, now: Instant) -> Option<Instant> {
+        let next = self.last? + Duration::from_millis(MIN_FRAME_MS);
+        (now < next).then_some(next)
     }
 
     /// The OS had no surface for the frame: it is owed, as if the strip had been covered.
@@ -275,7 +288,7 @@ impl FrameGate {
         (self.changed, self.again)
     }
 
-    /// The most changed frames presented in any one second since launch.
+    /// The most frames presented in any one second since launch.
     pub fn busiest_second(&self) -> u32 {
         self.busiest
     }
@@ -321,6 +334,17 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_waits_a_fifteenth_of_a_second_after_the_last() {
+        let mut gate = FrameGate::default();
+        let start = Instant::now();
+        assert_eq!(gate.paced(start), None);
+        gate.presented(start, false);
+        let next = start + Duration::from_millis(67);
+        assert_eq!(gate.paced(start + Duration::from_millis(10)), Some(next));
+        assert_eq!(gate.paced(next), None);
+    }
+
+    #[test]
     fn a_skipped_frame_is_owed_once_the_surface_is_back() {
         let mut gate = FrameGate::default();
         gate.skipped();
@@ -332,21 +356,21 @@ mod tests {
         let mut gate = FrameGate::default();
         let start = Instant::now();
         let at = |ms| start + Duration::from_millis(ms);
-        // Fifteen changes 67 ms apart; three frames again inside 100 ms count apart.
+        // Fifteen changes 67 ms apart; three frames again inside them count in the second too.
         for i in 0..15 {
             gate.presented(at(i * 67), true);
         }
         assert_eq!(gate.busiest_second(), 15);
         for i in 0..3 {
-            gate.presented(at(500 + i * 30), false);
+            gate.presented(at(1_000 + i * 30), false);
         }
         assert_eq!(gate.counts(), (15, 3));
-        assert_eq!(gate.busiest_second(), 15);
-        // Sixteen inside one second is a sixteen.
-        for i in 0..16 {
-            gate.presented(at(10_000 + i * 60), true);
+        assert_eq!(gate.busiest_second(), 17);
+        // Eighteen inside one second is an eighteen.
+        for i in 0..18 {
+            gate.presented(at(10_000 + i * 50), true);
         }
-        assert_eq!(gate.busiest_second(), 16);
+        assert_eq!(gate.busiest_second(), 18);
     }
 
     fn image(colour: u8) -> NativeImage {

@@ -7,11 +7,15 @@
 //! (`WM_PAINT`) in with them, so the causes are kept together until that redraw takes them all.
 //! A redraw nobody here asked for is the OS's own, and shows the pixels too.
 
+use std::time::Instant;
+
 /// The causes of the redraw on its way.
 #[derive(Debug, Default)]
 pub struct Redraws {
     scheduled: bool,
     forced: bool,
+    /// A frame the pace held back, owed whole at this moment.
+    owed: Option<Instant>,
 }
 
 /// What a redraw does.
@@ -36,6 +40,27 @@ impl Redraws {
     /// The strip asked for itself: opened, placed, resized or uncovered.
     pub fn force(&mut self) {
         self.forced = true;
+    }
+
+    /// A frame came sooner than the pace allows (I-10): it goes whole `at`, whatever the
+    /// pixels are then.
+    pub fn owe(&mut self, at: Instant) {
+        self.forced = true;
+        self.owed = Some(at);
+    }
+
+    /// When a frame held back is owed.
+    pub fn owed(&self) -> Option<Instant> {
+        self.owed
+    }
+
+    /// Whether a frame held back is owed by `now`: if so, it is asked for once.
+    pub fn take_owed(&mut self, now: Instant) -> bool {
+        let due = self.owed.is_some_and(|at| at <= now);
+        if due {
+            self.owed = None;
+        }
+        due
     }
 
     /// A redraw arrived with the pixels `changed` or not: what it does. It takes every cause
@@ -78,6 +103,19 @@ mod tests {
         // The OS's own redraw, which nobody here asked for, shows them whole too.
         assert_eq!(redraws.take(false), Present::Again);
         assert_eq!(redraws.take(true), Present::Changed { whole: true });
+    }
+
+    #[test]
+    fn a_frame_the_pace_held_back_goes_whole_when_it_is_owed() {
+        let mut redraws = Redraws::default();
+        let start = Instant::now();
+        let later = start + std::time::Duration::from_millis(67);
+        redraws.owe(later);
+        assert_eq!(redraws.owed(), Some(later));
+        assert!(!redraws.take_owed(start));
+        assert!(redraws.take_owed(later));
+        assert!(!redraws.take_owed(later), "asked for once");
+        assert_eq!(redraws.take(false), Present::Again);
     }
 
     #[test]

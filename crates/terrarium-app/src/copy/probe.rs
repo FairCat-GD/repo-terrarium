@@ -7,7 +7,7 @@ use std::path::Path;
 
 use terrarium_platform::appbar::TaskbarAction;
 
-use super::{BINARY_NAME, VERSION, hotkey};
+use super::{BINARY_NAME, VERSION, hotkey, megabytes};
 use crate::hotkey::{Platform, Which};
 use crate::hover::NativePoint;
 use crate::pinning::{
@@ -976,14 +976,13 @@ pub fn soak_intro(minutes: u32, json: &Path, text: &Path) -> String {
     )
 }
 
-pub fn soak_data_unavailable(err: &impl Display) -> String {
-    format!("{BINARY_NAME}: the soak's own data folder could not be made: {err}")
+/// Another app holds the soak's own data folder, which nothing else should.
+pub fn soak_data_taken() -> String {
+    format!("{BINARY_NAME}: the soak's own data folder is held by another app")
 }
 
-/// Decimal megabytes, to a tenth, as N-02's budget reads them.
-fn megabytes(bytes: u64) -> String {
-    let tenths = bytes / 100_000;
-    format!("{}.{} MB", tenths / 10, tenths % 10)
+pub fn soak_data_unavailable(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the soak's own data folder could not be made: {err}")
 }
 
 fn soak_memory(name: &str, steady: Option<u64>, peak: Option<u64>) -> Option<String> {
@@ -1035,14 +1034,14 @@ fn soak_summary(summary: &Summary) -> String {
     }
     let _ = write!(
         out,
-        "  frames: {} for a change, {:.2} a second, at most {} in any one second; {} again \
-         unchanged\n  \
+        "  frames: {} for a change, {:.2} a second; {} again unchanged; at most {} in any one \
+         second\n  \
          compositions: {:.2} a second\n  loop wakes: {:.1} a minute\n  covered: {:.1}% of the \
          time\n",
         summary.frames_changed,
         summary.frames_per_second,
-        summary.busiest_second,
         summary.frames_again,
+        summary.busiest_second,
         summary.compositions_per_second,
         summary.wakes_per_minute,
         summary.covered_percent

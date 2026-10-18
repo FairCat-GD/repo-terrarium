@@ -785,6 +785,13 @@ const PROBE_KINDS: &[&str] = if cfg!(feature = "dev") {
     &["pinning", "soak"]
 };
 
+/// Decimal megabytes, to a tenth, as N-02's budget reads them: every memory figure the app
+/// shows.
+fn megabytes(bytes: u64) -> String {
+    let tenths = bytes / 100_000;
+    format!("{}.{} MB", tenths / 10, tenths % 10)
+}
+
 pub fn window_failed(err: &impl Display) -> String {
     format!("{BINARY_NAME}: the strip could not open: {err}")
 }
@@ -843,6 +850,7 @@ impl Display for PresentError {
             Self::Gpu(err) => write!(f, "{err}"),
             Self::NoFormat => f.write_str("the GPU's surface cannot hold the pixels as they are"),
             Self::Lost => f.write_str("the GPU device was lost"),
+            Self::Validation => f.write_str("the GPU's surface refused the frame"),
             #[cfg(target_os = "macos")]
             Self::NoLayer => f.write_str("the window could not take a layer for the picture"),
             #[cfg(target_os = "macos")]
@@ -1719,7 +1727,7 @@ pub mod debug {
     use terrarium_truth::PresentationState;
     use terrarium_truth::scene::{EventKind, Light, Weather};
 
-    use super::{BINARY_NAME, PRODUCT_NAME, VERSION};
+    use super::{BINARY_NAME, PRODUCT_NAME, VERSION, megabytes};
     use crate::debug::Readout;
     use crate::egui_probe::{Phase, Sample};
 
@@ -1818,10 +1826,6 @@ pub mod debug {
         )]
         let minutes = minutes.max(0.0) as u32;
         format!("{:02}:{:02}", minutes / 60, minutes % 60)
-    }
-
-    fn megabytes(bytes: u64) -> String {
-        format!("{}.{} MB", bytes >> 20, ((bytes & 0xF_FFFF) * 10) >> 20)
     }
 
     pub fn readout(readout: &Readout) -> Vec<String> {

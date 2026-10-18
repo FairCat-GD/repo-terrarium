@@ -6,7 +6,7 @@
 //! device, whose first use alone costs some 80 MB on Apple silicon.
 
 use objc2::rc::Retained;
-use objc2_app_kit::{NSColorSpace, NSView};
+use objc2_app_kit::NSColorSpace;
 use objc2_core_foundation::{CFData, CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColor, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
@@ -29,9 +29,10 @@ pub struct ImageArea {
 
 /// A layer over a window's view that shows the images it is given.
 pub struct ImageLayer {
-    view: Retained<NSView>,
     layer: Retained<CALayer>,
     space: CFRetained<CGColorSpace>,
+    /// Whether the view's layer counts y from the top, as winit's flipped view does.
+    flipped: bool,
 }
 
 impl ImageLayer {
@@ -57,6 +58,10 @@ impl ImageLayer {
         let [r, g, b, a] = letterbox.map(|channel| f64::from(channel) / 255.0);
         root.setBackgroundColor(Some(&CGColor::new_srgb(r, g, b, a)));
         root.setMasksToBounds(true);
+        // A presenter that could not start may have left a layer of its own here (wgpu's
+        // Metal layer, made with its surface): nothing is drawn over the picture but it.
+        // SAFETY: no sublayers is a valid value; the view's own layer is not among them.
+        unsafe { root.setSublayers(None) };
         let layer = CALayer::new();
         // SAFETY: the filter's name is a constant `NSString` the framework defines, read only.
         let nearest = unsafe { kCAFilterNearest };
@@ -69,12 +74,34 @@ impl ImageLayer {
         // From the top left, as the strip's pixels are counted.
         layer.setAnchorPoint(CGPoint::new(0.0, 0.0));
         root.addSublayer(&layer);
-        Ok(ImageLayer { view, layer, space })
+        Ok(ImageLayer {
+            layer,
+            space,
+            flipped: root.isGeometryFlipped(),
+        })
+    }
+
+    /// Places the images over `area` of a window `window_height` physical pixels tall, at
+    /// `backing` pixels a point: only when the strip is placed or rescaled, not every frame.
+    pub fn place(&self, area: ImageArea, window_height: u32, backing: f64) {
+        let points = |pixels: u32| f64::from(pixels) / backing;
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        self.layer.setContentsScale(backing);
+        self.layer.setFrame(CGRect::new(
+            CGPoint::new(
+                points(area.x),
+                top(self.flipped, points(window_height), points(area.height)),
+            ),
+            CGSize::new(points(area.width), points(area.height)),
+        ));
+        CATransaction::commit();
     }
 
     /// Shows `rgba`, `width` by `height` pixels in rows of red, green, blue and an ignored
-    /// fourth byte, over `area` of the window. False if the OS could not make an image of it.
-    pub fn show(&self, rgba: &[u8], width: usize, height: usize, area: ImageArea) -> bool {
+    /// fourth byte, where [`ImageLayer::place`] put it. False if the OS could not make an
+    /// image of it.
+    pub fn show(&self, rgba: &[u8], width: usize, height: usize) -> bool {
         let data = CFData::from_bytes(rgba);
         let Some(provider) = CGDataProvider::with_cf_data(Some(&data)) else {
             return false;
@@ -101,20 +128,9 @@ impl ImageLayer {
         let Some(image) = image else {
             return false;
         };
-        let backing = self
-            .view
-            .window()
-            .map_or(1.0, |window| window.backingScaleFactor());
-        let points = |pixels: u32| f64::from(pixels) / backing;
-        let top = self.view.bounds().size.height;
         // Without actions: a new picture replaces the last at once, with no fade.
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        self.layer.setContentsScale(backing);
-        self.layer.setFrame(CGRect::new(
-            CGPoint::new(points(area.x), top - points(area.height)),
-            CGSize::new(points(area.width), points(area.height)),
-        ));
         // SAFETY: a `CGImage` is a valid `contents` for a layer.
         unsafe { self.layer.setContents(Some(image.as_ref())) };
         CATransaction::commit();
@@ -125,5 +141,23 @@ impl ImageLayer {
 impl Drop for ImageLayer {
     fn drop(&mut self) {
         self.layer.removeFromSuperlayer();
+    }
+}
+
+/// Where the image's top lies, in points, in a layer `height` tall: the top itself when y
+/// counts down from it, `height − image` when y counts up from the bottom.
+fn top(flipped: bool, height: f64, image: f64) -> f64 {
+    if flipped { 0.0 } else { height - image }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_image_starts_at_the_window_s_top_however_y_is_counted() {
+        // A window still 200 points tall around a strip 148 tall.
+        assert!(top(true, 200.0, 148.0).abs() < f64::EPSILON);
+        assert!((top(false, 200.0, 148.0) - 52.0).abs() < f64::EPSILON);
     }
 }

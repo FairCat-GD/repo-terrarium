@@ -110,6 +110,9 @@ enum Scene {
         soil: SoilPanel,
         /// While paused, what the panel and the hover labels word, held with the scene.
         held: Option<Box<Held>>,
+        /// Dim mode held off, whatever the settings say: a soak measures the bright strip,
+        /// which moves four times as much.
+        bright: bool,
     },
 }
 
@@ -150,8 +153,9 @@ impl Scene {
             ),
             None => (Feeder::new(feed, Millis(0), &os), preset::SALT),
         };
+        let bright = matches!(mode, Mode::Soak(_));
         let mut feeder = Box::new(feeder);
-        feeder.set_times(prefs.day_night(), prefs.dim_after(), Millis(0), &os);
+        feeder.set_times(prefs.day_night(), dim_after(prefs, bright), Millis(0), &os);
         Scene::Living {
             living: Box::new(Living::new(
                 feeder.scene(),
@@ -163,6 +167,7 @@ impl Scene {
             origin: Instant::now(),
             soil: SoilPanel::default(),
             held: None,
+            bright,
         }
     }
 
@@ -175,6 +180,7 @@ impl Scene {
             origin,
             soil,
             held,
+            ..
         } = self
         {
             let at = Self::millis(*origin, now);
@@ -222,6 +228,7 @@ impl Scene {
             origin,
             soil,
             held,
+            ..
         } = self
         {
             let at = Self::millis(*origin, now);
@@ -246,12 +253,18 @@ impl Scene {
             feeder,
             origin,
             soil,
+            bright,
             ..
         } = self
         {
             let at = Self::millis(*origin, now);
             let dim = feeder.dim();
-            feeder.set_times(prefs.day_night(), prefs.dim_after(), at, &Os::read());
+            feeder.set_times(
+                prefs.day_night(),
+                dim_after(prefs, *bright),
+                at,
+                &Os::read(),
+            );
             Self::dimmed(feeder, soil, dim);
             living.update(feeder.scene(), &feeder.overlay(), at);
         }
@@ -266,6 +279,7 @@ impl Scene {
             origin,
             soil,
             held,
+            ..
         } = self
         else {
             return;
@@ -349,17 +363,13 @@ impl Scene {
         }
     }
 
-    /// Brings the scene to `now` if the living strip is due to compose; true if its pixels
-    /// changed. The pace holds for every redraw, the OS's own included (I-10): one that comes
-    /// sooner shows the picture the strip holds.
+    /// Brings the scene to `now`; true if its pixels changed. A redraw sooner than the living
+    /// strip is due shows the picture it holds (I-10).
     fn advance(&mut self, now: Instant) -> bool {
         self.look(now, false);
         match self {
             Scene::Still { .. } => false,
-            Scene::Living { living, origin, .. } => {
-                let at = Self::millis(*origin, now);
-                living.due().is_some_and(|due| due <= at) && living.advance(at)
-            }
+            Scene::Living { living, origin, .. } => living.advance(Self::millis(*origin, now)),
         }
     }
 
@@ -404,6 +414,7 @@ impl Scene {
             origin,
             soil,
             held,
+            ..
         } = self
         {
             let at = Self::millis(*origin, now);
@@ -470,6 +481,15 @@ impl Scene {
             Scene::Still { .. } => 0,
             Scene::Living { living, .. } => living.compositions(),
         }
+    }
+}
+
+/// How long without input the strip dims after: as `prefs` say, or never while held `bright`.
+fn dim_after(prefs: &Prefs, bright: bool) -> Duration {
+    if bright {
+        Duration::MAX
+    } else {
+        prefs.dim_after()
     }
 }
 
@@ -897,15 +917,10 @@ impl Strip {
         prefs: Prefs,
     ) -> Self {
         let level = probe.as_ref().map_or(DEFAULT_LEVEL, Probe::level);
-        let mut prefs = prefs;
         let setup = match mode {
             Mode::Soak(setup) => Some(*setup),
             _ => None,
         };
-        if setup.is_some() {
-            // Dim mode held off: the bright strip, which moves four times as much, is measured.
-            prefs.dim_after_minutes = u32::MAX;
-        }
         let scene = match repo.as_ref().map(|repo| repo.connected.as_ref()) {
             // A run with a data directory and nothing connected shows no strip.
             Some(None) => None,
@@ -1090,7 +1105,7 @@ impl Strip {
         eprintln!("{}", copy::presenter_fell_back(&PresentError::Lost));
         self.backend = Backend::DEFAULT;
         self.gpu = None;
-        self.shell.gpu = None;
+        self.shell.lose_gpu(event_loop);
         self.close_view();
         self.open_view(event_loop);
     }
@@ -1259,7 +1274,14 @@ impl Strip {
                 let fitted = scene.fit(view.scale.viewport(), now);
                 let changed = scene.advance(now) || fitted;
                 let present = self.redraws.take(changed);
-                if present != Present::No && self.gate.should_present() {
+                // Changed pixels come at the composer's pace already; the same pixels again,
+                // sooner than a frame may follow the last, go then, whole (I-10).
+                let paced = (present == Present::Again)
+                    .then(|| self.gate.paced(now))
+                    .flatten();
+                if let Some(at) = paced {
+                    self.redraws.owe(at);
+                } else if present != Present::No && self.gate.should_present() {
                     let whole = present != (Present::Changed { whole: false });
                     match view.presenter.present(scene.pixels(), &view.scale, whole) {
                         Ok(Shown::Presented) => {
@@ -2047,6 +2069,11 @@ impl ApplicationHandler<UserEvent> for Strip {
         #[cfg(feature = "dev")]
         self.dev_woke(event_loop, now);
         self.soak_woke(event_loop, now);
+        if self.redraws.take_owed(now)
+            && let Some(view) = &self.view
+        {
+            view.window.request_redraw();
+        }
         let covered = self.gate.occluded();
         if let Some(scene) = self.scene.as_mut().filter(|_| !covered) {
             scene.look(now, false);
@@ -2266,7 +2293,8 @@ impl ApplicationHandler<UserEvent> for Strip {
         #[cfg(not(feature = "dev"))]
         let dev = None;
         let soak = self.soak.as_ref().and_then(Soak::due);
-        let deadline = [self.raise.deadline(), living, windows, dev, soak]
+        let owed = self.view.as_ref().and(self.redraws.owed());
+        let deadline = [self.raise.deadline(), living, windows, dev, soak, owed]
             .into_iter()
             .flatten()
             .min();
@@ -2410,6 +2438,21 @@ mod tests {
     use super::*;
     use crate::instance::Claim;
     use crate::shell::Intent;
+
+    #[test]
+    fn a_soak_holds_dim_mode_off_and_leaves_the_settings_as_they_are() {
+        let prefs = Prefs::default();
+        assert_eq!(dim_after(&prefs, true), Duration::MAX);
+        assert_eq!(dim_after(&prefs, false), prefs.dim_after());
+        let setup = soak::Setup {
+            minutes: 1,
+            presenter: None,
+            edge: None,
+        };
+        let scene = Scene::new(&Mode::Soak(setup), None, &prefs);
+        assert!(matches!(scene, Scene::Living { bright: true, .. }));
+        assert_eq!(prefs.dim_after_minutes, Prefs::default().dim_after_minutes);
+    }
 
     #[test]
     fn the_machine_waking_wakes_the_engine_and_the_screens_waking_only_takes_the_time() {

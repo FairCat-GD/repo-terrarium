@@ -32,12 +32,23 @@ pub struct Living {
     /// The frame `image` was composited from, exactly: only what a new frame changes of it
     /// is composited again. None while a handover's dissolve lies over the picture.
     shown: Option<Frame>,
+    /// Where `spare` may hold other pixels than `image`; none where it holds the same.
+    stale: Option<Area>,
     /// When it next wants composing, worked out once per composition or update: the loop asks
     /// on every event it handles.
     due: Option<Millis>,
     compositions: u64,
     /// A re-seed's handover: the strip as it stood, fading out over the new layout.
     handover: Option<Handover>,
+}
+
+/// The rows and columns of `area` inside `whole`.
+fn span(area: Area, whole: Area) -> (std::ops::Range<u32>, std::ops::Range<usize>) {
+    let clamp = |at: i32, end: i32| at.clamp(0, end).cast_unsigned();
+    let rows = clamp(area.y, whole.h)..clamp(area.y.saturating_add(area.h), whole.h);
+    let columns =
+        clamp(area.x, whole.w) as usize..clamp(area.x.saturating_add(area.w), whole.w) as usize;
+    (rows, columns)
 }
 
 /// The picture a re-seed left, and its opacity over the new one's.
@@ -73,6 +84,7 @@ impl Living {
             image: blank.clone(),
             spare: blank,
             shown: None,
+            stale: None,
             due: None,
             compositions: 0,
             handover: None,
@@ -178,10 +190,11 @@ impl Living {
         self.due
     }
 
-    /// Brings the strip to `now`; true if its pixels changed. Every call counts against the
-    /// pace, so the strip composes at most 15 times a second whatever it shows.
+    /// Brings the strip to `now` if it is due to compose; true if its pixels changed. The pace
+    /// holds for every call, the OS's redraws included (I-10): one sooner composes nothing, and
+    /// the picture held stands.
     pub fn advance(&mut self, now: Millis) -> bool {
-        self.compose(now)
+        self.due.is_some_and(|due| due <= now) && self.compose(now)
     }
 
     pub fn image(&self) -> &NativeImage {
@@ -201,6 +214,12 @@ impl Living {
         self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
         self.compose(now);
         self.spare = NativeImage::new(viewport, [0, 0, 0, u8::MAX]);
+        self.stale = Some(Area {
+            x: 0,
+            y: 0,
+            w: i32::try_from(viewport.width()).unwrap_or(i32::MAX),
+            h: i32::try_from(NATIVE_HEIGHT).unwrap_or(i32::MAX),
+        });
         true
     }
 
@@ -228,11 +247,17 @@ impl Living {
             _ => Some(whole),
         };
         let changed = area.is_some_and(|area| {
-            if area != whole {
-                for y in 0..NATIVE_HEIGHT {
-                    self.spare.row_mut(y).copy_from_slice(self.image.row(y));
+            // Only a frame of the same width is composited in part, over the picture held;
+            // the spare already holds it but where the two last differed.
+            let partial = area != whole && self.image.width() == self.spare.width();
+            if partial && let Some(stale) = self.stale {
+                let (rows, columns) = span(stale, whole);
+                for y in rows {
+                    self.spare.row_mut(y)[columns.clone()]
+                        .copy_from_slice(&self.image.row(y)[columns.clone()]);
                 }
             }
+            let area = if partial { area } else { whole };
             composite_area(self.art, &frame, &mut self.spare, area);
             if let Some(handover) = &self.handover {
                 let opacity = handover.fade.value(now);
@@ -242,26 +267,17 @@ impl Living {
                     dissolve(&mut self.spare, &handover.from, opacity);
                 }
             }
-            // Outside the area the two hold the same pixels, but at another width.
-            let changed = if area == whole || self.image.width() != self.spare.width() {
-                self.image != self.spare
-            } else {
-                let rows = area.y.max(0).cast_unsigned()
-                    ..area
-                        .y
-                        .saturating_add(area.h)
-                        .clamp(0, whole.h)
-                        .cast_unsigned();
-                let columns = area.x.clamp(0, whole.w).cast_unsigned() as usize
-                    ..area
-                        .x
-                        .saturating_add(area.w)
-                        .clamp(0, whole.w)
-                        .cast_unsigned() as usize;
+            // Outside the area the two hold the same pixels.
+            let changed = if partial {
+                let (rows, columns) = span(area, whole);
                 rows.into_iter().any(|y| {
                     self.image.row(y)[columns.clone()] != self.spare.row(y)[columns.clone()]
                 })
+            } else {
+                self.image != self.spare
             };
+            // Swapped, the spare holds the picture before, which differs only in the area.
+            self.stale = changed.then_some(area);
             if changed {
                 std::mem::swap(&mut self.image, &mut self.spare);
             }
@@ -319,7 +335,7 @@ mod tests {
                 break;
             }
             wakes.push(due);
-            frames += usize::from(living.advance(due));
+            frames += usize::from(living.compose(due));
         }
         for (i, &wake) in wakes.iter().enumerate() {
             let within = wakes[i..]
@@ -355,7 +371,7 @@ mod tests {
                 let scene = preset::scene("thriving").unwrap();
                 living.reseed(&scene, &overlay, InstallSalt::new([9; 16]), due);
             }
-            living.advance(due);
+            living.compose(due);
             if living.handover.is_none() {
                 let mix = living.composer.palette_mix(due);
                 let frame =
@@ -371,6 +387,18 @@ mod tests {
     }
 
     #[test]
+    fn the_pace_holds_whoever_asks_for_a_frame() {
+        let mut living = thriving_at(LocalClock::noon(preset::DATE));
+        let due = living.due().expect("the strip lives");
+        let compositions = living.compositions();
+        // Asked sooner, as by the OS's own redraw, it composes nothing.
+        assert!(!living.advance(Millis(due.0 - 1)));
+        assert_eq!(living.compositions(), compositions);
+        living.advance(due);
+        assert_eq!(living.compositions(), compositions + 1);
+    }
+
+    #[test]
     fn between_changes_nothing_changes() {
         let mut living = thriving_at(LocalClock::noon(preset::DATE));
         for _ in 0..200 {
@@ -382,11 +410,11 @@ mod tests {
             if change.0 > living.at.0 + 1 {
                 let mid = Millis(living.at.0 + (change.0 - living.at.0) / 2);
                 assert!(
-                    !living.advance(mid),
+                    !living.compose(mid),
                     "a change at {mid:?} before {change:?}"
                 );
             }
-            living.advance(due);
+            living.compose(due);
         }
     }
 
@@ -403,7 +431,7 @@ mod tests {
     fn an_update_never_changes_the_picture_at_its_own_moment() {
         let mut living = thriving_at(LocalClock::noon(preset::DATE));
         let now = Millis(90_000);
-        living.advance(now);
+        living.compose(now);
         let before = living.image().clone();
         let night = OverlayInput {
             dim: true,
@@ -413,7 +441,7 @@ mod tests {
             )
         };
         living.update(&preset::scene("dead").unwrap(), &night, now);
-        assert!(!living.advance(now), "the update cut the picture");
+        assert!(!living.compose(now), "the update cut the picture");
         assert_eq!(living.image(), &before);
         assert!(living.due().is_some_and(|due| due > now));
     }
@@ -422,7 +450,7 @@ mod tests {
     fn a_reseed_dissolves_into_the_new_layout_and_never_cuts() {
         let mut living = thriving_at(LocalClock::noon(preset::DATE));
         let now = Millis(120_000);
-        living.advance(now);
+        living.compose(now);
         let before = living.image().clone();
         let overlay = OverlayInput::new(
             vec![copy::sample_label().to_owned()],
@@ -434,7 +462,7 @@ mod tests {
             living.composer.settled_at() <= now,
             "the new layout stands whole from the start"
         );
-        assert!(!living.advance(now), "the re-seed cut the picture");
+        assert!(!living.compose(now), "the re-seed cut the picture");
         assert_eq!(living.image(), &before);
         // It dissolves at the strip's pace, and the old picture is gone by its end.
         let end = now.plus(RESTYLE_MS);
@@ -442,7 +470,7 @@ mod tests {
         let mut mid = None;
         while let Some(due) = living.due().filter(|&due| due <= end) {
             wakes.push(due);
-            living.advance(due);
+            living.compose(due);
             if mid.is_none() && due >= now.plus(RESTYLE_MS / 2) {
                 mid = Some(living.image().clone());
             }
@@ -452,7 +480,7 @@ mod tests {
             "{} wakes in six seconds",
             wakes.len()
         );
-        living.advance(end);
+        living.compose(end);
         assert!(living.handover.is_none(), "the handover ended");
         let mix = living.composer.palette_mix(end);
         let frame = living
@@ -482,20 +510,20 @@ mod tests {
             Millis(60_000),
         );
         let now = Millis(90_000);
-        living.advance(now);
+        living.compose(now);
         living.update(&scene, &overlay(copy::label_paused(), true), now);
-        assert!(!living.advance(now), "the pause cut the picture");
+        assert!(!living.compose(now), "the pause cut the picture");
         // The label crosses to its one line, then nothing moves.
         let mut last = now;
         while let Some(due) = living.due() {
             assert!(due.0 < now.0 + 60_000, "still asking at {due:?}");
-            living.advance(due);
+            living.compose(due);
             last = due;
         }
         let held = living.image().clone();
         assert!(last > now);
         assert!(
-            !living.advance(Millis(now.0 + 600_000)),
+            !living.compose(Millis(now.0 + 600_000)),
             "ten minutes on, nothing changed"
         );
         assert_eq!(living.image(), &held);
@@ -514,13 +542,13 @@ mod tests {
         };
         let scene = preset::scene("thriving").unwrap();
         living.update(&scene, &paused, now);
-        living.advance(now);
+        living.compose(now);
         let salt = InstallSalt::new([7; 16]);
         living.reseed(&scene, &paused, salt, now);
-        assert!(!living.advance(now), "the re-seed cut the picture");
+        assert!(!living.compose(now), "the re-seed cut the picture");
         // Once the old picture has dissolved, the new layout stands whole and still.
         let end = now.plus(RESTYLE_MS);
-        living.advance(end);
+        living.compose(end);
         assert!(living.handover.is_none());
         let settled = living.image().clone();
         let mut whole = Composer::new(living.table, salt);
@@ -535,7 +563,7 @@ mod tests {
             whole.depicted(whole.settled_at()),
             "the new layout stands whole"
         );
-        assert!(!living.advance(Millis(end.0 + 300_000)), "it stands still");
+        assert!(!living.compose(Millis(end.0 + 300_000)), "it stands still");
         assert_eq!(living.image(), &settled);
     }
 
@@ -545,7 +573,7 @@ mod tests {
         // brings the true clock, and the palette eases there over the clock fix, not at once.
         let mut living = thriving_at(LocalClock::noon(preset::DATE));
         let now = Millis(60_000);
-        living.advance(now);
+        living.compose(now);
         assert_eq!(living.composer.palette_mix(now), 0);
         let overlay = OverlayInput::new(
             vec![copy::sample_label().to_owned()],

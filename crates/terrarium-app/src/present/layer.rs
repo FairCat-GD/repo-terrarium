@@ -16,7 +16,10 @@ use super::{Backend, PresentError, Presenter, Shown};
 pub struct LayerPresenter {
     layer: ImageLayer,
     /// The window the layer is on, kept while it is.
-    _window: Arc<Window>,
+    window: Arc<Window>,
+    /// Where the layer was last placed, with the window's height and scale then: it is placed
+    /// again only when one of them changes, not every frame.
+    placed: Option<(ImageArea, u32, f64)>,
 }
 
 impl LayerPresenter {
@@ -24,7 +27,8 @@ impl LayerPresenter {
         let layer = ImageLayer::attach(&**window, LETTERBOX).map_err(|_| PresentError::NoLayer)?;
         Ok(Self {
             layer,
-            _window: Arc::clone(window),
+            window: Arc::clone(window),
+            placed: None,
         })
     }
 }
@@ -37,11 +41,20 @@ impl Presenter for LayerPresenter {
         scale: &StripScale,
         _whole: bool,
     ) -> Result<Shown, PresentError> {
+        let placement = (
+            area(frame, scale),
+            self.window.inner_size().height,
+            self.window.scale_factor(),
+        );
+        if self.placed != Some(placement) {
+            let (area, height, backing) = placement;
+            self.layer.place(area, height, backing);
+            self.placed = Some(placement);
+        }
         let shown = self.layer.show(
             frame.pixels().as_flattened(),
             frame.width() as usize,
             NATIVE_HEIGHT as usize,
-            area(frame, scale),
         );
         if shown {
             Ok(Shown::Presented)

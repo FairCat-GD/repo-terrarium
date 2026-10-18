@@ -72,10 +72,7 @@ pub fn run(args: SoakArgs) -> ExitCode {
     let instance = match Instance::claim(&data) {
         Ok(Claim::First(instance)) => instance,
         Ok(Claim::Running) => {
-            eprintln!(
-                "{}",
-                copy::soak_data_unavailable(&io::Error::other("locked"))
-            );
+            eprintln!("{}", copy::soak_data_taken());
             return ExitCode::FAILURE;
         }
         Err(err) => {
@@ -165,7 +162,7 @@ pub struct Summary {
     pub frames_again: u64,
     /// Changed frames a second.
     pub frames_per_second: f64,
-    /// The most changed frames presented in any one second of the whole run.
+    /// The most frames presented in any one second of the whole run, changed or again.
     pub busiest_second: u32,
     pub compositions_per_second: f64,
     pub wakes_per_minute: f64,

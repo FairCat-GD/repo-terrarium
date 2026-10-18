@@ -95,6 +95,8 @@ pub struct Shell {
     host: Option<EguiHost>,
     /// The strip's device, while it draws with one: the windows draw with it too.
     pub gpu: Option<Gpu>,
+    /// Whether the host draws on the strip's device, not one of its own.
+    on_strip_gpu: bool,
     /// The app the person was in when the first window opened.
     previous: Option<pinning::PreviousApp>,
     pub connect: Option<ConnectForm>,
@@ -110,6 +112,9 @@ impl Shell {
         if self.host.is_none() {
             self.previous = pinning::PreviousApp::frontmost();
         }
+        if self.host.is_none() {
+            self.on_strip_gpu = self.gpu.is_some();
+        }
         let gpu = self.gpu.as_ref();
         let host = self.host.get_or_insert_with(|| EguiHost::new(gpu));
         match host.open(event_loop, kind) {
@@ -120,6 +125,26 @@ impl Shell {
                 false
             }
         }
+    }
+
+    /// The strip's GPU device was lost: windows drawn on it close and open again on a device
+    /// of their own, their forms as they were.
+    pub fn lose_gpu(&mut self, event_loop: &ActiveEventLoop) {
+        self.gpu = None;
+        if !self.on_strip_gpu {
+            return;
+        }
+        let Some(host) = self.host.take() else {
+            return;
+        };
+        let kinds = host.kinds();
+        drop(host);
+        // The app the person was in stays the one the keyboard goes back to.
+        let previous = self.previous.take();
+        for kind in kinds {
+            self.open(event_loop, kind);
+        }
+        self.previous = previous;
     }
 
     pub fn close(&mut self, kind: WindowKind) {

@@ -189,6 +189,11 @@ impl EguiHost {
         self.windows.is_empty()
     }
 
+    /// The kinds of window open.
+    pub fn kinds(&self) -> Vec<WindowKind> {
+        self.windows.iter().map(|w| w.kind).collect()
+    }
+
     /// Handles `event` for the window `id`, painting it with `draw` when asked to.
     pub fn window_event(
         &mut self,
