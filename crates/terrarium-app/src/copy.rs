@@ -1588,13 +1588,11 @@ fn folder_reason() -> String {
     )
 }
 
-/// What the Windows installer and uninstaller say when the strip will not quit, so the files
-/// it holds cannot be replaced or removed.
+/// What the Windows installer and uninstaller say when the app will not quit, so the files it
+/// holds cannot be replaced or removed. It may be running with no strip (a demo, a probe), so
+/// no particular menu is named.
 fn still_running() -> String {
-    format!(
-        "{PRODUCT_NAME} is still running. Quit it from the strip's menu (right-click the strip), \
-         then try again."
-    )
+    format!("{PRODUCT_NAME} is still running. Quit it, then try again.")
 }
 
 /// The words the installers carry (`--package-copy`), one `key<tab>value` line each, which

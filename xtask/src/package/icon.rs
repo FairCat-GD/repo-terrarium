@@ -62,10 +62,13 @@ pub fn load(root: &Path) -> Result<Icon, String> {
     })
 }
 
-/// A PNG of any colour type as RGBA: palettes and transparency are expanded.
+/// A PNG of any colour type as RGBA: palettes and transparency are expanded, and 16-bit samples
+/// kept to their high byte, as an editor's 16-bit export of 8-bit art holds them.
 fn decode(bytes: &[u8]) -> Result<Image, String> {
     let mut decoder = Decoder::new(Cursor::new(bytes));
-    decoder.set_transformations(Transformations::EXPAND | Transformations::ALPHA);
+    decoder.set_transformations(
+        Transformations::EXPAND | Transformations::ALPHA | Transformations::STRIP_16,
+    );
     let mut reader = decoder.read_info().map_err(|err| err.to_string())?;
     let mut pixels = vec![0; reader.output_buffer_size().ok_or("is too large")?];
     let frame = reader
@@ -346,6 +349,20 @@ mod tests {
     fn a_png_reads_back_as_its_pixels() {
         let image = filled(16);
         assert_eq!(decode(&png(&image)), Ok(image));
+    }
+
+    #[test]
+    fn a_16_bit_png_reads_as_its_8_bit_pixels() {
+        let image = filled(16);
+        let wide: Vec<u8> = image.rgba.iter().flat_map(|&v| [v, v]).collect();
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, 16, 16);
+        encoder.set_color(ColorType::Rgba);
+        encoder.set_depth(BitDepth::Sixteen);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&wide).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(decode(&out), Ok(image));
     }
 
     fn icon() -> Icon {

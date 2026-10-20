@@ -21,17 +21,24 @@ pub struct Words {
 
 /// Runs the app's `--package-copy` and reads what it prints.
 pub fn read(root: &Path) -> Result<Words, String> {
+    parse(&app_prints(root, "--package-copy")?)
+}
+
+/// What the app prints for `flag`, run from the workspace: the words it keeps in its copy
+/// module, for a task that ships them.
+pub fn app_prints(root: &Path, flag: &str) -> Result<String, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let out = Command::new(&cargo)
         .args(["run", "--quiet", "--locked", "-p", "terrarium-app", "--"])
-        .arg("--package-copy")
+        .arg(flag)
         .current_dir(root)
         .output()
-        .map_err(|err| format!("repo-terrarium --package-copy: {err}"))?;
-    if !out.status.success() {
-        return Err("repo-terrarium --package-copy failed".to_owned());
+        .map_err(|err| format!("repo-terrarium {flag}: {err}"))?;
+    if out.status.success() && !out.stdout.is_empty() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!("repo-terrarium {flag} failed"))
     }
-    parse(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// `key<tab>value` lines, each key once. A value is refused if the installer script would read

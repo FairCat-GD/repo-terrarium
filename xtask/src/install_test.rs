@@ -72,8 +72,7 @@ fn uninstall_entry() -> String {
 }
 
 fn test(root: &Path) -> Result<(), String> {
-    let installer =
-        package::out_dir(root).join(format!("{BINARY}-{VERSION}-windows-x64-setup.exe"));
+    let installer = package::out_dir(root).join(package::installer_name(VERSION));
     if !installer.is_file() {
         return Err(format!(
             "no installer at {}: run cargo xtask package first",

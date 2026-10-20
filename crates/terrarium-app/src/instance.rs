@@ -16,6 +16,11 @@ use std::time::{Duration, Instant};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use terrarium_store::DataDir;
 
+/// How many times a launch looks at a lock it finds held, and how far apart: `--quit`'s look
+/// holds it for far less.
+const CLAIM_TRIES: u32 = 5;
+const CLAIM_RETRY: Duration = Duration::from_millis(20);
+
 /// Whether this launch is the one app.
 pub enum Claim {
     First(Instance),
@@ -48,8 +53,10 @@ pub struct RequestWatch {
 impl Instance {
     /// Takes the lock in `data`, creating the folder and the file as needed. The file is never
     /// truncated: on Windows the lock covers the file, and a truncating open would fail
-    /// against it rather than find it held. A request already waiting was left by a launch that
-    /// found an earlier app running, and is cleared: every request from now on is this one's.
+    /// against it rather than find it held. A lock found held is looked at again a few times,
+    /// since `--quit` holds it for a moment to see whether an app does. A request already
+    /// waiting was left by a launch that found an earlier app running, and is cleared: every
+    /// request from now on is this one's.
     pub fn claim(data: &DataDir) -> io::Result<Claim> {
         fs::create_dir_all(data.path())?;
         let lock = OpenOptions::new()
@@ -58,7 +65,17 @@ impl Instance {
             .create(true)
             .truncate(false)
             .open(data.instance_lock())?;
-        match lock.try_lock() {
+        let mut tries = 1;
+        let taken = loop {
+            match lock.try_lock() {
+                Err(TryLockError::WouldBlock) if tries < CLAIM_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(CLAIM_RETRY);
+                }
+                taken => break taken,
+            }
+        };
+        match taken {
             Ok(()) => {
                 let quit = data.quit_request();
                 let show_settings = data.show_settings_request();
@@ -260,6 +277,21 @@ mod tests {
         let (_watch, waiting) = first.watch(|_| {}).unwrap();
         assert_eq!(waiting, Some(Request::ShowSettings));
         assert!(!data.show_settings_request().exists());
+    }
+
+    #[test]
+    fn a_lock_held_for_a_moment_is_no_running_app() {
+        let (_dir, data) = data();
+        let Claim::First(first) = Instance::claim(&data).unwrap() else {
+            panic!("the first claim");
+        };
+        // As `--quit`'s look does: held, then let go a moment later.
+        let looker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(first);
+        });
+        assert!(matches!(Instance::claim(&data).unwrap(), Claim::First(_)));
+        looker.join().unwrap();
     }
 
     #[test]

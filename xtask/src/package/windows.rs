@@ -10,7 +10,7 @@ use terrarium_store::identifiers::{
     BINARY, WINDOWS_INSTALL_DIR, WINDOWS_RUN_VALUE, WINDOWS_UNINSTALL_KEY,
 };
 
-use super::icon::{self, Icon};
+use super::icon::Sizes;
 use super::res::{self, Details};
 use super::words::Words;
 use crate::sha256_hex;
@@ -23,7 +23,7 @@ pub const SCRIPT: &str = "packaging/windows/installer.nsi";
 pub fn res_file(
     root: &Path,
     words: &Words,
-    icon: &Icon,
+    sizes: &Sizes,
     version: &str,
     work: &Path,
 ) -> Result<PathBuf, String> {
@@ -34,7 +34,7 @@ pub fn res_file(
         binary: BINARY,
         version,
     };
-    let bytes = res::res(&icon::windows_sizes(icon), &details, &res::manifest(root)?)?;
+    let bytes = res::res(sizes, &details, &res::manifest(root)?)?;
     fs::create_dir_all(work).map_err(|err| format!("{}: {err}", work.display()))?;
     let path = work.join(format!("{BINARY}-{}.res", &sha256_hex(&bytes)[..16]));
     fs::write(&path, bytes).map_err(|err| format!("{}: {err}", path.display()))?;

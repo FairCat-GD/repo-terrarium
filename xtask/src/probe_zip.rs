@@ -7,7 +7,6 @@
 //!   they run the one-time command this prints; this task never accepts it.
 //! - The C runtime is linked statically, so testers need no Visual C++ redistributable.
 
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -22,20 +21,11 @@ pub fn run(root: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-
     // The tester's instructions are app copy, so the app prints them.
-    let readme = Command::new(&cargo)
-        .args(["run", "--quiet", "--locked", "-p", "terrarium-app", "--"])
-        .arg("--probe-readme")
-        .current_dir(root)
-        .output();
-    let readme = match readme {
-        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
-            String::from_utf8_lossy(&out.stdout).into_owned()
-        }
-        _ => {
-            println!("probe-zip: repo-terrarium --probe-readme failed");
+    let readme = match package::words::app_prints(root, "--probe-readme") {
+        Ok(readme) => readme,
+        Err(err) => {
+            println!("probe-zip: {err}");
             return ExitCode::FAILURE;
         }
     };

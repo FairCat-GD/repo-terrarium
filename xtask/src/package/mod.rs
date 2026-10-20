@@ -17,6 +17,8 @@ mod res;
 mod windows;
 pub mod words;
 
+pub use windows::installer_name;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -85,12 +87,13 @@ fn package(root: &Path, targets: &[Target]) -> Result<Vec<PathBuf>, String> {
     fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
     let words = words::read(root)?;
     let icon = icon::load(root)?;
+    let icns = icon::icns(&icon::mac_sizes(&icon));
+    let windows_sizes = icon::windows_sizes(&icon);
     let mut made = Vec::new();
     for &target in targets {
         let notices = notices::notices(root, target)?;
         if target.is_mac() {
             let binary = build_checked(root, target, None)?;
-            let icns = icon::icns(&icon::mac_sizes(&icon));
             let contents = mac::Contents {
                 words: &words,
                 version: VERSION,
@@ -99,13 +102,13 @@ fn package(root: &Path, targets: &[Target]) -> Result<Vec<PathBuf>, String> {
             };
             made.push(mac::package(target, &binary, &contents, &out_dir)?);
         } else {
-            let res = windows::res_file(root, &words, &icon, VERSION, &work)?;
+            let res = windows::res_file(root, &words, &windows_sizes, VERSION, &work)?;
             let exe = build_checked(root, target, Some(&res))?;
             let licences = work.join("LICENSES-windows.txt");
             let ico = work.join("app.ico");
             for (path, bytes) in [
                 (&licences, notices.as_bytes().to_vec()),
-                (&ico, icon::ico(&icon::windows_sizes(&icon))),
+                (&ico, icon::ico(&windows_sizes)),
             ] {
                 fs::write(path, bytes).map_err(|err| format!("{}: {err}", path.display()))?;
             }
@@ -171,8 +174,8 @@ fn runs(target: Target, binary: &Path) -> Result<String, String> {
 pub fn windows_exe(root: &Path) -> Result<PathBuf, String> {
     let work = out_dir(root).join("work");
     let words = words::read(root)?;
-    let icon = icon::load(root)?;
-    let res = windows::res_file(root, &words, &icon, VERSION, &work)?;
+    let sizes = icon::windows_sizes(&icon::load(root)?);
+    let res = windows::res_file(root, &words, &sizes, VERSION, &work)?;
     build_checked(root, Target::Windows, Some(&res))
 }
 

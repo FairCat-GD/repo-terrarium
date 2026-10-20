@@ -7,7 +7,8 @@
 //!   never ships.
 //! - **A folder of its own,** `target/package-build`: its flags differ from a plain release
 //!   build's, which the bench and the soak keep using.
-//! - **No trace of the build machine**: rustc's paths are remapped, the Mac's C maps
+//! - **No trace of the build machine:** a crash log's locations and the binary's strings
+//!   name no folder of the machine that built it. rustc's paths are remapped, the Mac's C maps
 //!   the cargo folder away, and the Windows C, whose `assert` would keep each file's whole path,
 //!   is built without asserts. A scan of each finished binary for the build machine's folders
 //!   shows it held.
@@ -35,7 +36,8 @@ const MACOS_MINIMUM_PARTS: (u32, u32, u32) = (13, 0, 0);
 const CARGO_HOME_AS: &str = "/cargo";
 const ROOT_AS: &str = "/repo-terrarium";
 
-/// What the installers are built for: both Macs and Windows x64.
+/// What the installers are built for: both Macs and Windows x64 (Windows on ARM runs the x64
+/// one under emulation).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     MacArm,
@@ -242,7 +244,11 @@ pub fn check(target: Target, binary: &Path) -> Result<Vec<String>, String> {
         return Err(lines.join("\n"));
     }
     let machine = Machine::here()?;
-    let found = traces(&bytes, &[&machine.home, &machine.cargo_home]);
+    let found = traces(
+        &bytes,
+        &[&machine.home, &machine.cargo_home],
+        target == Target::Windows,
+    );
     if !found.is_empty() {
         return Err(format!(
             "{} names the build machine's folders: {}",
@@ -327,12 +333,25 @@ pub const RT_VERSION: u16 = 16;
 pub const RT_MANIFEST: u16 = 24;
 
 /// Each of `folders` that `bytes` holds, as a path in either slash, in UTF-8 or UTF-16 (the
-/// Windows C runtime's `assert` keeps its file names wide).
-fn traces(bytes: &[u8], folders: &[&Path]) -> Vec<String> {
+/// Windows C runtime's `assert` keeps its file names wide); in any case of its letters when
+/// `any_case`, as Windows reads paths.
+fn traces(bytes: &[u8], folders: &[&Path], any_case: bool) -> Vec<String> {
+    let folded;
+    let bytes = if any_case {
+        folded = bytes.to_ascii_lowercase();
+        folded.as_slice()
+    } else {
+        bytes
+    };
     let mut found = Vec::new();
     for folder in folders {
         let text = folder.to_string_lossy();
-        let mut forms = vec![text.to_string()];
+        let text = if any_case {
+            text.to_ascii_lowercase()
+        } else {
+            text.into_owned()
+        };
+        let mut forms = vec![text.clone()];
         for form in [text.replace('\\', "/"), text.replace('/', "\\")] {
             if !forms.contains(&form) {
                 forms.push(form);
@@ -423,16 +442,24 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         let mut bytes = b"head /Users/someone/.cargo/registry tail".to_vec();
-        assert_eq!(traces(&bytes, &[folder]).len(), 1);
+        assert_eq!(traces(&bytes, &[folder], false).len(), 1);
         bytes.extend(&wide);
         assert_eq!(
-            traces(&bytes, &[folder]),
+            traces(&bytes, &[folder], false),
             [
                 "/Users/someone/.cargo (UTF-8)",
                 "\\Users\\someone\\.cargo (UTF-16)"
             ]
         );
-        assert!(traces(b"/cargo/registry/src", &[folder]).is_empty());
+        assert!(traces(b"/cargo/registry/src", &[folder], false).is_empty());
+        // Windows reads paths in any case, and so does its scan.
+        let windows = Path::new(r"C:\Users\Someone");
+        let other = b"C:\\USERS\\someone\\.cargo";
+        assert!(traces(other, &[windows], false).is_empty());
+        assert_eq!(
+            traces(other, &[windows], true),
+            [r"c:\users\someone (UTF-8)"]
+        );
     }
 
     #[test]
