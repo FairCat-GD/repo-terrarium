@@ -21,7 +21,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp, synthetic_until};
@@ -145,7 +145,7 @@ fn soak(root: &Path, options: &Options) -> Result<bool, String> {
         .map_err(|err| format!("the release binary could not be copied: {err}"))?;
     let repo_dir = work.path().join("repo");
     println!("soak: writing the busy repository ({COMMITS} commits)");
-    let mut repo = synthetic_until(&repo_dir, COMMITS, now_secs() - 3_600)
+    let mut repo = synthetic_until(&repo_dir, COMMITS, terrarium_engine::wall_secs() - 3_600)
         .map_err(|err| format!("the repository could not be written: {err}"))?;
 
     let mut runs = start(&app, &repo_dir, work.path(), options)?;
@@ -238,7 +238,7 @@ fn tend(runs: &mut [Run], repo: &mut FixtureRepo) -> Result<(), String> {
             let body = format!("pub const TENDED_{commits}: u32 = {commits};\n");
             repo.commit(
                 "main",
-                Stamp::at(now_secs()),
+                Stamp::at(terrarium_engine::wall_secs()),
                 "tend the soak",
                 &[Edit::Write(
                     format!("soak/s{commits}.rs"),
@@ -274,14 +274,6 @@ fn cpu_budget() -> f64 {
     } else {
         CPU_PERCENT
     }
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 /// The report as the judge reads it: the app writes more.

@@ -18,7 +18,7 @@ use terrarium_store::DataDir;
 
 use crate::cli::RecordTestsArgs;
 use crate::copy;
-use crate::now_secs;
+use terrarium_engine::wall_secs;
 
 /// This command's own failure: the tests never ran.
 const NOT_RUN: i32 = 125;
@@ -36,11 +36,11 @@ pub fn run(args: &RecordTestsArgs) -> i32 {
             return NOT_RUN;
         }
     };
-    let started_at = now_secs();
+    let started_at = wall_secs();
     terrarium_platform::interrupt::defer_to_child();
     match exec::run_user_command(&args.program, &args.args) {
         Ok(Finished::Code(code)) => {
-            let status = Status::new(i64::from(code), started_at, now_secs());
+            let status = Status::new(i64::from(code), started_at, wall_secs());
             if let Err(err) = status.write(&status_file) {
                 eprintln!("{}", copy::record_tests_not_recorded(&err));
             }

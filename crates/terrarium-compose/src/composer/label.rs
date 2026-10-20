@@ -19,6 +19,9 @@ pub(super) struct LabelLook {
     pub(super) lines: Vec<String>,
     pub(super) since: Millis,
     pub(super) opacity: Tween,
+    /// When each line's text arrived: a line swapped in place keeps the cycle's phase, and its
+    /// turn counts from then.
+    pub(super) arrived: Vec<Millis>,
 }
 
 impl LabelLook {
@@ -76,8 +79,19 @@ impl Composer {
         if look.lines.len() <= 1 || index >= look.lines.len() {
             return false;
         }
-        let steps = u64::try_from(index).map_or(u64::MAX, |index| index.saturating_add(1));
-        now.0.saturating_sub(look.since.0) >= steps.saturating_mul(u64::from(LABEL_CYCLE_MS))
+        // The first whole turn of its place that began once its text was there.
+        let cycle = u64::from(LABEL_CYCLE_MS);
+        let n = u64::try_from(look.lines.len()).unwrap_or(u64::MAX);
+        let place = u64::try_from(index).unwrap_or(u64::MAX);
+        let arrived = look.arrived.get(index).copied().unwrap_or(look.since);
+        let first = arrived.0.saturating_sub(look.since.0).div_ceil(cycle);
+        let turn = if first <= place {
+            place
+        } else {
+            place.saturating_add((first - place).div_ceil(n).saturating_mul(n))
+        };
+        let ends = turn.saturating_add(1).saturating_mul(cycle);
+        now.0.saturating_sub(look.since.0) >= ends
     }
 
     /// Raises a new set of label lines when they change, crossfading from the old. The lines
@@ -104,6 +118,42 @@ impl Composer {
         {
             return;
         }
+        // A set of the same length keeps the cycle's phase: lines that are not showing swap
+        // silently, and only a changed line showing crosses over. A set whose first line is the
+        // one line showing whole takes over in place. Either way an unchanged line never
+        // crosses over to itself, which would dim it.
+        let mut since = now;
+        let mut arrived = vec![now; lines.len()];
+        if let Some(look) = current {
+            let showing = look.showing(now);
+            if look.lines.len() == lines.len() {
+                for (i, (old, new)) in look.lines.iter().zip(&lines).enumerate() {
+                    if old == new
+                        && let (Some(slot), Some(&kept)) = (arrived.get_mut(i), look.arrived.get(i))
+                    {
+                        *slot = kept;
+                    }
+                }
+                since = look.since;
+                if showing
+                    .iter()
+                    .all(|&(i, _)| look.lines.get(i) == lines.get(i))
+                    && let Some(look) = self.label.last_mut()
+                {
+                    look.lines = lines;
+                    look.arrived = arrived;
+                    return;
+                }
+            } else if let [(i, SHOWN)] = showing[..]
+                && look.lines.get(i) == lines.first()
+                && let Some(look) = self.label.last_mut()
+            {
+                look.lines = lines;
+                look.since = now;
+                look.arrived = arrived;
+                return;
+            }
+        }
         for look in &mut self.label {
             if look.opacity.target() == SHOWN {
                 look.opacity = Tween::new(look.opacity.value(now), 0, now, fade);
@@ -112,8 +162,9 @@ impl Composer {
         if !lines.is_empty() {
             self.label.push(LabelLook {
                 lines,
-                since: now,
+                since,
                 opacity: Tween::new(0, SHOWN, now, fade),
+                arrived,
             });
         }
     }

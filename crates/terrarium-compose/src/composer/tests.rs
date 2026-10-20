@@ -309,7 +309,7 @@ fn a_pale_turn_fades_the_foliage_and_never_the_stem() {
     composer.update(&pale, &overlay(&[]), settled);
     let mid = settled.plus(HALF_RESTYLE / 2);
     let stems: Vec<Depicted> = composer
-        .depicted(mid)
+        .depicted(Art::embedded(), &table, mid)
         .into_iter()
         .filter(|d| matches!(d.piece, Piece::Stem { .. }))
         .collect();
@@ -520,6 +520,7 @@ fn the_label_cycles_its_lines_and_crossfades_between_them() {
         lines: vec!["one".into(), "two".into(), "three".into()],
         since: Millis(1000),
         opacity: Tween::at(SHOWN),
+        arrived: vec![Millis(1000); 3],
     };
     let cycle = u64::from(LABEL_CYCLE_MS);
     assert_eq!(look.showing(Millis(1000)), [(0, SHOWN)]);
@@ -574,6 +575,142 @@ fn a_label_line_s_turn_ends_when_the_cycle_moves_on_from_it() {
     // One line never moves on.
     composer.update(&input, &overlay(&["moss"]), Millis(5 * cycle));
     assert!(!composer.label_step_done(0, Millis(50 * cycle)));
+}
+
+/// Two composers on one bare scene, labelled `lines` from the start: one to change, one to
+/// compare with.
+fn label_pair(table: &ArtTable, lines: &[&str]) -> (Composer, Composer) {
+    let input = preset::bare(PresentationState::Thriving, Vec::new());
+    let make = || {
+        let mut composer = Composer::new(table, preset::SALT);
+        composer.update(&input, &overlay(lines), Millis(0));
+        composer
+    };
+    (make(), make())
+}
+
+fn relabel(composer: &mut Composer, lines: &[&str], now: Millis) {
+    let input = preset::bare(PresentationState::Thriving, Vec::new());
+    composer.update(&input, &overlay(lines), now);
+}
+
+fn label_draws(composer: &Composer, table: &ArtTable, now: Millis) -> Vec<Draw> {
+    of(composer, table, 0, now, Subject::Label)
+        .iter()
+        .map(|keyed| keyed.draw)
+        .collect()
+}
+
+#[test]
+fn a_changed_hidden_line_swaps_without_moving_anything() {
+    let table = table();
+    let (mut changed, same) = label_pair(&table, &["moss", "settling 3 days"]);
+    let at = Millis(5_000);
+    relabel(&mut changed, &["moss", "settling 2 days"], at);
+    for ms in [0, 750, 1_500, 10_000] {
+        let now = at.plus(ms);
+        assert_eq!(
+            label_draws(&changed, &table, now),
+            label_draws(&same, &table, now),
+            "{now:?}"
+        );
+    }
+    // Its turn shows the new text.
+    let turn = Millis(u64::from(LABEL_CYCLE_MS + LABEL_FADE_MS));
+    assert_ne!(
+        label_draws(&changed, &table, turn),
+        label_draws(&same, &table, turn)
+    );
+}
+
+#[test]
+fn an_unchanged_visible_line_never_dims_through_a_set_change() {
+    let table = table();
+    let (mut changed, same) = label_pair(&table, &["moss"]);
+    let at = same.settled_at();
+    relabel(&mut changed, &["moss", "history 10%"], at);
+    for ms in [0, 750, 1_500] {
+        let now = at.plus(ms);
+        let draws = label_draws(&changed, &table, now);
+        assert_eq!(draws, label_draws(&same, &table, now), "{now:?}");
+        assert!(draws.iter().all(|draw| draw.opacity == SHOWN));
+    }
+    // The note has its turn a cycle later.
+    let turn = at.plus(LABEL_CYCLE_MS + LABEL_FADE_MS);
+    assert_ne!(
+        label_draws(&changed, &table, turn),
+        label_draws(&same, &table, turn)
+    );
+}
+
+#[test]
+fn a_changed_visible_line_alone_crossfades_and_the_cycle_keeps_its_phase() {
+    let table = table();
+    let (mut changed, same) = label_pair(&table, &["moss", "main - clear"]);
+    let at = Millis(5_000);
+    relabel(&mut changed, &["fern", "main - clear"], at);
+    assert_eq!(
+        label_draws(&changed, &table, at),
+        label_draws(&same, &table, at)
+    );
+    let mid = label_draws(&changed, &table, at.plus(LABEL_FADE_MS / 2));
+    assert!(mid.iter().any(|draw| draw.opacity < SHOWN));
+    // The next line comes at the cycle's own moment, not a cycle after the change.
+    let next = Millis(u64::from(LABEL_CYCLE_MS + LABEL_FADE_MS));
+    assert_eq!(
+        label_draws(&changed, &table, next),
+        label_draws(&same, &table, next)
+    );
+}
+
+#[test]
+fn a_once_line_swapped_in_silently_still_has_its_turn() {
+    let table = table();
+    let (mut composer, _) = label_pair(&table, &["moss", "settling 3 days"]);
+    let cycle = u64::from(LABEL_CYCLE_MS);
+    // At 45 s the first line shows whole; the second swaps in unseen.
+    relabel(&mut composer, &["moss", "sim updated"], Millis(45_000));
+    assert!(!composer.label_step_done(1, Millis(4 * cycle - 1)));
+    assert!(composer.label_step_done(1, Millis(4 * cycle)));
+    assert!(composer.label_step_done(0, Millis(4 * cycle)));
+}
+
+#[test]
+fn a_frame_relabelled_is_the_frame_the_composer_draws_with_that_label() {
+    let table = table();
+    let art = Art::embedded();
+    let settled = |line: &str, clock: LocalClock, dim: bool| {
+        let mut composer = Composer::new(&table, preset::SALT);
+        let overlay = OverlayInput {
+            dim,
+            ..OverlayInput::new(vec![line.to_owned()], clock)
+        };
+        composer.update(&scene("thriving"), &overlay, Millis(0));
+        let at = composer
+            .settled_at()
+            .plus(crate::tween::durations::DIM_DOWN_MS);
+        let scenery = composer.scenery(art, &table);
+        let mix = composer.palette_mix(at);
+        composer.frame(art, &table, &scenery, mix, at)
+    };
+    for (clock, dim) in [
+        (LocalClock::noon(preset::DATE), false),
+        (LocalClock::midnight(preset::DATE), false),
+        (LocalClock::noon(preset::DATE), true),
+    ] {
+        let moss = settled("moss", clock, dim);
+        let halted = settled("halted", clock, dim);
+        let relabelled = crate::text::relabelled(&art.catalog, &moss, "halted").unwrap();
+        assert_eq!(
+            crate::compositor::composite(art, &relabelled),
+            crate::compositor::composite(art, &halted),
+            "dim {dim}"
+        );
+        assert_ne!(
+            crate::compositor::composite(art, &moss),
+            crate::compositor::composite(art, &halted)
+        );
+    }
 }
 
 #[test]
@@ -1010,7 +1147,7 @@ fn a_newcomer_is_drawn_though_one_leaving_still_fades() {
         .push(resident(9, ResidentSpecies::Woodlouse, LifeStage::Adult));
     composer.update(&scene, &overlay(&[]), Millis(30_000));
     let shown: BTreeSet<u32> = composer
-        .depicted(Millis(30_600))
+        .depicted(Art::embedded(), &table, Millis(30_600))
         .iter()
         .filter_map(|d| match d.subject {
             Subject::Resident { id, .. } => Some(id),

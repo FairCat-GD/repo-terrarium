@@ -94,8 +94,11 @@ canonical_struct!(ChangeAt { tick, change });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherState {
-    /// Every source seen, ordered by source. A list rather than a map: a branch name may hold
-    /// characters a map key in the canonical dump cannot.
+    /// The sources the weather can be chosen from, ordered by source: the local tests, and the
+    /// CI of HEAD's branch and of the default one. Another branch's CI is let go of at the next
+    /// evaluation, so the list stays three long however many branches HEAD visits. A list
+    /// rather than a map: a branch name may hold characters a map key in the canonical dump
+    /// cannot.
     pub sources: Vec<SourceWeather>,
     pub current_branch: Option<String>,
     /// When the observation that named the current branch was recorded.
@@ -166,8 +169,15 @@ impl WeatherState {
             .and_then(|index| self.sources.get(index))
     }
 
-    /// Chooses the source in effect at `tick` and records how it changed.
+    /// Lets go of every source [`WeatherState::choose`] cannot read, chooses the source in
+    /// effect at `tick` and records how it changed. A branch HEAD comes back to starts from its
+    /// next run, as one never seen.
     pub fn evaluate(&mut self, tick: Tick, default_branch: &str) {
+        let current = self.current_branch.as_deref();
+        self.sources.retain(|kept| match &kept.source {
+            WeatherSource::Local => true,
+            WeatherSource::Ci { branch } => branch == default_branch || Some(&**branch) == current,
+        });
         let chosen = self.choose(default_branch);
         if chosen == self.in_effect {
             return;
@@ -359,6 +369,64 @@ mod tests {
             }
         );
         assert_eq!(weather.last_change, None);
+    }
+
+    #[test]
+    fn only_the_three_sources_choose_reads_are_kept() {
+        let mut weather = WeatherState::default();
+        weather.record(&WeatherSource::Local, Some(true), at(1));
+        for (hour, branch) in (2..).zip(["feature/fern", "experiment/moss", "fix/lichen"]) {
+            weather.note_head(Some(branch), i64::from(hour));
+            weather.record(&ci(branch), Some(false), at(hour));
+            weather.record(&ci("main"), Some(true), at(hour));
+            weather.evaluate(at(hour), "main");
+        }
+        let kept: Vec<&WeatherSource> = weather.sources.iter().map(|s| &s.source).collect();
+        assert_eq!(
+            kept,
+            [&ci("fix/lichen"), &ci("main"), &WeatherSource::Local]
+        );
+        // Detached, only the default branch's and the local source remain.
+        weather.note_head(None, 10);
+        weather.evaluate(at(10), "main");
+        let kept: Vec<&WeatherSource> = weather.sources.iter().map(|s| &s.source).collect();
+        assert_eq!(kept, [&ci("main"), &WeatherSource::Local]);
+    }
+
+    #[test]
+    fn returning_to_a_pruned_branch_is_a_switch_once_its_run_is_recorded() {
+        let mut weather = WeatherState::default();
+        weather.note_head(Some("feature/fern"), 0);
+        weather.record(&ci("feature/fern"), Some(false), at(1));
+        weather.record(&ci("main"), Some(true), at(1));
+        weather.evaluate(at(1), "main");
+        weather.note_head(Some("main"), 2);
+        weather.evaluate(at(2), "main");
+        // Back on the feature branch: its failure is gone with it, so main's pass is in effect
+        // until the branch's next run.
+        weather.note_head(Some("feature/fern"), 3);
+        weather.evaluate(at(3), "main");
+        assert_eq!(weather.reading().source, Some(ci("main")));
+        // Its next run, a pass, comes into effect as a switch, never as a clearing.
+        weather.record(&ci("feature/fern"), Some(true), at(4));
+        weather.evaluate(at(4), "main");
+        assert_eq!(
+            weather.last_change,
+            Some(ChangeAt {
+                tick: at(4),
+                change: WeatherChange::Switch {
+                    to: Some(ci("feature/fern"))
+                }
+            })
+        );
+        assert_eq!(
+            weather.reading().state,
+            Reading::Known {
+                value: Q16::ONE,
+                stale: false,
+                since_tick: at(4),
+            }
+        );
     }
 
     #[test]

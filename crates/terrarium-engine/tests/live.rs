@@ -1080,6 +1080,7 @@ fn a_long_history_read_reports_progress_and_stops_when_cancelled() {
     );
     assert_eq!(done.reach, Some(Reach::Found));
     assert_eq!(all.last(), Some(&100));
+    assert!(all.iter().all(|percent| percent % 10 == 0), "{all:?}");
 }
 
 /// Appends, behind the pipeline's back, the observation `text` makes as a report of `format`

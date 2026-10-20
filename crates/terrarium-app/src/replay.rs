@@ -20,7 +20,7 @@ use terrarium_truth::canonical_dump;
 use crate::cli::{ReplayArgs, ReplayOutput};
 use crate::timelapse::mp4::write_mp4;
 use crate::timelapse::{Film, write_gif};
-use crate::{copy, now_secs, output};
+use crate::{copy, output};
 
 /// The salt of every headless replay: the same file on every machine.
 const SALT: [u8; 16] = [0; 16];
@@ -53,7 +53,7 @@ fn request<'a>(
         repo: &args.repo,
         data,
         observations: observations.map(|file| file as &mut dyn BufRead),
-        at_secs: args.at.unwrap_or_else(now_secs),
+        at_secs: args.at.unwrap_or_else(terrarium_engine::wall_secs),
         install_salt: SALT,
     }
 }

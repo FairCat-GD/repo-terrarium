@@ -118,7 +118,7 @@ impl Dev {
         let Some(probe) = &self.probe else {
             return;
         };
-        let path = PathBuf::from(copy::debug::egui_memory_file(crate::now_secs()));
+        let path = PathBuf::from(copy::debug::egui_memory_file(terrarium_engine::wall_secs()));
         match std::fs::write(&path, copy::debug::egui_probe_report(probe.samples())) {
             Ok(()) => println!("{}", copy::debug::egui_probe_written(&path)),
             Err(err) => eprintln!("{}", copy::debug::egui_probe_write_failed(&path, &err)),

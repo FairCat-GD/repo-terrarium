@@ -54,6 +54,52 @@ fn the_newest_decided_commit_gives_the_verdict() {
 }
 
 #[test]
+fn a_certificate_not_trusted_is_told_apart_from_no_answer() {
+    let refused = || rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+    assert_eq!(
+        client::unreached(&ureq::Error::Rustls(refused())),
+        CiError::Certificate
+    );
+    // As the TLS stream reports it, inside an I/O error.
+    let io = std::io::Error::new(std::io::ErrorKind::InvalidData, refused());
+    assert_eq!(
+        client::unreached(&ureq::Error::Io(io)),
+        CiError::Certificate
+    );
+    for other in [
+        ureq::Error::ConnectionFailed,
+        ureq::Error::HostNotFound,
+        ureq::Error::Rustls(rustls::Error::DecryptError),
+        ureq::Error::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+    ] {
+        assert_eq!(client::unreached(&other), CiError::Unreachable, "{other}");
+    }
+    assert!(CiError::Certificate.is_transient());
+}
+
+#[test]
+fn a_failing_workflow_s_name_is_cut_to_a_path_s_length() {
+    let run = |id: u64, name: &str| Run {
+        id,
+        workflow_id: id,
+        head_sha: A.to_owned(),
+        status: Some("completed".into()),
+        conclusion: Some("failure".into()),
+        run_attempt: None,
+        path: None,
+        name: Some(name.to_owned()),
+    };
+    // Each "é" is two bytes, so the cut falls inside one and backs off to its start.
+    let long = format!("x{}", "é".repeat(2_000));
+    let failing = verdict(&[run(1, &long), run(2, "lint")]).unwrap().failing;
+    assert_eq!(failing.len(), 2);
+    let cut = failing.iter().find(|name| name.starts_with('x')).unwrap();
+    assert_eq!(cut.len(), 1_023);
+    assert!(long.starts_with(cut.as_str()));
+    assert!(failing.contains(&"lint".to_owned()));
+}
+
+#[test]
 fn a_verdict_changes_its_hash_only_with_what_decided_it() {
     let pass = verdict_of("pass").unwrap();
     assert_eq!(verdict_of("pass").unwrap().hash, pass.hash);

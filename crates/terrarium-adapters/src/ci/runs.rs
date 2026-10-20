@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::report::MAX_CONTRIBUTOR_PATH;
+
 /// The most failing workflows kept, as for every reading's contributors.
 const MAX_FAILING: usize = 20;
 
@@ -127,14 +129,19 @@ fn decide(sha: &str, runs: &[Run]) -> Option<Verdict> {
     })
 }
 
-/// A run's workflow file without the `@<ref>` GitHub may add, else its name, else its id.
+/// A run's workflow file without the `@<ref>` GitHub may add, else its name, else its id; cut
+/// to the longest a contributor's path may be, since a workflow's name has no bound.
 fn workflow_file(run: &Run) -> String {
-    match (&run.path, &run.name) {
-        (Some(path), _) if !path.is_empty() => path
-            .split_once('@')
-            .map_or(path.as_str(), |(file, _)| file)
-            .to_owned(),
-        (_, Some(name)) => name.clone(),
-        _ => run.workflow_id.to_string(),
+    let file = match (&run.path, &run.name) {
+        (Some(path), _) if !path.is_empty() => {
+            path.split_once('@').map_or(path.as_str(), |(file, _)| file)
+        }
+        (_, Some(name)) => name.as_str(),
+        _ => return run.workflow_id.to_string(),
+    };
+    let mut end = file.len().min(MAX_CONTRIBUTOR_PATH);
+    while !file.is_char_boundary(end) {
+        end -= 1;
     }
+    file.get(..end).unwrap_or_default().to_owned()
 }

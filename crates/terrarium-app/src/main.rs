@@ -28,6 +28,7 @@ mod login;
 mod menu;
 mod monitor;
 mod output;
+mod picture;
 mod pinning;
 mod portability;
 mod prefs;
@@ -47,7 +48,6 @@ mod strip;
 mod timelapse;
 
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli::Command;
 use feed::Feed;
@@ -85,15 +85,6 @@ fn main() -> ExitCode {
             ExitCode::from(USAGE_EXIT)
         }
     }
-}
-
-/// Unix seconds now: 0 before 1970, which only a clock set far back gives.
-pub(crate) fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 pub(crate) fn run(mode: &Mode, launch: Option<live::Launch>) -> ExitCode {

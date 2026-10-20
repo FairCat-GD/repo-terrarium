@@ -217,7 +217,8 @@ fn a_poll_asks_heads_branch_then_the_default_one() {
         live.ci_ask(),
         Some(Ask {
             slug: slug(),
-            branches: vec!["main".into()]
+            branches: vec!["main".into()],
+            upstream: None,
         })
     );
     fx.checkout_new("feat/moss", DAYS);
@@ -227,6 +228,16 @@ fn a_poll_asks_heads_branch_then_the_default_one() {
     assert_eq!(
         live.ci_ask().unwrap().branches,
         ["feat/moss".to_owned(), "main".to_owned()]
+    );
+    // Tracking origin's branch of another name: asked by that name, at once.
+    fx.repo
+        .append_git_config("[branch \"feat/moss\"]\n\tremote = origin\n\tmerge = refs/heads/moss\n")
+        .unwrap();
+    shown(&mut live, Cause::Watch);
+    assert!(live.ci_ask_now());
+    assert_eq!(
+        live.ci_ask().unwrap().upstream,
+        Some(("feat/moss".to_owned(), "moss".to_owned()))
     );
 }
 
@@ -355,6 +366,32 @@ fn ci_that_cannot_be_read_any_more_gives_way_to_the_local_results() {
             serde_json::from_str(&fx.ci_rows().pop().unwrap().record.raw).unwrap();
         assert_eq!(raw.unread, Some(why));
     }
+}
+
+#[test]
+fn ci_that_cannot_be_read_any_more_is_unknown_only_where_truth_can_choose_it() {
+    let mut fx = Fixture::new();
+    let mut live = fx.connect();
+    answer(&mut live, decided("main", verdict(false, 1)), false).unwrap();
+    fx.checkout_new("feat/fern", DAYS);
+    shown(&mut live, Cause::Watch);
+    answer(&mut live, decided("feat/fern", verdict(true, 2)), false).unwrap();
+    // HEAD moves on: truth lets go of the fern branch's weather, and so does an outage.
+    fx.checkout_new("feat/moss", DAYS);
+    shown(&mut live, Cause::Watch);
+    let quiet = Answered {
+        slug: slug(),
+        read: Read::NoToken { removed: true },
+    };
+    let before = fx.ci_rows().len();
+    answer(&mut live, quiet, false).unwrap();
+    let unread: Vec<Option<WeatherSource>> = fx
+        .ci_rows()
+        .into_iter()
+        .skip(before)
+        .map(|row| row.record.source)
+        .collect();
+    assert_eq!(unread, [Some(ci("main"))]);
 }
 
 #[test]

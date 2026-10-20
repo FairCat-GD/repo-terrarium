@@ -474,12 +474,12 @@ fn a_large_deletion_opens_a_sinkhole_that_swallows_one_plant() {
 }
 
 #[test]
-fn lightning_strikes_each_day_of_failure_from_the_third_and_scorches_a_mature_plant() {
+fn lightning_strikes_on_the_third_day_of_failure_then_every_third_and_scorches_a_mature_plant() {
     let commits = daily_commits(&[1; 50]);
     let observations = [
         weather(ci("main"), 30 * 24, 30, "main", Some(true)),
         weather(ci("main"), 30 * 24 + 10, 31, "main", Some(false)),
-        weather(ci("main"), 38 * 24 + 10, 38, "main", Some(true)),
+        weather(ci("main"), 39 * 24 + 10, 39, "main", Some(true)),
     ];
     let fail = 30 * 24 + 10;
     let events = candidates(&commits, &observations, 40 * 24);
@@ -488,12 +488,9 @@ fn lightning_strikes_each_day_of_failure_from_the_third_and_scorches_a_mature_pl
         [
             (fail, Storm, Mid),
             (fail + 72, Lightning, Low),
-            (fail + 96, Lightning, Mid),
-            (fail + 120, Lightning, Mid),
             (fail + 144, Lightning, Mid),
-            (fail + 168, Lightning, High),
-            // At 8 days the pass arrives in the same tick: a clearing, no strike.
-            (fail + 192, Clearing, Mid),
+            // At 9 days the pass arrives in the same tick: a clearing, no strike.
+            (fail + 216, Clearing, Mid),
         ]
     );
     let state = replay(&commits, &observations, fail + 72);
@@ -528,8 +525,8 @@ fn lightning_spares_an_inactive_repository_and_a_switch_restarts_the_run() {
         weather(ci("main"), 3, 1, "main", Some(true)),
         weather(ci("feature/fern"), 100, 4, "feature/fern", Some(false)),
     ];
-    let events = candidates(&commits, &observations, 200);
-    assert_eq!(events, [(172, Lightning, Low), (196, Lightning, Mid)]);
+    let events = candidates(&commits, &observations, 300);
+    assert_eq!(events, [(172, Lightning, Low), (244, Lightning, Mid)]);
 }
 
 #[test]

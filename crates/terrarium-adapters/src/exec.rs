@@ -54,7 +54,8 @@ pub enum ExecError {
 /// Runs `program` with `args`, inheriting stdin, stdout, stderr, the environment and the
 /// working directory, and waits for it to end.
 pub fn run_user_command(program: &OsStr, args: &[OsString]) -> Result<Finished, ExecError> {
-    let status = Command::new(resolve(program))
+    let not_found = || ExecError::NotFound(io::Error::from(io::ErrorKind::NotFound));
+    let status = Command::new(resolve(program).ok_or_else(not_found)?)
         .args(args)
         .status()
         .map_err(|err| match err.kind() {
@@ -64,49 +65,59 @@ pub fn run_user_command(program: &OsStr, args: &[OsString]) -> Result<Finished, 
     Ok(finished(status))
 }
 
-/// The program as given. Unix searches `PATH` for it as a shell would.
-#[cfg(not(windows))]
-fn resolve(program: &OsStr) -> OsString {
-    program.to_owned()
-}
-
-/// On Windows, `Command` looks only for `<name>.exe`, and `npm`, `npx`, `yarn` and `pnpm` are
-/// `.cmd` scripts. A bare name is looked up on `PATH` with each `PATHEXT` extension, as
-/// `cmd.exe` would; `Command` then runs a script found that way through `cmd.exe`, quoting its
-/// arguments, or refuses arguments it cannot quote safely.
-#[cfg(windows)]
-fn resolve(program: &OsStr) -> OsString {
+/// The file `program` names: as given when it names a directory, else found on `PATH` (see
+/// [`find_on_path`]). A bare name found nowhere is not found: it is never handed to the OS's
+/// own search, which may look in the working directory first.
+fn resolve(program: &OsStr) -> Option<PathBuf> {
     let path = std::env::var_os("PATH");
     let pathext = std::env::var_os("PATHEXT");
-    find_on_path(program, path.as_deref(), pathext.as_deref(), Path::is_file)
-        .map_or_else(|| program.to_owned(), PathBuf::into_os_string)
+    find_on_path(
+        program,
+        path.as_deref(),
+        pathext.as_deref(),
+        cfg!(windows),
+        runnable,
+    )
 }
 
-/// The first `<dir>\<program><ext>` that exists, for each `PATH` directory in order and each
-/// `PATHEXT` extension in order; nothing for a program named with a directory or an extension.
-#[cfg(any(windows, test))]
+/// `program` as given when it names a directory; else the first `<dir>/<program>` that
+/// `exists`, in each absolute `PATH` directory in order. An empty or relative `PATH` entry names
+/// the working directory, which could be anywhere, so it is skipped. On `windows`, `Command`
+/// looks only for `<name>.exe`, and `npm`, `npx`, `yarn` and `pnpm` are `.cmd` scripts: a name
+/// with no extension is tried with each `PATHEXT` extension in order, as `cmd.exe` would, and
+/// `Command` then runs a script found that way through `cmd.exe`, quoting its arguments, or
+/// refuses arguments it cannot quote safely.
 fn find_on_path(
     program: &OsStr,
     path: Option<&OsStr>,
     pathext: Option<&OsStr>,
+    windows: bool,
     exists: impl Fn(&Path) -> bool,
 ) -> Option<PathBuf> {
     let name = Path::new(program);
-    if name.extension().is_some() || name.components().count() != 1 {
-        return None;
+    if name.components().count() != 1 {
+        return Some(name.to_path_buf());
     }
-    let pathext = pathext
-        .and_then(OsStr::to_str)
-        .unwrap_or(".COM;.EXE;.BAT;.CMD");
-    let extensions: Vec<&str> = pathext.split(';').filter(|ext| !ext.is_empty()).collect();
-    std::env::split_paths(path?).find_map(|dir| {
-        extensions.iter().find_map(|ext| {
-            let mut file = program.to_owned();
-            file.push(ext);
-            let candidate = dir.join(file);
-            exists(&candidate).then_some(candidate)
+    let extensions: Vec<&str> = if windows && name.extension().is_none() {
+        pathext
+            .and_then(OsStr::to_str)
+            .unwrap_or(".COM;.EXE;.BAT;.CMD")
+            .split(';')
+            .filter(|ext| !ext.is_empty())
+            .collect()
+    } else {
+        vec![""]
+    };
+    std::env::split_paths(path?)
+        .filter(|dir| dir.is_absolute())
+        .find_map(|dir| {
+            extensions.iter().find_map(|ext| {
+                let mut file = program.to_owned();
+                file.push(ext);
+                let candidate = dir.join(file);
+                exists(&candidate).then_some(candidate)
+            })
         })
-    })
 }
 
 /// A program found where a person installs tools, outside the repository: the only kind
@@ -898,37 +909,83 @@ mod tests {
         ));
     }
 
+    /// `rest` under a tools folder that is absolute on this OS.
+    fn tools(rest: &str) -> PathBuf {
+        let root = if cfg!(windows) { r"C:\tools" } else { "/tools" };
+        Path::new(root).join(rest)
+    }
+
     #[test]
     fn a_bare_name_is_found_with_the_path_extensions_in_order() {
-        let dirs = std::env::join_paths([Path::new("/tools/a"), Path::new("/tools/b")]).unwrap();
+        let dirs = std::env::join_paths([tools("a"), tools("b")]).unwrap();
         let present = |path: &Path| {
-            [
-                Path::new("/tools/b/npm.CMD"),
-                Path::new("/tools/b/npm.EXE"),
-                Path::new("/tools/a/node.EXE"),
-            ]
-            .contains(&path)
+            ["b/npm.CMD", "b/npm.EXE", "b/npm.cmd", "a/node.EXE"]
+                .iter()
+                .any(|known| tools(known) == path)
         };
         let find = |program: &str| {
             find_on_path(
                 OsStr::new(program),
                 Some(&dirs),
                 Some(OsStr::new(".COM;.EXE;.BAT;.CMD")),
+                true,
                 present,
             )
         };
-        assert_eq!(find("npm"), Some(PathBuf::from("/tools/b/npm.EXE")));
-        assert_eq!(find("node"), Some(PathBuf::from("/tools/a/node.EXE")));
+        assert_eq!(find("npm"), Some(tools("b/npm.EXE")));
+        assert_eq!(find("node"), Some(tools("a/node.EXE")));
         assert_eq!(find("cargo"), None);
-        assert_eq!(find("npm.cmd"), None, "an extension is used as given");
-        assert_eq!(find("bin/npm"), None, "a directory is used as given");
-        let only_cmd = |path: &Path| path == Path::new("/tools/b/npm.CMD");
         assert_eq!(
-            find_on_path(OsStr::new("npm"), Some(&dirs), None, only_cmd),
-            Some(PathBuf::from("/tools/b/npm.CMD")),
+            find("npm.cmd"),
+            Some(tools("b/npm.cmd")),
+            "an extension is looked for as given"
+        );
+        assert_eq!(
+            find("bin/npm"),
+            Some(PathBuf::from("bin/npm")),
+            "a directory is used as given"
+        );
+        let only_cmd = |path: &Path| path == tools("b/npm.CMD");
+        assert_eq!(
+            find_on_path(OsStr::new("npm"), Some(&dirs), None, true, only_cmd),
+            Some(tools("b/npm.CMD")),
             "without PATHEXT, Windows' default list"
         );
-        assert_eq!(find_on_path(OsStr::new("npm"), None, None, only_cmd), None);
+        assert_eq!(
+            find_on_path(OsStr::new("npm"), None, None, true, only_cmd),
+            None
+        );
+        // Elsewhere, the name alone.
+        let only_bare = |path: &Path| path == tools("b/npm");
+        assert_eq!(
+            find_on_path(OsStr::new("npm"), Some(&dirs), None, false, only_bare),
+            Some(tools("b/npm"))
+        );
+    }
+
+    #[test]
+    fn an_empty_or_relative_path_entry_is_never_searched() {
+        let dirs = std::env::join_paths([
+            PathBuf::new(),
+            PathBuf::from("."),
+            PathBuf::from("scripts"),
+            tools("a"),
+        ])
+        .unwrap();
+        let everywhere = |_: &Path| true;
+        for windows in [false, true] {
+            assert_eq!(
+                find_on_path(OsStr::new("npm"), Some(&dirs), None, windows, everywhere)
+                    .map(|found| found.starts_with(tools("a"))),
+                Some(true),
+                "windows: {windows}"
+            );
+        }
+        let relative = std::env::join_paths([Path::new(""), Path::new("bin")]).unwrap();
+        assert_eq!(
+            find_on_path(OsStr::new("npm"), Some(&relative), None, false, everywhere),
+            None
+        );
     }
 
     #[cfg(unix)]

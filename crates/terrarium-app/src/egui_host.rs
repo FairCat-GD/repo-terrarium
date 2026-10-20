@@ -48,7 +48,8 @@ impl WindowKind {
 
     fn size(self) -> LogicalSize<f64> {
         match self {
-            WindowKind::Connect => LogicalSize::new(520.0, 400.0),
+            // Room for the still at 1× in points: 2× on a 2× display.
+            WindowKind::Connect => LogicalSize::new(680.0, 460.0),
             WindowKind::Settings => LogicalSize::new(600.0, 480.0),
             // Room for the scene at 2× on a 2× display, and at 1× on a 1× one.
             WindowKind::TimeLapse => LogicalSize::new(700.0, 300.0),

@@ -110,11 +110,11 @@ impl TimeSection {
         if self.same {
             ui.label(words::SAME_TIMES);
         }
-        ui.label(words::CROSSFADE_FACT);
+        ui.weak(words::CROSSFADE_FACT);
         ui.add_space(12.0);
         let mut minutes = self.dim_after;
         ui.horizontal(|ui| {
-            ui.label(words::DIM_AFTER);
+            ui.strong(words::DIM_AFTER);
             egui::ComboBox::from_id_salt("dim")
                 .selected_text(words::minutes(minutes))
                 .show_ui(ui, |ui| {
@@ -124,7 +124,7 @@ impl TimeSection {
                 });
         });
         changes.extend(self.set_dim_after(minutes));
-        ui.label(words::DIM_FACT);
+        ui.weak(words::DIM_FACT);
     }
 }
 

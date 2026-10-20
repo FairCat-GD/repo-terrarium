@@ -198,6 +198,11 @@ impl SettingsForm {
         self.hotkeys.refused(which, why);
     }
 
+    /// Whether `which`'s keys are registered with the OS: `None` when they are, else why not.
+    pub fn hotkey_unregistered(&mut self, which: Which, why: Option<String>) {
+        self.hotkeys.set_unregistered(which, why);
+    }
+
     /// The repository tab, as a test presses it.
     #[cfg(test)]
     pub fn repo(&mut self) -> &mut RepoSection {
@@ -220,6 +225,7 @@ impl SettingsForm {
             }
         });
         ui.separator();
+        ui.add_space(4.0);
         let changes = &mut self.changes;
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
@@ -382,6 +388,7 @@ mod tests {
             CiStatus::Refused(slug.clone()),
             CiStatus::NotFound(slug.clone()),
             CiStatus::Unreachable(slug.clone()),
+            CiStatus::Certificate(slug.clone()),
             CiStatus::Waiting(slug),
             CiStatus::Keychain(KeychainError::Refused),
         ];

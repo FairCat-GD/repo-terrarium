@@ -108,6 +108,12 @@ const fn awake(species: ResidentSpecies, night: bool) -> bool {
     }
 }
 
+/// Whether the species favours the hours after rain: the snail, and the earthworm, which comes
+/// up when the ground is wet.
+const fn favours_rain(species: ResidentSpecies) -> bool {
+    matches!(species, ResidentSpecies::Snail | ResidentSpecies::Earthworm)
+}
+
 /// How much of its chances to move a resident takes, in quarters: by its energy.
 const fn energy_quarters(energy: Energy) -> u64 {
     match energy {
@@ -286,14 +292,21 @@ pub fn plans(
         .collect();
     // The turn's travellers rotate among those awake and settled, so none of the three
     // places goes to one asleep, hidden or changing.
-    let ready: Vec<u32> = rests
+    // After rain, those that favour it come first.
+    let mut ready: Vec<(bool, u32)> = rests
         .iter()
         .filter(|&&(resident, then, rest_now, moved)| {
             !moved && then == rest_now && lively(catalog, rest_now) && may_move(resident, now, w)
         })
-        .map(|(resident, ..)| resident.view.id)
+        .map(|(resident, ..)| {
+            let first = now.after_rain && favours_rain(resident.view.species);
+            (!first, resident.view.id)
+        })
         .collect();
-    let movers = movers(&ready, now, w);
+    ready.sort_by_key(|&(later, _)| later);
+    let favoured = ready.iter().filter(|&&(later, _)| !later).count();
+    let ready: Vec<u32> = ready.into_iter().map(|(_, id)| id).collect();
+    let movers = movers(&ready, favoured, now, w);
     let mut flyer_taken = false;
     let mut plans = Vec::new();
     for (resident, rest_then, rest_now, moved) in rests {
@@ -420,8 +433,9 @@ pub fn earlier<'a>(
 }
 
 /// The residents that travel in turn `w`, of those `ready` to: three in rotation, or all
-/// when there are three or fewer. In dim mode only every fourth turn moves.
-fn movers(ready: &[u32], now: &Snapshot, w: u64) -> Vec<u32> {
+/// when there are three or fewer. The first `favoured` of them, after rain, always go, and the
+/// rest rotate through the places left. In dim mode only every fourth turn moves.
+fn movers(ready: &[u32], favoured: usize, now: &Snapshot, w: u64) -> Vec<u32> {
     let n = ready.len();
     let Some(j) = motion_turn(w, now.dim) else {
         return Vec::new();
@@ -429,15 +443,24 @@ fn movers(ready: &[u32], now: &Snapshot, w: u64) -> Vec<u32> {
     if n <= MOST_MOVING {
         return ready.to_vec();
     }
-    let first = usize::try_from(j % u64::try_from(n).unwrap_or(1)).unwrap_or(0);
-    (0..MOST_MOVING)
-        .map(|k| ready[(first * MOST_MOVING + k) % n])
+    let favoured = favoured.min(MOST_MOVING);
+    let (first, rest) = ready.split_at(favoured);
+    let places = MOST_MOVING - favoured;
+    let m = rest.len();
+    let start = usize::try_from(j % u64::try_from(m.max(1)).unwrap_or(1)).unwrap_or(0);
+    first
+        .iter()
+        .copied()
+        .chain((0..places).map(|k| rest[(start * places + k) % m]))
         .collect()
 }
 
 /// Whether a chosen resident uses its turn: its energy and the scene's liveliness, in
 /// sixteenths, against the turn's draw for it.
 fn may_move(resident: &Resident, now: &Snapshot, w: u64) -> bool {
+    if now.after_rain && favours_rain(resident.view.species) {
+        return true;
+    }
     let share = energy_quarters(resident.view.energy) * state_quarters(now.state);
     motion_hash(u64::from(resident.view.id), w) % 16 < share
 }
@@ -707,6 +730,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn after_rain_the_snail_and_the_earthworm_come_out_first() {
+        use ResidentSpecies::{Beetle, Earthworm, Ladybird, Snail, Springtail, Woodlouse};
+        let low = |id, species| Resident {
+            view: ResidentView {
+                energy: Energy::Low,
+                ..resident(id, species, LifeStage::Adult, None).view
+            },
+            ..resident(id, species, LifeStage::Adult, None)
+        };
+        let cast = [
+            low(1, Beetle),
+            low(2, Snail),
+            low(3, Ladybird),
+            low(4, Earthworm),
+            low(5, Springtail),
+            low(6, Woodlouse),
+        ];
+        let mut wet = scene(cast.to_vec(), Weather::Clear, 12);
+        wet.after_rain = true;
+        let dry = scene(cast.to_vec(), Weather::Clear, 12);
+        // Low on energy, they still take every turn after rain; the rest do not.
+        for w in 0..40 {
+            assert!(may_move(&cast[1], &wet, w) && may_move(&cast[3], &wet, w));
+        }
+        assert!((0..40).any(|w| !may_move(&cast[1], &dry, w)));
+        // Ready first, they travel every turn, and the third place rotates among the rest.
+        let ready = [2, 4, 1, 3, 5, 6];
+        let mut others = BTreeSet::new();
+        for w in 0..12 {
+            let movers = movers(&ready, 2, &wet, w);
+            assert_eq!(movers.len(), MOST_MOVING);
+            assert_eq!(&movers[..2], &[2, 4], "turn {w}");
+            others.insert(movers[2]);
+        }
+        assert_eq!(others, BTreeSet::from([1, 3, 5, 6]));
+        // With none favoured, the rotation is the usual one.
+        assert_eq!(movers(&[1, 2, 3, 4, 5], 0, &dry, 1), [4, 5, 1]);
+    }
+
     fn scene(residents: Vec<Resident>, weather: Weather, hour: u32) -> Snapshot {
         Snapshot {
             state: PresentationState::Thriving,
@@ -721,6 +784,7 @@ mod tests {
             swaying: BTreeSet::new(),
             residents,
             shaken: None,
+            after_rain: false,
         }
     }
 

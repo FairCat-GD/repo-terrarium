@@ -197,12 +197,12 @@ fn the_arcs_events_follow_its_story() {
     let days = |kind: EventKind| -> Vec<u32> { at(kind).iter().map(|t| (t + 9) / 24).collect() };
     // Releases: v0.1.0, v0.2.0 (lightweight, dated by its commit on day 123), v1.0.0, v2.0.0.
     assert_eq!(days(Flowering), [52, 123, 260, 705]);
-    // CI turns red on day 301 and stays red to day 315: a storm, then lightning on each day
-    // from the third, then the clearing. One more red run on day 357 storms and clears.
+    // CI turns red on day 301 and stays red to day 315: a storm, then lightning on the third
+    // day and every third day after it, then the clearing. One more red run on day 357 storms
+    // and clears.
     assert_eq!(days(Storm), [301, 357]);
-    assert_eq!(at(Lightning).len(), 11);
-    assert_eq!(days(Lightning).first(), Some(&304));
-    assert!(at(Lightning).windows(2).all(|pair| pair[1] - pair[0] == 24));
+    assert_eq!(days(Lightning), [304, 307, 310, 313]);
+    assert!(at(Lightning).windows(2).all(|pair| pair[1] - pair[0] == 72));
     assert_eq!(days(Clearing), [315, 360]);
     // The legacy deletion opens a sinkhole naming its fossil, and its churn is a windstorm.
     assert_eq!(at(Sinkhole), [7_451]);

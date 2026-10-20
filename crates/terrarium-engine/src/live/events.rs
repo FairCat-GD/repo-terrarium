@@ -55,6 +55,8 @@ pub(super) struct CiState {
     pub(super) answer: Option<(Answered, bool)>,
     /// HEAD's branch or the repository changed: the worker asks at once.
     pub(super) ask_now: bool,
+    /// HEAD's branch, when it tracks `origin`'s branch of another name, and that name.
+    pub(super) upstream: Option<(String, String)>,
     pub(super) status: CiStatus,
 }
 
@@ -83,6 +85,14 @@ impl Live {
         self.head = Some(head.clone());
         if !self.ci.on {
             return;
+        }
+        let upstream = head.branch.as_ref().and_then(|branch| {
+            git.upstream_on_origin(branch)
+                .map(|remote| (branch.clone(), remote))
+        });
+        if upstream != self.ci.upstream {
+            self.ci.ask_now = true;
+            self.ci.upstream = upstream;
         }
         let here = self.here();
         let typed = self
@@ -123,7 +133,11 @@ impl Live {
             Some(branch) if branch != default => vec![branch.clone(), default.clone()],
             _ => vec![default.clone()],
         };
-        Some(Ask { slug, branches })
+        Some(Ask {
+            slug,
+            branches,
+            upstream: self.ci.upstream.clone(),
+        })
     }
 
     /// Takes in a poll's answer; `outage` says GitHub has been out of reach long enough for its
@@ -264,12 +278,17 @@ impl Live {
         }
     }
 
-    /// An unknown row for each CI source whose newest row is known: none of them is read now.
+    /// An unknown row for each CI source truth can choose (HEAD's branch's and the default
+    /// one's, as polled) whose newest row is known: none of them is read now. Truth has let go
+    /// of every other branch's.
     fn unread_rows(&self, why: CiUnread, head: &ObservationHead) -> Vec<ObservationRecord> {
+        let default = &self.terrarium.repo.default_branch;
         self.ci
             .newest
             .iter()
-            .filter(|(_, newest)| newest.known)
+            .filter(|(branch, newest)| {
+                newest.known && (*branch == default || head.branch.as_ref() == Some(*branch))
+            })
             .map(|(branch, _)| observe::ci_unread(branch, why, head.clone(), self.now))
             .collect()
     }

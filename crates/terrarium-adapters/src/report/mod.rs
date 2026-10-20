@@ -21,26 +21,29 @@ mod tests;
 mod xml;
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::fs;
 use std::io::{self, Read as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use sha2::{Digest, Sha256};
 use terrarium_truth::{ObservationKind, Q16, Q32};
 
+use crate::git::GitRepo;
+
 pub(crate) use knip::major;
 pub use knip::{KNIP_MIN_MAJOR, KnipCounts, installed_knip};
 pub(crate) use paths::relative_parts;
 
-/// At most this many contributors per report.
-pub const MAX_CONTRIBUTORS: usize = 20;
+pub use terrarium_truth::domain::MAX_CONTRIBUTORS;
 /// At most this many files are read for one report (a surefire run writes one per class).
 pub(crate) const MAX_FILES: usize = 10_000;
 /// At most this many bytes, over every file of one report.
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
-/// A contributor path longer than this is left out: no source file has one.
-const MAX_CONTRIBUTOR_PATH: usize = 1024;
+/// A contributor path longer than this is left out: no source file has one. A failing
+/// workflow's name is cut to it.
+pub(crate) const MAX_CONTRIBUTOR_PATH: usize = 1024;
 
 /// The report formats, each its own adapter with its own version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -191,6 +194,10 @@ pub enum Why {
     Missing,
     /// A configured path that is absolute or leaves the repository.
     OutsideRepository(String),
+    /// On the way to the report, a symbolic link the repository commits leads outside it: a
+    /// cloned repository cannot have the strip read a file elsewhere. Links a tool makes, which
+    /// the repository does not hold, are followed.
+    CommittedLink(String),
     /// The path is a directory, a device, a pipe or a broken link.
     NotAFile(String),
     /// More bytes or files than the format reads.
@@ -288,9 +295,13 @@ fn load(root: &Path, format: Format, files: &[String]) -> Result<Vec<Loaded>, Wh
     sorted.dedup();
     let mut total = 0_u64;
     let mut loaded = Vec::with_capacity(sorted.len());
+    let mut links = Links::new(root);
     for path in sorted {
-        if paths::relative_parts(path).is_none() {
+        let Some(parts) = paths::relative_parts(path) else {
             return Err(Why::OutsideRepository(path.clone()));
+        };
+        if let Some(link) = links.committed_leading_out(&parts) {
+            return Err(Why::CommittedLink(link));
         }
         let file = read_bounded(&root.join(path), path, format.max_file_bytes())?;
         total = total.saturating_add(u64::try_from(file.bytes.len()).unwrap_or(u64::MAX));
@@ -300,6 +311,60 @@ fn load(root: &Path, format: Format, files: &[String]) -> Result<Vec<Loaded>, Wh
         loaded.push(file);
     }
     Ok(loaded)
+}
+
+/// The symbolic links on the way to a report, asked of the repository only when one leads
+/// outside it, which is rare: then the repository at the root is opened once for the report.
+struct Links<'a> {
+    root: &'a Path,
+    /// The root, every link resolved; none when it cannot be resolved.
+    real_root: Option<PathBuf>,
+    /// The repository at the root, opened the first time a link asks; none if it holds none.
+    repo: OnceCell<Option<GitRepo>>,
+}
+
+impl Links<'_> {
+    fn new(root: &Path) -> Links<'_> {
+        Links {
+            root,
+            real_root: root.canonicalize().ok(),
+            repo: OnceCell::new(),
+        }
+    }
+
+    /// The first part of the path `parts` names, joined by `/`, that is a symbolic link leading
+    /// outside the root which the repository commits. An index that cannot be read counts every
+    /// such link as committed; a root that holds no repository commits none.
+    fn committed_leading_out(&mut self, parts: &[&str]) -> Option<String> {
+        let mut full = self.root.to_path_buf();
+        for (n, part) in parts.iter().enumerate() {
+            full.push(part);
+            let link = fs::symlink_metadata(&full).is_ok_and(|meta| meta.file_type().is_symlink());
+            if !link {
+                continue;
+            }
+            let inside = match (full.canonicalize(), &self.real_root) {
+                (Ok(target), Some(root)) => target.starts_with(root),
+                // A broken link reads nothing; an unresolved root is taken as left.
+                (Err(_), _) => true,
+                (Ok(_), None) => false,
+            };
+            if inside {
+                continue;
+            }
+            let shown = parts.get(..=n).unwrap_or(parts).join("/");
+            let root = self.root;
+            let committed = self
+                .repo
+                .get_or_init(|| GitRepo::open(root).ok())
+                .as_ref()
+                .is_some_and(|repo| repo.tracks_link(&shown).unwrap_or(true));
+            if committed {
+                return Some(shown);
+            }
+        }
+        None
+    }
 }
 
 /// Reads a regular file of at most `limit` bytes. `shown` names it in the reason.

@@ -226,7 +226,7 @@ impl Soak {
                 probe: KIND,
                 version: env!("CARGO_PKG_VERSION"),
                 os: crate::pinning::os_version(),
-                started_unix: u64::try_from(crate::now_secs()).unwrap_or(0),
+                started_unix: u64::try_from(terrarium_engine::wall_secs()).unwrap_or(0),
                 minutes: setup.minutes,
                 scene,
                 presenter: None,

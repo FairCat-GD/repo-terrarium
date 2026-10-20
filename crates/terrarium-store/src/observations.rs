@@ -10,8 +10,7 @@ use terrarium_truth::{CommitId, ObservationKind, Q16};
 use crate::error::is_unique_violation;
 use crate::{Invalid, Store, StoreError, TerrariumId, raw};
 
-/// At most this many contributors per observation.
-pub const MAX_CONTRIBUTORS: usize = 20;
+pub use terrarium_truth::domain::MAX_CONTRIBUTORS;
 /// The largest `raw` the store accepts, in bytes. Adapters keep theirs well below it.
 pub const MAX_RAW_BYTES: usize = 64 * 1024;
 

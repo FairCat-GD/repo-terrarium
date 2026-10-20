@@ -52,7 +52,12 @@ pub fn install(dir: PathBuf, on: bool) {
         if ON.load(Ordering::Relaxed)
             && let Some(dir) = DIR.get()
         {
-            let _ = write(dir, &crash(info), crate::now_secs(), std::process::id());
+            let _ = write(
+                dir,
+                &crash(info),
+                terrarium_engine::wall_secs(),
+                std::process::id(),
+            );
         }
         previous(info);
     }));

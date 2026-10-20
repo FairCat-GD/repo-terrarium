@@ -17,7 +17,7 @@ pub mod watch;
 pub mod worker;
 
 pub use ci::{CiConfig, CiStatus, POLL_EVERY};
-pub use clock::{Clock, ManualClock, SystemClock};
+pub use clock::{Clock, ManualClock, SystemClock, wall_secs};
 pub use details::{Buried, DeadCodeFrom, Details, Files, Found, Raised};
 pub use knip::KnipStatus;
 pub use live::{

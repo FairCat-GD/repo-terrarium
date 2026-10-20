@@ -730,6 +730,12 @@ impl Composer {
             swaying,
             residents,
             shaken: self.shaken(input, now),
+            after_rain: input.event.as_ref().is_some_and(|event| {
+                matches!(
+                    event.kind,
+                    EventKind::RainAfterDrought | EventKind::Clearing
+                )
+            }),
         }
     }
 
@@ -1155,23 +1161,19 @@ impl Composer {
 
     /// Every visible look at `now`, as depicted states in subject order. The label's text,
     /// which reads no salt, is not among them.
-    pub fn depicted(&self, now: Millis) -> Vec<Depicted> {
+    pub fn depicted(&self, art: &Art, table: &ArtTable, now: Millis) -> Vec<Depicted> {
         let now = self.pause.scene(now);
         let mut depicted = Vec::new();
-        for (&(id, spot), shown) in &self.residents {
-            let opacity = shown.opacity.value(now);
-            if opacity > 0 {
-                let view = shown.last.view;
-                depicted.push(Depicted {
-                    subject: Subject::Resident { id, spot },
-                    part: 0,
-                    piece: Piece::Resident {
-                        species: view.species,
-                        stage: view.stage,
-                    },
-                    opacity,
-                });
-            }
+        for ((id, spot), _, record, opacity) in self.drawn_residents(art, table, now) {
+            depicted.push(Depicted {
+                subject: Subject::Resident { id, spot },
+                part: 0,
+                piece: Piece::Resident {
+                    species: record.view.species,
+                    stage: record.view.stage,
+                },
+                opacity,
+            });
         }
         for (&subject, entry) in &self.entries {
             for (part, looks) in (0_u8..).zip(&entry.parts) {

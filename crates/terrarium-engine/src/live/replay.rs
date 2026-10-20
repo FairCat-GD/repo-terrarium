@@ -109,7 +109,9 @@ impl Live {
                 return ControlFlow::Break(());
             }
             if p.total > 0 && started.elapsed() >= after {
-                let percent = u8::try_from(p.diffed.saturating_mul(100) / p.total).unwrap_or(100);
+                // In tens: the label crosses over to each value it shows, so it shows few.
+                let percent =
+                    u8::try_from(p.diffed.saturating_mul(100) / p.total / 10 * 10).unwrap_or(100);
                 if last != Some(percent) {
                     last = Some(percent);
                     progress(percent);

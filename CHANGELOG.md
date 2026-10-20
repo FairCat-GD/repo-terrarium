@@ -5,6 +5,60 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-20
+
+Polish. The strip opens on its settled scene rather than fading in from black, its label no
+longer flickers when its lines change, and a failure in drawing it freezes the picture with
+"halted" on the label instead of closing the app. The first window shows a terrarium.
+Lightning is rarer during a long CI failure, so the same history grows a slightly different
+world (simulation version 9).
+
+### Added
+
+- **The connect window shows a thriving terrarium** across its top, by day or by night as the
+  clock is, as wide as the window and drawn pixel for pixel; its words now say plainly that the
+  app only reads, and that no data leaves the computer unless GitHub Actions is connected.
+- **A folder inside a repository connects that repository,** as git finds it, though never one
+  at or above the home folder from a folder below it.
+- **A branch that tracks a GitHub branch of another name** takes its CI weather from that
+  branch.
+- **GitHub's certificate not being trusted** (as when an antivirus reads secure connections) is
+  said so in Settings, rather than as GitHub not being reached.
+- **After rain, the snail and the earthworm come out:** for the hour a rain after drought or a
+  storm's clearing is in the scene, they are among the residents moving.
+
+### Changed
+
+- **Lightning strikes on the third day of a CI failure, then every third day,** rather than
+  every day from the third. The simulation version is now 9: the history is replayed once at
+  the next launch.
+- **The strip shows its settled scene from the first picture** at launch and on connecting,
+  rather than a black sky fading in.
+- **The label keeps its rhythm when its lines change:** a line that did not change no longer
+  crosses over to itself, a line not showing changes unseen, and a history read's progress
+  shows in tens.
+- **A setting that could not be saved is undone** in the strip and the window, so the strip
+  never runs on a value the rest of the app does not read; the window says why.
+- **A time-lapse hotkey stored on the raise's keys** takes a hotkey of its own; one the system
+  will not register says so in the Hotkeys tab.
+- **The soil panel no longer says "yet"** of what is not read or measured.
+- **The settings window's headings and explanations** are set apart, its size labels on Windows
+  follow the band the strip is given, and its window and the time-lapse's word their sentences
+  alike.
+- **CI weather keeps only the branches it can show** (HEAD's and the default branch's).
+
+### Fixed
+
+- **A report reached through a link the repository commits, leading outside it,** is refused
+  and named, so a cloned repository cannot have the strip read a file elsewhere. Links that
+  tools make, and links that stay inside, are read as before.
+- **`record-tests` runs only a program found in a folder named by its full path on `PATH`,** never
+  one in the working folder.
+- **A failing workflow's name from GitHub** is cut to a path's length.
+- **A failure in the settings writer** answers its change and goes on with the next.
+- **The settings window says how day and night cross over** truthfully: over 45 minutes at those
+  times, and within seconds when a time is changed.
+
 ## [0.29.0] - 2026-10-18
 
 The strip costs far less to run. On a Mac it is now shown the way macOS shows a picture, scaled

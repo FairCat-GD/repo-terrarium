@@ -7,13 +7,66 @@
 //!
 //! The form is a model the window only draws; what a press asks for is an [`Intent`] the strip
 //! carries out.
+//!
+//! Across the top of the window stands a still of a thriving terrarium, the sample's, by day or
+//! by night as the clock is: the first window looks like what it connects. It is composed as
+//! wide as the window, at the largest whole scale its scene fits (I-11: never stretched), and is
+//! a picture of the product, never of the repository; the report takes its place once one is
+//! connected.
 
 use std::path::PathBuf;
 
+use terrarium_compose::catalog::Art;
+use terrarium_compose::compositor::composite;
+use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH, NativeImage, Viewport, WIDEST};
+use terrarium_compose::preset;
+use terrarium_compose::variants::ArtTable;
+
 use crate::copy::connect as words;
+use crate::picture;
 use crate::shell::{Intent, Picking};
 
+/// The most the still is scaled up, in screen pixels per art pixel.
+const STILL_UP_TO: u32 = 8;
+
+/// The sample terrarium, thriving and settled, `columns` wide, at `palette_mix` (0 by day, 255
+/// by night).
+pub fn still(palette_mix: u8, columns: u32) -> Option<NativeImage> {
+    let art = Art::embedded();
+    let frame = preset::frame_in(
+        art,
+        ArtTable::embedded(),
+        "thriving",
+        crate::copy::sample_label(),
+        palette_mix,
+        Viewport::new(columns),
+    )?;
+    Some(composite(art, &frame))
+}
+
+/// For a window `room` screen pixels wide: the whole scale of the still and the columns it is
+/// composed with, so that it spans the window.
+pub fn still_fit(room: f32) -> (u32, u32) {
+    let k = picture::whole_scale(NATIVE_WIDTH, room, STILL_UP_TO);
+    // The most whole columns that fit, within what the composer draws.
+    let fits = |columns: u32| u16::try_from(columns * k).is_ok_and(|wide| f32::from(wide) <= room);
+    let columns = (NATIVE_WIDTH..=WIDEST)
+        .rev()
+        .find(|&columns| fits(columns))
+        .unwrap_or(NATIVE_WIDTH);
+    (k, columns)
+}
+
+/// The still as shown: its palette mix, and the picture with its serial once composed.
+struct Still {
+    mix: u8,
+    image: Option<NativeImage>,
+    serial: u64,
+}
+
 pub struct ConnectForm {
+    still: Option<Still>,
+    texture: Option<picture::Texture>,
     first_run: bool,
     path: Option<PathBuf>,
     open_at_login: bool,
@@ -38,6 +91,8 @@ enum Page {
 impl ConnectForm {
     pub fn new(first_run: bool) -> ConnectForm {
         ConnectForm {
+            still: None,
+            texture: None,
             first_run,
             path: None,
             open_at_login: true,
@@ -46,6 +101,17 @@ impl ConnectForm {
             busy: false,
             intent: None,
         }
+    }
+
+    /// Shows the still across the window's top, at `palette_mix`.
+    #[must_use]
+    pub fn with_still(mut self, palette_mix: u8) -> ConnectForm {
+        self.still = Some(Still {
+            mix: palette_mix,
+            image: None,
+            serial: 0,
+        });
+        self
     }
 
     /// "Choose folder…": asks for the picker.
@@ -124,7 +190,39 @@ impl ConnectForm {
         }
     }
 
+    /// The still across the top of the window, edge to edge, composed again when the window's
+    /// width asks for other columns.
+    fn still_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(still) = &mut self.still else {
+            return;
+        };
+        let ctx = ui.ctx().clone();
+        let ppp = ctx.pixels_per_point();
+        let window = ctx.content_rect();
+        let (k, columns) = still_fit(window.width() * ppp);
+        if still.image.as_ref().map(NativeImage::width) != Some(columns) {
+            still.image = self::still(still.mix, columns);
+            still.serial += 1;
+        }
+        let Some(image) = &still.image else {
+            return;
+        };
+        let texture = picture::upload(&mut self.texture, &ctx, image, still.serial);
+        let points = |native: u32| f32::from(u16::try_from(native * k).unwrap_or(u16::MAX)) / ppp;
+        let rect = egui::Rect::from_min_size(
+            window.min,
+            egui::vec2(points(columns), points(NATIVE_HEIGHT)),
+        );
+        let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        ui.painter()
+            .with_clip_rect(window)
+            .image(texture.id(), rect, whole, egui::Color32::WHITE);
+        // The form starts a little below it.
+        ui.add_space(rect.bottom() - ui.cursor().top() + 12.0);
+    }
+
     fn choose_ui(&mut self, ui: &mut egui::Ui) {
+        self.still_ui(ui);
         ui.heading(words::HEADING);
         ui.add_space(4.0);
         ui.label(words::INTRO);
@@ -179,6 +277,38 @@ impl ConnectForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_still_is_the_sample_terrarium_thriving_by_day_or_by_night() {
+        let art = Art::embedded();
+        for (mix, columns) in [(0, 640), (255, 680)] {
+            let frame = preset::frame_in(
+                art,
+                ArtTable::embedded(),
+                "thriving",
+                "repo-terrarium",
+                mix,
+                Viewport::new(columns),
+            )
+            .unwrap();
+            let image = still(mix, columns).unwrap();
+            assert_eq!(image.width(), columns);
+            assert_eq!(image, composite(art, &frame));
+        }
+        assert_ne!(still(0, 640), still(255, 640));
+    }
+
+    #[test]
+    fn the_still_spans_the_window_at_a_whole_scale() {
+        // 680 points on a 2x display: 2 screen pixels an art pixel, 680 columns.
+        assert_eq!(still_fit(1_360.0), (2, 680));
+        // At 1x: one to one, 680 columns.
+        assert_eq!(still_fit(680.0), (1, 680));
+        // Wider than the composer draws: the most columns it draws.
+        assert_eq!(still_fit(1_800.0), (2, 840));
+        // Narrower than the scene: the scene's 640.
+        assert_eq!(still_fit(500.0), (1, 640));
+    }
 
     #[test]
     fn a_folder_is_picked_then_connected_in_two_steps() {

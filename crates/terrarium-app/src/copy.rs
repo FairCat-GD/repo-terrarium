@@ -135,7 +135,7 @@ pub fn live_label(facts: &LabelFacts, now: i64) -> Vec<String> {
 /// One note's line, at most 18 characters.
 fn note_line(note: Note, now: i64) -> String {
     match note {
-        Note::Halted => "halted".to_owned(),
+        Note::Halted => label_halted().to_owned(),
         Note::RepoNotFound => "repo not found".to_owned(),
         Note::Progress(percent) => format!("history {percent}%"),
         Note::Tuning => "tuning".to_owned(),
@@ -606,6 +606,9 @@ fn why_text(format: Format, why: &Why) -> String {
     match why {
         Why::Missing => "no file is there".to_owned(),
         Why::OutsideRepository(path) => format!("{path} is outside the repository"),
+        Why::CommittedLink(path) => {
+            format!("{path} is a link the repository holds, leading outside it")
+        }
         Why::NotAFile(path) => format!("{path} is not a regular file"),
         Why::TooLarge(path) => format!("{path} is larger than a report is read"),
         Why::Io { path, kind } => format!("{path} could not be read ({kind})"),
@@ -900,6 +903,11 @@ pub fn label_paused() -> &'static str {
     "paused"
 }
 
+/// The label of a strip whose truth or composer failed: it stands still from then (I-16).
+pub fn label_halted() -> &'static str {
+    "halted"
+}
+
 /// A hotkey's keys as the platform's keyboards name them: Control-Option-T on a Mac, in
 /// Apple's order, and Ctrl+Alt+T on Windows.
 pub fn hotkey(binding: Binding, platform: Platform) -> String {
@@ -969,8 +977,10 @@ pub fn host_failed(err: &HostError) -> String {
 /// The connect window.
 pub mod connect {
     pub const HEADING: &str = "Connect a repository";
-    pub const INTRO: &str = "The terrarium grows from one local git repository. Only its git \
-        history is read; nothing in it runs.";
+    pub const INTRO: &str = "Pick a git repository on your computer and the terrarium will grow \
+        from it: from its commit history, and from any coverage, test or dead-code reports you \
+        already produce. Read-only: nothing in your repository is ever changed, and no data \
+        leaves your computer, unless you connect GitHub Actions in Settings for CI weather.";
     pub const CHOOSE: &str = "Choose folder…";
     pub const NONE_CHOSEN: &str = "No folder chosen";
     pub const OPEN_AT_LOGIN: &str = "Open at login";
@@ -1037,8 +1047,11 @@ pub mod settings {
 
     /// A change that could not be kept.
     pub fn not_saved(err: &impl Display) -> String {
-        format!("The setting could not be saved: {err}")
+        format!("The setting could not be saved: {err}.")
     }
+
+    /// Why, when writing it failed in the app itself.
+    pub const WRITER_STOPPED: &str = "writing it failed in the app";
 
     // The terrarium's data.
     pub const DATA_FACT: &str = "Light, soil and weather history live only in the \
@@ -1295,6 +1308,10 @@ pub mod settings {
             CiStatus::Unreachable(slug) => {
                 format!("GitHub could not be reached for {slug}; it is asked again later.")
             }
+            CiStatus::Certificate(slug) => format!(
+                "GitHub's certificate was not trusted for {slug}: an antivirus or a proxy that \
+                 reads secure connections may stand in between. It is asked again later."
+            ),
             CiStatus::Waiting(slug) => {
                 format!("GitHub asked to wait before the next look at {slug}.")
             }
@@ -1396,7 +1413,10 @@ pub mod settings {
             LoginError::NotBundled => {
                 "Open at login applies to the installed app; this build is not one.".to_owned()
             }
-            LoginError::Os(reason) => format!("Open at login could not be set: {reason}"),
+            LoginError::Os(reason) => format!("Open at login could not be set: {reason}."),
+            LoginError::Failed => {
+                "Open at login could not be set: the app failed to ask the system.".to_owned()
+            }
         }
     }
 
@@ -1441,19 +1461,19 @@ pub mod panel {
 
     /// A page with nothing to list says why, in one line.
     pub const NO_COVERAGE_REPORT: &str = "no coverage report found";
-    pub const COVERAGE_NOT_READ: &str = "no coverage read yet";
+    pub const COVERAGE_NOT_READ: &str = "no coverage read";
     pub const NO_UNCOVERED_LINES: &str = "no uncovered lines";
     pub const NO_TEST_REPORT: &str = "no test report found";
-    pub const TESTS_NOT_READ: &str = "no test run read yet";
+    pub const TESTS_NOT_READ: &str = "no test run read";
     pub const NO_FAILING_TESTS: &str = "no failing tests";
     pub const FAILING_UNNAMED: &str = "the failing tests are not named";
     pub const NO_FAILING_WORKFLOWS: &str = "no failing workflows";
     pub const WORKFLOWS_UNNAMED: &str = "the failing workflows are not named";
-    pub const KNIP_NOT_RUN: &str = "Knip has not run here yet";
-    pub const NOT_MEASURED: &str = "not measured yet";
+    pub const KNIP_NOT_RUN: &str = "Knip has not run here";
+    pub const NOT_MEASURED: &str = "not measured";
     pub const NO_SOURCE: &str = "no code in the languages read";
     pub const NO_KNIP_REPORT: &str = "no Knip report found";
-    pub const DEAD_CODE_NOT_READ: &str = "no dead code read yet";
+    pub const DEAD_CODE_NOT_READ: &str = "no dead code read";
     pub const COVERAGE_OFF: &str = "coverage is off in settings";
     pub const TESTS_OFF: &str = "tests are off in settings";
     pub const DEAD_CODE_OFF: &str = "dead code is off in settings";
@@ -1553,6 +1573,9 @@ pub fn login_not_set(err: &LoginError) -> String {
         LoginError::Os(reason) => {
             format!("{BINARY_NAME}: open at login could not be set: {reason}")
         }
+        LoginError::Failed => {
+            format!("{BINARY_NAME}: open at login could not be set: the app failed to ask")
+        }
     }
 }
 
@@ -1624,7 +1647,7 @@ pub mod timelapse {
     } else {
         "An MP4 is saved through ffmpeg, which is not on PATH."
     };
-    pub const PREPARING: &str = "Preparing the days";
+    pub const PREPARING: &str = "Preparing the days…";
     pub const NO_DAY_YET: &str = "No day of this history has ended yet.";
     pub const ANOTHER_REPOSITORY: &str =
         "The folder holds another repository than this terrarium's.";
@@ -1635,7 +1658,7 @@ pub mod timelapse {
     pub fn reading(percent: Option<u8>) -> String {
         match percent {
             Some(percent) => format!("Reading the history: {percent}%"),
-            None => "Reading the history".to_owned(),
+            None => "Reading the history…".to_owned(),
         }
     }
 
@@ -1644,14 +1667,14 @@ pub mod timelapse {
         match err {
             LapseError::NotThisRepository => ANOTHER_REPOSITORY.to_owned(),
             LapseError::BeforeHistory => OUTSIDE_HISTORY.to_owned(),
-            LapseError::Git(err) => format!("The history could not be read: {err}"),
-            LapseError::Store(err) => format!("The observations could not be read: {err}"),
+            LapseError::Git(err) => format!("The history could not be read: {err}."),
+            LapseError::Store(err) => format!("The observations could not be read: {err}."),
         }
     }
 
     pub fn replay_failed(err: &ReplayError) -> String {
         format!(
-            "The replay could not run: {}",
+            "The replay could not run: {}.",
             super::replay_problem(err, "the history")
         )
     }
@@ -1925,35 +1948,70 @@ mod tests {
     use crate::probe::report::{EndReason, Report, StepReport};
 
     /// Every string literal in a source file, tests included, so a string anywhere in this module
-    /// is checked; a list of rendered strings would miss one nobody added to it.
+    /// is checked; a list of rendered strings would miss one nobody added to it. Raw strings
+    /// are read whole, escapes and all, and comments of both kinds are skipped.
     fn string_literals(source: &str) -> Vec<String> {
+        let chars: Vec<char> = source.chars().collect();
+        let at = |i: usize| chars.get(i).copied();
         let mut literals = Vec::new();
-        let mut chars = source.chars();
-        while let Some(c) = chars.next() {
+        let mut i = 0;
+        while let Some(c) = at(i) {
+            let word_before = i > 0 && at(i - 1).is_some_and(|c| c.is_alphanumeric() || c == '_');
+            i += 1;
             match c {
-                // A comment runs to the end of its line.
-                '/' if chars.clone().next() == Some('/') => {
-                    chars.by_ref().find(|&c| c == '\n');
+                // A line comment runs to the end of its line; a block comment to its close.
+                '/' if at(i) == Some('/') => {
+                    while at(i).is_some_and(|c| c != '\n') {
+                        i += 1;
+                    }
+                }
+                '/' if at(i) == Some('*') => {
+                    i += 1;
+                    while at(i).is_some() && !(at(i) == Some('*') && at(i + 1) == Some('/')) {
+                        i += 1;
+                    }
+                    i += 2;
                 }
                 // A char literal (`'"'`, `'\\''`) is skipped; a lifetime (`'static`) is not one.
-                '\'' => {
-                    let mut ahead = chars.clone();
-                    match (ahead.next(), ahead.next()) {
-                        (Some('\\'), _) => {
-                            chars.nth(1);
-                            chars.by_ref().find(|&c| c == '\'');
+                '\'' => match (at(i), at(i + 1)) {
+                    (Some('\\'), _) => {
+                        i += 2;
+                        while at(i).is_some_and(|c| c != '\'') {
+                            i += 1;
                         }
-                        (Some(_), Some('\'')) => {
-                            chars.nth(1);
-                        }
-                        _ => {}
+                        i += 1;
                     }
+                    (Some(_), Some('\'')) => i += 2,
+                    _ => {}
+                },
+                // A raw string: `r"…"`, `r#"…"#` and so on, nothing in it escaped.
+                'r' if !word_before && matches!(at(i), Some('"' | '#')) => {
+                    let hashes = chars[i..].iter().take_while(|&&c| c == '#').count();
+                    if at(i + hashes) != Some('"') {
+                        continue;
+                    }
+                    i += hashes + 1;
+                    let mut literal = String::new();
+                    while let Some(c) = at(i) {
+                        let closes = c == '"' && (1..=hashes).all(|k| at(i + k) == Some('#'));
+                        if closes {
+                            i += hashes + 1;
+                            break;
+                        }
+                        literal.push(c);
+                        i += 1;
+                    }
+                    literals.push(literal);
                 }
                 '"' => {
                     let mut literal = String::new();
-                    while let Some(c) = chars.next() {
+                    while let Some(c) = at(i) {
+                        i += 1;
                         match c {
-                            '\\' => literal.extend(chars.next()),
+                            '\\' => {
+                                literal.extend(at(i));
+                                i += 1;
+                            }
                             '"' => break,
                             _ => literal.push(c),
                         }
@@ -1964,6 +2022,23 @@ mod tests {
             }
         }
         literals
+    }
+
+    #[test]
+    fn the_literal_scan_reads_raw_strings_and_skips_comments() {
+        let source = concat!(
+            "let a = \"plain \\\" quoted\";\n",
+            "// \"commented\"\n",
+            "/* \"blocked\" */\n",
+            "let b = r\"raw \\ back\";\n",
+            "let c = r#\"raw \"hashed\" end\"#;\n",
+            "let d = for_r\"x\";\n",
+            "let e: &'static str = '\"'.to_string();\n",
+        );
+        assert_eq!(
+            string_literals(source),
+            ["plain \" quoted", "raw \\ back", "raw \"hashed\" end", "x",]
+        );
     }
 
     #[test]
@@ -2082,7 +2157,7 @@ mod tests {
     fn a_time_lapse_s_replay_failure_is_worded_and_never_a_debug_dump() {
         assert_eq!(
             timelapse::replay_failed(&ReplayError::BasisChanged),
-            "The replay could not run: the replay could not continue from its own state"
+            "The replay could not run: the replay could not continue from its own state."
         );
         let out_of_order = timelapse::replay_failed(&ReplayError::CommitsOutOfOrder {
             commit: terrarium_truth::CommitId::from_hex(&"ab".repeat(20)).unwrap(),
@@ -2090,7 +2165,7 @@ mod tests {
         assert_eq!(
             out_of_order,
             format!(
-                "The replay could not run: the history came out of order at commit {}",
+                "The replay could not run: the history came out of order at commit {}.",
                 "ab".repeat(20)
             )
         );
@@ -2220,6 +2295,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The calls that put text in front of a person: a window's widgets, its title, the
+    /// menu, and the terminal.
+    const SHOWING: &[&str] = &[
+        ".label(",
+        ".button(",
+        ".heading(",
+        ".small(",
+        ".strong(",
+        ".weak(",
+        ".monospace(",
+        ".hyperlink_to(",
+        ".on_hover_text(",
+        ".checkbox(",
+        ".radio_value(",
+        ".selectable_value(",
+        ".selectable_label(",
+        "RichText::new(",
+        "Button::new(",
+        "Label::new(",
+        "with_title(",
+        "MenuItem::new(",
+        "Submenu::new(",
+    ];
+
+    /// The macros that print to the terminal, by name: this file's literals hold no
+    /// exclamation mark, so each call is made up when scanning.
+    const PRINTING: &[&str] = &["println", "print"];
+
+    /// Whether `literal` holds a word: a letter outside every `{...}` placeholder.
+    fn worded(literal: &str) -> bool {
+        let mut depth = 0_u32;
+        literal.chars().any(|c| {
+            match c {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => return depth == 0 && c.is_alphabetic(),
+            }
+            false
+        })
+    }
+
+    /// I-8's other half: the words live here, so no shipped call outside this module shows a
+    /// worded literal. The scan reads each call's line, and the next one when the call opens
+    /// there and goes on.
+    #[test]
+    fn no_user_facing_literal_outside_copy() {
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|name| name != "copy") {
+                        sources(&path, out);
+                    }
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && path.file_name().is_some_and(|name| name != "copy.rs")
+                {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        assert!(files.len() > 20, "{} sources", files.len());
+        let mut found = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            // Tests may word what they like.
+            let shipped = text.split("\n#[cfg(test)]\nmod tests").next().unwrap_or("");
+            let lines: Vec<&str> = shipped.lines().collect();
+            for (n, line) in lines.iter().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                let prints = PRINTING
+                    .iter()
+                    .any(|name| code.contains(&format!("{name}{}(", '!')));
+                if !prints && !SHOWING.iter().any(|call| code.contains(call)) {
+                    continue;
+                }
+                // A call rustfmt split goes on to the next line.
+                let next = if code.trim_end().ends_with('(') {
+                    lines.get(n + 1).copied().unwrap_or("")
+                } else {
+                    ""
+                };
+                let call = format!("{code}\n{next}");
+                if string_literals(&call).iter().any(|literal| worded(literal)) {
+                    found.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "words outside copy:\n{}",
+            found.join("\n")
+        );
     }
 
     #[test]
@@ -2545,6 +2719,10 @@ mod tests {
                 (
                     Why::OutsideRepository("../x".into()),
                     "../x is outside the repository",
+                ),
+                (
+                    Why::CommittedLink("coverage".into()),
+                    "coverage is a link the repository holds, leading outside it",
                 ),
                 (
                     Why::NotAFile("junit.xml".into()),

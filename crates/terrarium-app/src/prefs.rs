@@ -9,6 +9,8 @@
 //! The GitHub token is no setting: [`Writer`] keeps it in the keychain, and it never reaches
 //! the `settings` table, a [`Pref`] or an answer.
 
+use std::collections::BTreeMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
@@ -33,6 +35,7 @@ use terrarium_store::identifiers::{
 };
 use terrarium_store::{DataDir, Store, StoreError};
 
+use crate::copy;
 use crate::hotkey::{Binding, Which};
 use crate::login::LoginItem;
 use crate::monitor::MonitorId;
@@ -236,6 +239,27 @@ pub enum Pref {
 }
 
 impl Pref {
+    /// The setting it is stored under, which [`save`] writes; `None` for a report path of a
+    /// metric, which reads no report and is never stored.
+    pub const fn key(&self) -> Option<&'static str> {
+        match self {
+            Pref::Monitor(_) => Some(SETTING_STRIP_MONITOR),
+            Pref::Edge(_) => Some(SETTING_STRIP_EDGE),
+            Pref::SizeStep(_) => Some(SETTING_STRIP_SIZE_STEP),
+            Pref::Hotkey(Which::Raise, _) => Some(SETTING_HOTKEYS_RAISE),
+            Pref::Hotkey(Which::TimeLapse, _) => Some(SETTING_HOTKEYS_TIMELAPSE),
+            Pref::DayStarts(_) => Some(SETTING_DAYNIGHT_DAY_START),
+            Pref::NightStarts(_) => Some(SETTING_DAYNIGHT_NIGHT_START),
+            Pref::DimAfter(_) => Some(SETTING_DIM_AFTER_MINUTES),
+            Pref::OpenAtLogin(_) => Some(SETTING_LOGIN_OPEN_AT_LOGIN),
+            Pref::CrashLog(_) => Some(SETTING_CRASHLOG_OPT_IN),
+            Pref::AdapterEnabled(kind, _) => Some(kind.enabled_key()),
+            Pref::ReportPath(kind, _) => kind.path_key(),
+            Pref::KnipRun(_) => Some(SETTING_KNIP_RUN_OPT_IN),
+            Pref::CiRepository(_) => Some(SETTING_CI_GITHUB_REPO),
+        }
+    }
+
     /// Whether the engine reads it: an adapter's setting, which a refresh then takes in.
     pub const fn is_adapter(&self) -> bool {
         matches!(
@@ -277,10 +301,15 @@ impl Prefs {
                 .and_then(|text| Binding::parse(&text))
                 .filter(|binding| binding.allowed().is_ok())
         };
+        // The time-lapse never takes the raise's keys. When the raise holds the time-lapse's
+        // default, the raise's own default is free, the two defaults being different. Rows the
+        // settings window never writes (by hand, or by an old version) are the only way there,
+        // so the fallback is not written back.
         let raise = binding(SETTING_HOTKEYS_RAISE).unwrap_or(defaults.raise);
         let timelapse = binding(SETTING_HOTKEYS_TIMELAPSE)
             .filter(|binding| *binding != raise)
-            .unwrap_or(defaults.timelapse);
+            .or(Some(defaults.timelapse).filter(|binding| *binding != raise))
+            .unwrap_or(defaults.raise);
         let day = text(SETTING_DAYNIGHT_DAY_START).and_then(|t| TimeOfDay::parse(&t));
         let night = text(SETTING_DAYNIGHT_NIGHT_START).and_then(|t| TimeOfDay::parse(&t));
         let (day_starts, night_starts) = match (
@@ -329,6 +358,30 @@ impl Prefs {
         match which {
             Which::Raise => self.raise,
             Which::TimeLapse => self.timelapse,
+        }
+    }
+
+    /// The change that would set what `like` changes back to its value here.
+    pub fn restoring(&self, like: &Pref) -> Pref {
+        match like {
+            Pref::Monitor(_) => Pref::Monitor(self.monitor.clone()),
+            Pref::Edge(_) => Pref::Edge(self.edge),
+            Pref::SizeStep(_) => Pref::SizeStep(self.size_step),
+            Pref::Hotkey(which, _) => Pref::Hotkey(*which, self.binding(*which)),
+            Pref::DayStarts(_) => Pref::DayStarts(self.day_starts),
+            Pref::NightStarts(_) => Pref::NightStarts(self.night_starts),
+            Pref::DimAfter(_) => Pref::DimAfter(self.dim_after_minutes),
+            Pref::OpenAtLogin(_) => Pref::OpenAtLogin(self.open_at_login),
+            Pref::CrashLog(_) => Pref::CrashLog(self.crash_log),
+            Pref::AdapterEnabled(kind, _) => {
+                Pref::AdapterEnabled(*kind, kind.enabled(self.adapters.enabled))
+            }
+            Pref::ReportPath(kind, _) => Pref::ReportPath(
+                *kind,
+                kind.path(&self.adapters.overrides).map(str::to_owned),
+            ),
+            Pref::KnipRun(_) => Pref::KnipRun(self.adapters.knip_run.clone()),
+            Pref::CiRepository(_) => Pref::CiRepository(self.adapters.ci_repository.clone()),
         }
     }
 
@@ -402,6 +455,57 @@ pub fn save(store: &mut Store, pref: &Pref) -> Result<(), StoreError> {
     }
 }
 
+/// What the store holds of each setting, and how many changes of each the writer has yet to
+/// answer. The strip runs on a change at once, while the engine reads the stored value: a change
+/// the writer fails to save is undone, to the value stored, once no later change of the same
+/// setting waits (that one's answer decides). With a store that never opened, every change is
+/// undone, and the settings window says why.
+#[derive(Clone, Debug)]
+pub struct Saving {
+    stored: Prefs,
+    in_flight: BTreeMap<&'static str, u32>,
+}
+
+impl Saving {
+    /// Starts from what the store held at load.
+    pub fn new(stored: Prefs) -> Saving {
+        Saving {
+            stored,
+            in_flight: BTreeMap::new(),
+        }
+    }
+
+    /// `pref` went to the writer.
+    pub fn sent(&mut self, pref: &Pref) {
+        if let Some(key) = pref.key() {
+            *self.in_flight.entry(key).or_default() += 1;
+        }
+    }
+
+    /// `pref` was stored by other means than the writer.
+    pub fn stored(&mut self, pref: &Pref) {
+        self.stored.apply(pref);
+    }
+
+    /// The writer answered `pref`, saved or `failed`: the change to apply to undo it, when it
+    /// failed and no later change of its setting waits.
+    pub fn answered(&mut self, pref: &Pref, failed: bool) -> Option<Pref> {
+        let key = pref.key()?;
+        let waiting = self.in_flight.get_mut(key).map_or(0, |count| {
+            *count = count.saturating_sub(1);
+            *count
+        });
+        if waiting == 0 {
+            self.in_flight.remove(key);
+        }
+        if !failed {
+            self.stored.apply(pref);
+            return None;
+        }
+        (waiting == 0).then(|| self.stored.restoring(pref))
+    }
+}
+
 /// What the writer did with one change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Saved {
@@ -448,16 +552,32 @@ impl Writer {
         let _ = thread::Builder::new()
             .name("terrarium-settings".into())
             .spawn(move || {
+                // Each step is caught on its own, so a panic answers its job and the writer goes
+                // on with the next: the store is opened again after one, and a panic in the OS
+                // call comes after the value was stored, so it never reads as a failed save.
                 let mut store = Store::open(&data);
                 for job in rx {
                     match job {
                         Job::Save(pref) => {
                             let problem = match &mut store {
-                                Ok(store) => save(store, &pref).err().map(|err| err.to_string()),
+                                Ok(open) => {
+                                    let saved =
+                                        panic::catch_unwind(AssertUnwindSafe(|| save(open, &pref)));
+                                    if let Ok(done) = saved {
+                                        done.err().map(|err| err.to_string())
+                                    } else {
+                                        store = Store::open(&data);
+                                        Some(copy::settings::WRITER_STOPPED.to_owned())
+                                    }
+                                }
                                 Err(err) => Some(err.to_string()),
                             };
                             let login = match pref {
-                                Pref::OpenAtLogin(on) if problem.is_none() => login.set(on).err(),
+                                Pref::OpenAtLogin(on) if problem.is_none() => {
+                                    panic::catch_unwind(AssertUnwindSafe(|| login.set(on)))
+                                        .unwrap_or(Err(LoginError::Failed))
+                                        .err()
+                                }
                                 _ => None,
                             };
                             answer(Saved::Pref {
@@ -466,13 +586,20 @@ impl Writer {
                                 login,
                             });
                         }
-                        Job::LoginStatus => answer(Saved::LoginStatus(status())),
+                        // A status the OS could not give is no answer: the window keeps the one
+                        // it has.
+                        Job::LoginStatus => {
+                            if let Ok(status) = panic::catch_unwind(status) {
+                                answer(Saved::LoginStatus(status));
+                            }
+                        }
                         Job::Token(change) => {
                             let saved = matches!(change, TokenChange::Save(_));
-                            let done = match &change {
+                            let done = panic::catch_unwind(AssertUnwindSafe(|| match &change {
                                 TokenChange::Save(token) => keychain.save(token),
                                 TokenChange::Remove => keychain.remove(),
-                            };
+                            }))
+                            .unwrap_or(Err(KeychainError::Failed));
                             answer(Saved::Token {
                                 saved,
                                 problem: done.err(),
@@ -686,14 +813,161 @@ mod tests {
             assert_eq!(prefs.timelapse, Prefs::default().timelapse, "{refused}");
         }
         store.clear_setting(SETTING_HOTKEYS_TIMELAPSE).unwrap();
-        // Two equal hotkeys: the raise keeps its own.
+        // The raise on the time-lapse's default: the time-lapse takes the raise's, free.
         store
             .set_setting(SETTING_HOTKEYS_RAISE, "ctrl+alt+H")
             .unwrap();
         let prefs = Prefs::load(store);
         assert_eq!(prefs.raise.to_setting(), "ctrl+alt+H");
-        assert_eq!(prefs.timelapse, Prefs::default().timelapse);
-        assert_eq!(prefs.raise, prefs.timelapse, "the default itself is taken");
+        assert_eq!(prefs.timelapse, Which::Raise.default_binding());
+        assert_ne!(prefs.raise, prefs.timelapse);
+    }
+
+    #[test]
+    fn a_stored_time_lapse_on_the_raise_s_keys_falls_to_its_own_default() {
+        let mut fx = Fixture::new();
+        let store = &mut fx.store;
+        store
+            .set_setting(SETTING_HOTKEYS_RAISE, "ctrl+shift+K")
+            .unwrap();
+        store
+            .set_setting(SETTING_HOTKEYS_TIMELAPSE, "ctrl+shift+K")
+            .unwrap();
+        let prefs = Prefs::load(store);
+        assert_eq!(prefs.raise.to_setting(), "ctrl+shift+K");
+        assert_eq!(prefs.timelapse, Which::TimeLapse.default_binding());
+        // Both on the time-lapse's default: the raise keeps it, the time-lapse takes the
+        // raise's.
+        for key in [SETTING_HOTKEYS_RAISE, SETTING_HOTKEYS_TIMELAPSE] {
+            store.set_setting(key, "ctrl+alt+H").unwrap();
+        }
+        let prefs = Prefs::load(store);
+        assert_eq!(prefs.raise, Which::TimeLapse.default_binding());
+        assert_eq!(prefs.timelapse, Which::Raise.default_binding());
+    }
+
+    #[test]
+    fn every_change_is_stored_under_its_key_and_restores_itself() {
+        let mut fx = Fixture::new();
+        for pref in changed() {
+            let key = pref.key().expect("each change is stored");
+            let before: Option<serde_json::Value> = fx.store.setting(key).unwrap();
+            save(&mut fx.store, &pref).unwrap();
+            let after: Option<serde_json::Value> = fx.store.setting(key).unwrap();
+            assert_ne!(before, after, "{pref:?} under {key}");
+            let mut prefs = Prefs::default();
+            prefs.apply(&pref);
+            assert_eq!(prefs.restoring(&pref), pref);
+            assert_eq!(
+                Prefs::default().restoring(&pref).key(),
+                pref.key(),
+                "{pref:?}"
+            );
+        }
+        assert_eq!(
+            Pref::ReportPath(AdapterKind::Complexity, Some("x".into())).key(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failed_save_restores_the_stored_value_only_when_no_later_change_waits() {
+        let dim = Pref::DimAfter;
+        // A to B fails: back to A.
+        let mut saving = Saving::new(Prefs::default());
+        saving.sent(&dim(15));
+        assert_eq!(saving.answered(&dim(15), true), Some(dim(DIM_DEFAULT)));
+        // A, B, A, B with the first failing: the last change's answer decides, and it is kept.
+        let mut saving = Saving::new(Prefs::default());
+        for minutes in [15, DIM_DEFAULT, 15] {
+            saving.sent(&dim(minutes));
+        }
+        assert_eq!(saving.answered(&dim(15), true), None);
+        assert_eq!(saving.answered(&dim(DIM_DEFAULT), false), None);
+        assert_eq!(saving.answered(&dim(15), false), None);
+        saving.sent(&dim(20));
+        assert_eq!(saving.answered(&dim(20), true), Some(dim(15)));
+        // B is saved, then A fails: back to B. Another setting waiting changes nothing.
+        let mut saving = Saving::new(Prefs::default());
+        saving.sent(&dim(15));
+        assert_eq!(saving.answered(&dim(15), false), None);
+        saving.sent(&dim(DIM_DEFAULT));
+        saving.sent(&Pref::Edge(Edge::Top));
+        assert_eq!(saving.answered(&dim(DIM_DEFAULT), true), Some(dim(15)));
+        // A value stored by other means is the one gone back to.
+        saving.stored(&Pref::OpenAtLogin(true));
+        saving.sent(&Pref::OpenAtLogin(false));
+        assert_eq!(
+            saving.answered(&Pref::OpenAtLogin(false), true),
+            Some(Pref::OpenAtLogin(true))
+        );
+    }
+
+    /// A login item that panics when asked.
+    struct Panicking;
+
+    impl LoginItem for Panicking {
+        fn set(&mut self, _: bool) -> Result<(), LoginError> {
+            panic!("a login item failing in the app");
+        }
+    }
+
+    /// A keychain that panics on every call.
+    struct PanickingKeychain;
+
+    impl Keychain for PanickingKeychain {
+        fn token(&self) -> Result<Option<Token>, KeychainError> {
+            panic!("a keychain failing in the app");
+        }
+
+        fn save(&self, _: &Token) -> Result<(), KeychainError> {
+            panic!("a keychain failing in the app");
+        }
+
+        fn remove(&self) -> Result<(), KeychainError> {
+            panic!("a keychain failing in the app");
+        }
+    }
+
+    #[test]
+    fn a_login_item_or_keychain_that_panics_answers_and_the_writer_goes_on() {
+        let fx = Fixture::new();
+        let (tx, rx) = mpsc::channel();
+        let writer = Writer::start(
+            fx.data.clone(),
+            Box::new(Panicking),
+            || panic!("a status failing in the app"),
+            Arc::new(PanickingKeychain),
+            Box::new(move |saved| tx.send(saved).unwrap()),
+        );
+        writer.save(Pref::OpenAtLogin(true));
+        writer.ask_login_status();
+        writer.change_token(TokenChange::Remove);
+        writer.save(Pref::DimAfter(15));
+        let answers: Vec<Saved> = (0..3).map(|_| rx.recv().unwrap()).collect();
+        assert_eq!(
+            answers,
+            [
+                Saved::Pref {
+                    pref: Pref::OpenAtLogin(true),
+                    problem: None,
+                    login: Some(LoginError::Failed)
+                },
+                Saved::Token {
+                    saved: false,
+                    problem: Some(KeychainError::Failed)
+                },
+                Saved::Pref {
+                    pref: Pref::DimAfter(15),
+                    problem: None,
+                    login: None
+                },
+            ]
+        );
+        drop(writer);
+        let store = Store::open(&fx.data).unwrap();
+        let prefs = Prefs::load(&store);
+        assert!(prefs.open_at_login && prefs.dim_after_minutes == 15);
     }
 
     #[test]

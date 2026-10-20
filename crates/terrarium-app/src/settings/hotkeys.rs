@@ -17,6 +17,8 @@ pub struct HotkeysSection {
     chosen: [Binding; 2],
     /// Why a binding was not taken.
     refused: [Option<String>; 2],
+    /// Why the keys the strip runs on are not registered with the OS, while they are not.
+    unregistered: [Option<String>; 2],
     platform: Platform,
 }
 
@@ -34,6 +36,7 @@ impl HotkeysSection {
             current,
             chosen: current,
             refused: [None, None],
+            unregistered: [None, None],
             platform: Platform::THIS,
         }
     }
@@ -79,6 +82,11 @@ impl HotkeysSection {
         self.refused[index(which)] = Some(why);
     }
 
+    /// Whether `which`'s keys are registered with the OS: `None` when they are, else why not.
+    pub fn set_unregistered(&mut self, which: Which, why: Option<String>) {
+        self.unregistered[index(which)] = why;
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, changes: &mut Vec<Pref>) {
         let names = words::modifier_names(self.platform);
         for which in Which::ALL {
@@ -91,6 +99,9 @@ impl HotkeysSection {
                 self.current[i],
                 self.platform,
             )));
+            if let Some(why) = &self.unregistered[i] {
+                ui.label(why);
+            }
             let mut binding = self.chosen[i];
             ui.horizontal_wrapped(|ui| {
                 let mods = &mut binding.mods;
@@ -143,6 +154,20 @@ mod tests {
 
     fn binding(text: &str) -> Binding {
         Binding::parse(text).unwrap()
+    }
+
+    #[test]
+    fn an_unregistered_hotkey_says_so_until_its_keys_are_held() {
+        let mut section = HotkeysSection::new(&Prefs::default());
+        section.set_unregistered(Which::TimeLapse, Some("taken".into()));
+        // A rules refusal of the other and the unregistered line never clear each other.
+        section.choose(Which::Raise, binding("shift+T"));
+        assert_eq!(section.apply(Which::Raise), None);
+        assert_eq!(section.unregistered[1].as_deref(), Some("taken"));
+        assert!(section.refused[0].is_some());
+        section.set_unregistered(Which::TimeLapse, None);
+        assert_eq!(section.unregistered, [None, None]);
+        assert!(section.refused[0].is_some());
     }
 
     #[test]

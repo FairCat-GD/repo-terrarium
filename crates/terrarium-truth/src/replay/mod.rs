@@ -67,8 +67,9 @@ use crate::timeline::{Moment, PresentationTimeline};
 use crate::tuning::{
     BLOOM_TICKS, CLEARING_BURN_BANDS, CLEARING_BURN_ITEMS, CLEARING_BURN_PERCENT, DAILY_RECORDS,
     DROUGHT_BANDS, DROUGHT_DAYS, EARTHQUAKE_BANDS, FOSSILS_MAX, INACTIVE_TICKS, LIGHT_SHIFT_BANDS,
-    LIGHT_SHIFT_STEP, LIGHTNING_BANDS, LIGHTNING_DIP, LIGHTNING_FROM_DAYS, NEUTRAL, PASS_FROM,
-    RECOVERY_WINDOW_TICKS, SECONDS_PER_DAY, SETTLING_TICKS, SINKHOLE_BANDS, WINDSTORM_BANDS,
+    LIGHT_SHIFT_STEP, LIGHTNING_BANDS, LIGHTNING_DIP, LIGHTNING_EVERY_DAYS, LIGHTNING_FROM_DAYS,
+    NEUTRAL, PASS_FROM, RECOVERY_WINDOW_TICKS, SECONDS_PER_DAY, SETTLING_TICKS, SINKHOLE_BANDS,
+    WINDSTORM_BANDS,
 };
 use crate::vegetation::{Conditions, Vegetation};
 
@@ -682,8 +683,8 @@ impl SimState {
         self.qualify(kind, tick, Strength::Mid, None, None);
     }
 
-    /// Lightning: on each whole day the weather in effect has been failing, from the third,
-    /// while the repository is not inactive. It scorches one mature plant.
+    /// Lightning: on the third whole day the weather in effect has been failing, and every third
+    /// day after it, while the repository is not inactive. It scorches one mature plant.
     fn lightning(&mut self, tick: Tick) {
         if self.inactive_at(tick) {
             return;
@@ -698,7 +699,9 @@ impl SimState {
             return;
         }
         let days = run / TICKS_PER_DAY;
-        if days < LIGHTNING_FROM_DAYS {
+        if days < LIGHTNING_FROM_DAYS
+            || !(days - LIGHTNING_FROM_DAYS).is_multiple_of(LIGHTNING_EVERY_DAYS)
+        {
             return;
         }
         let target = self

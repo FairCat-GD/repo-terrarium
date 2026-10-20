@@ -42,6 +42,19 @@ pub struct Ask {
     pub slug: Slug,
     /// The branches to ask, in order: HEAD's, then the default one.
     pub branches: Vec<String>,
+    /// A local branch that tracks `origin`'s branch of another name, and that name: GitHub
+    /// knows the branch by it, and its weather is recorded as the local branch's.
+    pub upstream: Option<(String, String)>,
+}
+
+impl Ask {
+    /// The name GitHub knows the local `branch` by.
+    fn on_github<'a>(&'a self, branch: &'a str) -> &'a str {
+        match &self.upstream {
+            Some((local, remote)) if local == branch => remote,
+            _ => branch,
+        }
+    }
 }
 
 /// What a poll learned.
@@ -146,7 +159,7 @@ impl Poller {
 /// Asks each branch in turn until one's runs decide; a failure ends the poll.
 fn ask_branches(client: &mut dyn Fetch, ask: &Ask, token: &Token) -> Read {
     for branch in &ask.branches {
-        match client.runs(&ask.slug, branch, token) {
+        match client.runs(&ask.slug, ask.on_github(branch), token) {
             Ok(Some(verdict)) => return Read::Decided(Some((branch.clone(), verdict))),
             Ok(None) => {}
             Err(err) => return Read::Failed(err),
@@ -262,6 +275,8 @@ pub enum CiStatus {
     NotFound(Slug),
     /// GitHub could not be reached; the weather follows the local results meanwhile.
     Unreachable(Slug),
+    /// As unreachable, but the certificate presented for GitHub was not trusted.
+    Certificate(Slug),
     /// GitHub asked to wait.
     Waiting(Slug),
     Keychain(KeychainError),
@@ -277,6 +292,7 @@ impl CiStatus {
             Read::Failed(CiError::Refused) => CiStatus::Refused(slug),
             Read::Failed(CiError::NotFound) => CiStatus::NotFound(slug),
             Read::Failed(CiError::RateLimited { .. }) => CiStatus::Waiting(slug),
+            Read::Failed(CiError::Certificate) => CiStatus::Certificate(slug),
             Read::Failed(_) => CiStatus::Unreachable(slug),
         }
     }
@@ -319,6 +335,51 @@ mod tests {
 
     fn failed() -> Read {
         Read::Failed(CiError::Unreachable)
+    }
+
+    /// A client that records the branches it is asked, and has runs only on `ruled`.
+    struct Asked {
+        asked: Vec<String>,
+        ruled: &'static str,
+    }
+
+    impl Fetch for Asked {
+        fn runs(&mut self, _: &Slug, branch: &str, _: &Token) -> Result<Option<Verdict>, CiError> {
+            self.asked.push(branch.to_owned());
+            Ok((branch == self.ruled).then(|| Verdict {
+                passed: true,
+                sha: "ab".repeat(20),
+                workflows: 1,
+                failing: Vec::new(),
+                hash: [7; 32],
+            }))
+        }
+
+        fn forget(&mut self) {}
+    }
+
+    #[test]
+    fn a_branch_tracking_another_name_is_asked_by_it_and_recorded_as_itself() {
+        let ask = Ask {
+            slug: Slug::parse("example-garden/moss-bed").unwrap(),
+            branches: vec!["feat/moss".into(), "main".into()],
+            upstream: Some(("feat/moss".into(), "moss-on-github".into())),
+        };
+        let token = Token::new("github_pat_fictional").unwrap();
+        let mut client = Asked {
+            asked: Vec::new(),
+            ruled: "moss-on-github",
+        };
+        let read = ask_branches(&mut client, &ask, &token);
+        assert_eq!(client.asked, ["moss-on-github"]);
+        assert!(matches!(read, Read::Decided(Some((branch, _))) if branch == "feat/moss"));
+        // Its runs say nothing: the default branch is asked by its own name.
+        let mut client = Asked {
+            asked: Vec::new(),
+            ruled: "main",
+        };
+        ask_branches(&mut client, &ask, &token);
+        assert_eq!(client.asked, ["moss-on-github", "main"]);
     }
 
     #[test]

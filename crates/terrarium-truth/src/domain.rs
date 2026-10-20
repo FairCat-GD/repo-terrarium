@@ -3,6 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// At most this many contributors per reading: what an adapter keeps of a report, and what the
+/// store accepts of an observation.
+pub const MAX_CONTRIBUTORS: usize = 20;
+
 use crate::canon::{Canonical, DumpError, Reader, Writer, canonical_enum, canonical_struct};
 use crate::fixed::Q16;
 use crate::identity::CommitId;

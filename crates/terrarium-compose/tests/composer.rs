@@ -1094,7 +1094,7 @@ fn check_settled(
     }
     check_one_message(&day, &night, input, overlay, placement.plants.len())?;
     let clouds: BTreeSet<Subject> = composer
-        .depicted(now)
+        .depicted(art(), table(), now)
         .iter()
         .map(|depicted| depicted.subject)
         .filter(|subject| matches!(subject, Subject::Cloud(_)))
@@ -1105,6 +1105,20 @@ fn check_settled(
         weather_clouds(input.weather).min(quiet.clouds)
     );
     check_residents_settled(&day, input)?;
+    // The residents depicted are the residents drawn.
+    let resident = |subject: Subject| matches!(subject, Subject::Resident { .. });
+    let depicted: BTreeSet<Subject> = composer
+        .depicted(art(), table(), now)
+        .iter()
+        .map(|depicted| depicted.subject)
+        .filter(|&subject| resident(subject))
+        .collect();
+    let drawn: BTreeSet<Subject> = day
+        .iter()
+        .map(|keyed| keyed.key.subject)
+        .filter(|&subject| resident(subject))
+        .collect();
+    prop_assert_eq!(depicted, drawn);
     let scenery = composer.scenery(art(), table());
     for mix in [0, 255] {
         check_palette_discipline(
@@ -2064,7 +2078,7 @@ proptest! {
             .into_iter()
             .chain([end])
         {
-            prop_assert_eq!(one.depicted(moment), two.depicted(moment));
+            prop_assert_eq!(one.depicted(art(), table(), moment), two.depicted(art(), table(), moment));
         }
     }
 }
@@ -2090,6 +2104,44 @@ fn difference(a: &Frame, b: &Frame) -> String {
 /// The whole frame at `now`, as the app draws it: in the composer's own palette and dim.
 fn live_frame(composer: &Composer, scenery: &Scenery, now: Millis) -> Frame {
     composer.frame(art(), table(), scenery, composer.palette_mix(now), now)
+}
+
+proptest! {
+    #![proptest_config(config(300))]
+
+    /// Day turning to night, night to day, a clock set or woken elsewhere: the palette moves
+    /// at most one step a millisecond, whatever the updates bring (I-15).
+    #[test]
+    fn the_palette_never_jumps_across_day_and_night(
+        start in 0_u32..86_400_000,
+        updates in prop::collection::vec(
+            (1_u64..7_200_000, prop::option::of(0_u32..86_400_000)),
+            0..4,
+        ),
+        probes in prop::collection::vec(0_u64..12_000_000, 40),
+        eases in prop::collection::vec(0_u64..6_100, 20),
+    ) {
+        let input = preset::bare(PresentationState::Thriving, Vec::new());
+        let at = |ms: u32| OverlayInput::new(Vec::new(), LocalClock::new(preset::DATE, ms));
+        let mut composer = Composer::new(table(), preset::SALT);
+        composer.update(&input, &at(start), Millis(0));
+        let mut now = 0_u64;
+        let mut moments = vec![0];
+        for (after, jump) in updates {
+            now += after;
+            // The clock carried on, or one read elsewhere.
+            let carried = u32::try_from((u64::from(start) + now) % 86_400_000).unwrap();
+            composer.update(&input, &at(jump.unwrap_or(carried)), Millis(now));
+            moments.push(now);
+        }
+        // Anywhere, and within an eased clock's seconds after each update.
+        let near = moments.iter().flat_map(|&moment| eases.iter().map(move |ease| moment + ease));
+        for probe in probes.into_iter().chain(near) {
+            let before = composer.palette_mix(Millis(probe));
+            let after = composer.palette_mix(Millis(probe + 1));
+            prop_assert!(before.abs_diff(after) <= 1, "{} to {} at {}", before, after, probe);
+        }
+    }
 }
 
 proptest! {
@@ -2232,7 +2284,7 @@ proptest! {
         let mut held = vec![at, Millis(at.0 + 1), Millis(at.0 + pause / 2), resumed];
         held.dedup();
         for moment in held {
-            prop_assert_eq!(paused.depicted(moment), twin.depicted(at));
+            prop_assert_eq!(paused.depicted(art(), table(), moment), twin.depicted(art(), table(), at));
             prop_assert_eq!(paused.palette_mix(moment), twin.palette_mix(at));
             prop_assert_eq!(scene_draws(&paused, mix, moment), scene_draws(&twin, mix, at));
         }
@@ -2260,7 +2312,7 @@ proptest! {
             let until = times.get(i + 1).copied().unwrap_or(end);
             for moment in moments(update, until, &[], &cued, 0).into_iter().chain([end]) {
                 let later = Millis(moment.0 + pause);
-                prop_assert_eq!(paused.depicted(later), twin.depicted(moment), "at {:?}", moment);
+                prop_assert_eq!(paused.depicted(art(), table(), later), twin.depicted(art(), table(), moment), "at {:?}", moment);
                 prop_assert_eq!(paused.palette_mix(later), twin.palette_mix(moment));
                 prop_assert_eq!(
                     scene_draws(&paused, mix, later),

@@ -42,8 +42,12 @@ pub fn runs_path(slug: &Slug, branch: &str) -> String {
 /// Why a poll learned nothing new.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CiError {
-    /// No answer: the network, a timeout, a certificate, a connection cut short.
+    /// No answer: the network, a timeout, a connection cut short.
     Unreachable,
+    /// No answer GitHub could have given: the certificate presented for api.github.com is not
+    /// one the root list trusts, as when an antivirus or a proxy that reads HTTPS stands
+    /// between. It counts as [`CiError::Unreachable`] does; only its words differ.
+    Certificate,
     /// GitHub refused the token: unknown, revoked, expired, or without read access to Actions.
     Refused,
     /// No such repository for this token.
@@ -66,6 +70,7 @@ impl CiError {
         matches!(
             self,
             CiError::Unreachable
+                | CiError::Certificate
                 | CiError::RateLimited { .. }
                 | CiError::Server(_)
                 | CiError::Malformed
@@ -117,9 +122,12 @@ impl Backoff {
                 }
                 (None, None) => doubled(self.streak, 15),
             },
-            Err(CiError::Unreachable | CiError::Server(_) | CiError::Malformed) => {
-                doubled(self.streak, 10)
-            }
+            Err(
+                CiError::Unreachable
+                | CiError::Certificate
+                | CiError::Server(_)
+                | CiError::Malformed,
+            ) => doubled(self.streak, 10),
         };
         self.streak = self.streak.saturating_add(1);
         Some(wait)

@@ -6,6 +6,7 @@
 //! picture holds. A new film, the same days by night or another range, is taken by the same
 //! stage, so the change tweens like any other.
 
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,11 @@ pub struct Player {
     image: Option<NativeImage>,
     /// Counts the pictures composed, so a window uploads each once.
     serial: u64,
+    /// The composer panicked: the stage is gone and the picture stands as it was (I-16).
+    halted: bool,
+    /// Stage calls to fail before the next one runs, for the tests.
+    #[cfg(test)]
+    trip: u8,
 }
 
 impl Player {
@@ -54,12 +60,47 @@ impl Player {
             settles: None,
             image: None,
             serial: 0,
+            halted: false,
+            #[cfg(test)]
+            trip: 0,
+        }
+    }
+
+    /// Whether the composer panicked, so the picture no longer moves.
+    pub fn halted(&self) -> bool {
+        self.halted
+    }
+
+    /// Runs `body` on the stage, unless it has panicked before; a panic in it lets the stage
+    /// go, leaving the picture as it was.
+    fn guarded(&mut self, body: impl FnOnce(&mut Player)) {
+        if self.halted {
+            return;
+        }
+        let ran = panic::catch_unwind(AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if self.trip > 0 {
+                self.trip -= 1;
+                panic!("a composer failing in the app");
+            }
+            body(self);
+        }));
+        if ran.is_err() {
+            self.halted = true;
+            self.stage = None;
+            self.playing = None;
+            self.moved = None;
+            self.settles = None;
         }
     }
 
     /// Plays `film` from the frame shown: the first film settled on it, a later one taken by
     /// the same composer and changing in.
     pub fn set_film(&mut self, film: Arc<Film>, now: Instant) {
+        self.guarded(|player| player.set_film_guarded(film, now));
+    }
+
+    fn set_film_guarded(&mut self, film: Arc<Film>, now: Instant) {
         let showing = film.sampling.frames[self.frame];
         if self.stage.is_some() {
             self.advance_clock(now);
@@ -107,7 +148,7 @@ impl Player {
     pub fn stop(&mut self, now: Instant) {
         if self.playing.take().is_some() {
             self.advance_clock(now);
-            self.settles = self.stage.as_ref().map(Stage::settled_at);
+            self.guarded(|player| player.settles = player.stage.as_ref().map(Stage::settled_at));
         }
     }
 
@@ -124,8 +165,10 @@ impl Player {
             *playing = (now, frame);
         }
         self.moved = Some(now);
-        self.show();
-        self.settles = self.stage.as_ref().map(Stage::settled_at);
+        self.guarded(|player| {
+            player.show();
+            player.settles = player.stage.as_ref().map(Stage::settled_at);
+        });
     }
 
     /// The frame shown.
@@ -138,6 +181,12 @@ impl Player {
         if self.stage.is_none() || self.moved.is_none() {
             return false;
         }
+        let mut composed = false;
+        self.guarded(|player| composed = player.advance_guarded(now));
+        composed
+    }
+
+    fn advance_guarded(&mut self, now: Instant) -> bool {
         self.advance_clock(now);
         if let Some((began, from)) = self.playing {
             let elapsed = now.saturating_duration_since(began);
@@ -247,6 +296,26 @@ mod tests {
         // Played to the end, play starts over.
         player.play(at(start, 40_000));
         assert_eq!(player.frame(), 0);
+    }
+
+    #[test]
+    fn a_composer_panic_stops_the_picture_where_it_stood() {
+        let start = Instant::now();
+        let mut player = Player::new(preset::SALT);
+        player.set_film(film(&["thriving", "dead"]), start);
+        let (_, before) = player.image().unwrap();
+        let held = player.image().unwrap().0.clone();
+        player.trip = 1;
+        assert!(!player.advance(at(start, 67)));
+        assert!(player.halted());
+        assert_eq!(player.next_in(), None);
+        assert_eq!(player.image(), Some((&held, before)));
+        // Nothing asks the composer again.
+        player.play(at(start, 200));
+        player.seek(LAST, at(start, 300));
+        player.set_film(film(&["dead"]), at(start, 400));
+        assert!(!player.advance(at(start, 500)));
+        assert_eq!(player.image(), Some((&held, before)));
     }
 
     #[test]

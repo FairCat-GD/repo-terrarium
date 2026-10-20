@@ -593,6 +593,15 @@ impl FixtureRepo {
         Ok(())
     }
 
+    /// Writes the index as a checkout of `branch`'s tip would leave it, entry for entry. The
+    /// worktree is left as it is.
+    pub fn write_index(&self, branch: &str) -> FixtureResult<()> {
+        let tree = self.tree_of(&self.tip(branch))?;
+        let mut index = self.repo.index_from_tree(&to_object_id(&tree))?;
+        index.write(gix::index::write::Options::default())?;
+        Ok(())
+    }
+
     /// Writes a file inside the git directory, such as `info/attributes`.
     pub fn write_git_file(&self, relative: &str, bytes: &[u8]) -> FixtureResult<()> {
         let path = self.git_dir().join(relative);

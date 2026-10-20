@@ -14,7 +14,6 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use terrarium_compose::preset;
 use terrarium_engine::{Branch, Details, Update};
@@ -157,7 +156,7 @@ impl LiveView {
 
     /// The label's lines now.
     pub fn label(&self) -> Vec<String> {
-        self.label_at(wall_secs())
+        self.label_at(terrarium_engine::wall_secs())
     }
 
     /// The label's lines with the wall clock at `now`, in Unix seconds.
@@ -248,15 +247,6 @@ impl LiveView {
         self.facts.note.once.remove(0);
         Changed::Label
     }
-}
-
-/// The wall clock in Unix seconds, for the label's dates.
-pub fn wall_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 /// Runs the strip on the repository at `repo`, or, with none, on the one connected last; with

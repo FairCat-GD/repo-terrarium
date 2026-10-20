@@ -383,6 +383,26 @@ impl Composer {
         residents(Millis(at.0.saturating_sub(1))) != residents(at)
     }
 
+    /// The residents drawn at `now`, by `(id, spot)`, with their turn's plan, the record it
+    /// reads and how visible they are: shown above nothing and planned in the turn. Drawing
+    /// and [`Composer::depicted`] both read it, so neither counts one the other leaves out.
+    pub(super) fn drawn_residents(
+        &self,
+        art: &Art,
+        table: &ArtTable,
+        now: Millis,
+    ) -> Vec<((u32, u8), TurnPlan, Resident, u8)> {
+        let mut plans = self.resident_plans(art, table, turn(now));
+        self.residents
+            .iter()
+            .filter_map(|(&key, shown)| {
+                let visible = shown.opacity.value(now);
+                let (plan, record) = plans.remove(&key).filter(|_| visible > 0)?;
+                Some((key, plan, record, visible))
+            })
+            .collect()
+    }
+
     /// Every resident at `now`: its turn's pose, a cover or a move over the one before while
     /// it plays, and a firefly's lantern while it signals.
     pub(super) fn push_residents(
@@ -393,15 +413,10 @@ impl Composer {
         now: Millis,
         out: &mut Vec<KeyedDraw>,
     ) {
-        let w = turn(now);
-        let plans = self.resident_plans(art, table, w);
-        let before = self.eras.at(w.saturating_sub(1));
+        let before = self.eras.at(turn(now).saturating_sub(1));
         let arrivals = self.arrivals();
-        for (&(id, spot), shown) in &self.residents {
-            let visible = shown.opacity.value(now);
-            let Some((plan, record)) = plans.get(&(id, spot)).filter(|_| visible > 0) else {
-                continue;
-            };
+        for ((id, spot), plan, record, visible) in self.drawn_residents(art, table, now) {
+            let (plan, record) = (&plan, &record);
             let subject = Subject::Resident { id, spot };
             // Where it stood the turn before, for a move's pose fading out there: in the scene
             // that turn read, or as it arrived.

@@ -16,10 +16,16 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn wall_secs(&self) -> i64 {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(since) => i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
-            Err(before) => i64::try_from(before.duration().as_secs()).map_or(i64::MIN, |s| -s),
-        }
+        wall_secs()
+    }
+}
+
+/// The operating system's clock, as Unix seconds, UTC: negative before 1970, which only a clock
+/// set far back gives. The one reading of the wall clock every crate above truth shares.
+pub fn wall_secs() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(since) => i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_secs()).map_or(i64::MIN, |s| -s),
     }
 }
 

@@ -63,12 +63,12 @@ use crate::hotkey::{self, Hotkeys, Which};
 use crate::hover::{self, HoverTracker, ViewportPoint};
 use crate::instance::{Instance, RequestWatch};
 use crate::lifecycle::{self, Job, Outcome};
-use crate::live::{self, Changed, Launch, LiveView, PanelFacts};
+use crate::live::{Changed, Launch, LiveView, PanelFacts};
 use crate::login::{self, LoginItem};
 use crate::menu::{self, Choice, StripMenu};
-use crate::monitor::{self, MonitorId};
+use crate::monitor::{self, MonitorId, MonitorInfo};
 use crate::pinning::{self, AttachError, DEFAULT_LEVEL, LevelMode, Monitor, Observers, Pinning};
-use crate::prefs::{Pref, Prefs, Saved, Writer};
+use crate::prefs::{Pref, Prefs, Saved, Saving, Writer};
 use crate::present::gpu::WgpuPresenter;
 #[cfg(target_os = "macos")]
 use crate::present::layer::LayerPresenter;
@@ -84,7 +84,7 @@ use crate::shell::{DataFile, Export, Intent, Picking, Shell};
 use crate::soil::{Hits, SoilPanel};
 use crate::timelapse::form::TimeLapseForm;
 use crate::timelapse::job::{Answer, Msg, Session};
-use crate::{crash, discover, now_secs, portability, timelapse};
+use crate::{crash, discover, portability, timelapse};
 
 /// What the strip runs as.
 pub enum Mode {
@@ -206,7 +206,7 @@ impl Scene {
     fn worded(living: &Living, soil: &SoilPanel, held: Option<&Held>, view: &LiveView) -> Hover {
         let (facts, wall) = match held {
             Some(held) => (held.facts.as_ref(), held.wall),
-            None => (view.panel(), live::wall_secs()),
+            None => (view.panel(), terrarium_engine::wall_secs()),
         };
         soil.hover(facts, wall, living.catalog(), living.columns())
     }
@@ -235,7 +235,7 @@ impl Scene {
             *held = paused.then(|| {
                 Box::new(Held {
                     facts: view.and_then(LiveView::panel).cloned(),
-                    wall: live::wall_secs(),
+                    wall: terrarium_engine::wall_secs(),
                 })
             });
             feeder.set_paused(paused, at, &Os::read());
@@ -610,6 +610,8 @@ struct Repo {
     pending_login: Option<bool>,
     /// Saves the settings changed, and the GitHub token, off the loop.
     writer: Writer,
+    /// What the store holds, and the changes the writer has yet to answer.
+    saving: Saving,
     /// Where the GitHub token is kept: the OS keychain.
     keychain: Arc<dyn Keychain>,
 }
@@ -711,6 +713,7 @@ impl Repo {
             connected,
             pending_login: None,
             writer,
+            saving: Saving::new(prefs.clone()),
             keychain,
         };
         Ok((repo, prefs))
@@ -729,7 +732,7 @@ impl Repo {
         login: &mut dyn LoginItem,
     ) -> Effect {
         if generation != self.generation {
-            thread::spawn(move || outcome.into_engine().map(Engine::shutdown_and_join));
+            retire(outcome.into_engine());
             return Effect::Nothing;
         }
         match outcome {
@@ -800,6 +803,9 @@ impl Repo {
                             }
                         }
                     }
+                } else {
+                    // Nothing connected to restart: an engine started anyway is let go of.
+                    retire(started.ok().map(|(engine, _)| engine));
                 }
                 let facts = self.facts();
                 if let Some(form) = &mut shell.settings {
@@ -879,6 +885,12 @@ struct Strip {
     /// Made with the first strip window, and kept while the app runs.
     menu: Option<StripMenu>,
     hotkeys: Option<Hotkeys>,
+    /// Why each hotkey's keys are not registered with the OS, while they are not; the settings
+    /// window shows it.
+    unregistered: [Option<String>; 2],
+    /// The monitor the strip was last placed on, and the width it was given there: on Windows
+    /// the band granted, which a side taskbar narrows.
+    band: Option<(MonitorId, u32)>,
     /// The settings the strip runs on.
     prefs: Prefs,
     /// The generation of the settings window's discovery report: only the latest is shown.
@@ -965,6 +977,8 @@ impl Strip {
             failed: None,
             menu: None,
             hotkeys: None,
+            unregistered: [None, None],
+            band: None,
             prefs,
             discovery: 0,
             repo,
@@ -1129,6 +1143,7 @@ impl Strip {
             return;
         };
         view.scale = scale;
+        self.band = Some((monitor.info.id.clone(), scale.width));
         if let Some(soak) = &mut self.soak {
             soak.placed(&view.scale, view.presenter.backend());
         }
@@ -1173,7 +1188,7 @@ impl Strip {
             })
             .collect();
         let scales = monitor::choose(monitors, self.prefs.monitor.as_ref()).map(|index| {
-            let width = monitors[index].info.physical_width;
+            let width = scale_width(&monitors[index].info, self.band.as_ref());
             [SizeStep::Full, SizeStep::OneSmaller]
                 .map(|step| StripScale::for_physical_width(width, step).scale)
         });
@@ -1487,6 +1502,9 @@ impl Strip {
             form.set_repo(facts);
             form.set_missing(missing);
             form.set_prefs(prefs);
+            for which in Which::ALL {
+                form.hotkey_unregistered(which, self.unregistered[which_index(which)].clone());
+            }
             if let Some(connected) = &repo.connected {
                 form.set_tools(connected.tools.clone());
             }
@@ -1500,9 +1518,11 @@ impl Strip {
             return;
         }
         let first_run = repo.first_run;
-        self.shell
-            .connect
-            .get_or_insert_with(|| ConnectForm::new(first_run));
+        self.shell.connect.get_or_insert_with(|| {
+            let mix = terrarium_platform::clock::local_now()
+                .map_or(0, |now| self.prefs.day_night().mix(now.ms_of_day));
+            ConnectForm::new(first_run).with_still(mix)
+        });
         if !self.shell.open(event_loop, WindowKind::Connect) {
             self.failed = Some(StripError::NoConnectWindow);
             event_loop.exit();
@@ -1535,7 +1555,7 @@ impl Strip {
             &answer,
             data,
             terrarium,
-            now_secs(),
+            terrarium_engine::wall_secs(),
         ));
         if !self.shell.open(event_loop, WindowKind::TimeLapse) {
             self.close_timelapse();
@@ -1610,7 +1630,7 @@ impl Strip {
             terrarium,
             file,
             path,
-            now_secs(),
+            terrarium_engine::wall_secs(),
         );
     }
 
@@ -1691,16 +1711,26 @@ impl Strip {
     /// Applies a setting changed in the settings window at once, then has it saved. A hotkey
     /// the OS refuses changes nothing, and neither does one with no hotkeys to register it with.
     fn set(&mut self, pref: Pref) {
-        if let Pref::Hotkey(which, binding) = pref
-            && let Err(err) = self.bind(which, binding)
-        {
-            if let Some(form) = &mut self.shell.settings {
-                form.hotkey_refused(which, copy::settings::not_registered(&err));
+        if let Err(err) = self.apply_pref(&pref) {
+            if let (Pref::Hotkey(which, _), Some(form)) = (&pref, &mut self.shell.settings) {
+                form.hotkey_refused(*which, copy::settings::not_registered(&err));
             }
             self.shell.redraw(WindowKind::Settings);
             return;
         }
-        self.prefs.apply(&pref);
+        if let Some(repo) = &mut self.repo {
+            repo.saving.sent(&pref);
+            repo.writer.save(pref);
+        }
+    }
+
+    /// Runs the strip on `pref`, unsaved: the model, what follows from it, and the settings
+    /// window. A hotkey the OS refuses changes nothing.
+    fn apply_pref(&mut self, pref: &Pref) -> Result<(), global_hotkey::Error> {
+        if let Pref::Hotkey(which, binding) = *pref {
+            self.bind(which, binding)?;
+        }
+        self.prefs.apply(pref);
         match pref {
             Pref::Monitor(_) | Pref::Edge(_) | Pref::SizeStep(_) => self.placement_pending = true,
             Pref::DayStarts(_) | Pref::NightStarts(_) | Pref::DimAfter(_) => {
@@ -1709,8 +1739,8 @@ impl Strip {
                 }
             }
             Pref::CrashLog(on) => {
-                crash::set_enabled(on);
-                if let (true, Some(repo)) = (on, &self.repo) {
+                crash::set_enabled(*on);
+                if let (true, Some(repo)) = (*on, &self.repo) {
                     let _ = crash::prune(&repo.data.logs_dir(), crash::KEEP);
                 }
             }
@@ -1720,9 +1750,7 @@ impl Strip {
             form.set_prefs(&self.prefs);
         }
         self.shell.redraw(WindowKind::Settings);
-        if let Some(repo) = &self.repo {
-            repo.writer.save(pref);
-        }
+        Ok(())
     }
 
     /// Registers `binding` for `which`, making the hotkeys first if they could not be made at
@@ -1735,15 +1763,36 @@ impl Strip {
             if !hotkeys.is_bound(which.other()) {
                 let _ = hotkeys.bind(which.other(), other);
             }
+            let other_bound = hotkeys.is_bound(which.other());
+            self.registered(which);
+            if other_bound {
+                self.registered(which.other());
+            }
             return Ok(());
         }
         let mut hotkeys = Hotkeys::new()?;
         hotkeys.bind(which, binding)?;
-        if let Err(err) = hotkeys.bind(which.other(), other) {
-            self.hotkey_unavailable(which.other(), other, &err);
+        self.registered(which);
+        match hotkeys.bind(which.other(), other) {
+            Ok(()) => self.registered(which.other()),
+            Err(err) => self.hotkey_unavailable(which.other(), other, &err),
         }
         self.hotkeys = Some(hotkeys);
         Ok(())
+    }
+
+    /// `which`'s keys are registered with the OS.
+    fn registered(&mut self, which: Which) {
+        self.set_unregistered(which, None);
+    }
+
+    /// Notes why `which`'s keys are not registered, or `None` that they are, for the settings
+    /// window.
+    fn set_unregistered(&mut self, which: Which, why: Option<String>) {
+        if let Some(form) = &mut self.shell.settings {
+            form.hotkey_unregistered(which, why.clone());
+        }
+        self.unregistered[which_index(which)] = why;
     }
 
     /// Says a hotkey could not be registered; the probe hears of the raise's.
@@ -1754,6 +1803,7 @@ impl Strip {
         err: &global_hotkey::Error,
     ) {
         eprintln!("{}", copy::hotkey_unavailable(which, binding, err));
+        self.set_unregistered(which, Some(copy::settings::not_registered(err)));
         if which == Which::Raise {
             self.record(ProbeEvent::HotkeyUnavailable {
                 error: err.to_string(),
@@ -1770,6 +1820,15 @@ impl Strip {
                 problem,
                 login,
             } => {
+                // A change that could not be stored is undone, so the strip runs on what the
+                // engine reads. Keys another hotkey took meanwhile stay as the OS holds them.
+                let undo = self
+                    .repo
+                    .as_mut()
+                    .and_then(|repo| repo.saving.answered(&pref, problem.is_some()));
+                if let Some(undo) = undo {
+                    let _ = self.apply_pref(&undo);
+                }
                 if pref.is_adapter() && problem.is_none() {
                     if let Some(engine) = self.repo.as_ref().and_then(|repo| repo.engine.as_ref()) {
                         engine.refresh();
@@ -1963,6 +2022,7 @@ impl Strip {
                 // The first run's choice is the setting now.
                 if let Some(on) = first_login {
                     self.prefs.open_at_login = on;
+                    repo.saving.stored(&Pref::OpenAtLogin(on));
                 }
                 if let Some(connected) = &repo.connected {
                     let live = Some((&connected.live, salt));
@@ -2426,6 +2486,31 @@ impl Strip {
     }
 }
 
+/// Stops `engine` on a thread of its own that waits for it to end, so the loop never waits for
+/// it and nothing it writes is left running.
+fn retire(engine: Option<Engine>) -> Option<thread::JoinHandle<()>> {
+    let engine = engine?;
+    thread::Builder::new()
+        .name("terrarium-retire".into())
+        .spawn(move || engine.shutdown_and_join())
+        .ok()
+}
+
+/// The width the strip's scales are worked out from on `monitor`: the width it was last placed
+/// at there (on Windows the band granted, which a side taskbar narrows), else the monitor's.
+fn scale_width(monitor: &MonitorInfo, band: Option<&(MonitorId, u32)>) -> u32 {
+    band.filter(|(id, _)| *id == monitor.id)
+        .map_or(monitor.physical_width, |&(_, width)| width)
+}
+
+/// `which`'s place in a pair kept for both hotkeys.
+const fn which_index(which: Which) -> usize {
+    match which {
+        Which::Raise => 0,
+        Which::TimeLapse => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -2515,6 +2600,7 @@ mod tests {
             first_run: true,
             pending_login: None,
             writer,
+            saving: Saving::new(Prefs::default()),
             keychain,
         }
     }
@@ -2739,6 +2825,49 @@ mod tests {
         );
         assert!(repo.connected.is_none() && repo.engine.is_none());
         assert!(shell.settings.is_none() && shell.connect.is_none());
+    }
+
+    #[test]
+    fn the_settings_scales_follow_the_band_the_strip_was_given() {
+        let monitor = MonitorInfo {
+            id: MonitorId("wide".into()),
+            name: "Wide".into(),
+            physical_width: 2_560,
+            physical_height: 1_440,
+            scale: 1.0,
+            primary: true,
+            detail: String::new(),
+        };
+        assert_eq!(scale_width(&monitor, None), 2_560);
+        // A side taskbar narrowed the band on this monitor; another's band says nothing here.
+        assert_eq!(
+            scale_width(&monitor, Some(&(MonitorId("wide".into()), 2_480))),
+            2_480
+        );
+        assert_eq!(
+            scale_width(&monitor, Some(&(MonitorId("other".into()), 1_200))),
+            2_560
+        );
+    }
+
+    #[test]
+    fn a_restart_with_nothing_connected_lets_its_engine_go_off_the_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = repo(dir.path());
+        let mut shell = Shell::default();
+        let outcome = Outcome::Restarted {
+            changed: Ok(lifecycle::Changed::Terrarium),
+            started: Ok((engine(dir.path()), terrarium(3))),
+        };
+        assert_eq!(
+            repo.changed(1, outcome, &mut shell, &mut Asked::default()),
+            Effect::Nothing
+        );
+        assert!(repo.connected.is_none() && repo.engine.is_none());
+        // Let go of, an engine stops on a thread of its own, which ends once it has.
+        let handle = retire(Some(engine(dir.path()))).expect("a thread");
+        handle.join().unwrap();
+        assert!(retire(None).is_none());
     }
 
     #[test]

@@ -116,6 +116,23 @@ impl GitRepo {
         GitRepo::configured(repo)
     }
 
+    /// Whether the index holds a symbolic link at `path`, relative to the worktree's top and
+    /// joined by `/`. Where the file system ignores case (macOS, Windows), in any case.
+    pub fn tracks_link(&self, path: &str) -> Result<bool, GitError> {
+        let index = self.repo.index_or_empty().map_err(read_err)?;
+        let fold = cfg!(any(target_os = "macos", windows));
+        let same = |held: &[u8]| {
+            if fold {
+                held.to_str_lossy().to_lowercase() == path.to_lowercase()
+            } else {
+                held == path.as_bytes()
+            }
+        };
+        Ok(index.entries().iter().any(|entry| {
+            entry.mode == gix::index::entry::Mode::SYMLINK && same(entry.path(&index))
+        }))
+    }
+
     fn configured(mut repo: gix::Repository) -> Result<GitRepo, GitError> {
         if repo.object_hash() != gix::hash::Kind::Sha1 {
             return Err(GitError::UnsupportedObjectFormat);
@@ -176,6 +193,24 @@ impl GitRepo {
         let remote = self.repo.find_remote("origin").ok()?;
         let url = remote.url(gix::remote::Direction::Fetch)?;
         Some(url.to_bstring().to_str_lossy().into_owned())
+    }
+
+    /// The name of `origin`'s branch the local `branch` tracks, when it is another name than
+    /// its own (`branch.<name>.remote` is `origin` and `branch.<name>.merge` names a branch).
+    pub fn upstream_on_origin(&self, branch: &str) -> Option<String> {
+        let remote = self
+            .repo
+            .branch_remote_name(branch, gix::remote::Direction::Fetch)?;
+        if remote.as_bstr() != "origin" {
+            return None;
+        }
+        let local = gix::refs::FullName::try_from(format!("refs/heads/{branch}")).ok()?;
+        let merge = self
+            .repo
+            .branch_remote_ref_name(local.as_ref(), gix::remote::Direction::Fetch)?
+            .ok()?;
+        let name = merge.as_bstr().to_str().ok()?.strip_prefix("refs/heads/")?;
+        (name != branch).then(|| name.to_owned())
     }
 
     /// The directory holding this worktree's `HEAD`: `.git`, or a linked worktree's own.

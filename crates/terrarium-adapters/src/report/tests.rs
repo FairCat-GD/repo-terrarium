@@ -719,6 +719,101 @@ fn a_link_to_a_pipe_is_never_opened() {
     );
 }
 
+/// A repository at `dir/repo` committing `links` (path, target) on `main`, its index written,
+/// each link made on disk too, with a coverage report at `dir/elsewhere/lcov.info` and one at
+/// `repo/build/lcov.info`.
+#[cfg(unix)]
+fn linked(dir: &TempDir, links: &[(&str, &str)]) -> std::path::PathBuf {
+    use crate::fixture::{Edit, FixtureRepo, Stamp};
+    let repo_dir = dir.path().join("repo");
+    let mut repo = FixtureRepo::init(&repo_dir).unwrap();
+    let edits: Vec<Edit> = links
+        .iter()
+        .map(|(path, target)| Edit::Symlink((*path).to_owned(), (*target).to_owned()))
+        .chain([Edit::write("README", "moss\n")])
+        .collect();
+    repo.commit("main", Stamp::at(1_704_704_400), "links", &edits)
+        .unwrap();
+    repo.write_index("main").unwrap();
+    let report = fs::read_to_string(fixture("lcov/jest.info")).unwrap();
+    for place in [dir.path().join("elsewhere"), repo_dir.join("build")] {
+        fs::create_dir_all(&place).unwrap();
+        fs::write(place.join("lcov.info"), &report).unwrap();
+    }
+    for (path, target) in links {
+        let full = repo_dir.join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, full).unwrap();
+    }
+    repo_dir
+}
+
+#[cfg(unix)]
+#[test]
+fn a_committed_link_leading_outside_is_refused_and_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("elsewhere");
+    let outside = elsewhere.join("lcov.info").display().to_string();
+    let inside = "build/lcov.info";
+    let repo = linked(
+        &dir,
+        &[
+            ("coverage/lcov.info", &outside),
+            ("reports", &elsewhere.display().to_string()),
+            ("lcov.info", inside),
+        ],
+    );
+    let read = |path: &str| Report::read(&repo, Format::Lcov, &[path.to_owned()]).outcome;
+    assert_eq!(
+        read("coverage/lcov.info"),
+        Outcome::Unknown(Why::CommittedLink("coverage/lcov.info".into()))
+    );
+    // A committed directory link on the way.
+    assert_eq!(
+        read("reports/lcov.info"),
+        Outcome::Unknown(Why::CommittedLink("reports".into()))
+    );
+    // A committed link that stays inside reads.
+    assert!(matches!(read("lcov.info"), Outcome::Known(_)));
+    // Where the file system ignores case, the index is asked in any case.
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            read("Coverage/lcov.info"),
+            Outcome::Unknown(Why::CommittedLink("Coverage/lcov.info".into()))
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_the_repository_does_not_hold_still_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = linked(&dir, &[]);
+    // A tool's link, such as Bazel's, made in the worktree and never committed.
+    std::os::unix::fs::symlink(dir.path().join("elsewhere"), repo.join("bazel-testlogs")).unwrap();
+    let report = Report::read(
+        &repo,
+        Format::Lcov,
+        &["bazel-testlogs/lcov.info".to_owned()],
+    );
+    assert!(matches!(report.outcome, Outcome::Known(_)));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_index_that_cannot_be_read_refuses_links_leading_outside() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = linked(&dir, &[]);
+    std::os::unix::fs::symlink(dir.path().join("elsewhere"), repo.join("bazel-testlogs")).unwrap();
+    fs::write(repo.join(".git/index"), b"not an index").unwrap();
+    let read = |path: &str| Report::read(&repo, Format::Lcov, &[path.to_owned()]).outcome;
+    assert_eq!(
+        read("bazel-testlogs/lcov.info"),
+        Outcome::Unknown(Why::CommittedLink("bazel-testlogs".into()))
+    );
+    assert!(matches!(read("build/lcov.info"), Outcome::Known(_)));
+}
+
 #[test]
 fn contributors_are_the_heaviest_twenty() {
     let mut many: Vec<Contributor> = (0..30)
@@ -821,6 +916,13 @@ fn a_half_written_lcov_reads_as_its_complete_records_or_not_at_all() {
 }
 
 proptest! {
+    // A fixed seed, as the git reader's: a failure replays.
+    #![proptest_config(ProptestConfig {
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x7265_706f_7274),
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
     #[test]
     fn noise_never_panics_and_never_reads_out_of_range(
         bytes in proptest::collection::vec(any::<u8>(), 0..512),

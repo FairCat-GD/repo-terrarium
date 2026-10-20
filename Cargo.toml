@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.29.0"
+version = "0.30.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -41,6 +41,9 @@ serde_json = "1.0.151"
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11.0", default-features = false }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+# Exact pixel snapshots, in compose and the app. Pinned exactly: its binary snapshots are marked
+# experimental, and a minor release may change them.
+insta = { version = "=1.48.0", default-features = false }
 # The store: SQLite compiled in, so every install runs the same version. No statement cache, and
 # no `fallible_uint`, so a `u64` cannot reach a column (stored integers are `i64`).
 # `directories` finds the OS app-data directory; `tempfile` gives tests their own.

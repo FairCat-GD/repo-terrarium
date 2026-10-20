@@ -24,6 +24,8 @@ pub enum LoginError {
     NotBundled,
     /// The OS refused, in its own words.
     Os(String),
+    /// Asking the OS failed in the app itself, so the OS gave no answer.
+    Failed,
 }
 
 impl fmt::Display for LoginError {
@@ -31,6 +33,7 @@ impl fmt::Display for LoginError {
         match self {
             LoginError::NotBundled => f.write_str("not an app bundle"),
             LoginError::Os(reason) => f.write_str(reason),
+            LoginError::Failed => f.write_str("the app failed to ask"),
         }
     }
 }

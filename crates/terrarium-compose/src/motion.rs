@@ -90,6 +90,9 @@ pub struct Snapshot {
     pub residents: Vec<Resident>,
     /// The earthquake the scene carries, and the one turn it sends the residents into hiding.
     pub shaken: Option<Shaken>,
+    /// Rain has just fallen: the scene carries a rain after drought or a storm's clearing, for
+    /// the hour it is held. The residents that favour the hours after rain come out.
+    pub after_rain: bool,
 }
 
 /// An earthquake, by the tick it started in, and the turn after the update that first carried
@@ -158,6 +161,7 @@ mod tests {
             swaying: BTreeSet::new(),
             residents: Vec::new(),
             shaken: None,
+            after_rain: false,
         }
     }
 

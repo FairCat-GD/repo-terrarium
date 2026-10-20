@@ -36,8 +36,7 @@ pub fn relink(data: &DataDir, id: TerrariumId, path: &Path) -> Result<Terrarium,
     let terrarium = store
         .terrarium(id)?
         .ok_or(StoreError::NoSuchTerrarium(id))?;
-    let path = absolute(path)?;
-    let git = GitRepo::open(&path)?;
+    let (git, path) = open_at(path, ceiling().as_deref())?;
     let recorded = &terrarium.repo.default_branch;
     let (branch, seed) = match git.identity(recorded) {
         Ok(identity) => (recorded.clone(), identity.seed),
@@ -150,6 +149,35 @@ pub(crate) fn new_salt() -> Result<[u8; 16], ConnectError> {
     Ok(salt)
 }
 
+/// The repository holding `path`, and where it is connected from: the top of its worktree, so
+/// a folder picked inside a repository connects that repository, as git finds it; a bare
+/// repository where it is. The search never climbs to `ceiling` or above it (the home folder,
+/// in use), where a repository of settings may hold every folder below.
+pub(crate) fn open_at(
+    path: &Path,
+    ceiling: Option<&Path>,
+) -> Result<(GitRepo, PathBuf), ConnectError> {
+    let path = absolute(path)?;
+    let Some(ceiling) = ceiling else {
+        return Ok((GitRepo::open(&path)?, path));
+    };
+    let git = GitRepo::discover(&path)?;
+    let top = match git.workdir() {
+        Some(dir) => absolute(dir)?,
+        None => path.clone(),
+    };
+    // A repository at the ceiling or above it is found only from where it is.
+    if top != path && absolute(ceiling)?.starts_with(&top) {
+        return Ok((GitRepo::open(&path)?, path));
+    }
+    Ok((git, top))
+}
+
+/// The folder a picked repository's search stops below: the home folder.
+pub(crate) fn ceiling() -> Option<PathBuf> {
+    std::env::home_dir()
+}
+
 /// `path` made absolute, with its `.` and `..` resolved as text.
 pub(crate) fn absolute(path: &Path) -> Result<PathBuf, ConnectError> {
     Ok(normalized(
@@ -207,6 +235,42 @@ mod tests {
             .1
             .seed;
         (repo, seed)
+    }
+
+    /// A repository at `path` with one commit; its worktree holds the folders `folders`.
+    fn tended(path: &Path, folders: &[&str]) {
+        let mut repo = fixture::FixtureRepo::init(path).unwrap();
+        repo.commit(
+            "main",
+            fixture::Stamp::at(fixture::ARC_START_SECS),
+            "tend",
+            &[fixture::Edit::write("src/moss.rs", "fn moss() {}\n")],
+        )
+        .unwrap();
+        for folder in folders {
+            std::fs::create_dir_all(path.join(folder)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_folder_inside_a_repository_connects_that_repository_and_never_one_above_home() {
+        let dir = tempfile::tempdir().unwrap();
+        // The ceiling's spelling is the one the search walks, links resolved.
+        let dir = dir.path().canonicalize().unwrap();
+        let home = dir.join("home");
+        let moss = home.join("projects/moss");
+        tended(&moss, &["src/deep"]);
+        let (_, top) = open_at(&moss.join("src/deep"), Some(&home)).unwrap();
+        assert_eq!(top, moss);
+        assert_eq!(location(&top, "main".to_owned()).name, "moss");
+        // Home itself holds a repository of settings: it is found from home, never from a
+        // folder under it that no repository of its own holds.
+        tended(&home, &["notes"]);
+        assert!(open_at(&home.join("notes"), Some(&home)).is_err());
+        assert_eq!(open_at(&home, Some(&home)).unwrap().1, home);
+        assert_eq!(open_at(&moss.join("src"), Some(&home)).unwrap().1, moss);
+        // Without a ceiling, only the folder itself is opened.
+        assert!(open_at(&moss.join("src"), None).is_err());
     }
 
     /// The repository at `repo` connected, with seed `seed`, in a data directory of its own.

@@ -87,7 +87,7 @@ impl StripSection {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, changes: &mut Vec<Pref>) {
-        ui.label(words::MONITOR);
+        ui.strong(words::MONITOR);
         let mut chosen = self.chosen.clone();
         egui::ComboBox::from_id_salt("monitor")
             .selected_text(self.selected_text())
@@ -107,18 +107,18 @@ impl StripSection {
             });
         changes.extend(self.choose_monitor(chosen));
         if self.chosen.is_none() {
-            ui.label(words::AUTOMATIC_FACT);
+            ui.weak(words::AUTOMATIC_FACT);
         }
-        ui.add_space(8.0);
-        ui.label(words::EDGE);
+        ui.add_space(12.0);
+        ui.strong(words::EDGE);
         let mut edge = self.edge;
         ui.horizontal(|ui| {
             ui.radio_value(&mut edge, Edge::Bottom, words::BOTTOM);
             ui.radio_value(&mut edge, Edge::Top, words::TOP);
         });
         changes.extend(self.choose_edge(edge));
-        ui.add_space(8.0);
-        ui.label(words::SIZE);
+        ui.add_space(12.0);
+        ui.strong(words::SIZE);
         let mut step = self.size_step;
         let scale = |i: usize| self.scales.map(|scales| scales[i]);
         ui.horizontal(|ui| {

@@ -1312,7 +1312,7 @@ mod tests {
         composer.update(&wilting, &overlay(false), after(now, 1000));
         let settled = composer.settled_at();
         let shown: Vec<Piece> = composer
-            .depicted(settled)
+            .depicted(art(), table(), settled)
             .into_iter()
             .filter(|d| d.subject == plant && usize::from(d.part) == FOLIAGE)
             .map(|d| d.piece)

@@ -5,8 +5,9 @@
 //! none; the words shown live in the app's copy module (I-8).
 
 use crate::catalog::{Catalog, Font, Layer, Rect, SpriteId};
-use crate::frame::Draw;
+use crate::frame::{Draw, Frame};
 use crate::palette::Slot;
+use crate::world::{LABEL_X, LABEL_Y};
 
 /// The two delivered fonts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +180,34 @@ impl<'a> Label<'a> {
         self.text
             .draws(line, text_x, text_y, Slot::SOIL_DEEP, Layer::Label)
     }
+}
+
+/// `frame` with its label reading `line` alone, at full opacity: the label's text draws are
+/// replaced and everything else stays, the plate included. It needs no composer, so a strip
+/// whose composer has failed can still say so on its last picture. `None` if the catalog lacks
+/// the plate or the body font.
+pub fn relabelled(catalog: &Catalog, frame: &Frame, line: &str) -> Option<Frame> {
+    let label = Label::new(catalog)?;
+    let plate = label.plate(LABEL_X, LABEL_Y).sprite;
+    let mut draws: Vec<Draw> = frame
+        .draws
+        .iter()
+        .filter(|draw| draw.layer != Layer::Label || draw.sprite == plate)
+        .copied()
+        .collect();
+    // The text goes right after the plate, before any layer above the label.
+    let after_plate = draws
+        .iter()
+        .position(|draw| draw.layer == Layer::Label)
+        .map_or(draws.len(), |at| at + 1);
+    draws.splice(
+        after_plate..after_plate,
+        label.text_draws(line, LABEL_X, LABEL_Y),
+    );
+    Some(Frame {
+        draws,
+        ..frame.clone()
+    })
 }
 
 #[cfg(test)]

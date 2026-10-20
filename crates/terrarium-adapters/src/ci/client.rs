@@ -98,7 +98,7 @@ impl GitHub {
         if let Some(etag) = etag {
             request = request.header("If-None-Match", etag);
         }
-        let mut response = request.call().map_err(|_| CiError::Unreachable)?;
+        let mut response = request.call().map_err(|err| unreached(&err))?;
         let header = |name: &str| {
             response
                 .headers()
@@ -238,5 +238,24 @@ impl Fetch for GitHub {
 
     fn forget(&mut self) {
         self.known.clear();
+    }
+}
+
+/// Why a request got no answer: a certificate the root list does not trust, which rustls
+/// reports itself or inside an I/O error, or anything else.
+pub(super) fn unreached(err: &ureq::Error) -> CiError {
+    let refused = |tls: &rustls::Error| matches!(tls, rustls::Error::InvalidCertificate(_));
+    let certificate = match err {
+        ureq::Error::Rustls(tls) => refused(tls),
+        ureq::Error::Io(io) => io
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+            .is_some_and(refused),
+        _ => false,
+    };
+    if certificate {
+        CiError::Certificate
+    } else {
+        CiError::Unreachable
     }
 }

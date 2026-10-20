@@ -67,7 +67,7 @@ impl Probe {
     /// directory the tester ran it from, where they will look for it.
     pub fn start(proxy: EventLoopProxy<UserEvent>) -> Self {
         read_answers(proxy);
-        let started_unix = u64::try_from(crate::now_secs()).unwrap_or(0);
+        let started_unix = u64::try_from(terrarium_engine::wall_secs()).unwrap_or(0);
         let probe = Self::new(
             std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
             std::env::temp_dir(),

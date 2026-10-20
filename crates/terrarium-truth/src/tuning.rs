@@ -252,8 +252,10 @@ pub(crate) const WINDSTORM_BANDS: [u64; 2] = [6, 12];
 /// - sunburst and dusk: how far coverage moved.
 pub(crate) const LIGHT_SHIFT_BANDS: [Q16; 2] = [Q16::from_ratio(5, 100), Q16::from_ratio(10, 100)];
 
-/// Lightning strikes on each whole day the weather in effect has failed, from the third.
+/// Lightning strikes on the third whole day the weather in effect has failed, then on every
+/// third day after it: a long failure is a few strikes, not one a day.
 pub(crate) const LIGHTNING_FROM_DAYS: u32 = 3;
+pub(crate) const LIGHTNING_EVERY_DAYS: u32 = 3;
 /// A strike lowers its plant's vigor by this, never below `FAILING_BELOW`: lightning marks a
 /// plant, it never kills one.
 pub(crate) const LIGHTNING_DIP: Q16 = Q16::from_ratio(15, 100);
@@ -411,7 +413,14 @@ mod tests {
             LIGHT_SHIFT_BANDS.map(Q16::raw),
             [Q16::from_ratio(5, 100).raw(), 6_554]
         );
-        assert_eq!((LIGHTNING_FROM_DAYS, LIGHTNING_DIP.raw()), (3, 9_830));
+        assert_eq!(
+            (
+                LIGHTNING_FROM_DAYS,
+                LIGHTNING_EVERY_DAYS,
+                LIGHTNING_DIP.raw()
+            ),
+            (3, 3, 9_830)
+        );
         assert_eq!((BLOOM_TICKS, DROUGHT_DAYS), (24, 14));
         assert_eq!((CLEARING_BURN_ITEMS, CLEARING_BURN_PERCENT), (5, 20));
         assert_eq!(

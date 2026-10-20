@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use terrarium_adapters::discovery::Enabled;
 use terrarium_adapters::exec::{Tool, find_node};
-use terrarium_adapters::git::{GitError, GitRepo};
+use terrarium_adapters::git::GitError;
 use terrarium_adapters::metrics::{METRICS_VERSION, Metrics};
 use terrarium_adapters::report::Format;
 use terrarium_store::identifiers::SETTING_REPO_ACTIVE;
@@ -231,8 +231,8 @@ fn note_ci_newest(newest: &mut BTreeMap<String, CiNewest>, row: &StoredObservati
 /// Creates the terrarium for the repository at `path`, or relinks the one with its seed, and
 /// makes it the active one.
 fn connect_repo(store: &mut Store, path: &Path, now: i64) -> Result<Terrarium, ConnectError> {
-    let path = lifecycle::absolute(path)?;
-    let (default_branch, identity) = GitRepo::open(&path)?.default_identity()?;
+    let (git, path) = lifecycle::open_at(path, lifecycle::ceiling().as_deref())?;
+    let (default_branch, identity) = git.default_identity()?;
     let seed = identity.seed;
     let location = lifecycle::location(&path, default_branch);
     let id = if let Some(known) = store.terrarium_by_seed(&seed)? {

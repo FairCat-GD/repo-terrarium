@@ -14,7 +14,7 @@ use terrarium_truth::{PresentationState, Tick};
 use crate::catalog::Art;
 use crate::clock::{LocalClock, NIGHT_FROM};
 use crate::composer::{Composer, OverlayInput};
-use crate::frame::Frame;
+use crate::frame::{Frame, Viewport};
 use crate::salt::InstallSalt;
 use crate::sky::LocalDate;
 use crate::tween::Millis;
@@ -430,8 +430,21 @@ pub fn frame(
     label: &str,
     palette_mix: u8,
 ) -> Option<Frame> {
+    frame_in(art, table, name, label, palette_mix, Viewport::SCENE)
+}
+
+/// [`frame`], composed for `viewport`.
+pub fn frame_in(
+    art: &Art,
+    table: &ArtTable,
+    name: &str,
+    label: &str,
+    palette_mix: u8,
+    viewport: Viewport,
+) -> Option<Frame> {
     let input = scene(name)?;
     let mut composer = Composer::new(table, SALT);
+    composer.set_viewport(viewport);
     let overlay = OverlayInput::new(
         vec![label.to_owned()],
         clock(world(name)?.date, palette_mix),

@@ -10,9 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use egui::{ColorImage, TextureHandle, TextureOptions, Vec2};
 use terrarium_adapters::exec::Tool;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
+use terrarium_compose::frame::NATIVE_WIDTH;
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::sky::LocalDate;
 use terrarium_compose::timelapse::{FRAMES, Shot};
@@ -20,6 +19,7 @@ use terrarium_compose::timelapse::{FRAMES, Shot};
 use super::Film;
 use super::player::Player;
 use crate::copy::timelapse as words;
+use crate::picture;
 use crate::shell::{Export, Intent, Picking};
 
 /// The scales an export is written at, at the least: 1× to 4×, or to the strip's own if larger.
@@ -38,7 +38,7 @@ pub struct TimeLapseForm {
     ffmpeg: Ffmpeg,
     phase: Phase,
     intents: Vec<Intent>,
-    texture: Option<Texture>,
+    texture: Option<picture::Texture>,
 }
 
 enum Ffmpeg {
@@ -73,14 +73,6 @@ struct Ready {
     status: Option<String>,
     /// The export being written.
     writing: Option<Export>,
-}
-
-/// The picture as uploaded to the window's egui context, and which picture it is. A window
-/// opened again has a new context, which needs it uploaded anew.
-struct Texture {
-    ctx: egui::Context,
-    handle: TextureHandle,
-    serial: u64,
 }
 
 impl TimeLapseForm {
@@ -310,8 +302,11 @@ impl TimeLapseForm {
             ui.label(words::PREPARING);
             return;
         };
-        let texture = upload(&mut self.texture, ui.ctx(), image, serial);
-        ui.image((texture.id(), picture_size(ui, self.shown_up_to)));
+        let texture = picture::upload(&mut self.texture, ui.ctx(), image, serial);
+        ui.image((
+            texture.id(),
+            picture::size(ui, NATIVE_WIDTH, self.shown_up_to),
+        ));
         let asked = ready.controls(ui, self.scales, &self.ffmpeg, now);
         if let Some((moved_from, released)) = asked.moved {
             self.range(asked.from, asked.to, moved_from, released);
@@ -417,48 +412,11 @@ impl Ready {
         if let Ffmpeg::Missing = ffmpeg {
             ui.add(egui::Label::new(words::NO_FFMPEG).wrap());
         }
+        if self.player.halted() {
+            ui.label(words::HALTED);
+        }
         asked
     }
-}
-
-/// The picture's size in points: the largest whole scale of it whose physical width fits the
-/// window, at most `shown_up_to`, at least 1×.
-fn picture_size(ui: &egui::Ui, shown_up_to: u32) -> Vec2 {
-    let ppp = ui.ctx().pixels_per_point();
-    let room = ui.available_width() * ppp;
-    let fits = |k: u32| u16::try_from(NATIVE_WIDTH * k).is_ok_and(|width| f32::from(width) <= room);
-    let k = (1..=shown_up_to).rev().find(|&k| fits(k)).unwrap_or(1);
-    let size = |native: u32| u16::try_from(native * k).map_or(f32::MAX, f32::from) / ppp;
-    Vec2::new(size(NATIVE_WIDTH), size(NATIVE_HEIGHT))
-}
-
-/// The picture in `ctx`, uploaded once per picture and anew for a new context.
-fn upload<'a>(
-    texture: &'a mut Option<Texture>,
-    ctx: &egui::Context,
-    image: &terrarium_compose::frame::NativeImage,
-    serial: u64,
-) -> &'a TextureHandle {
-    let colours = || {
-        let bytes: Vec<u8> = image.pixels().iter().flatten().copied().collect();
-        ColorImage::from_rgba_unmultiplied([NATIVE_WIDTH as usize, NATIVE_HEIGHT as usize], &bytes)
-    };
-    match texture {
-        Some(shown) if shown.ctx == *ctx => {
-            if shown.serial != serial {
-                shown.handle.set(colours(), TextureOptions::NEAREST);
-                shown.serial = serial;
-            }
-        }
-        _ => {
-            *texture = Some(Texture {
-                ctx: ctx.clone(),
-                handle: ctx.load_texture("time-lapse", colours(), TextureOptions::NEAREST),
-                serial,
-            });
-        }
-    }
-    &texture.as_ref().expect("uploaded").handle
 }
 
 #[cfg(test)]

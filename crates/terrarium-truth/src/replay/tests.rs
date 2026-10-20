@@ -420,7 +420,7 @@ fn the_state_round_trips_through_both_encodings() {
     let prepared = Prepared::new(basis(), &commits, &observations).expect("valid");
     let dump = crate::dump(&prepared, Tick::new(100)).expect("dumps");
     assert_eq!(dump.state, state);
-    assert!(canonical_dump(&dump).starts_with("sim_version = 8\n"));
+    assert!(canonical_dump(&dump).starts_with("sim_version = 9\n"));
     assert_eq!(
         from_canonical_dump(&canonical_dump(&dump)),
         Ok(dump.clone())
@@ -504,7 +504,10 @@ fn generated_value(kind: u8, n: u32) -> ObservationValue {
             source: ci("feature/fern"),
         },
         5 => rewrite("main"),
-        _ => rewrite("feature/fern"),
+        6 => rewrite("feature/fern"),
+        _ => ObservationValue::Weather {
+            source: ci("experiment/moss"),
+        },
     }
 }
 
@@ -551,8 +554,8 @@ fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
     );
     let observations = prop::collection::vec(
         (
-            (0_u32..THROUGH, 0_i64..3_600, 0_u8..7),
-            (1_u32..45, 0_u8..3, any::<bool>()),
+            (0_u32..THROUGH, 0_i64..3_600, 0_u8..8),
+            (1_u32..45, 0_u8..4, any::<bool>()),
             prop::option::of(0_i32..=65_536),
         ),
         0..40,
@@ -598,9 +601,11 @@ fn generated() -> impl Strategy<Value = (Vec<CommitFacts>, Vec<Observation>)> {
                         ObservationValue::RefRewrite { .. } => None,
                         _ => raw.map(Q16::from_raw),
                     };
+                    // A third branch, so HEAD leaves a branch's CI behind from either side.
                     let branch = match branch {
                         0 => Some("main".to_owned()),
                         1 => Some("feature/fern".to_owned()),
+                        2 => Some("experiment/moss".to_owned()),
                         _ => None,
                     };
                     Observation {
