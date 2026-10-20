@@ -9,12 +9,12 @@
 //!   ever pushes it out, so a plant never jumps.
 //! - **No neighbours alike.** Neighbouring cells of a band never hold one species. Placement
 //!   checks it, and a removal can never break it.
-//! - **Hero plus company.** Each third has two tree cells, and they are band neighbours, so a
-//!   third holds at most two mature trees and never two of one species, and a tree matures
-//!   where it stands. The two are not ranked by size.
-//! - **Ceiling.** At most [`CEILING`] plants are placed, 70% of the cells. Above it a terrarium
-//!   grows taller and fuller, not into more sprites: the waiting plants are placed mature
-//!   first, and the rest are not drawn, which never adds health (I-7).
+//! - **Trees.** Each third has four tree cells, standing in a pair, a grove or alone, so a
+//!   third holds at most four mature trees, and a tree matures where it stands.
+//! - **Ceiling.** At most [`CEILING`] plants are placed, 70% of the cells, which is more than
+//!   truth ever grows. Were it not, a terrarium would grow taller and fuller rather than into
+//!   more sprites: the waiting plants are placed mature first, and the rest are not drawn,
+//!   which never adds health (I-7).
 //! - **Weeds.** Truth's weeds stand in free cells, at most [`WEED_CELLS`] and never past the
 //!   ceiling, and they count toward the window: real ground cover, not invented. Above the
 //!   cap they merge, a cell at a time, into patches. Plants are placed first and never wait
@@ -36,22 +36,23 @@ use terrarium_truth::scene::{GrowthStage, PlantSpecies, PlantState, PlantView, S
 use crate::slots::{Band, CELLS, PATTERN, band_cells};
 use crate::variants::ArtTable;
 
-/// The fewest occupied cells: 35% of 30, rounded up.
-pub const FLOOR: usize = 11;
-/// The most plants placed: 70% of 30.
-pub const CEILING: usize = 21;
+/// The fewest occupied cells: 35% of 108, rounded up.
+pub const FLOOR: usize = 38;
+/// The most plants placed: 70% of 108, rounded down.
+pub const CEILING: usize = 75;
 // The window is constraint 2's: the fewest cells at or above 35%, and the most at or below 70%.
 const _: () = assert!(FLOOR * 100 >= 35 * CELLS && (FLOOR - 1) * 100 < 35 * CELLS);
 const _: () = assert!(CEILING * 100 <= 70 * CELLS && (CEILING + 1) * 100 > 70 * CELLS);
 
 /// Steps through the cells when choosing filler, so it spreads along the strip. Coprime with
 /// [`CELLS`], so it reaches every cell.
-const FILL_STRIDE: usize = 11;
+const FILL_STRIDE: usize = 41;
 /// The most cells weeds take; above it they merge into patches.
-pub const WEED_CELLS: usize = 4;
-/// Steps through the cells when choosing weed cells, from [`WEED_START`]: one near each
-/// third and the middle, apart from the filler's walk. Coprime with [`CELLS`].
-const WEED_STRIDE: usize = 7;
+pub const WEED_CELLS: usize = 12;
+/// Steps through the cells when choosing weed cells, from [`WEED_START`]: the first four near
+/// each third and the middle, the rest between them, apart from the filler's walk. Coprime
+/// with [`CELLS`].
+const WEED_STRIDE: usize = 25;
 const WEED_START: usize = 4;
 
 /// Each species' band, read once from the art.
@@ -380,23 +381,38 @@ mod tests {
 
     #[test]
     fn above_the_ceiling_the_mature_plants_are_placed_first() {
-        let pool = [
-            PlantSpecies::Oak,
-            PlantSpecies::Rowan,
-            PlantSpecies::Fern,
-            PlantSpecies::Foxglove,
-            PlantSpecies::Reed,
-            PlantSpecies::MossMound,
-            PlantSpecies::Clover,
-            PlantSpecies::Thistle,
+        // Each band's species in turn, at every stage: six trees of each stage, as many as
+        // their band holds mature, and thirty herbs and thirty ground plants of each stage.
+        // That is more mature and young plants than the ceiling, and seedlings beyond them.
+        let bands: [(&[PlantSpecies], u16); 3] = [
+            (&[PlantSpecies::Oak, PlantSpecies::Rowan], 6),
+            (
+                &[
+                    PlantSpecies::Fern,
+                    PlantSpecies::Foxglove,
+                    PlantSpecies::Reed,
+                ],
+                30,
+            ),
+            (
+                &[
+                    PlantSpecies::MossMound,
+                    PlantSpecies::Clover,
+                    PlantSpecies::Thistle,
+                ],
+                30,
+            ),
         ];
-        // 14 seedlings, 13 young and 13 mature plants over the pool: more than the ceiling.
-        let plants: Vec<PlantView> = (0..40_u16)
-            .map(|i| {
-                let stage = GrowthStage::ALL[usize::from(i % 3)];
-                view(u32::from(i), pool[usize::from(i) % 8], stage, i)
-            })
-            .collect();
+        let mut plants = Vec::new();
+        for stage in GrowthStage::ALL.iter().copied() {
+            for &(pool, count) in &bands {
+                for i in 0..count {
+                    let n = u16::try_from(plants.len()).unwrap();
+                    let species = pool[usize::from(i) % pool.len()];
+                    plants.push(view(u32::from(n), species, stage, n));
+                }
+            }
+        }
         let placement = fresh(&scene(PresentationState::Thriving, plants.clone()));
         assert_eq!(placement.plants.len(), CEILING);
         assert!(placement.fill.is_empty());
@@ -412,12 +428,12 @@ mod tests {
 
     #[test]
     fn a_monoculture_never_stands_side_by_side() {
-        let oaks = (0..10)
+        let oaks = (0..20)
             .map(|i| view(i, PlantSpecies::Oak, GrowthStage::Mature, 0))
             .collect();
         let placement = fresh(&scene(PresentationState::Thriving, oaks));
         let cells: Vec<u8> = placement.plants.values().map(|p| p.cell).collect();
-        assert_eq!(cells.len(), 3, "{cells:?}");
+        assert_eq!(cells.len(), 6, "{cells:?}");
         let far = band_cells(Band::Far);
         for pair in far.windows(2) {
             assert!(
@@ -457,7 +473,7 @@ mod tests {
             PlantSpecies::Fern,
             PlantSpecies::Reed,
         ];
-        let seedlings: Vec<PlantView> = (0..30)
+        let seedlings: Vec<PlantView> = (0..100)
             .map(|i| {
                 view(
                     i,
@@ -468,8 +484,9 @@ mod tests {
             })
             .collect();
         let first = fresh(&scene(PresentationState::Thriving, seedlings.clone()));
+        assert_eq!(first.plants.len(), CEILING);
         let mut plants = seedlings;
-        plants.extend((50..60).map(|i| view(i, PlantSpecies::Oak, GrowthStage::Mature, 0)));
+        plants.extend((200..210).map(|i| view(i, PlantSpecies::Oak, GrowthStage::Mature, 0)));
         let next = place(
             &first,
             &scene(PresentationState::Thriving, plants),
@@ -584,21 +601,16 @@ mod tests {
                 .collect::<Vec<WeedForm>>()
         };
         let singles = |n| vec![WeedForm::Single; n];
+        let cap = u8::try_from(WEED_CELLS).unwrap();
         assert_eq!(forms(0), singles(0));
         assert_eq!(forms(3), singles(3));
-        assert_eq!(forms(4), singles(4));
+        assert_eq!(forms(cap), singles(WEED_CELLS));
         // Each weed past the cap merges one more cell into a patch, in cell order.
-        assert_eq!(
-            forms(6),
-            [
-                WeedForm::Patch,
-                WeedForm::Patch,
-                WeedForm::Single,
-                WeedForm::Single
-            ]
-        );
-        assert_eq!(forms(8), [WeedForm::Patch; 4]);
-        assert_eq!(forms(200), [WeedForm::Patch; 4]);
+        let mut two = vec![WeedForm::Patch; 2];
+        two.extend(singles(WEED_CELLS - 2));
+        assert_eq!(forms(cap + 2), two);
+        assert_eq!(forms(2 * cap), [WeedForm::Patch; WEED_CELLS]);
+        assert_eq!(forms(200), [WeedForm::Patch; WEED_CELLS]);
     }
 
     #[test]
@@ -615,7 +627,7 @@ mod tests {
                 .all(|cell| !placement.weeds.contains_key(cell))
         );
         // A crowd at the ceiling leaves no room for weeds; a placed plant never waits for one.
-        let crowd: Vec<PlantView> = (0..40_u16)
+        let crowd: Vec<PlantView> = (0..120_u16)
             .map(|i| {
                 let species = PlantSpecies::ALL[usize::from(i) % PlantSpecies::ALL.len()];
                 view(u32::from(i), species, GrowthStage::Mature, i)
@@ -623,7 +635,7 @@ mod tests {
             .collect();
         let mut full = scene(PresentationState::Thriving, crowd.clone());
         let bare = fresh(&full);
-        full.weeds = 8;
+        full.weeds = 24;
         let weedy = fresh(&full);
         assert_eq!(weedy.plants, bare.plants);
         assert!(weedy.occupied() <= CEILING);
@@ -652,11 +664,30 @@ mod tests {
     }
 
     #[test]
+    fn every_plant_truth_grows_has_a_cell_of_its_band() {
+        use terrarium_truth::habitat::plant_capacity;
+        use terrarium_truth::vegetation::Layer;
+        let most = plant_capacity(u64::MAX);
+        assert!(CEILING >= usize::try_from(most).unwrap());
+        // At the most, each of truth's layers has as many slots as its band has cells or fewer.
+        let slots = |layer| {
+            (0..u16::try_from(most).unwrap())
+                .filter(|&slot| Layer::of_slot(slot) == layer)
+                .count()
+        };
+        assert_eq!(slots(Layer::Far), band_cells(Band::Far).len());
+        assert!(slots(Layer::Mid) <= band_cells(Band::Mid).len());
+        assert!(slots(Layer::Near) <= band_cells(Band::Near).len());
+    }
+
+    #[test]
     fn strides_are_coprime_and_spread() {
-        for n in 1..=30 {
+        for n in 1..=CELLS {
             assert_eq!(gcd(stride(n), n), 1, "{n}");
         }
         assert_eq!([stride(6), stride(10), stride(14)], [5, 7, 9]);
+        let bands = Band::ALL.map(|band| stride(band_cells(band).len()));
+        assert_eq!(bands, [7, 29, 30]);
         assert_eq!(gcd(FILL_STRIDE, CELLS), 1);
         assert_eq!(gcd(WEED_STRIDE, CELLS), 1);
     }

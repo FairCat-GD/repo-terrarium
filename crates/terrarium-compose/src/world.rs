@@ -1,10 +1,12 @@
 //! The world around the plants: where each of its pieces stands on one install, and the fixed
 //! scenery.
 //!
-//! Every position here comes from the install salt and nothing else, so it never changes
-//! while the app runs. Each kind of piece has a fixed number of places, spread one per stratum
-//! across the strip, and piece `i` always stands in place `i`: a count that changes never moves
-//! another piece. Which piece stands where is decided elsewhere, without the salt (I-2).
+//! Every position here comes from the install salt and the viewport's width and nothing else,
+//! so it changes only when the width does. Each kind of piece has a fixed number of places,
+//! spread one per stratum across the strip, and piece `i` always stands in place `i`: a count
+//! that changes never moves another piece. Places on the ground spread with the width
+//! ([`Viewport::spread`]); the sun, the moon and the stars keep the scene's own columns. Which
+//! piece stands where is decided elsewhere, without the salt (I-2).
 
 use crate::catalog::{Art, Catalog, Flags, SpriteId};
 use crate::drift::{self, SOIL_PERIOD};
@@ -12,7 +14,7 @@ use crate::frame::{Area, Draw, GROUND_Y, NATIVE_HEIGHT, NATIVE_WIDTH, SOIL_Y, Vi
 use crate::order::{KeyedDraw, Subject};
 use crate::salt::{InstallSalt, Purpose};
 use crate::sky::{self, Drift};
-use crate::slots::boundary;
+use crate::slots::{CELLS, boundary};
 use crate::text::Label;
 use crate::variants::{ArtTable, WorldArt};
 
@@ -36,9 +38,15 @@ const FOSSIL_JITTER: i32 = 91;
 /// A crack keeps this far inside the scene's edges.
 const CRACK_MARGIN: i32 = 24;
 pub const PEBBLES: usize = 10;
-pub const DRESSING: usize = 6;
-pub const LITTER: usize = 8;
-pub const FUNGUS: usize = 6;
+pub const DRESSING: usize = 18;
+pub const LITTER: usize = 24;
+pub const FUNGUS: usize = 18;
+/// The litter places' strata.
+const LITTER_FROM: i32 = 24;
+const LITTER_TO: i32 = 616;
+/// Steps through the litter places for the fungus. Coprime with [`LITTER`], so no two fungi
+/// share a place.
+const FUNGUS_STEP: usize = 5;
 pub const STARS: usize = 7;
 /// Six stretches of the strip, one per resident (at most six).
 pub const RESIDENTS: usize = 6;
@@ -47,8 +55,8 @@ const RESIDENTS_FROM: i32 = 24;
 const RESIDENTS_TO: i32 = WIDTH - 24;
 
 /// The cell boundaries the monuments stand at, one per third: each between a mid and a near
-/// cell, clear of the tree cells.
-const MONUMENT_BOUNDARIES: [usize; MONUMENTS] = [9, 15, 24];
+/// cell, in the open ground between the trees.
+const MONUMENT_BOUNDARIES: [usize; MONUMENTS] = [15, 44, 87];
 /// Each cloud path's pace: different, so the clouds pass one another.
 const CLOUD_MS_PER_PX: [u32; sky::MAX_CLOUDS] = [3000, 3700, 2600];
 /// The stars' left edge: right of the label plate.
@@ -121,10 +129,11 @@ pub fn pick<T: Copy>(salt: InstallSalt, kind: Kind, item: u64, list: &[T]) -> Op
     list.get(usize::try_from(chosen).ok()?).copied()
 }
 
-/// Where every world piece stands on one install.
+/// Where every world piece stands on one install, in one viewport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorldLayout {
     salt: InstallSalt,
+    viewport: Viewport,
     monuments: [i32; MONUMENTS],
     /// Each fossil spot's left edge; fossils sit on the bottom row.
     fossils: [i32; FOSSILS],
@@ -144,10 +153,20 @@ pub struct WorldLayout {
 }
 
 impl WorldLayout {
-    /// The places of one install, kept clear of one another by the art's own sizes.
-    pub fn new(salt: InstallSalt, art: &WorldArt) -> WorldLayout {
-        let (body, star) = (art.body_side, art.star_side);
-        let fossils = std::array::from_fn(|i| {
+    /// The places of one install in `viewport`, kept clear of one another by the art's own
+    /// sizes.
+    pub fn new(salt: InstallSalt, art: &WorldArt, viewport: Viewport) -> WorldLayout {
+        WorldLayout::laid(salt, (art.body_side, art.star_side), viewport)
+    }
+
+    /// The same install's places in `viewport`.
+    #[must_use]
+    pub fn in_viewport(&self, viewport: Viewport) -> WorldLayout {
+        WorldLayout::laid(self.salt, (self.body_side, self.star_side), viewport)
+    }
+
+    fn laid(salt: InstallSalt, (body, star): (i32, i32), viewport: Viewport) -> WorldLayout {
+        let fossils: [i32; FOSSILS] = std::array::from_fn(|i| {
             stratum(FOSSILS_FROM, FOSSILS_TO, FOSSILS, i)
                 + place(salt, Kind::Fossil, i, 0, FOSSIL_JITTER)
         });
@@ -157,30 +176,39 @@ impl WorldLayout {
         // sun and the moon, where it would touch either.
         let lowest = *sky::BODY_ROWS.end() - star + 1;
         let star_rows = lowest - *sky::BODY_ROWS.start() + 1;
+        let per_dressing = CELLS / DRESSING;
+        let litter_jitter = (LITTER_TO - LITTER_FROM) / i32::try_from(LITTER).unwrap_or(1) - 3;
         WorldLayout {
             salt,
+            viewport,
             body_side: body,
             star_side: star,
             monuments: std::array::from_fn(|i| {
-                boundary(MONUMENT_BOUNDARIES[i]) + place(salt, Kind::Monument, i, 0, 5) - 2
+                viewport.spread(
+                    boundary(MONUMENT_BOUNDARIES[i]) + place(salt, Kind::Monument, i, 0, 5) - 2,
+                )
             }),
-            fossils,
             pebbles: std::array::from_fn(|i| {
                 let mut x = stratum(8, 632, PEBBLES, i) + 1 + place(salt, Kind::Pebble, i, 0, 58);
                 // Clear of every fossil spot, so no pebble ever lies over a fossil.
                 while x < WIDTH - 8 && fossils.iter().any(|&f| x + 2 >= f - 1 && x - 1 <= f + 8) {
                     x += 12;
                 }
-                (x, 69 + place(salt, Kind::Pebble, i, 1, 4))
+                (viewport.spread(x), 69 + place(salt, Kind::Pebble, i, 1, 4))
             }),
+            fossils: fossils.map(|x| viewport.spread(x)),
             dressing: std::array::from_fn(|i| {
-                boundary(
-                    5 * i + 1 + usize::try_from(place(salt, Kind::Dressing, i, 0, 4)).unwrap_or(0),
-                ) + place(salt, Kind::Dressing, i, 1, 3)
-                    - 1
+                let cell = per_dressing * i
+                    + 1
+                    + usize::try_from(place(salt, Kind::Dressing, i, 0, 4)).unwrap_or(0);
+                viewport.spread(boundary(cell) + place(salt, Kind::Dressing, i, 1, 3) - 1)
             }),
             litter: std::array::from_fn(|i| {
-                stratum(24, 616, LITTER, i) + 6 + place(salt, Kind::Litter, i, 0, 63)
+                viewport.spread(
+                    stratum(LITTER_FROM, LITTER_TO, LITTER, i)
+                        + 2
+                        + place(salt, Kind::Litter, i, 0, litter_jitter),
+                )
             }),
             sun,
             moon,
@@ -213,41 +241,48 @@ impl WorldLayout {
         }
     }
 
+    /// The viewport its places are laid in.
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
     /// The side of the sun and the moon, and of a star.
     pub fn sides(&self) -> (i32, i32) {
         (self.body_side, self.star_side)
     }
 
-    /// A monument spot's ground point x.
+    /// A monument spot's ground point x, in viewport columns.
     pub fn monument(&self, spot: u8) -> i32 {
         self.monuments[usize::from(spot) % MONUMENTS]
     }
 
-    /// A fossil spot's left edge.
+    /// A fossil spot's left edge, in viewport columns.
     pub fn fossil(&self, spot: u8) -> i32 {
         self.fossils[usize::from(spot) % FOSSILS]
     }
 
-    /// Where a crack `width` wide that truth's mark `id` names opens: its left edge, a salted
-    /// place kept clear of the scene's edges.
+    /// Where a crack `width` wide that truth's mark `id` names opens: its left edge, in
+    /// viewport columns, a salted place kept clear of the edges.
     pub fn crack(&self, id: u32, width: i32) -> i32 {
         let item = usize::try_from(id).unwrap_or(0);
-        CRACK_MARGIN
-            + place(
-                self.salt,
-                Kind::Ground,
-                item,
-                0,
-                WIDTH - 2 * CRACK_MARGIN - width,
-            )
+        self.viewport.spread(
+            CRACK_MARGIN
+                + place(
+                    self.salt,
+                    Kind::Ground,
+                    item,
+                    0,
+                    WIDTH - 2 * CRACK_MARGIN - width,
+                ),
+        )
     }
 
-    /// A decorative tuft's ground point x.
+    /// A decorative tuft's ground point x, in viewport columns.
     pub fn dressing(&self, i: u8) -> i32 {
         self.dressing[usize::from(i) % DRESSING]
     }
 
-    /// A piece of litter's ground point x.
+    /// A piece of litter's ground point x, in viewport columns.
     pub fn litter(&self, i: u8) -> i32 {
         self.litter[usize::from(i) % LITTER]
     }
@@ -255,25 +290,26 @@ impl WorldLayout {
     /// A fungus's ground point x: just right of a litter place, whether or not litter lies
     /// there, so it never moves with the litter count.
     pub fn fungus(&self, i: u8) -> i32 {
-        self.litter[(3 * usize::from(i) + 1) % LITTER] + 8
+        self.litter[(FUNGUS_STEP * usize::from(i) + 1) % LITTER] + 8
     }
 
-    /// The sun's top-left.
+    /// The sun's top-left, in the scene's columns.
     pub fn sun(&self) -> (i32, i32) {
         self.sun
     }
 
-    /// The moon's top-left.
+    /// The moon's top-left, in the scene's columns.
     pub fn moon(&self) -> (i32, i32) {
         self.moon
     }
 
-    /// A star's top-left.
+    /// A star's top-left, in the scene's columns.
     pub fn star(&self, i: u8) -> (i32, i32) {
         self.stars[usize::from(i) % STARS]
     }
 
-    /// A stretch's resident home when no vigorous plant grows there.
+    /// A stretch's resident home when no vigorous plant grows there, in the scene's columns:
+    /// a resident keeps its home in the scene and is drawn where the width spreads it.
     pub fn resident(&self, spot: u8) -> i32 {
         self.residents[usize::from(spot) % RESIDENTS]
     }
@@ -287,13 +323,14 @@ impl WorldLayout {
     }
 }
 
-/// The middle of fossil spot `spot` before the salt moves it: the same on every install, so a
-/// choice made by it is too.
+/// The middle of fossil spot `spot` in the scene, before the width spreads it and the salt
+/// moves it: the same on every install and at every width, so a choice made by it is too.
 pub fn fossil_centre(spot: usize) -> i32 {
     stratum(FOSSILS_FROM, FOSSILS_TO, FOSSILS, spot) + FOSSIL_JITTER / 2
 }
 
-/// Where resident stretch `i` begins and ends: the same on every install.
+/// Where resident stretch `i` begins and ends in the scene: the same on every install and at
+/// every width.
 pub fn resident_stretch(i: usize) -> (i32, i32) {
     (
         stratum(RESIDENTS_FROM, RESIDENTS_TO, RESIDENTS, i),
@@ -319,19 +356,20 @@ pub struct Scenery {
 }
 
 impl Scenery {
-    /// The scenery of one install, in `viewport`: the glass at its edges, the label at its
-    /// left, and the pebbles with the scene in its middle.
+    /// The scenery of one install, in its layout's viewport: the glass at its edges, the label
+    /// at its left, and the pebbles spread across it.
     ///
     /// # Panics
     /// If the catalog lacks the label plate, which the embedded art has.
-    pub fn new(art: &Art, table: &ArtTable, layout: &WorldLayout, viewport: Viewport) -> Scenery {
+    pub fn new(art: &Art, table: &ArtTable, layout: &WorldLayout) -> Scenery {
+        let viewport = layout.viewport;
         let catalog = &art.catalog;
         let world = table.world();
         let mut draws = glass(art, world.corners, viewport);
         for (i, &(x, y)) in layout.pebbles.iter().enumerate() {
             let item = u64::try_from(i).unwrap_or(0);
             if let Some(pebble) = pick(layout.salt, Kind::Pebble, item, &world.pebbles) {
-                draws.push(Draw::anchored(catalog, pebble, x + viewport.inset(), y));
+                draws.push(Draw::anchored(catalog, pebble, x, y));
             }
         }
         let label = Label::new(catalog).expect("the delivered label plate");
@@ -540,7 +578,6 @@ mod tests {
     use super::*;
     use crate::catalog::{Flags, Layer, Point};
     use crate::frame::PLANT_GROUND_Y;
-    use crate::slots::screen_third;
     use terrarium_truth::scene::Weather;
 
     fn salts() -> impl Iterator<Item = InstallSalt> {
@@ -591,36 +628,65 @@ mod tests {
     }
 
     #[test]
-    fn every_place_stays_inside_the_glass_and_monuments_keep_one_per_third() {
-        for salt in salts() {
-            let layout = WorldLayout::new(salt, table().world());
-            for spot in 0..3_u8 {
-                let x = layout.monument(spot);
-                assert_eq!(screen_third(x), i32::from(spot), "{x}");
+    fn every_place_stays_inside_the_glass_and_monuments_keep_one_per_third_at_every_width() {
+        for columns in [640, 651, 735, 756, 840] {
+            let viewport = Viewport::new(columns);
+            let width = viewport.width().cast_signed();
+            for salt in salts() {
+                let layout = WorldLayout::new(salt, table().world(), viewport);
+                for spot in 0..3_u8 {
+                    let x = layout.monument(spot);
+                    assert_eq!(viewport.third(x), i32::from(spot), "{x} at {columns}");
+                }
+                let count = |n: usize| 0..u8::try_from(n).unwrap();
+                let xs = count(FOSSILS)
+                    .map(|i| layout.fossil(i))
+                    .chain(count(DRESSING).map(|i| layout.dressing(i)))
+                    .chain(count(LITTER).map(|i| layout.litter(i)))
+                    .chain(count(FUNGUS).map(|i| layout.fungus(i)))
+                    .chain(count(RESIDENTS).map(|i| viewport.spread(layout.resident(i))))
+                    .chain(layout.pebbles().iter().map(|&(x, _)| x));
+                for x in xs {
+                    assert!((8..width - 8).contains(&x), "{x} at {columns}");
+                }
+                assert!(
+                    layout
+                        .pebbles()
+                        .iter()
+                        .all(|&(_, y)| (69..=72).contains(&y))
+                );
+                // The sky's places are the scene's, at every width.
+                let scene = WorldLayout::new(salt, table().world(), Viewport::SCENE);
+                assert_eq!((layout.sun(), layout.moon()), (scene.sun(), scene.moon()));
             }
-            let xs = (0..6_u8)
-                .map(|i| layout.fossil(i))
-                .chain((0..6).map(|i| layout.dressing(i)))
-                .chain((0..8).map(|i| layout.litter(i)))
-                .chain((0..6).map(|i| layout.fungus(i)))
-                .chain(layout.pebbles().iter().map(|&(x, _)| x));
-            for x in xs {
-                assert!((8..WIDTH - 8).contains(&x), "{x}");
-            }
-            assert!(
-                layout
-                    .pebbles()
-                    .iter()
-                    .all(|&(_, y)| (69..=72).contains(&y))
-            );
         }
+    }
+
+    #[test]
+    fn the_ground_spreads_with_the_width_and_stands_still_at_640() {
+        let salt = salts().next().unwrap();
+        let scene = WorldLayout::new(salt, table().world(), Viewport::SCENE);
+        let wide = scene.in_viewport(Viewport::new(840));
+        assert_eq!(
+            wide,
+            WorldLayout::new(salt, table().world(), Viewport::new(840))
+        );
+        assert_eq!(scene.in_viewport(Viewport::SCENE), scene);
+        for i in 0..u8::try_from(LITTER).unwrap() {
+            assert_eq!(wide.litter(i), Viewport::new(840).spread(scene.litter(i)));
+        }
+        // Spread apart, never closer: the first and last litter are further from the edges.
+        let last = u8::try_from(LITTER - 1).unwrap();
+        assert!(wide.litter(0) >= scene.litter(0));
+        assert!(840 - wide.litter(last) >= 640 - scene.litter(last));
+        assert!(wide.litter(last) - wide.litter(0) > scene.litter(last) - scene.litter(0));
     }
 
     #[test]
     fn stars_never_touch_the_sun_the_moon_or_the_label() {
         let table = table();
         for salt in salts() {
-            let layout = WorldLayout::new(salt, table.world());
+            let layout = WorldLayout::new(salt, table.world(), Viewport::SCENE);
             let (side, star_side) = layout.sides();
             let body = |(x, y): (i32, i32)| (x, y, side, side);
             let label = (LABEL_X, LABEL_Y, 90, 9);
@@ -643,15 +709,17 @@ mod tests {
 
     #[test]
     fn no_pebble_lies_over_a_fossil_spot() {
-        for salt in salts() {
-            let layout = WorldLayout::new(salt, table().world());
-            for &(x, _) in layout.pebbles() {
-                for spot in 0..6_u8 {
-                    let fossil = layout.fossil(spot);
-                    assert!(
-                        x + 2 < fossil - 1 || x - 1 > fossil + 8,
-                        "{x} over {fossil}"
-                    );
+        for columns in [640, 735, 840] {
+            for salt in salts() {
+                let layout = WorldLayout::new(salt, table().world(), Viewport::new(columns));
+                for &(x, _) in layout.pebbles() {
+                    for spot in 0..6_u8 {
+                        let fossil = layout.fossil(spot);
+                        assert!(
+                            x + 2 < fossil - 1 || x - 1 > fossil + 8,
+                            "{x} over {fossil} at {columns}"
+                        );
+                    }
                 }
             }
         }
@@ -673,7 +741,7 @@ mod tests {
         .unwrap();
         let label = (LABEL_X, LABEL_Y, 90, 9);
         for salt in salts() {
-            let layout = WorldLayout::new(salt, table.world());
+            let layout = WorldLayout::new(salt, table.world(), Viewport::SCENE);
             let paths = u8::try_from(sky::MAX_CLOUDS).unwrap();
             let rows: Vec<i32> = (0..paths).map(|i| layout.cloud(i).y).collect();
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?}");
@@ -693,8 +761,7 @@ mod tests {
         let scenery = Scenery::new(
             art,
             &table,
-            &WorldLayout::new(crate::preset::SALT, table.world()),
-            Viewport::SCENE,
+            &WorldLayout::new(crate::preset::SALT, table.world(), Viewport::SCENE),
         );
         let glass: Vec<&KeyedDraw> = scenery
             .keyed()

@@ -26,7 +26,7 @@ pub fn seed(byte: u8) -> RepoSeed {
 }
 
 /// Day `day`'s close, after `START`, with no light or soil tool, the usual rain and 1,000
-/// lines (10 plants, 2 residents), while the repository is active.
+/// lines (30 plants, 2 residents), while the repository is active.
 pub fn day(day: u32) -> Conditions {
     Conditions {
         tick: Tick::new(START + day * TICKS_PER_DAY),
@@ -57,7 +57,7 @@ pub fn conditions() -> impl Strategy<Value = (Option<Q16>, Option<Q16>, Q16, u64
         reading(),
         reading(),
         (0_i32..=4 << 16).prop_map(Q16::from_raw),
-        select(vec![0_u64, 500, 3_000, 15_000, 40_000, 1_000_000]),
+        select(vec![0_u64, 500, 3_000, 15_000, 40_000, 200_000, 1_000_000]),
         // Inactive about one day in seven.
         (0_u8..7).prop_map(|n| n == 0),
     )
@@ -77,10 +77,10 @@ pub fn any_state() -> impl Strategy<Value = (u64, Vegetation)> {
         any::<bool>(),
     );
     (
-        0_u64..40_000,
+        0_u64..100_000,
         any::<u8>(),
-        prop::collection::vec(plant, 24),
-        0_usize..8,
+        prop::collection::vec(plant, 72),
+        0_usize..24,
         prop::collection::vec(0_u32..30, 0..20),
         prop::collection::vec(0_u32..80, 0..20),
         prop::collection::vec(SEED_BANK_FLOOR..=SEED_BANK_CAP, 8),
@@ -109,7 +109,7 @@ pub fn any_state() -> impl Strategy<Value = (u64, Vegetation)> {
                     bloom_until: None,
                 });
             }
-            vegetation.next_id = 25;
+            vegetation.next_id = 73;
             let room = capacity - vegetation.plants.len();
             let weeds = weeds
                 .min(room)

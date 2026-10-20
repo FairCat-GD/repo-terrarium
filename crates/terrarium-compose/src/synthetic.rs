@@ -42,11 +42,15 @@ const THRIVING_FROM: u8 = 60;
 const ALIVE_FROM: u8 = 35;
 /// Soil below which weeds take free slots.
 const WEEDS_BELOW: u8 = 45;
-/// The most weeds: a third of the plant capacity, at most 8.
-const MAX_WEEDS: u32 = 6;
-const MAX_LITTER: u32 = 8;
-/// The fewest plants present: the plant capacity's floor.
-const MIN_PLANTS: u32 = 6;
+/// The most weeds: a third of the plant capacity, at most 24, as truth's.
+const MAX_WEEDS: u32 = 18;
+/// The most litter: as much as the composer draws.
+const MAX_LITTER: u32 = 24;
+/// The fewest plants present: the plant capacity's floor, as truth's.
+const MIN_PLANTS: u32 = 18;
+/// How many times over the terrarium holds the rows, as truth's capacity does.
+const DENSITY: usize = 3;
+const ROW_COUNT: usize = ROWS.len() * DENSITY;
 /// Rain or wind, as a percentage of baseline, from which the wind is Breezy, and from which it
 /// is a Gale: the windstorm ratio.
 const BREEZY_FROM: u16 = 100;
@@ -177,7 +181,8 @@ use PlantSpecies::{Clover, Fern, Foxglove, MossMound, Oak, Reed, Rowan, Thistle}
 
 /// The plant rows, from one seeded pool of eight, the presets' own: each row's species, its
 /// stage in an ordinary year, and how far its vigor sits from the climate's. The hardiest come
-/// first, since a failing terrarium loses rows from the end.
+/// first, since a failing terrarium loses rows from the end. The terrarium holds them
+/// [`DENSITY`] times over, one round after another, so twelve trees at the most.
 const ROWS: [(PlantSpecies, GrowthStage, i8); 20] = [
     (Oak, M, 12),
     (Fern, M, -3),
@@ -230,7 +235,7 @@ pub fn scene(knobs: &Knobs) -> SceneInput {
         .iter()
         .filter(|plant| plant.state == PlantState::Dead)
         .count();
-    let lost = ROWS.len() - plants.len();
+    let lost = ROW_COUNT - plants.len();
     let wind = knobs.wind_class();
     let gust = if wind == Wind::Gale { 2 } else { 0 };
     let litter = count(
@@ -379,16 +384,16 @@ fn level(days: u16, thresholds: &[u16]) -> u8 {
 
 fn plants(knobs: &Knobs, whole: PresentationState) -> Vec<PlantView> {
     let health = knobs.health();
-    let rows = u32::try_from(ROWS.len()).unwrap_or(u32::MAX);
+    let rows = u32::try_from(ROW_COUNT).unwrap_or(u32::MAX);
     let present = MIN_PLANTS + u32::from(health) * (rows - MIN_PLANTS) / u32::from(FULL);
-    let present = usize::try_from(present).unwrap_or(ROWS.len());
+    let present = usize::try_from(present).unwrap_or(ROW_COUNT);
     let failing = if knobs.light_limits() {
         PlantState::Pale
     } else {
         PlantState::Wilting
     };
     (0_u16..)
-        .zip(ROWS.iter().take(present))
+        .zip(ROWS.iter().cycle().take(present))
         .map(|(order, &(species, usual, offset))| {
             let vigor = vigor(health, offset);
             let alive = if vigor >= THRIVING_FROM {
@@ -406,7 +411,7 @@ fn plants(knobs: &Knobs, whole: PresentationState) -> Vec<PlantView> {
                 PresentationState::Mature => (M, alive),
                 // The old growth stands dead, and new growth rises among it.
                 PresentationState::Recovering if order % 3 == 0 => (M, PlantState::Dead),
-                PresentationState::Recovering if order < 10 => (Y, alive),
+                PresentationState::Recovering if usize::from(order) < ROW_COUNT / 2 => (Y, alive),
                 PresentationState::Recovering => (S, alive),
                 _ => (usual, alive),
             };
@@ -939,7 +944,7 @@ mod tests {
                 .collect()
         };
         let all = ids(&Knobs::typical(100));
-        assert_eq!(all.len(), 20);
+        assert_eq!(all.len(), ROW_COUNT);
         for (_, knobs) in NAMED {
             let some = ids(&knobs);
             assert_eq!(some[..], all[..some.len()], "{knobs:?}");

@@ -507,7 +507,8 @@ pub struct Composer {
     light_ms: u32,
     label_capacity: usize,
     sweep_width: i32,
-    /// The columns it composes for; the scene stands in their middle.
+    /// The columns it composes for: the ground spreads across them, and the sky's bodies stand
+    /// in their middle.
     viewport: Viewport,
     placement: Placement,
     monuments: BTreeMap<u32, u8>,
@@ -565,8 +566,8 @@ impl Composer {
         Composer {
             salt,
             bands: Bands::new(table),
-            layout: Layout::new(salt),
-            world: WorldLayout::new(salt, table.world()),
+            layout: Layout::new(salt, Viewport::SCENE),
+            world: WorldLayout::new(salt, table.world(), Viewport::SCENE),
             light_ms: table.world().light_ms,
             label_capacity: table.world().label_capacity,
             sweep_width: table.world().sweep_width,
@@ -617,7 +618,7 @@ impl Composer {
 
     /// The fixed scenery of this install, from the composer's own salt.
     pub fn scenery(&self, art: &Art, table: &ArtTable) -> Scenery {
-        Scenery::new(art, table, &self.world, self.viewport)
+        Scenery::new(art, table, &self.world)
     }
 
     /// Moves the depiction toward `input` and `overlay` from `now`. The frame at `now` does
@@ -933,7 +934,6 @@ impl Composer {
     /// it rather than moving.
     fn landmarks(&self, art: &Art, table: &ArtTable, now: Millis) -> Vec<hover::Placed> {
         let catalog = &art.catalog;
-        let inset = self.viewport.inset();
         let mut out = Vec::new();
         for (&subject, entry) in &self.entries {
             let (landmark, spot) = match subject {
@@ -957,13 +957,13 @@ impl Composer {
                     }
                 };
                 let area = Area {
-                    x: draw.x + inset,
+                    x: draw.x,
                     y: draw.y,
                     w: i32::from(rect.w),
                     h: i32::from(rect.h),
                 };
                 let (centre, top) = match landmark {
-                    Landmark::Monument(_) => (self.world.monument(spot) + inset, area.y),
+                    Landmark::Monument(_) => (self.world.monument(spot), area.y),
                     Landmark::Fossil(_) => (area.x + area.w / 2, GROUND),
                 };
                 let newest = usize::from(index) + 1 == looks.len();
@@ -1240,13 +1240,10 @@ impl Composer {
         };
         self.hover
             .push(art, &landmarks, self.viewport_width(), real, &mut keyed);
-        // The scene stands in the middle of the viewport; everything else is laid out across
-        // the viewport already.
+        // The sun, the moon and the stars stand in the middle of the viewport; everything else
+        // is laid out across the viewport already.
         let inset = self.viewport.inset();
-        for keyed in keyed
-            .iter_mut()
-            .filter(|keyed| keyed.key.subject.in_scene())
-        {
+        for keyed in keyed.iter_mut().filter(|keyed| keyed.key.subject.centred()) {
             keyed.key.x += inset;
             keyed.draw.x += inset;
             if let Some(clip) = &mut keyed.draw.clip {
@@ -1258,9 +1255,12 @@ impl Composer {
         keyed
     }
 
-    /// Composes for `viewport` from now on; its scenery is [`Composer::scenery`]'s anew.
+    /// Composes for `viewport` from now on: the ground's places spread to its width, and its
+    /// scenery is [`Composer::scenery`]'s anew.
     pub fn set_viewport(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+        self.layout = Layout::new(self.salt, viewport);
+        self.world = self.world.in_viewport(viewport);
         self.refit_show();
     }
 

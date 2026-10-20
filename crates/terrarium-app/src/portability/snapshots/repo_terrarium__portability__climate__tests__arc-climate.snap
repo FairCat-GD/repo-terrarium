@@ -2,4 +2,4 @@
 source: crates/terrarium-app/src/portability/climate.rs
 expression: "format!(\"{} bytes, SHA-256 {}\", out.len(), to_hex(&Sha256::digest(&out)))"
 ---
-313298 bytes, SHA-256 743fa4b2abbcb410311c29ed02b04edd56ebfc23cfdd45611bbef73e030fad0c
+313299 bytes, SHA-256 71d6d3dd82bc5ff596193c145e1ee1dadac9f17dd7793de6e428e26045d904e2

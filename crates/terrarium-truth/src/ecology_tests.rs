@@ -155,7 +155,7 @@ fn any_cast(terrain: u64) -> impl Strategy<Value = Fauna> {
         })
 }
 
-/// The slowest return good climate allows: 24 plants failing so long that they die at the
+/// The slowest return good climate allows: 72 plants failing so long that they die at the
 /// fourth close and stand a month, rain at 0.70 of the usual pace, and no resident left.
 #[test]
 fn the_slowest_return_still_fills_the_cast_within_60_days() {
@@ -163,7 +163,7 @@ fn the_slowest_return_still_fills_the_cast_within_60_days() {
     let seed = seed(3);
     let mut vegetation = crate::vegetation::Vegetation::new(&seed);
     let capacity = crate::habitat::plant_capacity(terrain);
-    assert_eq!((capacity, resident_capacity(terrain)), (24, 6));
+    assert_eq!((capacity, resident_capacity(terrain)), (72, 6));
     let failing_since = Tick::new(START - 17 * TICKS_PER_DAY);
     vegetation.plants = (0..u16::try_from(capacity).expect("small"))
         .map(|slot| crate::vegetation::Plant {
@@ -202,8 +202,8 @@ fn the_slowest_return_still_fills_the_cast_within_60_days() {
     }
     assert_eq!(died, Some(4));
     // Plant food is good again from about the 37th close; the banked arrivals fill the cast at
-    // the 53rd, a week inside the 60 days.
-    assert_eq!(filled, Some(53));
+    // the 54th, six days inside the 60.
+    assert_eq!(filled, Some(54));
 }
 
 proptest! {

@@ -97,9 +97,20 @@ fn the_pool_is_known() {
 fn germination_is_known() {
     use PlantSpecies::*;
     let seed = seed(7);
-    let mut vegetation = Vegetation::new(&seed);
-    // Six plants of capacity, one seedling a day (⌈free / 7⌉), at the closes 24 hours apart
-    // from tick 24, as the model has them.
+    // Eighteen plants of capacity, twelve of them taken by young plants that shed nothing, so
+    // six are free and one seedling comes a day (⌈free / 7⌉), at the closes 24 hours apart from
+    // tick 24, as the model has them. Slots 12 to 17 run through the layers as 0 to 5 do.
+    let mut vegetation = Vegetation {
+        plants: (0..12)
+            .map(|slot| Plant {
+                stage: GrowthStage::Young,
+                grown: 0,
+                ..plant(slot, Q16::ONE, Limit::Soil)
+            })
+            .collect(),
+        next_id: 13,
+        ..Vegetation::new(&seed)
+    };
     for n in 1..=6 {
         let today = Conditions {
             tick: Tick::new(24 * n),
@@ -111,17 +122,18 @@ fn germination_is_known() {
     let planted: Vec<(u16, u32, PlantSpecies)> = vegetation
         .plants
         .iter()
+        .filter(|p| p.slot >= 12)
         .map(|p| (p.slot, p.id, p.species))
         .collect();
     assert_eq!(
         planted,
         [
-            (0, 1, MossMound),
-            (1, 2, Foxglove),
-            (2, 3, Birch),
-            (3, 4, WildflowerCluster),
-            (4, 5, Foxglove),
-            (5, 6, MossMound)
+            (12, 13, MossMound),
+            (13, 14, Foxglove),
+            (14, 15, Birch),
+            (15, 16, WildflowerCluster),
+            (16, 17, Foxglove),
+            (17, 18, MossMound)
         ]
     );
     let bank: Vec<u32> = vegetation.seed_bank.values().copied().collect();
@@ -158,8 +170,9 @@ fn a_repository_without_tools_grows_a_full_thriving_terrarium() {
     let mut vegetation = Vegetation::new(&seed);
     run(&mut vegetation, &seed, 1..=60, |_| {});
     assert!(thriving(&vegetation, 1_000), "{vegetation:#?}");
-    // The last seedlings germinated on day 2 or so; trees take 60 days to mature.
-    run(&mut vegetation, &seed, 61..=70, |_| {});
+    // The last tree germinated on day 11 and the last seedling on day 14; trees take 60 days
+    // to mature.
+    run(&mut vegetation, &seed, 61..=72, |_| {});
     assert!(
         vegetation
             .plants
@@ -172,7 +185,7 @@ fn a_repository_without_tools_grows_a_full_thriving_terrarium() {
         .iter()
         .map(|p| Layer::of(p.species))
         .collect();
-    assert_eq!(layers, (0..10).map(Layer::of_slot).collect::<Vec<_>>());
+    assert_eq!(layers, (0..30).map(Layer::of_slot).collect::<Vec<_>>());
     assert_eq!(
         (0..6)
             .filter(|&slot| Layer::of_slot(slot) == Layer::Far)
@@ -356,59 +369,60 @@ fn pale_and_wilting_name_the_limiting_climate() {
 fn weeds_take_poor_soil_and_wither_as_it_recovers() {
     let seed = seed(2);
     let mut vegetation = Vegetation::new(&seed);
-    // Poor soil from the start: a weed a day, before the seedlings, up to W = 3 for P = 10.
+    // Poor soil from the start: a weed a day, before the seedlings, until weeds and seedlings
+    // fill P = 30, the ninth weed one short of W = 10.
     run(&mut vegetation, &seed, 1..=20, |today| {
         today.soil = Some(q(30));
     });
-    assert_eq!(vegetation.weeds.len(), 3);
-    assert_eq!(vegetation.plants.len(), 7);
+    assert_eq!(vegetation.weeds.len(), 9);
+    assert_eq!(vegetation.plants.len(), 21);
     // Middling soil holds them.
     run(&mut vegetation, &seed, 21..=40, |today| {
         today.soil = Some(q(50));
     });
-    assert_eq!(vegetation.weeds.len(), 3);
+    assert_eq!(vegetation.weeds.len(), 9);
     // Good or unknown soil withers one a day, and seedlings take the room.
     run(&mut vegetation, &seed, 41..=42, |today| {
         today.soil = Some(q(60));
     });
-    assert_eq!(vegetation.weeds.len(), 1);
+    assert_eq!(vegetation.weeds.len(), 7);
     run(&mut vegetation, &seed, 43..=60, |_| {});
     assert!(thriving(&vegetation, 1_000));
     // With one slot's room left on poor soil, the weed takes it before a seedling can.
     let mut crowded = Vegetation {
-        plants: (0..9)
+        plants: (0..29)
             .map(|slot| plant(slot, Q16::ONE, Limit::Soil))
             .collect(),
-        next_id: 10,
+        next_id: 30,
         ..Vegetation::new(&seed)
     };
     run(&mut crowded, &seed, 1..=1, |today| {
         today.soil = Some(q(30));
     });
-    assert_eq!((crowded.plants.len(), crowded.weeds.len()), (9, 1));
+    assert_eq!((crowded.plants.len(), crowded.weeds.len()), (29, 1));
 }
 
 #[test]
 fn a_species_with_thriving_mature_plants_sheds_one_seed_a_day_up_to_the_cap() {
     let seed = seed(0);
-    // Six slots, all taken, so nothing germinates: four mature thriving clovers, one young
-    // thistle and one pale moss mound.
+    // Eighteen slots, all taken, so nothing germinates: four mature thriving clovers, thirteen
+    // young thistles and one pale moss mound.
     let mut plants: Vec<Plant> = (0..4)
         .map(|slot| plant(slot, Q16::ONE, Limit::Soil))
         .collect();
-    plants.push(Plant {
+    plants.extend((4..17).map(|slot| Plant {
         species: PlantSpecies::Thistle,
         stage: GrowthStage::Young,
         grown: 0,
-        ..plant(4, Q16::ONE, Limit::Soil)
-    });
+        ..plant(slot, Q16::ONE, Limit::Soil)
+    }));
     plants.push(Plant {
         species: PlantSpecies::MossMound,
-        ..plant(5, q(40), Limit::Light)
+        ..plant(17, q(40), Limit::Light)
     });
     let mut vegetation = Vegetation {
         plants,
-        next_id: 7,
+        next_id: 19,
         ..Vegetation::new(&seed)
     };
     let bank = |vegetation: &Vegetation, species| vegetation.seed_bank[&species];
@@ -424,25 +438,25 @@ fn a_species_with_thriving_mature_plants_sheds_one_seed_a_day_up_to_the_cap() {
 #[test]
 fn a_shrinking_terrain_drops_the_highest_slots_and_the_newest_weeds() {
     let seed = seed(4);
-    let weeds: Vec<Tick> = (1..=5).map(|n| Tick::new(START - n * 24)).rev().collect();
+    let weeds: Vec<Tick> = (1..=12).map(|n| Tick::new(START - n * 24)).rev().collect();
     let mut vegetation = Vegetation {
-        plants: [0, 1, 12, 13]
+        plants: [0, 1, 36, 37]
             .into_iter()
             .map(|slot| plant(slot, Q16::ONE, Limit::Soil))
             .collect(),
         weeds: weeds.clone(),
-        next_id: 15,
+        next_id: 39,
         ..Vegetation::new(&seed)
     };
-    // 1 KLOC: P = 10, W = 3. Middling soil holds the weeds that are left.
+    // 1 KLOC: P = 30, W = 10. Middling soil holds the weeds that are left.
     run(&mut vegetation, &seed, 1..=1, |today| {
         today.soil = Some(q(50));
     });
     let slots: Vec<u16> = vegetation.plants.iter().map(|p| p.slot).collect();
-    // Slots 12 and 13 fell; one seedling took the lowest free slot (⌈5 / 7⌉).
-    assert_eq!(slots, [0, 1, 2]);
+    // Slots 36 and 37 fell; three seedlings took the lowest free slots (⌈18 / 7⌉).
+    assert_eq!(slots, [0, 1, 2, 3, 4]);
     assert_eq!(vegetation.litter, [day(1).tick; 2]);
-    assert_eq!(vegetation.weeds, weeds[..3]);
+    assert_eq!(vegetation.weeds, weeds[..10]);
 }
 
 #[test]
@@ -633,6 +647,6 @@ fn rain_after_drought_doubles_one_close_of_germination() {
         assert!(!vegetation.boost, "spent at the close");
         vegetation.plants.len()
     };
-    // 1 KLOC holds 10: a seventh of them, rounded up, is 2; doubled, 3.
-    assert_eq!((germinated(false), germinated(true)), (2, 3));
+    // 1 KLOC holds 30: a seventh of them, rounded up, is 5; doubled, 9.
+    assert_eq!((germinated(false), germinated(true)), (5, 9));
 }

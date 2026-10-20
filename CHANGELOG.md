@@ -5,6 +5,27 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-10-20
+
+More plants. A terrarium grows three times as many plants as before, up to 72 with twelve
+trees, and on a screen wider than the scene its ground spreads out to the strip's edges. The
+same history grows a fuller world (simulation version 10).
+
+### Changed
+
+- **Three times the plants:** a repository's terrarium holds 18 plants at the least and 72 at
+  the most, three times as many as before, and weeds follow, 6 to 24. Its twelve trees stand
+  in pairs, in groves and alone. The simulation version is now 10: the history is replayed once
+  at the next launch.
+- **Every plant the terrarium grows is drawn:** the strip has room for more than it ever grows,
+  where a large terrarium's youngest plants used to go undrawn.
+- **The ground spreads to the strip's edges** on a screen whose width is no multiple of 640
+  pixels, as a MacBook's own display is: plants, weeds, monuments, fossils, litter and the
+  residents' homes spread across the whole width rather than standing in its middle. The sun,
+  the moon and the stars keep their places.
+- **More ground cover is drawn:** up to 24 pieces of litter, 18 of fungus and 18 decorative
+  tufts, for the larger terrarium's fall.
+
 ## [0.30.0] - 2026-10-20
 
 Polish. The strip opens on its settled scene rather than fading in from black, its label no

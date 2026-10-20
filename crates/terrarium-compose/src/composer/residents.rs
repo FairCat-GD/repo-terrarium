@@ -282,7 +282,7 @@ impl Composer {
             .map(|placed| placed.cell)
             .min();
         let (home, base) = match vigorous {
-            Some(cell) => (self.layout.slot(cell).x, slots::centre(usize::from(cell))),
+            Some(cell) => (self.layout.scene_x(cell), slots::centre(usize::from(cell))),
             None => (self.world.resident(spot), i32::midpoint(from, to)),
         };
         let (left, right) = (base - from, to - base);
@@ -439,7 +439,7 @@ impl Composer {
                     table,
                     Place::new(subject, 0, look),
                     &segment,
-                    home,
+                    self.viewport.spread(home),
                     record.out,
                     lit,
                     now,

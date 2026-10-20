@@ -1,7 +1,7 @@
 //! The per-frame budget: compositing a busy frame takes under 1 ms in a release build. The
-//! frame is the sample scene with a full-frame dusk overlay, rain across the width and the
-//! heaviest condensation, more than any one presentation state draws. Run by `cargo xtask
-//! bench`.
+//! frame is the thriving preset, as many plants as truth grows, with a full-frame dusk
+//! overlay, rain across the width and the heaviest condensation, more than any one
+//! presentation state draws. Run by `cargo xtask bench`.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use terrarium_compose::catalog::Art;
 use terrarium_compose::compositor::composite_into;
 use terrarium_compose::frame::{Draw, Frame, NativeImage};
-use terrarium_compose::sample;
+use terrarium_compose::preset;
 use terrarium_compose::variants::ArtTable;
 
 const BUDGET: Duration = Duration::from_millis(1);
@@ -57,7 +57,8 @@ fn main() -> ExitCode {
 
 fn busy_frame(art: &Art, table: &ArtTable) -> Frame {
     let catalog = &art.catalog;
-    let mut frame = sample::frame(art, table, "repo-terrarium", 0, 0);
+    let mut frame =
+        preset::frame(art, table, "thriving", "repo-terrarium", 0).expect("the thriving preset");
     let named = |name: &str| catalog.id(name).expect(name);
     frame
         .draws

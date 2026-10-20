@@ -41,7 +41,8 @@ pub struct Resident {
     pub view: ResidentView,
     /// Its stretch of the strip, one of six.
     pub spot: u8,
-    /// The ground point it rests at and returns to.
+    /// The ground point it rests at and returns to, in the scene's columns: it is drawn where
+    /// the viewport's width spreads it, and walks from there a column a step.
     pub home: i32,
     /// The cell of the vigorous plant its home is beside, where it feeds; `None` for its
     /// stretch's own place. Whether a resident moved home is told by this, never by `home`,

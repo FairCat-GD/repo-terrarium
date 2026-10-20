@@ -15,8 +15,10 @@ pub const WIDEST: u32 = 840;
 
 /// The native columns a strip shows: the scene's 640, or more, up to [`WIDEST`], on a screen
 /// whose width is no multiple of 640, so nothing is ever stretched across its spare width. The
-/// scene stands in the middle. The backdrop, the soil, the glass, the label and the sky's
-/// drifting pieces reach the viewport's edges.
+/// ground spreads across it: every place on the ground stands in proportion to the width
+/// ([`Viewport::spread`]), while its art keeps its pixels. The sun, the moon and the stars
+/// stand in the middle. The backdrop, the soil, the glass, the label and the sky's drifting
+/// pieces reach the viewport's edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Viewport {
     width: u32,
@@ -47,6 +49,20 @@ impl Viewport {
     /// The columns beyond the scene, both sides together.
     pub fn extra(self) -> i32 {
         i32::try_from(self.width - NATIVE_WIDTH).unwrap_or(0)
+    }
+
+    /// Where the scene's column `x` on the ground stands in the viewport: in proportion to its
+    /// width, rounded to the nearest column. It is `x` itself at 640, and it only ever grows
+    /// with `x`, so places keep their order and their distance from the glass at either edge
+    /// grows with the width.
+    pub fn spread(self, x: i32) -> i32 {
+        let scene = NATIVE_WIDTH.cast_signed();
+        x + (2 * x * self.extra() + scene).div_euclid(2 * scene)
+    }
+
+    /// Which third of the viewport column `x` falls in: 0, 1 or 2.
+    pub fn third(self, x: i32) -> i32 {
+        x * 3 / self.width.cast_signed()
     }
 }
 
@@ -299,6 +315,32 @@ mod tests {
         assert_eq!(frame.row(73).len(), 640);
         frame.row_mut(2)[7] = [4, 4, 4, 255];
         assert_eq!(frame.pixels()[2 * 640 + 7], [4, 4, 4, 255]);
+    }
+
+    #[test]
+    fn the_ground_spreads_in_proportion_and_stands_still_at_640() {
+        for x in -10..650 {
+            assert_eq!(Viewport::SCENE.spread(x), x);
+        }
+        for columns in [641, 651, 735, 756, 840] {
+            let viewport = Viewport::new(columns);
+            let width = viewport.width().cast_signed();
+            assert_eq!((viewport.spread(0), viewport.spread(640)), (0, width));
+            // A step of the scene is a step or more, never less, and never more than the
+            // width's own ratio rounded up: places keep their order and grow apart.
+            for x in 0..640 {
+                let step = viewport.spread(x + 1) - viewport.spread(x);
+                assert!((1..=2).contains(&step), "{x} at {columns}: {step}");
+            }
+            // The scene's thirds are the viewport's, but for a column's rounding at a border.
+            for x in (1..639).filter(|x| (x - 1) * 3 / 640 == (x + 1) * 3 / 640) {
+                assert_eq!(
+                    viewport.third(viewport.spread(x)),
+                    x * 3 / 640,
+                    "{x} at {columns}"
+                );
+            }
+        }
     }
 
     #[test]

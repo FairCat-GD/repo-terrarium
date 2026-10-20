@@ -563,7 +563,7 @@ impl Composer {
         };
         self.push(art, table, place, look.piece, lit, at, &mut draws);
         let width = self.viewport_width();
-        let inset = if place.subject.in_scene() {
+        let inset = if place.subject.centred() {
             self.viewport.inset()
         } else {
             0
@@ -740,7 +740,6 @@ impl Composer {
         event: &ActiveEvent,
         struck: Option<(u8, PlantView)>,
     ) -> (i32, i32) {
-        let inset = self.viewport.inset();
         if let Some((cell, view)) = struck {
             let x = self.layout.slot(cell).x;
             let PlantView {
@@ -759,13 +758,13 @@ impl Composer {
                 state,
             };
             let top = Draw::anchored(&art.catalog, foliage, x, standing(piece)).y;
-            return (x + inset, top);
+            return (x, top);
         }
         let index = (u64::from(event.started_tick.hours()) << 8) | STRIKE;
         let width = u64::try_from(super::FRAME_WIDTH - 2 * STRIKE_MARGIN).unwrap_or(0);
         let x = STRIKE_MARGIN
             + i32::try_from(self.salt.below(Purpose::EventPlace, index, width)).unwrap_or(0);
-        (x + inset, PLANT_GROUND_Y)
+        (self.viewport.spread(x), PLANT_GROUND_Y)
     }
 
     /// The first moment after `now` at which the choreography's draws change.

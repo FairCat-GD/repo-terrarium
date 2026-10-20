@@ -101,44 +101,13 @@ pub enum Subject {
 }
 
 impl Subject {
-    /// Whether it stands in the 640-wide scene, which a wider viewport shows in its middle.
-    /// The rest belong to the viewport and reach its edges: the backdrop, the clouds, the
-    /// soil, the glass and its films and sweep, the light, the label, and the sky's event
-    /// pieces, which the event places across the viewport itself. The ground's event pieces
-    /// stand in the scene, on what they act on.
-    pub const fn in_scene(self) -> bool {
-        match self {
-            Subject::Sun
-            | Subject::Moon
-            | Subject::Star(_)
-            | Subject::Monument { .. }
-            | Subject::Fossil { .. }
-            | Subject::Dressing(_)
-            | Subject::Weed { .. }
-            | Subject::Fill { .. }
-            | Subject::Plant { .. }
-            | Subject::Resident { .. }
-            | Subject::Litter(_)
-            | Subject::Fungus(_)
-            | Subject::Mark { .. }
-            | Subject::Scorch { .. }
-            | Subject::Burn(_)
-            | Subject::Sprinkle(_) => true,
-            Subject::Film(_)
-            | Subject::Scenery(_)
-            | Subject::Soil
-            | Subject::Weather
-            | Subject::Cloud(_)
-            | Subject::Front
-            | Subject::Bolt
-            | Subject::Rain
-            | Subject::Leaf(_)
-            | Subject::Light
-            | Subject::Label
-            | Subject::Sweep
-            | Subject::Tag { .. }
-            | Subject::Panel => false,
-        }
+    /// Whether it stands in the 640-wide scene's own columns, which a wider viewport shows in
+    /// its middle: the sun, the moon and the stars. Places on the ground are laid across the
+    /// viewport already ([`crate::frame::Viewport::spread`]), as are the backdrop, the clouds,
+    /// the soil, the glass and its films and sweep, the light, the label, and the sky's event
+    /// pieces, which the event places across the viewport itself.
+    pub const fn centred(self) -> bool {
+        matches!(self, Subject::Sun | Subject::Moon | Subject::Star(_))
     }
 
     /// The cell a plant, a filler or a weed stands in.

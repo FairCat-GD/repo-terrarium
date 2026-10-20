@@ -918,8 +918,9 @@ fn wind_sways_at_most_six_plants_their_foliage_and_blooms_only() {
             "the first turn is still"
         );
         let mut seen = BTreeSet::new();
-        // Every cell gusts once in five turns.
-        for ms in (24_000..144_000).step_by(100) {
+        // Every cell gusts once in a gust's cycle of turns, each pose held 300 ms at the least.
+        let cycle = 24_000 * (1 + sway::GUST_EVERY);
+        for ms in (24_000..cycle).step_by(150) {
             let (subjects, parts) = leaning(&composer, &table, Millis(ms));
             assert!(subjects.len() <= sway::MOST_SWAYING);
             assert!(
@@ -1508,4 +1509,68 @@ fn a_time_lapse_label_crossfades_at_its_pace() {
     assert_eq!(looks(settled.plus(fade / 2)), BTreeSet::from([0, 1]));
     assert_eq!(looks(settled.plus(fade)), BTreeSet::from([1]));
     assert_eq!(composer.settled_at(), settled.plus(fade));
+}
+
+#[test]
+fn a_wider_viewport_spreads_the_ground_and_keeps_the_sky_and_every_gait() {
+    let table = table();
+    let art = Art::embedded();
+    let scene = scene("thriving");
+    let at = |columns: u32| {
+        let mut composer = Composer::new(&table, preset::SALT);
+        composer.set_viewport(Viewport::new(columns));
+        composer.update(&scene, &overlay(&[]), Millis(0));
+        composer
+    };
+    let (narrow, wide) = (at(640), at(840));
+    let viewport = Viewport::new(840);
+    let mut walked = 0;
+    let mut shifts: BTreeMap<Subject, BTreeSet<i32>> = BTreeMap::new();
+    for ms in (24_000..72_000).step_by(167) {
+        let now = Millis(ms);
+        let draws = |composer: &Composer| -> BTreeMap<(Subject, u8, u16), i32> {
+            composer
+                .draws(art, &table, 0, now)
+                .into_iter()
+                .map(|keyed| {
+                    (
+                        (keyed.key.subject, keyed.key.part, keyed.key.look),
+                        keyed.draw.x,
+                    )
+                })
+                .collect()
+        };
+        let (a, b) = (draws(&narrow), draws(&wide));
+        for (key, x) in &a {
+            let Some(spread) = b.get(key) else { continue };
+            match key.0 {
+                // The sky's bodies stand in the middle.
+                Subject::Sun | Subject::Moon | Subject::Star(_) => {
+                    assert_eq!(spread - x, viewport.inset(), "{key:?}");
+                }
+                // A plant stands where its slot spreads.
+                Subject::Plant { cell, .. } => {
+                    assert_eq!(
+                        spread - x,
+                        wide.layout.slot(cell).x - narrow.layout.slot(cell).x
+                    );
+                }
+                Subject::Resident { .. } => {
+                    shifts.entry(key.0).or_default().insert(spread - x);
+                }
+                _ => {}
+            }
+        }
+        walked += 1;
+    }
+    assert!(walked > 0 && !shifts.is_empty(), "residents are drawn");
+    assert!(
+        shifts.values().flatten().any(|&shift| shift > 0),
+        "the residents' homes spread"
+    );
+    // Each resident walks the same steps at either width: only its home moved.
+    for (subject, shift) in shifts {
+        assert_eq!(shift.len(), 1, "{subject:?}: {shift:?}");
+        assert!(shift.iter().all(|&s| s >= 0), "{subject:?}");
+    }
 }

@@ -32,17 +32,17 @@ use terrarium_compose::palette::Slot;
 use terrarium_compose::panel::{
     Freshness, Hover, Landmark, Page, Panel, Row, Shape, Tag, Target, Trend,
 };
-use terrarium_compose::place::{CEILING, FLOOR};
+use terrarium_compose::place::{CEILING, FLOOR, WEED_CELLS};
 use terrarium_compose::salt::InstallSalt;
 use terrarium_compose::sky::{LocalDate, MoonPhase, moon_phase};
-use terrarium_compose::slots::{Band, PATTERN, band_cells, screen_third};
+use terrarium_compose::slots::{Band, PATTERN, band_cells};
 use terrarium_compose::tween::Millis;
 use terrarium_compose::tween::durations::{
     APPEAR_MS, LABEL_CYCLE_MS, LABEL_FADE_MS, POINTER_MS, RESTYLE_MS, RISE_MS, SHORTEST_MS, SKY_MS,
     TAG_MS,
 };
 use terrarium_compose::variants::{ArtTable, art_key};
-use terrarium_compose::world::Scenery;
+use terrarium_compose::world::{DRESSING, FOSSILS, FUNGUS, LITTER, MONUMENTS, STARS, Scenery};
 use terrarium_compose::{preset, synthetic};
 use terrarium_truth::scene::{
     Energy, EventKind, FossilForm, FossilView, GroundMark, GroundMarkView, GrowthStage, LifeStage,
@@ -118,11 +118,11 @@ fn species(kind: u8, mask: u16) -> Vec<PlantSpecies> {
     }
 }
 
-/// A plant from 64 bits: an id in 0..48, so scenes share ids; an `order` among a few small
+/// A plant from 64 bits: an id in 0..144, so scenes share ids; an `order` among a few small
 /// values, so they repeat, or any value; now and then the one lightning strikes.
 fn plant(species: &[PlantSpecies], bits: u64) -> PlantView {
     PlantView {
-        id: u32::try_from(field(bits, 0, 48)).unwrap(),
+        id: u32::try_from(field(bits, 0, 144)).unwrap(),
         species: pick(species, field(bits, 8, 64)),
         stage: pick(GrowthStage::ALL, field(bits, 16, 3)),
         state: pick(PlantState::ALL, field(bits, 20, 5)),
@@ -241,9 +241,9 @@ fn dress(scene: &mut SceneInput, world: u64, things: u64) {
         |r| r.id,
     );
     scene.light = pick(&LIGHTS, field(world, 2, 4));
-    scene.weeds = small(world, 4, 13);
-    scene.litter = small(world, 8, 13);
-    scene.fungus = small(world, 12, 10);
+    scene.weeds = small(world, 4, 31);
+    scene.litter = small(world, 8, 31);
+    scene.fungus = small(world, 12, 25);
     scene.condensation = pick(&LEVELS, field(world, 16, 6));
     scene.dust = pick(&LEVELS, field(world, 20, 6));
     let monuments = usize::from(small(world, 24, 5));
@@ -492,11 +492,11 @@ fn hover_after(bits: u64, scene: &SceneInput, before: &Hover) -> Hover {
     }
 }
 
-/// A valid scene of 0 to 40 plants, dressed, with its overlay.
+/// A valid scene of 0 to 90 plants, dressed, with its overlay.
 fn scene() -> impl Strategy<Value = (SceneInput, OverlayInput)> {
     (
         any::<(u8, u8, u16)>(),
-        prop::collection::vec(any::<u64>(), 0..=40),
+        prop::collection::vec(any::<u64>(), 0..=90),
         any::<(u64, u64, u64)>(),
     )
         .prop_map(|((state, kind, mask), bits, (world, things, label))| {
@@ -697,15 +697,6 @@ fn plain(keyed: &[KeyedDraw]) -> Vec<Draw> {
 fn band(species: PlantSpecies) -> Band {
     Band::from_layer(table().plant_layer(species)).expect("a plant layer")
 }
-
-/// The most weed cells, and the most of each kind the world has places for.
-const WEED_CELLS: usize = 4;
-const MONUMENTS: usize = 3;
-const FOSSILS: usize = 6;
-const LITTER: usize = 8;
-const FUNGUS: usize = 6;
-const DRESSING: usize = 6;
-const STARS: usize = 7;
 
 /// Constraints 2 and 3 on the placement, which every frame settles to.
 fn check_placement(composer: &Composer, input: &SceneInput) -> Result<(), TestCaseError> {
@@ -1029,8 +1020,8 @@ fn settled_opacity(draw: &Draw, mix: u8) -> u8 {
 }
 
 /// Once settled: every draw at its own opacity, exactly the placement drawn, the healthy
-/// subset exact, each third of the strip with at most two mature trees and never two of one
-/// species, and the one-message table kept.
+/// subset exact, each third of the viewport with at most four mature trees, and the
+/// one-message table kept.
 fn check_settled(
     composer: &Composer,
     input: &SceneInput,
@@ -1076,21 +1067,23 @@ fn check_settled(
         .collect();
     prop_assert_eq!(subjects, placed);
     check_subset(&night, &[input])?;
+    // Constraint 3's focal elements: the trees, at most four in each third of the viewport,
+    // and no two band neighbours alike (`check_placement`).
+    let viewport = composer.viewport();
     let mut trees: BTreeMap<i32, Vec<PlantSpecies>> = BTreeMap::new();
     for keyed in &day {
         if let Class::Foliage(species, GrowthStage::Mature, _) = class(&keyed.draw)
             && keyed.key.layer == Layer::FarPlants
         {
             trees
-                .entry(screen_third(keyed.key.x))
+                .entry(viewport.third(keyed.key.x))
                 .or_default()
                 .push(species);
         }
     }
-    for (third, mut species) in trees {
-        prop_assert!(species.len() <= 2, "third {}: {:?}", third, species);
-        species.dedup();
-        prop_assert!(species.len() == 1 || species[0] != species[1]);
+    for (third, species) in trees {
+        prop_assert!((0..3).contains(&third), "third {}", third);
+        prop_assert!(species.len() <= 4, "third {}: {:?}", third, species);
     }
     check_one_message(&day, &night, input, overlay, placement.plants.len())?;
     let clouds: BTreeSet<Subject> = composer
@@ -1222,10 +1215,10 @@ const SWEEP_PX_PER_100_MS: u64 = 2;
 const TURN_MS: u64 = 24_000;
 const TURN_MS_U32: u32 = 24_000;
 
-/// Whether a tile `w` wide at `x` stands at an edge of the frame, where a drifting tile may
-/// enter or leave.
-fn at_edge(x: i32, w: i32) -> bool {
-    x + w <= w.max(1) || x >= WIDTH - w
+/// Whether a tile `w` wide at `x` stands at an edge of a frame `frame` columns wide, where a
+/// drifting tile may enter or leave.
+fn at_edge(x: i32, w: i32, frame: i32) -> bool {
+    x + w <= w.max(1) || x >= frame - w
 }
 
 /// The storm front crosses a column in no less than a frame's time; a windstorm's leaf
@@ -1255,10 +1248,11 @@ fn anchor_x(draw: &Draw) -> i32 {
     }
 }
 
-/// The columns a draw shows in the frame, after its clip; empty as `(x, x)`.
-fn columns(draw: &Draw) -> (i32, i32) {
+/// The columns a draw shows in a frame `frame` columns wide, after its clip; empty as
+/// `(x, x)`.
+fn columns(draw: &Draw, frame: i32) -> (i32, i32) {
     let w = i32::from(art().catalog.sprite(draw.sprite).rect.w);
-    let (mut from, mut to) = (draw.x.max(0), (draw.x + w).min(WIDTH));
+    let (mut from, mut to) = (draw.x.max(0), (draw.x + w).min(frame));
     if let Some(clip) = draw.clip {
         (from, to) = (from.max(clip.x), to.min(clip.x + clip.w));
     }
@@ -1297,8 +1291,8 @@ fn family(draw: &Draw) -> &'static str {
 }
 
 /// Whether a draw within `reach` columns of the frame's edges could come or go there.
-fn by_an_edge(draw: &Draw, width: i32, reach: i32) -> bool {
-    draw.x < reach || draw.x + width > WIDTH - reach
+fn by_an_edge(draw: &Draw, width: i32, reach: i32, frame: i32) -> bool {
+    draw.x < reach || draw.x + width > frame - reach
 }
 
 /// I-15 for an event's own pieces, which play their art: the curtain crosses at its pace and
@@ -1312,6 +1306,7 @@ fn check_event_piece(
     a: Option<&Draw>,
     b: Option<&Draw>,
     elapsed: u64,
+    frame: i32,
 ) -> Result<(), TestCaseError> {
     let steps = |ms_per_px: u64| i32::try_from(elapsed / ms_per_px + 1).unwrap();
     match (subject, a, b) {
@@ -1326,7 +1321,7 @@ fn check_event_piece(
         }
         (Subject::Front, Some(at), None) | (Subject::Front, None, Some(at)) => {
             prop_assert!(
-                by_an_edge(at, CURTAIN, steps(FRONT_MS_PER_PX)),
+                by_an_edge(at, CURTAIN, steps(FRONT_MS_PER_PX), frame),
                 "front at {}",
                 at.x
             );
@@ -1365,7 +1360,7 @@ fn check_event_piece(
         }
         (Subject::Leaf(_), Some(at), None) | (Subject::Leaf(_), None, Some(at)) => {
             prop_assert!(
-                by_an_edge(at, LEAF, steps(LEAF_MS_PER_PX) + LEAF),
+                by_an_edge(at, LEAF, steps(LEAF_MS_PER_PX) + LEAF, frame),
                 "leaf at {}",
                 at.x
             );
@@ -1439,6 +1434,7 @@ fn check_continuity(
     before: &[KeyedDraw],
     after: &[KeyedDraw],
     elapsed: u64,
+    frame: i32,
 ) -> Result<(), TestCaseError> {
     // While the storm front crosses, the sky's draws are cut at it.
     let wiping = [before, after].iter().any(|draws| {
@@ -1481,7 +1477,7 @@ fn check_continuity(
                     | Subject::Scorch { .. }
             )
         {
-            check_event_piece(key.0, a, b, elapsed)?;
+            check_event_piece(key.0, a, b, elapsed, frame)?;
             continue;
         }
         // Burn-off steps its weeds out and its fresh soil in, as the art keys them.
@@ -1501,12 +1497,12 @@ fn check_continuity(
         if wiping && drawn.layer == Layer::Sky {
             // Uncovered or covered as the curtain passes, no wider than it moved; anything
             // wider comes or goes as any look does.
-            let (from, to) = columns(drawn);
+            let (from, to) = columns(drawn, frame);
             if (a.is_none() || b.is_none()) && to - from <= front {
                 continue;
             }
             if let (Some(a), Some(b)) = (a, b) {
-                let ((a0, a1), (b0, b1)) = (columns(a), columns(b));
+                let ((a0, a1), (b0, b1)) = (columns(a, frame), columns(b, frame));
                 prop_assert!(
                     (b0 - a0).abs() <= front && (b1 - a1).abs() <= front,
                     "{:?} cut from {:?} to {:?}",
@@ -1520,7 +1516,7 @@ fn check_continuity(
         // A drifting tile, a cloud or the sweep may come and go at an edge of the frame;
         // anywhere else it fades like any other draw.
         let drifting = matches!(key.0, Subject::Soil | Subject::Sweep | Subject::Cloud(_));
-        if drifting && (a.is_none() || b.is_none()) && at_edge(drawn.x, width) {
+        if drifting && (a.is_none() || b.is_none()) && at_edge(drawn.x, width, frame) {
             continue;
         }
         // The panel rises out of the frame's bottom edge and lowers into it.
@@ -2022,8 +2018,13 @@ proptest! {
     fn every_constraint_holds_through_generated_histories(
         history in history(),
         salt in salt(),
+        columns in prop::sample::select(vec![640_u32, 651, 735, 756, 840]),
     ) {
+        // At every width the strip takes: the ground spreads, and the constraints hold.
+        let viewport = Viewport::new(columns);
+        let frame = viewport.width().cast_signed();
         let mut composer = Composer::new(table(), salt);
+        composer.set_viewport(viewport);
         let times = play(&mut composer, &history)?;
         let (last, overlay) = &history.scenes[2];
         if !overlay.paused {
@@ -2035,6 +2036,7 @@ proptest! {
         let mix = if salt.bytes()[0] % 2 == 0 { 0 } else { 255 };
         let clock = scene_clock(&history, &times);
         let mut replay = Composer::new(table(), salt);
+        replay.set_viewport(viewport);
         let mut raised = Vec::new();
         for (i, (scene, overlay)) in history.scenes.iter().enumerate() {
             replay.update(scene, overlay, times[i]);
@@ -2050,7 +2052,7 @@ proptest! {
                 check_subset(&draws, &showing)?;
                 check_one_show(&draws)?;
                 if let Some((then, before)) = &previous {
-                    check_continuity(before, &draws, moment.0 - then.0).map_err(|err| {
+                    check_continuity(before, &draws, moment.0 - then.0, frame).map_err(|err| {
                         TestCaseError::fail(format!("{err} from {then:?} to {moment:?}; updates at {times:?}"))
                     })?;
                 }
@@ -2604,7 +2606,7 @@ fn the_generator_reaches_the_edges() {
     let empty = scene_with(PresentationState::Dead, Vec::new());
     let mut crowd = scene_with(
         PresentationState::Thriving,
-        (0..40)
+        (0..90)
             .map(|id| PlantView {
                 id,
                 species: POOL[usize::try_from(id).unwrap() % 8],
@@ -2616,9 +2618,9 @@ fn the_generator_reaches_the_edges() {
             })
             .collect(),
     );
-    crowd.weeds = 12;
-    crowd.litter = 12;
-    crowd.fungus = 9;
+    crowd.weeds = 30;
+    crowd.litter = 30;
+    crowd.fungus = 24;
     crowd.monuments = (0..4)
         .map(|id| MonumentView {
             id,
@@ -2636,11 +2638,15 @@ fn the_generator_reaches_the_edges() {
         LINES.iter().map(|line| (*line).to_owned()).collect(),
         LocalClock::noon(preset::DATE),
     );
+    assert!(crowd.plants.len() > CEILING);
     for scene in [empty, crowd] {
-        let mut composer = Composer::new(table(), InstallSalt::new([7; 16]));
-        composer.update(&scene, &overlay, Millis(0));
-        check_placement(&composer, &scene).unwrap();
-        check_settled(&composer, &scene, &overlay).unwrap();
+        for columns in [640, 840] {
+            let mut composer = Composer::new(table(), InstallSalt::new([7; 16]));
+            composer.set_viewport(Viewport::new(columns));
+            composer.update(&scene, &overlay, Millis(0));
+            check_placement(&composer, &scene).unwrap();
+            check_settled(&composer, &scene, &overlay).unwrap();
+        }
     }
 }
 

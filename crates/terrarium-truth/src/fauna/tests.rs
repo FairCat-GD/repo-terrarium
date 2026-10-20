@@ -8,7 +8,7 @@ use ResidentSpecies::{
     Beetle, Earthworm, Firefly, Harvestman, Ladybird, Snail, Springtail, Woodlouse,
 };
 
-/// Lines for one resident (and 6 plants), two (10 plants), three, four, and six (24 plants).
+/// Lines for one resident (and 18 plants), two (30 plants), three, four, and six (72 plants).
 const ONE: u64 = 0;
 const TWO: u64 = 1_000;
 const THREE: u64 = 3_000;

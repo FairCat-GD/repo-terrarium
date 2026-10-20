@@ -99,16 +99,18 @@ pub(crate) const TEMPO_MIN: Q16 = Q16::from_ratio(1, 4);
 pub(crate) const TEMPO_MAX: Q16 = Q16::from_int(2);
 pub(crate) const GROWTH_RATE: Q16 = Q16::from_ratio(1, 7);
 
-/// Plant capacity: `clamp(6 + 4 × log2(1 + KLOC), 6, 24)`, rounded down.
-pub(crate) const PLANTS_MIN: i32 = 6;
-pub(crate) const PLANTS_MAX: i32 = 24;
-pub(crate) const PLANTS_PER_DOUBLING: Q16 = Q16::from_int(4);
+/// Plant capacity: `clamp(18 + 12 × log2(1 + KLOC), 18, 72)`, rounded down: three times the
+/// original values, so a large terrarium grows twelve trees.
+pub(crate) const PLANTS_MIN: i32 = 18;
+pub(crate) const PLANTS_MAX: i32 = 72;
+pub(crate) const PLANTS_PER_DOUBLING: Q16 = Q16::from_int(12);
 pub(crate) const LINES_PER_KLOC: i64 = 1_000;
 
-/// Weed capacity: `clamp(P / 3, 2, 8)`.
+/// Weed capacity: `clamp(P / 3, 6, 24)`, following the plants' (the same ratio, three times the
+/// original bounds).
 pub(crate) const WEEDS_PER_PLANTS: u32 = 3;
-pub(crate) const WEEDS_MIN: u32 = 2;
-pub(crate) const WEEDS_MAX: u32 = 8;
+pub(crate) const WEEDS_MIN: u32 = 6;
+pub(crate) const WEEDS_MAX: u32 = 24;
 
 /// Weeds germinate, one a day, while the soil is below 0.45, and wither, one a day, while it is
 /// unknown or at least 0.55; in between they hold.
@@ -320,7 +322,7 @@ mod tests {
         assert_eq!(TEMPO_MIN.raw(), 16_384);
         assert_eq!(TEMPO_MAX.raw(), 131_072);
         assert_eq!(GROWTH_RATE.raw(), 9_362);
-        assert_eq!(PLANTS_PER_DOUBLING, Q16::from_int(4));
+        assert_eq!(PLANTS_PER_DOUBLING, Q16::from_int(12));
         assert_eq!(WEEDS_BELOW.raw(), 29_491);
         assert_eq!(WEEDS_WITHER_FROM.raw(), 36_045);
         assert_eq!(LIGHT_SHIFT_STEP.raw(), 1_311);

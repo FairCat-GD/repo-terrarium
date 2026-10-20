@@ -2,7 +2,8 @@
 //! and pinned by exact snapshots, by day and by night. Every preset grows from one seeded pool
 //! of eight species, as truth's would: two far, three mid and three near. Each holds what such
 //! a terrarium would: its weather and light, ground cover, glass, monuments, fossils and
-//! residents.
+//! residents. Truth's terrarium holds three times this many plants, so a preset holds its list
+//! three times over, with twelve trees at the most.
 
 use terrarium_truth::scene::{
     Energy, FossilForm, FossilView, GrowthStage, LifeStage, Light, MonumentAge, MonumentView,
@@ -320,12 +321,35 @@ fn world(name: &str) -> Option<World> {
     })
 }
 
+/// How many times over a preset's terrarium holds its list of plants and its ground cover.
+const DENSITY: usize = 3;
+/// The most trees a terrarium grows: one of truth's slots in six, of its 72.
+const TREES: usize = 12;
+
+/// A preset's plants: its list three times over, past the twelfth tree without the trees.
+fn grown(list: &[Plant]) -> Vec<Plant> {
+    let mut trees = 0;
+    list.iter()
+        .cycle()
+        .take(list.len() * DENSITY)
+        .filter(|(species, ..)| {
+            let tree = matches!(
+                species,
+                PlantSpecies::Oak | PlantSpecies::Birch | PlantSpecies::Rowan
+            );
+            trees += usize::from(tree);
+            !tree || trees <= TREES
+        })
+        .copied()
+        .collect()
+}
+
 /// The named preset's scene, or `None` for a name not in [`NAMES`].
 pub fn scene(name: &str) -> Option<SceneInput> {
     let world = world(name)?;
     let plants = (0_u16..)
-        .zip(world.plants)
-        .map(|(order, &(species, stage, state, bloom))| PlantView {
+        .zip(grown(world.plants))
+        .map(|(order, (species, stage, state, bloom))| PlantView {
             id: 100 + u32::from(order) * 7,
             species,
             stage,
@@ -335,7 +359,12 @@ pub fn scene(name: &str) -> Option<SceneInput> {
             order,
         })
         .collect();
-    let (weeds, litter, fungus) = world.cover;
+    let thrice = |count: u8| count.saturating_mul(u8::try_from(DENSITY).unwrap_or(1));
+    let (weeds, litter, fungus) = (
+        thrice(world.cover.0),
+        thrice(world.cover.1),
+        thrice(world.cover.2),
+    );
     let (condensation, dust) = world.glass;
     let monuments = (0_u32..)
         .zip(world.monuments)
@@ -467,6 +496,31 @@ mod tests {
             assert!(name.starts_with(&state), "{name} is {state}");
         }
         assert_eq!(scene("lush"), None);
+    }
+
+    #[test]
+    fn a_preset_holds_its_list_three_times_over_with_twelve_trees_at_the_most() {
+        let tree = |species: PlantSpecies| matches!(species, Oak | Rowan | PlantSpecies::Birch);
+        for name in NAMES {
+            let listed = world(name).unwrap().plants;
+            let plants = scene(name).unwrap().plants;
+            let trees = plants.iter().filter(|p| tree(p.species)).count();
+            let listed_trees = listed.iter().filter(|p| tree(p.0)).count();
+            assert_eq!(trees, (DENSITY * listed_trees).min(TREES), "{name}");
+            let herbs = plants.len() - trees;
+            assert_eq!(herbs, DENSITY * (listed.len() - listed_trees), "{name}");
+            // Never more than truth's terrarium holds.
+            assert!(plants.len() <= 72, "{name}");
+        }
+        for name in ["thriving", "mature", "dormant"] {
+            let trees = scene(name)
+                .unwrap()
+                .plants
+                .iter()
+                .filter(|p| tree(p.species))
+                .count();
+            assert_eq!(trees, TREES, "{name}");
+        }
     }
 
     #[test]

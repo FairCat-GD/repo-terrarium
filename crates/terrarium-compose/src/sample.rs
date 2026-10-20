@@ -85,7 +85,7 @@ pub fn frame(art: &Art, table: &ArtTable, label: &str, palette_mix: u8, dim: u8)
     frame_in(art, table, label, palette_mix, dim, Viewport::SCENE)
 }
 
-/// As [`frame`], in `viewport`: the plants in its middle, the rest to its edges.
+/// As [`frame`], in `viewport`: the plants spread across it, the rest to its edges.
 ///
 /// # Panics
 /// If the catalog lacks the soil, glass or label art, which the embedded art has.
@@ -101,7 +101,7 @@ pub fn frame_in(
     let mut draws: Vec<Draw> = PLANTS
         .iter()
         .flat_map(|&(species, growth, health, bloom, x)| {
-            Parts::new(table, species, growth, health, bloom).draws(catalog, x + viewport.inset())
+            Parts::new(table, species, growth, health, bloom).draws(catalog, viewport.spread(x))
         })
         .collect();
     if let Some(&backdrop) = table.weather(Weather::Clear).first() {
@@ -196,22 +196,32 @@ mod tests {
     }
 
     #[test]
-    fn a_wider_viewport_keeps_the_plants_in_its_middle_and_the_glass_at_its_edges() {
+    fn a_wider_viewport_spreads_the_plants_and_keeps_the_glass_at_its_edges() {
         let art = Art::embedded();
         let table = ArtTable::new(&art.catalog).expect("the embedded art is complete");
-        let scene = frame(art, &table, "repo-terrarium", 0, 0);
         let wide = Viewport::new(735);
         let shown = frame_in(art, &table, "repo-terrarium", 0, 0, wide);
-        let plants = |frame: &Frame| -> Vec<(i32, i32)> {
-            frame
-                .draws
-                .iter()
-                .filter(|d| (Layer::FarPlants..Layer::ResidentsGround).contains(&d.layer))
-                .map(|d| (d.x, d.y))
-                .collect()
-        };
-        let moved: Vec<(i32, i32)> = plants(&scene).iter().map(|&(x, y)| (x + 48, y)).collect();
-        assert_eq!(plants(&shown), moved, "735 columns put the scene 48 in");
+        let mut plants: Vec<(i32, i32)> = shown
+            .draws
+            .iter()
+            .filter(|d| (Layer::FarPlants..Layer::ResidentsGround).contains(&d.layer))
+            .map(|d| (d.x, d.y))
+            .collect();
+        // Each plant whole, its ground point where 735 columns spread it.
+        let mut spread: Vec<(i32, i32)> = PLANTS
+            .iter()
+            .flat_map(|&(species, growth, health, bloom, x)| {
+                let shift = wide.spread(x) - x;
+                Parts::new(&table, species, growth, health, bloom)
+                    .draws(&art.catalog, x)
+                    .into_iter()
+                    .map(move |d| (d.x + shift, d.y))
+            })
+            .collect();
+        plants.sort_unstable();
+        spread.sort_unstable();
+        assert_eq!(plants, spread);
+        assert!(PLANTS.iter().all(|p| wide.spread(p.4) - p.4 > 0));
         let glass: Vec<i32> = shown
             .draws
             .iter()

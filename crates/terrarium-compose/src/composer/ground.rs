@@ -1733,7 +1733,6 @@ mod tests {
             .map(|k| (k.draw.x, k.draw.y))
             .collect();
         assert_eq!(burning, at_cue);
-        let inset = viewport.inset();
         for burn in of(&composer, after(now, 200), |s| {
             matches!(s, Subject::Burn(_))
         }) {
@@ -1741,7 +1740,9 @@ mod tests {
                 unreachable!()
             };
             let anchor = i32::from(art().catalog.sprite(burn.draw.sprite).anchor.x);
-            assert_eq!(burn.draw.x + anchor, composer.layout.slot(cell).x + inset);
+            let slot = composer.layout.slot(cell).x;
+            assert_eq!(burn.draw.x + anchor, slot);
+            assert_eq!(slot, viewport.spread(composer.layout.scene_x(cell)));
         }
     }
 

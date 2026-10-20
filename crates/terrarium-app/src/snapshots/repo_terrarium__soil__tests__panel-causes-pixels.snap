@@ -2,4 +2,4 @@
 source: crates/terrarium-app/src/soil.rs
 expression: "format!(\"{width}x{NATIVE_HEIGHT} RGBA8, SHA-256 {hex}\")"
 ---
-640x74 RGBA8, SHA-256 562a23ac5da4ce900fa11bd828b5ba81f8dda24ad67a87ea9ccbc9d4866852cc
+640x74 RGBA8, SHA-256 284d23d1c2fe623a75ba7abcf9b8cc5fe3430a4b334826f4980bbd5300b164cd

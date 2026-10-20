@@ -623,7 +623,7 @@ mod tests {
         let living = (
             select(PresentationState::ALL),
             any::<u32>(),
-            prop::collection::vec(plant(), 0..24),
+            prop::collection::vec(plant(), 0..72),
             any::<(u8, u8, u8)>(),
             prop::collection::vec(resident(), 0..6),
         );

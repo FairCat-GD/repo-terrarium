@@ -30,7 +30,8 @@ fn doublings(terrain: u64) -> Q16 {
         .unwrap_or(Q16::ZERO)
 }
 
-/// How many plants `terrain` lines hold: `clamp(6 + 4 × log2(1 + KLOC), 6, 24)`, rounded down.
+/// How many plants `terrain` lines hold: `clamp(18 + 12 × log2(1 + KLOC), 18, 72)`, rounded
+/// down.
 pub fn plant_capacity(terrain: u64) -> u32 {
     let plants = PLANTS_MIN
         .saturating_add(
@@ -50,7 +51,7 @@ pub fn resident_capacity(terrain: u64) -> u32 {
     u32::try_from(residents).unwrap_or(0)
 }
 
-/// How many weeds a terrarium of `plants` capacity holds: `clamp(P / 3, 2, 8)`.
+/// How many weeds a terrarium of `plants` capacity holds: `clamp(P / 3, 6, 24)`.
 pub(crate) fn weed_capacity(plants: u32) -> u32 {
     (plants / WEEDS_PER_PLANTS).clamp(WEEDS_MIN, WEEDS_MAX)
 }
@@ -108,7 +109,7 @@ mod tests {
 
     #[test]
     fn capacities_follow_the_terrain() {
-        // KLOC 0, 0.5, 1, 3, 3.921 (the arc's end), 15, 21.6 (just short of 24) and beyond.
+        // KLOC 0, 0.5, 1, 3, 3.921 (the arc's end), 15, 21 (just short of 72) and beyond.
         let plants: Vec<u32> = [
             0,
             500,
@@ -123,9 +124,12 @@ mod tests {
         .into_iter()
         .map(plant_capacity)
         .collect();
-        assert_eq!(plants, [6, 8, 10, 14, 15, 22, 23, 24, 24]);
-        let weeds: Vec<u32> = [6, 8, 14, 15, 24].into_iter().map(weed_capacity).collect();
-        assert_eq!(weeds, [2, 2, 4, 5, 8]);
+        assert_eq!(plants, [18, 25, 30, 42, 45, 66, 71, 72, 72]);
+        let weeds: Vec<u32> = [18, 20, 42, 45, 72]
+            .into_iter()
+            .map(weed_capacity)
+            .collect();
+        assert_eq!(weeds, [6, 6, 14, 15, 24]);
         // KLOC 0, 0.999, 1, 2.999, 3, 3.921 (the arc's end), 7, 15, 31 and beyond: one more
         // resident each time the code doubles from a thousand lines.
         let residents: Vec<u32> = [

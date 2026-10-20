@@ -37,7 +37,7 @@ Depiction: from `SceneInput` to pixels.
 - Residents (`resident`): homes in six stretches of the strip, the day and night schedule,
   storms, lifecycle steps through the art's own hand-offs, and each turn's plan: at most three
   travelling, one of them in the air.
-- Sway (`sway`): stepped shears of living foliage, six cells in thirty each turn.
+- Sway (`sway`): stepped shears of living foliage, six cells of the hundred and eight each turn.
 - The foreground event's choreography, each instance once, one at a time: in the sky
   (`composer::event`) the storm front wiping the sky in from the event's side and a clearing
   carrying it on out, lightning's two frames, dusk and sunburst, rain after drought tiled
@@ -100,22 +100,24 @@ are not one to one.
 in. `OverlayInput` is what the app gives beside truth: the label's lines, already worded, and
 the local date, for the moon.
 
-- **Slots** (`slots`). Thirty cells cross the strip, ten per third, each in a depth band: far,
-  mid or near. The bands step tall, medium, small, and each third has two tree cells, spaced
-  differently in each third. The install salt moves each slot up to 7 pixels within its cell,
-  and nothing else.
+- **Slots** (`slots`). A hundred and eight cells cross the strip, thirty-six per third, each in
+  a depth band: far, mid or near. The bands step tall, medium, small, and each third has four
+  tree cells, standing in a pair, a grove or alone, differently in each third. A viewport
+  wider than the scene spreads the cells, and every other place on the ground, to its edges
+  (`Viewport::spread`); the sun, the moon and the stars stay in its middle. The install salt
+  moves each slot up to 2 pixels within its cell, and nothing else.
 - **Placement** (`place`). A pure function of the previous placement and the scene, over cells
   only, so the same history depicts the same plants on every install. The rules:
   - **bands:** a plant stands in its species' band;
   - **kept:** a plant keeps its cell while truth keeps it;
   - **neighbours:** neighbouring cells of a band never hold one species;
-  - **trees:** a third holds at most two mature trees, of different species;
-  - **ceiling:** at most 21 plants, mature ones first;
-  - **floor:** filler brings the occupied cells to at least 11.
+  - **trees:** a third holds at most four mature trees;
+  - **ceiling:** at most 75 plants, more than truth grows, mature ones first;
+  - **floor:** filler brings the occupied cells to at least 38.
 
   Filler follows the scene's state and is never a living plant: grass tufts, the terrarium's
   own species dormant or dead, or dead-stem litter. Truth's weeds also take free cells, at most
-  four, and above that merge into patches; they count toward the window, real cover before
+  twelve, and above that merge into patches; they count toward the window, real cover before
   invented filler. Litter, fungus and the decorative tufts take no cell.
 - **The world** (`world`, `sky`).
   - The sky: a 13-row weather band, drifting clouds, the sun by day, and the moon (in the

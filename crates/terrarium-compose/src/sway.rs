@@ -1,11 +1,12 @@
 //! Plants swaying in the wind. Foliage leans about its `shearPivot` in stepped poses, as pixel
 //! art moves, and the stem never shears. Wind raises how far a crown leans, never how many
-//! plants sway: at most six of the thirty cells gust in any turn, a different six each turn,
-//! each at its own moment.
+//! plants sway: at most six of the cells gust in any turn, a different six each turn, each at
+//! its own moment.
 
 use terrarium_truth::scene::Wind;
 
 use crate::frame::Shear;
+use crate::slots::CELLS;
 
 /// The most plants swaying at once.
 pub const MOST_SWAYING: usize = 6;
@@ -18,13 +19,20 @@ const GALE: [(i32, u64); 5] = [(1, 300), (2, 700), (1, 300), (2, 700), (1, 300)]
 /// A cell's second gust comes this long after its first, both within the turn.
 const SECOND_GUST_MS: u64 = 9000;
 
-/// A cell gusts in one motion turn of every this many.
-pub const GUST_EVERY: u64 = 5;
+/// A cell gusts in one motion turn of every this many: as many turns as there are cells to each
+/// swaying one.
+pub const GUST_EVERY: u64 = (CELLS / MOST_SWAYING) as u64;
+const _: () = assert!(CELLS.is_multiple_of(MOST_SWAYING));
 
-/// Whether a plant in `cell` gusts in the turn whose motion count is `j`: six cells in thirty,
-/// spread along the strip and different every turn.
+/// Steps the cells through the turns. A prime that does not divide [`GUST_EVERY`], so coprime
+/// with it, and every cell has its turn.
+const GUST_STEP: u64 = 7;
+const _: () = assert!(!GUST_EVERY.is_multiple_of(GUST_STEP));
+
+/// Whether a plant in `cell` gusts in the turn whose motion count is `j`: one cell in every
+/// [`GUST_EVERY`], so six, spread along the strip and different every turn.
 pub const fn gusts(cell: u8, j: u64) -> bool {
-    (cell as u64 * 7 + j).is_multiple_of(GUST_EVERY)
+    (cell as u64 * GUST_STEP + j).is_multiple_of(GUST_EVERY)
 }
 
 /// How far into its turn a cell's first gust starts: staggered by cell, so neighbours never
@@ -98,18 +106,29 @@ mod tests {
     use crate::catalog::Art;
 
     #[test]
-    fn six_cells_in_thirty_gust_each_turn_and_each_cell_in_turn() {
-        for j in 0..20 {
-            assert_eq!((0..30).filter(|&cell| gusts(cell, j)).count(), MOST_SWAYING);
+    fn six_cells_gust_each_turn_spread_along_the_strip_and_each_cell_in_turn() {
+        let cells = || 0..u8::try_from(CELLS).unwrap();
+        for j in 0..40 {
+            let gusting: Vec<u8> = cells().filter(|&cell| gusts(cell, j)).collect();
+            assert_eq!(gusting.len(), MOST_SWAYING, "turn {j}");
+            // One in each sixth of the strip.
+            let sixths: Vec<usize> = gusting
+                .iter()
+                .map(|&cell| usize::from(cell) * MOST_SWAYING / CELLS)
+                .collect();
+            assert_eq!(sixths, [0, 1, 2, 3, 4, 5], "turn {j}");
         }
-        for cell in 0..30 {
-            assert!((0..5).any(|j| gusts(cell, j)), "cell {cell} never gusts");
+        for cell in cells() {
+            assert!(
+                (0..GUST_EVERY).any(|j| gusts(cell, j)),
+                "cell {cell} never gusts"
+            );
         }
     }
 
     #[test]
     fn a_gust_leans_step_by_step_and_rests_before_the_turn_ends() {
-        for cell in 0..30 {
+        for cell in 0..u8::try_from(CELLS).unwrap() {
             let first = first_gust(cell);
             assert_eq!(crown(Wind::Gale, cell, first - 1), 0);
             assert_eq!(crown(Wind::Gale, cell, first), 1);
