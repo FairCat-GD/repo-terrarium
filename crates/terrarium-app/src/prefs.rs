@@ -903,6 +903,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_change_the_writer_cannot_save_comes_back_as_the_stored_value() {
+        // The data directory is a file, so the store never opens and every save answers why.
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("data");
+        std::fs::write(&blocked, b"not a folder").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let writer = Writer::start(
+            DataDir::at(&blocked),
+            Box::new(Refusing(Arc::default())),
+            || LoginStatus::Unavailable,
+            Arc::new(MemoryKeychain::default()),
+            Box::new(move |saved| tx.send(saved).unwrap()),
+        );
+        // As the strip does: the change runs at once, goes to the writer, and its answer
+        // decides whether it stays.
+        let mut prefs = Prefs::default();
+        let mut saving = Saving::new(prefs.clone());
+        let change = Pref::Edge(Edge::Top);
+        prefs.apply(&change);
+        saving.sent(&change);
+        writer.save(change);
+        let Saved::Pref { pref, problem, .. } = rx.recv().unwrap() else {
+            panic!("a save's answer");
+        };
+        assert!(problem.is_some());
+        let undo = saving.answered(&pref, problem.is_some()).expect("undone");
+        prefs.apply(&undo);
+        assert_eq!(prefs, Prefs::default());
+    }
+
     /// A login item that panics when asked.
     struct Panicking;
 

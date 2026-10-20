@@ -433,8 +433,9 @@ pub fn earlier<'a>(
 }
 
 /// The residents that travel in turn `w`, of those `ready` to: three in rotation, or all
-/// when there are three or fewer. The first `favoured` of them, after rain, always go, and the
-/// rest rotate through the places left. In dim mode only every fourth turn moves.
+/// when there are three or fewer. After rain the first `favoured` of them take all but one of
+/// the places (all of them when none else is ready), in rotation among themselves, and the rest
+/// rotate through what is left. In dim mode only every fourth turn moves.
 fn movers(ready: &[u32], favoured: usize, now: &Snapshot, w: u64) -> Vec<u32> {
     let n = ready.len();
     let Some(j) = motion_turn(w, now.dim) else {
@@ -443,16 +444,22 @@ fn movers(ready: &[u32], favoured: usize, now: &Snapshot, w: u64) -> Vec<u32> {
     if n <= MOST_MOVING {
         return ready.to_vec();
     }
-    let favoured = favoured.min(MOST_MOVING);
-    let (first, rest) = ready.split_at(favoured);
-    let places = MOST_MOVING - favoured;
-    let m = rest.len();
-    let start = usize::try_from(j % u64::try_from(m.max(1)).unwrap_or(1)).unwrap_or(0);
-    first
-        .iter()
-        .copied()
-        .chain((0..places).map(|k| rest[(start * places + k) % m]))
+    let (first, rest) = ready.split_at(favoured.min(n));
+    let their_places = if rest.is_empty() {
+        MOST_MOVING
+    } else {
+        first.len().min(MOST_MOVING - 1)
+    };
+    rotation(first, their_places, j)
+        .chain(rotation(rest, MOST_MOVING - their_places, j))
         .collect()
+}
+
+/// `places` of `list` in turn `j`'s rotation; `places` is never more than the list holds.
+fn rotation(list: &[u32], places: usize, j: u64) -> impl Iterator<Item = u32> + '_ {
+    let m = list.len().max(1);
+    let start = usize::try_from(j % u64::try_from(m).unwrap_or(1)).unwrap_or(0);
+    (0..places.min(list.len())).filter_map(move |k| list.get((start * places + k) % m).copied())
 }
 
 /// Whether a chosen resident uses its turn: its energy and the scene's liveliness, in
@@ -768,6 +775,22 @@ mod tests {
         assert_eq!(others, BTreeSet::from([1, 3, 5, 6]));
         // With none favoured, the rotation is the usual one.
         assert_eq!(movers(&[1, 2, 3, 4, 5], 0, &dry, 1), [4, 5, 1]);
+        // Two snails and two earthworms: they share two places in turn, and the third rotates
+        // among the others; with no other ready, they take all three in turn.
+        let (mut favoured, mut others) = (BTreeSet::new(), BTreeSet::new());
+        for w in 0..12 {
+            let movers = movers(&[2, 4, 7, 8, 1, 3], 4, &wet, w);
+            assert_eq!(movers.len(), MOST_MOVING);
+            favoured.extend(movers[..2].iter().copied());
+            others.insert(movers[2]);
+        }
+        assert_eq!(favoured, BTreeSet::from([2, 4, 7, 8]));
+        assert_eq!(others, BTreeSet::from([1, 3]));
+        let mut all = BTreeSet::new();
+        for w in 0..12 {
+            all.extend(movers(&[2, 4, 7, 8], 4, &wet, w));
+        }
+        assert_eq!(all, BTreeSet::from([2, 4, 7, 8]));
     }
 
     fn scene(residents: Vec<Resident>, weather: Weather, hour: u32) -> Snapshot {

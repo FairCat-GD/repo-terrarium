@@ -22,13 +22,6 @@ pub struct HotkeysSection {
     platform: Platform,
 }
 
-const fn index(which: Which) -> usize {
-    match which {
-        Which::Raise => 0,
-        Which::TimeLapse => 1,
-    }
-}
-
 impl HotkeysSection {
     pub fn new(prefs: &Prefs) -> HotkeysSection {
         let current = [prefs.raise, prefs.timelapse];
@@ -55,19 +48,19 @@ impl HotkeysSection {
     }
 
     pub fn choose(&mut self, which: Which, binding: Binding) {
-        self.chosen[index(which)] = binding;
+        self.chosen[which.index()] = binding;
     }
 
     /// The binding chosen for `which`, if the rules let it be offered to the OS.
     pub fn apply(&mut self, which: Which) -> Option<Pref> {
-        let binding = self.chosen[index(which)];
-        let other = self.current[index(which.other())];
+        let binding = self.chosen[which.index()];
+        let other = self.current[which.other().index()];
         if let Err(refusal) = binding.check(other) {
-            self.refused[index(which)] = Some(words::refusal(refusal, self.platform).to_owned());
+            self.refused[which.index()] = Some(words::refusal(refusal, self.platform).to_owned());
             return None;
         }
-        self.refused[index(which)] = None;
-        (binding != self.current[index(which)]).then_some(Pref::Hotkey(which, binding))
+        self.refused[which.index()] = None;
+        (binding != self.current[which.index()]).then_some(Pref::Hotkey(which, binding))
     }
 
     /// Back to `which`'s own keys.
@@ -78,19 +71,19 @@ impl HotkeysSection {
 
     /// The OS refused the keys chosen for `which`, for `why`.
     pub fn refused(&mut self, which: Which, why: String) {
-        self.chosen[index(which)] = self.current[index(which)];
-        self.refused[index(which)] = Some(why);
+        self.chosen[which.index()] = self.current[which.index()];
+        self.refused[which.index()] = Some(why);
     }
 
     /// Whether `which`'s keys are registered with the OS: `None` when they are, else why not.
     pub fn set_unregistered(&mut self, which: Which, why: Option<String>) {
-        self.unregistered[index(which)] = why;
+        self.unregistered[which.index()] = why;
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, changes: &mut Vec<Pref>) {
         let names = words::modifier_names(self.platform);
         for which in Which::ALL {
-            let i = index(which);
+            let i = which.index();
             ui.strong(match which {
                 Which::Raise => words::RAISE,
                 Which::TimeLapse => words::TIME_LAPSE,

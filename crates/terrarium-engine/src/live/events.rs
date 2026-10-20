@@ -86,14 +86,6 @@ impl Live {
         if !self.ci.on {
             return;
         }
-        let upstream = head.branch.as_ref().and_then(|branch| {
-            git.upstream_on_origin(branch)
-                .map(|remote| (branch.clone(), remote))
-        });
-        if upstream != self.ci.upstream {
-            self.ci.ask_now = true;
-            self.ci.upstream = upstream;
-        }
         let here = self.here();
         let typed = self
             .adapters
@@ -101,6 +93,19 @@ impl Live {
             .as_ref()
             .filter(|typed| typed.binding == here)
             .map(|typed| typed.repo.clone());
+        // The name `origin` knows HEAD's branch by says nothing of a repository typed instead.
+        let upstream = head
+            .branch
+            .as_ref()
+            .filter(|_| typed.is_none())
+            .and_then(|branch| {
+                git.upstream_on_origin(branch)
+                    .map(|remote| (branch.clone(), remote))
+            });
+        if upstream != self.ci.upstream {
+            self.ci.ask_now = true;
+            self.ci.upstream = upstream;
+        }
         let slug = typed.or_else(|| git.origin_url().and_then(|url| Slug::from_remote_url(&url)));
         if slug != self.ci.slug {
             self.ci.ask_now = true;

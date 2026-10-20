@@ -22,6 +22,9 @@ pub(super) struct LabelLook {
     /// When each line's text arrived: a line swapped in place keeps the cycle's phase, and its
     /// turn counts from then.
     pub(super) arrived: Vec<Millis>,
+    /// The lines this set took over unchanged from the set it crossfades from, in the same
+    /// phase: drawn whole by this set alone, so they never cross over to themselves.
+    pub(super) held: Vec<bool>,
 }
 
 impl LabelLook {
@@ -124,6 +127,7 @@ impl Composer {
         // crosses over to itself, which would dim it.
         let mut since = now;
         let mut arrived = vec![now; lines.len()];
+        let mut held = vec![false; lines.len()];
         if let Some(look) = current {
             let showing = look.showing(now);
             if look.lines.len() == lines.len() {
@@ -133,6 +137,9 @@ impl Composer {
                     {
                         *slot = kept;
                     }
+                    if let Some(slot) = held.get_mut(i) {
+                        *slot = old == new;
+                    }
                 }
                 since = look.since;
                 if showing
@@ -140,6 +147,10 @@ impl Composer {
                     .all(|&(i, _)| look.lines.get(i) == lines.get(i))
                     && let Some(look) = self.label.last_mut()
                 {
+                    // Swapped in place, a line no longer holds what the set before showed.
+                    for ((slot, old), new) in look.held.iter_mut().zip(&look.lines).zip(&lines) {
+                        *slot = *slot && old == new;
+                    }
                     look.lines = lines;
                     look.arrived = arrived;
                     return;
@@ -148,6 +159,7 @@ impl Composer {
                 && look.lines.get(i) == lines.first()
                 && let Some(look) = self.label.last_mut()
             {
+                look.held = vec![false; lines.len()];
                 look.lines = lines;
                 look.since = now;
                 look.arrived = arrived;
@@ -165,6 +177,7 @@ impl Composer {
                 since,
                 opacity: Tween::new(0, SHOWN, now, fade),
                 arrived,
+                held,
             });
         }
     }
@@ -175,12 +188,31 @@ impl Composer {
         let Some(label) = Label::new(catalog) else {
             return;
         };
+        // The set rising, if one is: a line it holds is its alone, drawn whole.
+        let rising = self
+            .label
+            .last()
+            .filter(|look| look.opacity.target() == SHOWN);
+        let holds = |look: &LabelLook, line: usize| {
+            rising.is_some_and(|rising| {
+                rising.since == look.since
+                    && rising.held.get(line) == Some(&true)
+                    && rising.lines.get(line) == look.lines.get(line)
+            })
+        };
+        let last = self.label.len().saturating_sub(1);
         for (index, look) in (0_u16..).zip(&self.label) {
             let value = look.opacity.value(now);
-            if value == 0 {
-                continue;
-            }
+            let newest = usize::from(index) == last;
             for (line, line_value) in look.showing(now) {
+                let held = holds(look, line);
+                if !newest && held {
+                    continue;
+                }
+                let value = if newest && held { SHOWN } else { value };
+                if value == 0 {
+                    continue;
+                }
                 let opacity = scale(value, line_value);
                 let Some(text) = look.lines.get(line) else {
                     continue;

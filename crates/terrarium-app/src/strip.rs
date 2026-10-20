@@ -1158,12 +1158,15 @@ impl Strip {
     /// moved taskbar or a change of the settings.
     fn replace(&mut self, view: &mut View) {
         let monitors = view.pinning.monitors(&view.window);
-        self.show_monitors(&monitors);
         if let Some(monitor) = choose(monitors, self.prefs.monitor.as_ref()) {
             self.place(view, &monitor);
             self.redraws.force();
             view.window.request_redraw();
         }
+        // The settings' scales follow the band this placement was given, so they are worked
+        // out after it.
+        let monitors = view.pinning.monitors(&view.window);
+        self.show_monitors(&monitors);
     }
 
     /// The displays connected, as the settings window lists them, with the strip's scales on
@@ -1503,7 +1506,7 @@ impl Strip {
             form.set_missing(missing);
             form.set_prefs(prefs);
             for which in Which::ALL {
-                form.hotkey_unregistered(which, self.unregistered[which_index(which)].clone());
+                form.hotkey_unregistered(which, self.unregistered[which.index()].clone());
             }
             if let Some(connected) = &repo.connected {
                 form.set_tools(connected.tools.clone());
@@ -1792,7 +1795,7 @@ impl Strip {
         if let Some(form) = &mut self.shell.settings {
             form.hotkey_unregistered(which, why.clone());
         }
-        self.unregistered[which_index(which)] = why;
+        self.unregistered[which.index()] = why;
     }
 
     /// Says a hotkey could not be registered; the probe hears of the raise's.
@@ -2501,14 +2504,6 @@ fn retire(engine: Option<Engine>) -> Option<thread::JoinHandle<()>> {
 fn scale_width(monitor: &MonitorInfo, band: Option<&(MonitorId, u32)>) -> u32 {
     band.filter(|(id, _)| *id == monitor.id)
         .map_or(monitor.physical_width, |&(_, width)| width)
-}
-
-/// `which`'s place in a pair kept for both hotkeys.
-const fn which_index(which: Which) -> usize {
-    match which {
-        Which::Raise => 0,
-        Which::TimeLapse => 1,
-    }
 }
 
 #[cfg(test)]

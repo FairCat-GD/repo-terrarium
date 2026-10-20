@@ -521,6 +521,7 @@ fn the_label_cycles_its_lines_and_crossfades_between_them() {
         since: Millis(1000),
         opacity: Tween::at(SHOWN),
         arrived: vec![Millis(1000); 3],
+        held: vec![false; 3],
     };
     let cycle = u64::from(LABEL_CYCLE_MS);
     assert_eq!(look.showing(Millis(1000)), [(0, SHOWN)]);
@@ -661,6 +662,26 @@ fn a_changed_visible_line_alone_crossfades_and_the_cycle_keeps_its_phase() {
         label_draws(&changed, &table, next),
         label_draws(&same, &table, next)
     );
+}
+
+#[test]
+fn a_line_kept_through_a_change_mid_crossing_never_dims() {
+    let table = table();
+    let (mut changed, same) = label_pair(&table, &["moss", "settling 3 days"]);
+    // Mid-way through the cycle crossing from the first line to the second, the second changes.
+    let at = Millis(u64::from(LABEL_CYCLE_MS + LABEL_FADE_MS / 2));
+    relabel(&mut changed, &["moss", "settling 2 days"], at);
+    let moss = |composer: &Composer, now: Millis| -> Vec<Draw> {
+        of(composer, &table, 0, now, Subject::Label)
+            .iter()
+            .filter(|keyed| keyed.key.part == 0)
+            .map(|keyed| keyed.draw)
+            .collect()
+    };
+    for ms in [0, 250, 500, 750, 1_000, 1_500] {
+        let now = at.plus(ms);
+        assert_eq!(moss(&changed, now), moss(&same, now), "{now:?}");
+    }
 }
 
 #[test]

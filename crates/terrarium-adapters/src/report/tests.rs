@@ -786,6 +786,33 @@ fn a_committed_link_leading_outside_is_refused_and_named() {
 
 #[cfg(unix)]
 #[test]
+fn a_link_the_index_lets_go_of_reads_again() {
+    use crate::fixture::{Edit, FixtureRepo, Stamp};
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("elsewhere").display().to_string();
+    let root = linked(&dir, &[("reports", &elsewhere)]);
+    let read = || Report::read(&root, Format::Lcov, &["reports/lcov.info".to_owned()]).outcome;
+    assert_eq!(
+        read(),
+        Outcome::Unknown(Why::CommittedLink("reports".into()))
+    );
+    // Untracked (the index written from a tree without it), the same link is a tool's.
+    let mut repo = FixtureRepo::init(&dir.path().join("plain")).unwrap();
+    repo.commit(
+        "main",
+        Stamp::at(1_704_704_400),
+        "plain",
+        &[Edit::write("README", "moss\n")],
+    )
+    .unwrap();
+    let index = repo.git_dir().join("index");
+    repo.write_index("main").unwrap();
+    fs::copy(index, root.join(".git/index")).unwrap();
+    assert!(matches!(read(), Outcome::Known(_)));
+}
+
+#[cfg(unix)]
+#[test]
 fn a_link_the_repository_does_not_hold_still_reads() {
     let dir = tempfile::tempdir().unwrap();
     let repo = linked(&dir, &[]);

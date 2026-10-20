@@ -57,6 +57,13 @@ pub fn still_fit(room: f32) -> (u32, u32) {
     (k, columns)
 }
 
+/// How many screen pixels from the window's left edge a still `width` pixels wide starts, so
+/// that whatever whole columns do not fill is shared by both sides; a whole number of pixels,
+/// so each art pixel still lands on whole screen pixels.
+fn centred(window: f32, width: f32) -> f32 {
+    ((window - width) / 2.0).max(0.0).floor()
+}
+
 /// The still as shown: its palette mix, and the picture with its serial once composed.
 struct Still {
     mix: u8,
@@ -209,9 +216,13 @@ impl ConnectForm {
         };
         let texture = picture::upload(&mut self.texture, &ctx, image, still.serial);
         let points = |native: u32| f32::from(u16::try_from(native * k).unwrap_or(u16::MAX)) / ppp;
+        let size = egui::vec2(points(columns), points(NATIVE_HEIGHT));
         let rect = egui::Rect::from_min_size(
-            window.min,
-            egui::vec2(points(columns), points(NATIVE_HEIGHT)),
+            egui::pos2(
+                window.min.x + centred(window.width() * ppp, size.x * ppp) / ppp,
+                window.min.y,
+            ),
+            size,
         );
         let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         ui.painter()
@@ -308,6 +319,17 @@ mod tests {
         assert_eq!(still_fit(1_800.0), (2, 840));
         // Narrower than the scene: the scene's 640.
         assert_eq!(still_fit(500.0), (1, 640));
+        // What whole columns leave is shared by both sides.
+        for (window, width, left) in [
+            (900.0, 840.0, 30.0),
+            (680.0, 680.0, 0.0),
+            (300.0, 320.0, 0.0),
+        ] {
+            assert!(
+                (centred(window, width) - left).abs() < f32::EPSILON,
+                "{window} {width}"
+            );
+        }
     }
 
     #[test]

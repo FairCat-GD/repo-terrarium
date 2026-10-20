@@ -21,16 +21,17 @@ mod tests;
 mod xml;
 
 use std::borrow::Cow;
-use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::sync::{Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use terrarium_truth::{ObservationKind, Q16, Q32};
 
-use crate::git::GitRepo;
+use crate::git::{GitRepo, link_key};
 
 pub(crate) use knip::major;
 pub use knip::{KNIP_MIN_MAJOR, KnipCounts, installed_knip};
@@ -295,7 +296,7 @@ fn load(root: &Path, format: Format, files: &[String]) -> Result<Vec<Loaded>, Wh
     sorted.dedup();
     let mut total = 0_u64;
     let mut loaded = Vec::with_capacity(sorted.len());
-    let mut links = Links::new(root);
+    let links = Links::new(root);
     for path in sorted {
         let Some(parts) = paths::relative_parts(path) else {
             return Err(Why::OutsideRepository(path.clone()));
@@ -313,14 +314,12 @@ fn load(root: &Path, format: Format, files: &[String]) -> Result<Vec<Loaded>, Wh
     Ok(loaded)
 }
 
-/// The symbolic links on the way to a report, asked of the repository only when one leads
-/// outside it, which is rare: then the repository at the root is opened once for the report.
+/// The symbolic links on the way to a report. Only a link that leads outside the root is asked
+/// about, and the repository's answer is kept by [`TRACKED`] until its index changes.
 struct Links<'a> {
     root: &'a Path,
     /// The root, every link resolved; none when it cannot be resolved.
     real_root: Option<PathBuf>,
-    /// The repository at the root, opened the first time a link asks; none if it holds none.
-    repo: OnceCell<Option<GitRepo>>,
 }
 
 impl Links<'_> {
@@ -328,14 +327,12 @@ impl Links<'_> {
         Links {
             root,
             real_root: root.canonicalize().ok(),
-            repo: OnceCell::new(),
         }
     }
 
     /// The first part of the path `parts` names, joined by `/`, that is a symbolic link leading
-    /// outside the root which the repository commits. An index that cannot be read counts every
-    /// such link as committed; a root that holds no repository commits none.
-    fn committed_leading_out(&mut self, parts: &[&str]) -> Option<String> {
+    /// outside the root which the repository commits.
+    fn committed_leading_out(&self, parts: &[&str]) -> Option<String> {
         let mut full = self.root.to_path_buf();
         for (n, part) in parts.iter().enumerate() {
             full.push(part);
@@ -353,18 +350,59 @@ impl Links<'_> {
                 continue;
             }
             let shown = parts.get(..=n).unwrap_or(parts).join("/");
-            let root = self.root;
-            let committed = self
-                .repo
-                .get_or_init(|| GitRepo::open(root).ok())
-                .as_ref()
-                .is_some_and(|repo| repo.tracks_link(&shown).unwrap_or(true));
-            if committed {
+            if committed(self.root, &shown) {
                 return Some(shown);
             }
         }
         None
     }
+}
+
+/// The links each repository's index holds, by the root its reports are read from, with the
+/// index file's length and modification time when they were read: a refresh reads the index
+/// again only once it has changed.
+static TRACKED: Mutex<BTreeMap<PathBuf, Tracked>> = Mutex::new(BTreeMap::new());
+
+struct Tracked {
+    index: PathBuf,
+    stamp: Option<(u64, SystemTime)>,
+    links: BTreeSet<String>,
+}
+
+fn stamp(index: &Path) -> Option<(u64, SystemTime)> {
+    let meta = fs::metadata(index).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+/// Whether the repository at `root` commits a link at `path`. An index that cannot be read
+/// counts every link as committed; a root that holds no repository commits none.
+fn committed(root: &Path, path: &str) -> bool {
+    let mut tracked = TRACKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let fresh = tracked
+        .get(root)
+        .is_some_and(|known| known.stamp.is_some() && stamp(&known.index) == known.stamp);
+    if !fresh {
+        let Ok(repo) = GitRepo::open(root) else {
+            tracked.remove(root);
+            return false;
+        };
+        let Ok((index, links)) = repo.tracked_links() else {
+            tracked.remove(root);
+            return true;
+        };
+        let stamp = stamp(&index);
+        tracked.insert(
+            root.to_path_buf(),
+            Tracked {
+                index,
+                stamp,
+                links,
+            },
+        );
+    }
+    tracked
+        .get(root)
+        .is_some_and(|known| known.links.contains(&link_key(path)))
 }
 
 /// Reads a regular file of at most `limit` bytes. `shown` names it in the reason.

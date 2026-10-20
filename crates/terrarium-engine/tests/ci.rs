@@ -239,6 +239,20 @@ fn a_poll_asks_heads_branch_then_the_default_one() {
         live.ci_ask().unwrap().upstream,
         Some(("feat/moss".to_owned(), "moss".to_owned()))
     );
+    // A repository typed for this one is asked by the local name: origin's says nothing of it.
+    let here = {
+        let terrarium = live.terrarium();
+        RepoBinding::new(&terrarium.seed, &terrarium.repo.path)
+    };
+    let mut store = Store::open(&DataDir::at(fx.dir.path().join("data"))).unwrap();
+    let typed = CiRepository {
+        binding: here,
+        repo: Slug::parse("example-garden/upstream").unwrap(),
+    };
+    store.set_setting(SETTING_CI_GITHUB_REPO, &typed).unwrap();
+    drop(store);
+    shown(&mut live, Cause::Request);
+    assert_eq!(live.ci_ask().unwrap().upstream, None);
 }
 
 #[test]

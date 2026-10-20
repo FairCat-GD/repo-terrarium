@@ -150,8 +150,23 @@ impl Living {
     ) -> Living {
         let art = Art::embedded();
         let table = ArtTable::embedded();
-        let composer = Composer::new(table, salt);
-        let scenery = composer.scenery(art, table);
+        // Settled from the first picture: its clock runs ahead of the strip's by as long as the
+        // scene takes to settle. A panic here leaves a bare composer, the strip halted.
+        let viewport = Viewport::SCENE;
+        let made = panic::catch_unwind(AssertUnwindSafe(|| {
+            let settling = settling(table, salt, viewport, scene, overlay);
+            let epoch = settling.saturating_sub(now.0);
+            let at = Millis(now.0.saturating_add(epoch));
+            let composer = settled(table, salt, viewport, (scene, overlay), at, settling);
+            let scenery = composer.scenery(art, table);
+            (composer, scenery, epoch)
+        }));
+        let broken = made.is_err();
+        let (composer, scenery, epoch) = made.unwrap_or_else(|_| {
+            let composer = Composer::new(table, salt);
+            let scenery = composer.scenery(art, table);
+            (composer, scenery, 0)
+        });
         let blank = NativeImage::filled([0, 0, 0, u8::MAX]);
         let mut living = Living {
             art,
@@ -159,7 +174,7 @@ impl Living {
             composer,
             scenery,
             pacer: Pacer::default(),
-            epoch: 0,
+            epoch,
             at: now,
             image: blank.clone(),
             spare: blank,
@@ -173,13 +188,9 @@ impl Living {
             #[cfg(test)]
             trip: Cell::new(0),
         };
-        living.guarded(now, |living| {
-            let viewport = living.composer.viewport();
-            let settling = settling(table, salt, viewport, scene, overlay);
-            living.epoch = settling.saturating_sub(now.0);
-            let at = living.clock(now);
-            living.composer = settled(table, salt, viewport, (scene, overlay), at, settling);
-        });
+        if broken {
+            living.halt(now);
+        }
         living.compose(now);
         living
     }

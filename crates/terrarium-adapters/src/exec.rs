@@ -66,14 +66,26 @@ pub fn run_user_command(program: &OsStr, args: &[OsString]) -> Result<Finished, 
 }
 
 /// The file `program` names: as given when it names a directory, else found on `PATH` (see
-/// [`find_on_path`]). A bare name found nowhere is not found: it is never handed to the OS's
-/// own search, which may look in the working directory first.
+/// [`find_on_path`]), then where the OS's own search also looks: Windows' system folders, and
+/// with no `PATH` at all the shell's default ones. A bare name found nowhere is not found: it
+/// is never handed to the OS's search, which may look in the working directory.
 fn resolve(program: &OsStr) -> Option<PathBuf> {
     let path = std::env::var_os("PATH");
     let pathext = std::env::var_os("PATHEXT");
+    let also: Vec<PathBuf> = if cfg!(windows) {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map(|root| vec![root.join("System32"), root])
+            .unwrap_or_default()
+    } else if path.is_none() {
+        vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+    } else {
+        Vec::new()
+    };
     find_on_path(
         program,
         path.as_deref(),
+        &also,
         pathext.as_deref(),
         cfg!(windows),
         runnable,
@@ -81,7 +93,7 @@ fn resolve(program: &OsStr) -> Option<PathBuf> {
 }
 
 /// `program` as given when it names a directory; else the first `<dir>/<program>` that
-/// `exists`, in each absolute `PATH` directory in order. An empty or relative `PATH` entry names
+/// `exists`, in each absolute `PATH` directory in order, then in each of `also`. An empty or relative `PATH` entry names
 /// the working directory, which could be anywhere, so it is skipped. On `windows`, `Command`
 /// looks only for `<name>.exe`, and `npm`, `npx`, `yarn` and `pnpm` are `.cmd` scripts: a name
 /// with no extension is tried with each `PATHEXT` extension in order, as `cmd.exe` would, and
@@ -90,6 +102,7 @@ fn resolve(program: &OsStr) -> Option<PathBuf> {
 fn find_on_path(
     program: &OsStr,
     path: Option<&OsStr>,
+    also: &[PathBuf],
     pathext: Option<&OsStr>,
     windows: bool,
     exists: impl Fn(&Path) -> bool,
@@ -108,7 +121,9 @@ fn find_on_path(
     } else {
         vec![""]
     };
-    std::env::split_paths(path?)
+    path.into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(also.iter().cloned())
         .filter(|dir| dir.is_absolute())
         .find_map(|dir| {
             extensions.iter().find_map(|ext| {
@@ -927,6 +942,7 @@ mod tests {
             find_on_path(
                 OsStr::new(program),
                 Some(&dirs),
+                &[],
                 Some(OsStr::new(".COM;.EXE;.BAT;.CMD")),
                 true,
                 present,
@@ -947,18 +963,18 @@ mod tests {
         );
         let only_cmd = |path: &Path| path == tools("b/npm.CMD");
         assert_eq!(
-            find_on_path(OsStr::new("npm"), Some(&dirs), None, true, only_cmd),
+            find_on_path(OsStr::new("npm"), Some(&dirs), &[], None, true, only_cmd),
             Some(tools("b/npm.CMD")),
             "without PATHEXT, Windows' default list"
         );
         assert_eq!(
-            find_on_path(OsStr::new("npm"), None, None, true, only_cmd),
+            find_on_path(OsStr::new("npm"), None, &[], None, true, only_cmd),
             None
         );
         // Elsewhere, the name alone.
         let only_bare = |path: &Path| path == tools("b/npm");
         assert_eq!(
-            find_on_path(OsStr::new("npm"), Some(&dirs), None, false, only_bare),
+            find_on_path(OsStr::new("npm"), Some(&dirs), &[], None, false, only_bare),
             Some(tools("b/npm"))
         );
     }
@@ -975,15 +991,58 @@ mod tests {
         let everywhere = |_: &Path| true;
         for windows in [false, true] {
             assert_eq!(
-                find_on_path(OsStr::new("npm"), Some(&dirs), None, windows, everywhere)
-                    .map(|found| found.starts_with(tools("a"))),
+                find_on_path(
+                    OsStr::new("npm"),
+                    Some(&dirs),
+                    &[],
+                    None,
+                    windows,
+                    everywhere
+                )
+                .map(|found| found.starts_with(tools("a"))),
                 Some(true),
                 "windows: {windows}"
             );
         }
+        // After PATH, and with none, the folders the OS's own search adds; never a relative one.
+        let system = [tools("system"), PathBuf::from("bin")];
+        let only_system = |path: &Path| path == tools("system/npm");
+        assert_eq!(
+            find_on_path(
+                OsStr::new("npm"),
+                Some(&dirs),
+                &system,
+                None,
+                false,
+                only_system
+            ),
+            Some(tools("system/npm"))
+        );
+        assert_eq!(
+            find_on_path(OsStr::new("npm"), None, &system, None, false, only_system),
+            Some(tools("system/npm"))
+        );
+        assert_eq!(
+            find_on_path(
+                OsStr::new("npm"),
+                None,
+                &system[1..],
+                None,
+                false,
+                everywhere
+            ),
+            None
+        );
         let relative = std::env::join_paths([Path::new(""), Path::new("bin")]).unwrap();
         assert_eq!(
-            find_on_path(OsStr::new("npm"), Some(&relative), None, false, everywhere),
+            find_on_path(
+                OsStr::new("npm"),
+                Some(&relative),
+                &[],
+                None,
+                false,
+                everywhere
+            ),
             None
         );
     }

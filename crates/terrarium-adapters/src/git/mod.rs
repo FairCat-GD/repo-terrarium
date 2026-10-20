@@ -13,8 +13,9 @@ mod tests;
 mod tip;
 mod walk;
 
+use std::collections::BTreeSet;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gix::bstr::ByteSlice as _;
 
@@ -71,6 +72,16 @@ pub(crate) fn read_err(err: impl fmt::Display) -> GitError {
     GitError::Read(err.to_string())
 }
 
+/// A worktree path, relative to its top and joined by `/`, as links are compared: in any case
+/// where the file system ignores case (macOS, Windows).
+pub fn link_key(path: &str) -> String {
+    if cfg!(any(target_os = "macos", windows)) {
+        path.to_lowercase()
+    } else {
+        path.to_owned()
+    }
+}
+
 /// What a terrarium is keyed by, read once at connect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoIdentity {
@@ -116,21 +127,17 @@ impl GitRepo {
         GitRepo::configured(repo)
     }
 
-    /// Whether the index holds a symbolic link at `path`, relative to the worktree's top and
-    /// joined by `/`. Where the file system ignores case (macOS, Windows), in any case.
-    pub fn tracks_link(&self, path: &str) -> Result<bool, GitError> {
+    /// The index file, and every symbolic link it holds, each as [`link_key`] spells it: what
+    /// the repository commits as a link, as checkout wrote it into this worktree.
+    pub fn tracked_links(&self) -> Result<(PathBuf, BTreeSet<String>), GitError> {
         let index = self.repo.index_or_empty().map_err(read_err)?;
-        let fold = cfg!(any(target_os = "macos", windows));
-        let same = |held: &[u8]| {
-            if fold {
-                held.to_str_lossy().to_lowercase() == path.to_lowercase()
-            } else {
-                held == path.as_bytes()
-            }
-        };
-        Ok(index.entries().iter().any(|entry| {
-            entry.mode == gix::index::entry::Mode::SYMLINK && same(entry.path(&index))
-        }))
+        let links = index
+            .entries()
+            .iter()
+            .filter(|entry| entry.mode == gix::index::entry::Mode::SYMLINK)
+            .map(|entry| link_key(&entry.path(&index).to_str_lossy()))
+            .collect();
+        Ok((self.repo.index_path(), links))
     }
 
     fn configured(mut repo: gix::Repository) -> Result<GitRepo, GitError> {

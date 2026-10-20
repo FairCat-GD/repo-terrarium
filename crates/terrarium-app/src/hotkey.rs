@@ -25,6 +25,14 @@ pub enum Which {
 }
 
 impl Which {
+    /// Its place in a pair kept for both hotkeys: the raise first.
+    pub const fn index(self) -> usize {
+        match self {
+            Which::Raise => 0,
+            Which::TimeLapse => 1,
+        }
+    }
+
     pub const ALL: [Which; 2] = [Which::Raise, Which::TimeLapse];
 
     /// `Ctrl+Alt+T` raises the strip (Control-Option-T on a Mac) and `Ctrl+Alt+H` opens the
