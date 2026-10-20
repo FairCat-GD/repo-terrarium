@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use terrarium_adapters::fixture::{Edit, FixtureRepo, Stamp, synthetic_until};
 
-use crate::{probe_zip, sweep};
+use crate::{release, sweep};
 
 /// The busy repository's commits.
 const COMMITS: usize = 5_000;
@@ -128,7 +128,7 @@ struct Run {
 fn soak(root: &Path, options: &Options) -> Result<bool, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let built = Command::new(&cargo)
-        .args(probe_zip::BUILD)
+        .args(release::BUILD)
         .current_dir(root)
         .status()
         .map_err(|err| format!("the release build could not start: {err}"))?;

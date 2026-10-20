@@ -9,9 +9,14 @@ mod gallery;
 mod golden;
 mod graph;
 mod hero;
+mod install_test;
+mod macho;
+mod package;
+mod pe;
 mod pieces;
 mod probe_zip;
 mod purity;
+mod release;
 mod render;
 mod size;
 mod soak;
@@ -61,6 +66,8 @@ fn main() -> ExitCode {
         {
             golden::run(root, golden::Mode::Bless { same_version: true })
         }
+        [task] if task == "install-test" => install_test::run(root),
+        [task, rest @ ..] if task == "package" => package::run(root, rest),
         [task] if task == "probe-zip" => probe_zip::run(root),
         [task] if task == "size" => size::run(root),
         [task, rest @ ..] if task == "soak" => soak::run(root, rest),
@@ -74,7 +81,8 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: cargo xtask verify | arc | assets [--check] | bench | fixture <dir> | fixture \
                  --bless | gallery | golden [--check | --bless [--same-version]] | hero | \
-                 probe-zip | render --demo <out.png> | render --preset <name> <out.png> | size | \
+                 install-test | package [--windows | --target <triple>] | probe-zip | \
+                 render --demo <out.png> | render --preset <name> <out.png> | size | \
                  soak [--minutes <n>] [--presenter layer | softbuffer | wgpu | both] | soak --report <file>"
             );
             ExitCode::from(2)

@@ -104,7 +104,7 @@ pub fn usage_error(err: &UsageError) -> String {
         .collect();
     format!(
         "{BINARY_NAME}: {problem}\nusage: {BINARY_NAME} [--repo <path> | --version | --demo | \
-         {} | --probe-readme]\n       {BINARY_NAME} --probe soak [--minutes <1-{soak}>] \
+         {} | --probe-readme | --package-copy | --quit]\n       {BINARY_NAME} --probe soak [--minutes <1-{soak}>] \
          [--presenter layer | softbuffer | wgpu] [--edge top | bottom] [--repo <path>]\n       \
          {BINARY_NAME} replay <path> (--dump | (--gif | --mp4) \
          <file> [--night] [--scale <1-{max}>]) [--observations <file>] [--at <unix-seconds>]\n       \
@@ -1564,6 +1564,54 @@ pub fn requests_unwatched(err: &impl Display) -> String {
     format!("{BINARY_NAME}: a second launch cannot reach this one: {err}")
 }
 
+/// `--quit` waited, and the running app did not quit.
+pub fn quit_timed_out() -> String {
+    format!("{BINARY_NAME}: the running app did not quit within a minute")
+}
+
+pub fn quit_failed(err: &impl Display) -> String {
+    format!("{BINARY_NAME}: the running app could not be asked to quit: {err}")
+}
+
+/// Who publishes the app, as the Windows list of installed apps and the exe's details show it.
+const PUBLISHER: &str = "FairCat-GD";
+
+/// The licences, where the Mac's and the Windows file details show a copyright line.
+const LICENCE_LINE: &str = "Code MIT or Apache-2.0; art CC BY-SA 4.0";
+
+/// The reason macOS shows when the app first reads a repository in a folder it guards
+/// (Documents, Desktop, Downloads, another volume), under its own line asking to allow it.
+fn folder_reason() -> String {
+    format!(
+        "{PRODUCT_NAME} reads the repository you connected to grow its terrarium. It only \
+         reads, and never changes or uploads anything."
+    )
+}
+
+/// What the Windows installer and uninstaller say when the strip will not quit, so the files
+/// it holds cannot be replaced or removed.
+fn still_running() -> String {
+    format!(
+        "{PRODUCT_NAME} is still running. Quit it from the strip's menu (right-click the strip), \
+         then try again."
+    )
+}
+
+/// The words the installers carry (`--package-copy`), one `key<tab>value` line each, which
+/// `cargo xtask package` puts in the Mac's `Info.plist`, the Windows exe's details and the
+/// Windows installer.
+pub fn package_copy() -> String {
+    [
+        ("product", PRODUCT_NAME.to_owned()),
+        ("publisher", PUBLISHER.to_owned()),
+        ("licence", LICENCE_LINE.to_owned()),
+        ("folder-reason", folder_reason()),
+        ("still-running", still_running()),
+    ]
+    .map(|(key, value)| format!("{key}\t{value}\n"))
+    .concat()
+}
+
 /// "Open at login" was checked but not set.
 pub fn login_not_set(err: &LoginError) -> String {
     match err {
@@ -2394,6 +2442,34 @@ mod tests {
             "words outside copy:\n{}",
             found.join("\n")
         );
+    }
+
+    #[test]
+    fn the_installers_words_are_one_line_each_and_the_folder_reason_is_the_owners() {
+        let copy = package_copy();
+        let lines: Vec<(&str, &str)> = copy
+            .lines()
+            .map(|line| line.split_once('\t').unwrap())
+            .collect();
+        assert_eq!(
+            lines.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [
+                "product",
+                "publisher",
+                "licence",
+                "folder-reason",
+                "still-running"
+            ]
+        );
+        assert_eq!(lines[0].1, "Repo Terrarium");
+        // Word for word.
+        assert_eq!(
+            lines[3].1,
+            "Repo Terrarium reads the repository you connected to grow its terrarium. It only \
+             reads, and never changes or uploads anything."
+        );
+        // The installer script reads `$` and `"` as its own.
+        assert!(!copy.contains(['$', '"']));
     }
 
     #[test]

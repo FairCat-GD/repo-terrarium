@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Development tasks: cargo xtask verify, arc, assets, bench, fixture, gallery, golden, hero, probe-zip and render."
+description = "Development tasks: cargo xtask verify, arc, assets, bench, fixture, gallery, golden, hero, install-test, package, probe-zip, render, size and soak."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

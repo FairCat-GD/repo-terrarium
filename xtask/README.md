@@ -2,7 +2,7 @@
 
 Development tasks, run as `cargo xtask <task>` from anywhere in the repository. Not shipped.
 The tasks are `verify`, `arc`, `assets`, `bench`, `fixture`, `gallery`, `golden`, `hero`,
-`probe-zip`, `render`, `size` and `soak`.
+`install-test`, `package`, `probe-zip`, `render`, `size` and `soak`.
 
 ## `verify`
 
@@ -16,7 +16,7 @@ summary. The stages:
 4. **clippy (windows)**: `--all-features` for `x86_64-pc-windows-msvc`. There is no CI, so
    this is what compiles and lints the Windows code. A lint never links: SQLite's C is
    skipped, and the tree-sitter grammars' C, which has no such switch, is compiled for the
-   target with the Mac's clang against the `xwin` splat's headers, as `probe-zip` compiles it.
+   target with the Mac's clang against the `xwin` splat's headers, as the release build compiles it.
 5. **clippy (shipped)**: the code that ships, as it is built:
    `cargo clippy --package terrarium-app --package terrarium-adapters -- -D warnings`. Every
    workspace stage compiles adapters with `fixture`, which xtask and the dev-dependencies turn
@@ -66,7 +66,7 @@ targets listed in `deny.toml`'s `[graph] targets`, and `src/graph.rs` holds the 
   default and is turned on only by xtask or a dev-dependency, never named in another
   member's features: the fixture code never ships (I-5). Cargo unifies features across the
   packages a build selects, so this holds for builds of the app alone (`-p terrarium-app`,
-  as `probe-zip` does and a test pins), never for `--workspace` release builds.
+  as the release build does and a test pins), never for `--workspace` release builds.
 - No dependency declares a `rust-version` above the workspace's.
 
 ### The scan of truth's sources
@@ -282,40 +282,84 @@ Both go through the strip's own compositor and upscaler, and the one PNG encoder
 the same words from its copy module, so the two literals must change together. The presets'
 pictures are also exact snapshots in `terrarium-compose`'s tests.
 
+## The release build
+
+`src/release.rs` builds the app as the installers ship it, for `package`, `size` and
+`probe-zip` alike, so what they measure and ship is one build:
+
+- **The app alone** (`cargo build --release --locked -p terrarium-app --target <triple>`), into
+  `target/package-build`, apart from a plain release build's flags.
+- **No trace of the build machine**: rustc's paths are remapped (`/cargo/…`,
+  `/repo-terrarium/…`); the Mac's C maps the cargo folder away; the Windows C is built without
+  asserts, since the C runtime's `assert` keeps each file's whole path in UTF-16.
+- **macOS 13 and later** (`MACOSX_DEPLOYMENT_TARGET`), for rustc and the C.
+- **Windows:** the C runtime linked statically, and the resources (`src/package/res.rs`)
+  linked in: the icon, the version details and the manifest.
+
+Each binary is then checked: N-08's budget (under 25,000,000 bytes); a scan that fails on the
+build machine's home or cargo folder in it, in UTF-8 or UTF-16; on the Mac, a minimum macOS of
+13.0 in its load commands; on Windows, comctl32 imported by ordinal only, no C runtime DLL, and
+one manifest (id 1, with the console policy), the group icon and the version in its resources.
+
+**On the Mac, the Windows target** is cross-built with the toolchain's `rust-lld` against the
+MSVC C runtime and the Windows SDK from `xwin` 0.10.0 (`cargo install --locked xwin@0.10.0`),
+splatted once into `~/Library/Caches/repo-terrarium/xwin`, or `$TERRARIUM_XWIN_DIR`. Getting
+them downloads Microsoft's packages and accepts Microsoft's license for them. That is a
+person's decision, so no task runs it; when the libraries are missing, the task prints the
+one-time command. On Windows the target is built with Microsoft's own tools.
+
+## `package`
+
+`cargo xtask package` makes the installers into `target/package/`. The release workflow
+(`.github/workflows/release.yml`), started by hand, runs it on a Mac and on Windows and drafts a
+GitHub Release with what it makes.
+
+- **On a Mac:** `repo-terrarium-<version>-macos-arm64.dmg` and `…-macos-x64.dmg`. Each holds
+  `Repo Terrarium.app`: its `Info.plist` (the bundle id, macOS 13, no Dock icon, and the reason
+  macOS shows before the app reads a guarded folder), the binary, the icon and `LICENSES.txt`,
+  sealed with an ad-hoc signature, beside a link to `/Applications`.
+- **On Windows,** or on a Mac with `--windows`:
+  `repo-terrarium-<version>-windows-x64-setup.exe`, a quiet per-user NSIS installer
+  (`packaging/windows/installer.nsi`), compiled by NSIS's `makensis` (Homebrew's on a Mac).
+- **`--target <triple>`** makes one alone.
+- **The words** (the product's name, the folder reason, the installer's message) are the app's
+  copy, so the task takes them from `repo-terrarium --package-copy`. The names an install is
+  found by are the pinned identifiers.
+- **The icon** comes from `packaging/icon/`, checked against the rounded square both platforms
+  show, and scaled by whole numbers only (`packaging/icon/README.md`).
+- **`LICENSES.txt`:** the app's own licences and its art's, every crate the app is built from
+  for the target, and each licence text those crates carry, once.
+
+## `install-test`
+
+On Windows, after `package`: installs the installer as a script would (`/S`), checks the files,
+the Start menu's shortcut, the installed apps' entry and that the installed app runs
+(`--version`, `--quit`), writes the login item as the app writes it, starts the app where the
+machine can show it, uninstalls, and fails if anything the installer wrote, the login item, or
+the running app is left. Every launch uses a data folder of the test's own.
+
 ## `probe-zip`
 
-The Windows probe build for testers. There is no CI, so it is cross-built on the Mac for
-`x86_64-pc-windows-msvc`, the target `verify` lints and the release ships.
+The Windows probe build for testers: the exe the installer carries, from the release build
+above, in `target/probe/repo-terrarium-<version>-probe-windows-x64.zip` (under
+`CARGO_TARGET_DIR` when it is set), holding:
 
-- **Linker:** the `rust-lld` the toolchain ships, so no LLVM install is needed. The C runtime is
-  linked statically, so testers need no Visual C++ redistributable.
-- **Libraries:** the MSVC C runtime and the Windows SDK come from `xwin` 0.10.0
-  (`cargo install --locked xwin@0.10.0`). They are splatted once into
-  `~/Library/Caches/repo-terrarium/xwin`, or `$TERRARIUM_XWIN_DIR`.
-- **The license.** Getting the libraries downloads Microsoft's packages and accepts
-  Microsoft's license for them. That is a person's decision, so the task never runs it. When
-  the libraries are missing, it prints the one-time command.
-- **The import check.** It fails an exe that imports `comctl32.dll` by name rather than by
-  ordinal, since such an exe may not start where comctl32 exports only ordinals.
-- **Output:** `target/probe/repo-terrarium-<version>-probe-windows-x64.zip` (under
-  `CARGO_TARGET_DIR` when it is set), holding:
-  - `repo-terrarium.exe`;
-  - `README.txt`, the tester's instructions. They are app copy, so the task takes them from
-    `repo-terrarium --probe-readme`;
-  - `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder;
-  - `run-connect.cmd`, which starts the app with its data in a `data` folder beside it;
-  - `run-soak.cmd` and `run-soak-gpu.cmd`, an hour's `--probe soak` with the default presenter
-    and with wgpu.
+- `repo-terrarium.exe`;
+- `README.txt`, the tester's instructions. They are app copy, so the task takes them from
+  `repo-terrarium --probe-readme`;
+- `run-probe.cmd`, which runs `--probe pinning` from the unzipped folder;
+- `run-connect.cmd`, which starts the app with its data in a `data` folder beside it;
+- `run-soak.cmd` and `run-soak-gpu.cmd`, an hour's `--probe soak` with the default presenter
+  and with wgpu.
 
 ## `size`
 
-`cargo xtask size` builds the app for release as it ships (`cargo build --release --locked -p
-terrarium-app`, the app alone, as `probe-zip` builds it) and fails unless the binary is under
-25,000,000 bytes (N-08's "< 25 MB", read in decimal megabytes). On the Mac it also cross-builds
-the Windows exe as `probe-zip` does, into the same `target/probe-build`, and holds it to the
-same budget; on Windows the binary it builds is that exe. A fat-LTO build takes minutes, so it
-runs like `bench`, when a change could move the size (a dependency, a grammar, the art, a
-profile), not as a `verify` stage.
+`cargo xtask size` builds and checks each binary as the release build above does, and fails
+unless each is under 25,000,000 bytes (N-08's "< 25 MB", read in decimal megabytes): on the Mac
+both Macs' binaries and the cross-built Windows exe; on Windows the exe. A fat-LTO build takes
+minutes, so it runs like `bench`, when a change could move the size (a dependency, a grammar,
+the art, a profile), not as a `verify` stage. `package` passes the same verdict on every binary
+it ships.
 
 ## `soak`
 

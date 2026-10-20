@@ -1,15 +1,17 @@
-//! One app at a time. The running app holds a lock on a file in the data directory. A second
+//! One app at a time. The running app holds a lock on a file in the data directory. A later
 //! launch finds it held, leaves a request in the data directory's requests folder, and ends;
-//! the running app watches that folder, and shows its settings when a request arrives. The OS
-//! lets go of the lock when the process ends, however it ends.
+//! the running app watches that folder, and answers each request as it arrives: a second
+//! launch's by showing its settings, `--quit`'s by quitting. The OS lets go of the lock when
+//! the process ends, however it ends.
 //!
-//! The installed app on macOS never reaches this: opening it again sends the running app a
-//! reopen event instead (`terrarium_platform::macos::on_reopen`). A build run from the command
-//! line, and every launch on Windows, does.
+//! The installed app on macOS never gets the second launch's request: opening it again sends
+//! the running app a reopen event instead (`terrarium_platform::macos::on_reopen`). A build run
+//! from the command line, and every launch on Windows, sends it.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use terrarium_store::DataDir;
@@ -21,11 +23,21 @@ pub enum Claim {
     Running,
 }
 
+/// What a later launch asks the running app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    /// `--quit`: quit, as the menu's Quit does.
+    Quit,
+    /// A second launch: show the settings.
+    ShowSettings,
+}
+
 /// The claim of the one app running. Dropping it lets another start.
 pub struct Instance {
     _lock: File,
     requests: PathBuf,
-    request: PathBuf,
+    quit: PathBuf,
+    show_settings: PathBuf,
 }
 
 /// The watch on the requests folder. Dropping it stops the watch.
@@ -48,12 +60,15 @@ impl Instance {
             .open(data.instance_lock())?;
         match lock.try_lock() {
             Ok(()) => {
-                let request = data.show_settings_request();
-                let _ = fs::remove_file(&request);
+                let quit = data.quit_request();
+                let show_settings = data.show_settings_request();
+                let _ = fs::remove_file(&quit);
+                let _ = fs::remove_file(&show_settings);
                 Ok(Claim::First(Instance {
                     _lock: lock,
                     requests: data.requests_dir(),
-                    request,
+                    quit,
+                    show_settings,
                 }))
             }
             Err(TryLockError::WouldBlock) => Ok(Claim::Running),
@@ -61,23 +76,49 @@ impl Instance {
         }
     }
 
-    /// Calls `on_request` for each request a later launch makes, from the watcher's thread.
-    /// Also says whether one was already waiting once the watch began: made between the claim
-    /// and the watch, it is answered here, by the caller.
+    /// Calls `on_request` for each request a later launch makes, from the watcher's thread; a
+    /// quit is answered before a settings request found with it. Also says which request was
+    /// already waiting once the watch began: made between the claim and the watch, it is
+    /// answered here, by the caller.
     pub fn watch(
         &self,
-        mut on_request: impl FnMut() + Send + 'static,
-    ) -> notify::Result<(RequestWatch, bool)> {
+        mut on_request: impl FnMut(Request) + Send + 'static,
+    ) -> notify::Result<(RequestWatch, Option<Request>)> {
         fs::create_dir_all(&self.requests)?;
-        let request = self.request.clone();
+        let waiting = Waiting {
+            quit: self.quit.clone(),
+            show_settings: self.show_settings.clone(),
+        };
+        let watching = waiting.clone();
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<_>| {
-            if event.is_ok() && take(&request) {
-                on_request();
+            if event.is_ok()
+                && let Some(request) = watching.take()
+            {
+                on_request(request);
             }
         })?;
         watcher.watch(&self.requests, RecursiveMode::NonRecursive)?;
-        let waiting = take(&self.request);
-        Ok((RequestWatch { _watcher: watcher }, waiting))
+        Ok((RequestWatch { _watcher: watcher }, waiting.take()))
+    }
+}
+
+/// The requests' files, taken in the order they are answered.
+#[derive(Clone)]
+struct Waiting {
+    quit: PathBuf,
+    show_settings: PathBuf,
+}
+
+impl Waiting {
+    /// The request waiting, removed so exactly one caller answers it: a quit first.
+    fn take(&self) -> Option<Request> {
+        if take(&self.quit) {
+            Some(Request::Quit)
+        } else if take(&self.show_settings) {
+            Some(Request::ShowSettings)
+        } else {
+            None
+        }
     }
 }
 
@@ -91,6 +132,58 @@ fn take(path: &Path) -> bool {
 pub fn ask_to_show(data: &DataDir) -> io::Result<()> {
     fs::create_dir_all(data.requests_dir())?;
     fs::write(data.show_settings_request(), b"")
+}
+
+/// How `--quit` ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Quit {
+    /// No app held the lock, so none was running.
+    NotRunning,
+    /// The app running quit.
+    Ended,
+    /// The app running had not quit by the time given; its request is withdrawn.
+    StillRunning,
+}
+
+/// How often `--quit` looks again for the lock let go.
+const QUIT_POLL: Duration = Duration::from_millis(100);
+
+/// Asks the app running on `data` to quit, and waits up to `wait` for it to let go of its
+/// lock. The lock's file is opened, never created: with no app ever run on `data`, nothing is
+/// written there, so an uninstall that asks leaves no data folder behind.
+pub fn ask_to_quit(data: &DataDir, wait: Duration) -> io::Result<Quit> {
+    let lock = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.instance_lock())
+    {
+        Ok(lock) => lock,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Quit::NotRunning),
+        Err(err) => return Err(err),
+    };
+    let held = |lock: &File| match lock.try_lock() {
+        Ok(()) => {
+            let _ = lock.unlock();
+            Ok(false)
+        }
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(err)) => Err(err),
+    };
+    if !held(&lock)? {
+        return Ok(Quit::NotRunning);
+    }
+    fs::create_dir_all(data.requests_dir())?;
+    fs::write(data.quit_request(), b"")?;
+    let until = Instant::now() + wait;
+    while Instant::now() < until {
+        std::thread::sleep(QUIT_POLL);
+        if !held(&lock)? {
+            return Ok(Quit::Ended);
+        }
+    }
+    // Left in place, it would end the app whenever its loop next looked.
+    let _ = fs::remove_file(data.quit_request());
+    Ok(Quit::StillRunning)
 }
 
 #[cfg(test)]
@@ -136,11 +229,16 @@ mod tests {
             "cleared at the claim"
         );
         let (heard, hear) = mpsc::channel();
-        let (watch, waiting) = first.watch(move || heard.send(()).unwrap()).unwrap();
-        assert!(!waiting, "a stale request is no request");
+        let (watch, waiting) = first
+            .watch(move |request| heard.send(request).unwrap())
+            .unwrap();
+        assert_eq!(waiting, None, "a stale request is no request");
         ask_to_show(&data).unwrap();
-        hear.recv_timeout(Duration::from_secs(10))
-            .expect("the request arrives");
+        assert_eq!(
+            hear.recv_timeout(Duration::from_secs(10)),
+            Ok(Request::ShowSettings),
+            "the request arrives"
+        );
         assert!(!data.show_settings_request().exists(), "answered once");
         drop(watch);
     }
@@ -159,8 +257,80 @@ mod tests {
             .unwrap()
             .set_modified(std::time::SystemTime::now() - Duration::from_secs(3_600))
             .unwrap();
-        let (_watch, waiting) = first.watch(|| {}).unwrap();
-        assert!(waiting);
+        let (_watch, waiting) = first.watch(|_| {}).unwrap();
+        assert_eq!(waiting, Some(Request::ShowSettings));
         assert!(!data.show_settings_request().exists());
+    }
+
+    #[test]
+    fn a_quit_with_nothing_running_writes_nothing() {
+        let (_dir, data) = data();
+        assert_eq!(
+            ask_to_quit(&data, Duration::from_secs(5)).unwrap(),
+            Quit::NotRunning
+        );
+        assert!(!data.path().exists(), "no data folder made");
+        // An app ran once and ended: its lock's file is there, held by no one.
+        drop(Instance::claim(&data).unwrap());
+        assert_eq!(
+            ask_to_quit(&data, Duration::from_secs(5)).unwrap(),
+            Quit::NotRunning
+        );
+        assert!(!data.quit_request().exists());
+    }
+
+    #[test]
+    fn a_quit_reaches_the_running_app_and_waits_for_it_to_let_go() {
+        let (_dir, data) = data();
+        let Claim::First(first) = Instance::claim(&data).unwrap() else {
+            panic!("the first claim");
+        };
+        let (heard, hear) = mpsc::channel();
+        let (watch, waiting) = first
+            .watch(move |request| heard.send(request).unwrap())
+            .unwrap();
+        assert_eq!(waiting, None);
+        // The app: it quits when asked, letting go of its lock.
+        let app = std::thread::spawn(move || {
+            let request = hear.recv_timeout(Duration::from_secs(10));
+            drop(watch);
+            drop(first);
+            request
+        });
+        assert_eq!(
+            ask_to_quit(&data, Duration::from_secs(20)).unwrap(),
+            Quit::Ended
+        );
+        assert_eq!(app.join().unwrap(), Ok(Request::Quit));
+        assert!(!data.quit_request().exists(), "answered once");
+    }
+
+    #[test]
+    fn an_app_that_does_not_quit_keeps_running_and_the_request_is_withdrawn() {
+        let (_dir, data) = data();
+        let Claim::First(_first) = Instance::claim(&data).unwrap() else {
+            panic!("the first claim");
+        };
+        assert_eq!(
+            ask_to_quit(&data, Duration::from_millis(300)).unwrap(),
+            Quit::StillRunning
+        );
+        assert!(!data.quit_request().exists());
+        assert!(matches!(Instance::claim(&data).unwrap(), Claim::Running));
+    }
+
+    #[test]
+    fn a_quit_left_from_before_is_cleared_and_one_waiting_wins_over_the_settings() {
+        let (_dir, data) = data();
+        fs::create_dir_all(data.requests_dir()).unwrap();
+        fs::write(data.quit_request(), b"").unwrap();
+        let Claim::First(first) = Instance::claim(&data).unwrap() else {
+            panic!("the first claim");
+        };
+        assert!(!data.quit_request().exists(), "cleared at the claim");
+        ask_to_show(&data).unwrap();
+        fs::write(data.quit_request(), b"").unwrap();
+        let (_watch, waiting) = first.watch(|_| {}).unwrap();
+        assert_eq!(waiting, Some(Request::Quit));
     }
 }

@@ -61,7 +61,7 @@ use crate::feed::{Feed, Feeder, Os};
 use crate::gpu::Gpu;
 use crate::hotkey::{self, Hotkeys, Which};
 use crate::hover::{self, HoverTracker, ViewportPoint};
-use crate::instance::{Instance, RequestWatch};
+use crate::instance::{Instance, Request, RequestWatch};
 use crate::lifecycle::{self, Job, Outcome};
 use crate::live::{Changed, Launch, LiveView, PanelFacts};
 use crate::login::{self, LoginItem};
@@ -504,8 +504,8 @@ pub enum UserEvent {
     ProbeTools(Box<ToolsReport>),
     /// An update from the engine of that generation.
     Engine(u64, Update),
-    /// A second launch asked for the settings.
-    ShowSettings,
+    /// A later launch asked for the settings, or for the app to quit.
+    Requested(Request),
     /// The folder picker closed, with the folder chosen, if one was.
     /// A dialog's answer, with the time-lapse window open when it was asked (`lapses`).
     Picked(Picking, Option<PathBuf>, u64),
@@ -674,16 +674,15 @@ impl Repo {
                 let _ = saved.send_event(UserEvent::Saved(answer));
             }),
         );
-        let config = lifecycle::engine_config(data.clone(), repo.clone(), &keychain);
-        let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy, 0))
-            .map_err(|err| StripError::Connect(repo, err))?;
+        // Watched before the first connect, which can hold this thread for half a minute, so a
+        // quit asked meanwhile is answered as soon as the loop runs.
         let requests = proxy.clone();
-        let requests = match instance.watch(move || {
-            let _ = requests.send_event(UserEvent::ShowSettings);
+        let requests = match instance.watch(move |request| {
+            let _ = requests.send_event(UserEvent::Requested(request));
         }) {
             Ok((watch, waiting)) => {
-                if waiting {
-                    let _ = proxy.send_event(UserEvent::ShowSettings);
+                if let Some(request) = waiting {
+                    let _ = proxy.send_event(UserEvent::Requested(request));
                 }
                 Some(watch)
             }
@@ -692,6 +691,9 @@ impl Repo {
                 None
             }
         };
+        let config = lifecycle::engine_config(data.clone(), repo.clone(), &keychain);
+        let (engine, start) = Engine::spawn(config, lifecycle::sink(proxy, 0))
+            .map_err(|err| StripError::Connect(repo, err))?;
         let (engine, connected) = match start {
             Start::Connected { terrarium, scene } => (
                 Some(engine),
@@ -1235,6 +1237,12 @@ impl Strip {
             app_active: pinning::app_is_active(),
             frontmost: pinning::frontmost_app(),
         }
+    }
+
+    /// The menu's Quit, and `--quit`'s: the loop ends, and `exiting` gives the edge back.
+    fn quit(&mut self, event_loop: &ActiveEventLoop) {
+        self.end_probe(EndReason::Quit);
+        event_loop.exit();
     }
 
     fn end_probe(&mut self, reason: EndReason) {
@@ -2170,7 +2178,7 @@ impl ApplicationHandler<UserEvent> for Strip {
         if self.repo.is_some() && self.reopen.is_none() {
             let proxy = self.proxy.clone();
             self.reopen = pinning::on_reopen(move || {
-                let _ = proxy.send_event(UserEvent::ShowSettings);
+                let _ = proxy.send_event(UserEvent::Requested(Request::ShowSettings));
             });
         }
         // A second launch's request may have opened the connect window already.
@@ -2203,10 +2211,7 @@ impl ApplicationHandler<UserEvent> for Strip {
                 None => {}
             },
             UserEvent::Menu(id) => match self.menu.as_ref().and_then(|menu| menu.choice(&id)) {
-                Some(Choice::Quit) => {
-                    self.end_probe(EndReason::Quit);
-                    event_loop.exit();
-                }
+                Some(Choice::Quit) => self.quit(event_loop),
                 Some(Choice::Settings) => self.show_settings(event_loop),
                 Some(Choice::TimeLapse) => self.show_timelapse(event_loop),
                 Some(Choice::Pause) => self.toggle_pause(),
@@ -2269,7 +2274,8 @@ impl ApplicationHandler<UserEvent> for Strip {
             }
             UserEvent::ProbeTools(report) => self.record(ProbeEvent::Tools(report)),
             UserEvent::Engine(generation, update) => self.engine_update(generation, update),
-            UserEvent::ShowSettings => self.show_settings(event_loop),
+            UserEvent::Requested(Request::ShowSettings) => self.show_settings(event_loop),
+            UserEvent::Requested(Request::Quit) => self.quit(event_loop),
             UserEvent::Picked(picking, path, lapse) => self.picked(picking, path, lapse),
             UserEvent::Lifecycle(generation, outcome) => {
                 self.changed(event_loop, generation, *outcome);

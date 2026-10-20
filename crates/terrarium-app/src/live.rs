@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use terrarium_compose::preset;
 use terrarium_engine::{Branch, Details, Update};
@@ -24,7 +25,7 @@ use terrarium_truth::scene::{SceneInput, Weather};
 
 use crate::copy;
 use crate::feed::Feed;
-use crate::instance::{self, Claim, Instance};
+use crate::instance::{self, Claim, Instance, Quit};
 use crate::pinning;
 use crate::strip::Mode;
 
@@ -292,6 +293,33 @@ pub fn run(repo: Option<PathBuf>) -> ExitCode {
             instance,
         }),
     )
+}
+
+/// How long `--quit` waits for the running app: its first connect can hold its loop for half
+/// a minute before it hears the request.
+const QUIT_WAIT: Duration = Duration::from_secs(60);
+
+/// `--quit`: asks the app running on this data directory to quit, and waits for it. Ends well
+/// when it quit, or when none was running.
+pub fn quit() -> ExitCode {
+    let data = match DataDir::resolve() {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("{}", copy::data_dir_unavailable(&err));
+            return ExitCode::FAILURE;
+        }
+    };
+    match instance::ask_to_quit(&data, QUIT_WAIT) {
+        Ok(Quit::NotRunning | Quit::Ended) => ExitCode::SUCCESS,
+        Ok(Quit::StillRunning) => {
+            eprintln!("{}", copy::quit_timed_out());
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("{}", copy::quit_failed(&err));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

@@ -75,6 +75,9 @@ fn main() -> ExitCode {
         }
         // Byte for byte: `cargo xtask probe-zip` writes this into the zip as `README.txt`.
         Ok(Command::ProbeReadme) => output::print(copy::PROBE_README, copy::print_failed),
+        // Read by `cargo xtask package`, which puts the words in the installers.
+        Ok(Command::PackageCopy) => output::print(&copy::package_copy(), copy::print_failed),
+        Ok(Command::Quit) => live::quit(),
         Ok(Command::Replay(args)) => replay::run(&args),
         Ok(Command::Discover(repo)) => discover::run(&repo),
         // The command's own exit code, whole: `ExitCode` holds only 0 to 255, and Windows codes

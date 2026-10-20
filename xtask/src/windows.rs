@@ -5,10 +5,12 @@
 //! - **a lint** (`verify`'s two `clippy (windows)` stages) never links: SQLite's C is skipped
 //!   through its build script's switch, and the grammars' C, which has no such switch, is
 //!   compiled as a real build compiles it, so the lint also shows that it compiles for Windows;
-//! - **a real build** (`probe-zip`) compiles all of it with the Mac's clang against the `xwin`
-//!   splat's headers and archives it with the toolchain's `rust-lld` acting as `lib.exe`.
+//! - **a real build** (`release`, for `package`, `size` and `probe-zip`) compiles all of it
+//!   with the Mac's clang against the `xwin` splat's headers, archives it with the toolchain's
+//!   `rust-lld` acting as `lib.exe`, and links with `rust-lld` against the splat's libraries.
 //!
-//! The splat is made once, by a person, since making it accepts Microsoft's license.
+//! The splat is made once, by a person, since making it accepts Microsoft's license. A Windows
+//! machine needs none of this: it builds the target with Microsoft's own tools.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,7 +18,7 @@ use std::process::{Command, Stdio};
 
 pub const TARGET: &str = "x86_64-pc-windows-msvc";
 
-/// The `xwin` version the splat layout here and the flags in `probe_zip` are written for.
+/// The `xwin` version the splat layout and the flags here are written for.
 pub const XWIN_VERSION: &str = "0.10.0";
 /// Where the splat lives unless `TERRARIUM_XWIN_DIR` says otherwise.
 pub const XWIN_DIR_ENV: &str = "TERRARIUM_XWIN_DIR";
@@ -47,6 +49,77 @@ pub fn splat_needed(xwin_dir: &Path, what: &str) -> String {
         xwin_dir.with_extension("cache").display(),
         xwin_dir.display()
     )
+}
+
+/// What a real build on the Mac adds for the target: rustc's flags for the linker and the
+/// splat's libraries, and the environment the target's C is compiled in.
+pub struct Cross {
+    pub rustflags: Vec<OsString>,
+    pub env: Vec<(&'static str, OsString)>,
+}
+
+/// [`Cross`] for this machine, once xwin, the splat and `rust-lld` are found.
+pub fn cross_build(root: &Path) -> Result<Cross, String> {
+    let xwin_dir =
+        xwin_dir().ok_or_else(|| format!("HOME is not set, and neither is {XWIN_DIR_ENV}"))?;
+    if !has_xwin() {
+        return Err(format!(
+            "the Windows build needs xwin {XWIN_VERSION}: cargo install --locked xwin@{XWIN_VERSION}"
+        ));
+    }
+    if !lib_dirs(&xwin_dir).iter().all(|dir| dir.is_dir()) {
+        return Err(splat_needed(
+            &xwin_dir,
+            "the Windows build needs the Windows CRT and SDK libraries",
+        ));
+    }
+    let lld = toolchain_lld(root).ok_or("the toolchain's rust-lld was not found")?;
+    Ok(Cross {
+        rustflags: cross_rustflags(&xwin_dir),
+        env: c_build_env(&xwin_dir, &lld, std::env::var_os("DYLD_LIBRARY_PATH"))?,
+    })
+}
+
+/// `xwin --version` prints `xwin 0.10.0`.
+fn has_xwin() -> bool {
+    let Ok(out) = Command::new("xwin")
+        .arg("--version")
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    let printed = String::from_utf8_lossy(&out.stdout);
+    out.status.success() && printed.split_whitespace().eq(["xwin", XWIN_VERSION])
+}
+
+/// The CRT's and the SDK's import libraries, in `xwin splat`'s default layout.
+fn lib_dirs(xwin_dir: &Path) -> [PathBuf; 3] {
+    [
+        xwin_dir.join("crt/lib/x86_64"),
+        xwin_dir.join("sdk/lib/um/x86_64"),
+        xwin_dir.join("sdk/lib/ucrt/x86_64"),
+    ]
+}
+
+/// The linker's flags for the target on the Mac: `rust-lld` as `link.exe`, and the splat's
+/// libraries to link against.
+fn cross_rustflags(xwin_dir: &Path) -> Vec<OsString> {
+    let mut flags: Vec<OsString> = [
+        "-Clinker-flavor=lld-link",
+        // The static C runtime names debug databases that are not shipped; the linker's
+        // warning about each one is noise.
+        "-Clink-arg=/IGNORE:4099",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    for dir in lib_dirs(xwin_dir) {
+        let mut flag = OsString::from("-Lnative=");
+        flag.push(dir);
+        flags.push(flag);
+    }
+    flags
 }
 
 /// For a lint, on this machine: SQLite's switch, and the environment that compiles the
@@ -230,6 +303,21 @@ mod tests {
                 "AR_x86_64_pc_windows_msvc",
                 "ARFLAGS_x86_64_pc_windows_msvc",
                 "DYLD_LIBRARY_PATH",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_cross_build_links_with_lld_against_the_splatted_libraries() {
+        let flags = cross_rustflags(Path::new("/a dir/xwin"));
+        assert_eq!(
+            flags,
+            [
+                "-Clinker-flavor=lld-link",
+                "-Clink-arg=/IGNORE:4099",
+                "-Lnative=/a dir/xwin/crt/lib/x86_64",
+                "-Lnative=/a dir/xwin/sdk/lib/um/x86_64",
+                "-Lnative=/a dir/xwin/sdk/lib/ucrt/x86_64",
             ]
         );
     }

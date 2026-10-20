@@ -28,6 +28,14 @@ pub const INSTANCE_LOCK_FILE: &str = "instance.lock";
 /// running app, and the request's file name.
 pub const REQUESTS_DIR: &str = "requests";
 pub const SHOW_SETTINGS_REQUEST: &str = "show-settings";
+/// The request `--quit` leaves, which the running app answers by quitting.
+pub const QUIT_REQUEST: &str = "quit";
+/// The Windows install's folder, under `%LOCALAPPDATA%\Programs`, and its entry in HKCU's list
+/// of installed apps: an upgrade and the uninstaller find the install by them.
+pub const WINDOWS_INSTALL_DIR: &str = BINARY;
+pub const WINDOWS_UNINSTALL_KEY: &str = BUNDLE_ID;
+/// The name of the login item's value in HKCU's `Run` key, which the uninstaller removes.
+pub const WINDOWS_RUN_VALUE: &str = BUNDLE_ID;
 
 /// Migration 1's tables, in its order.
 pub const TABLES: [&str; 5] = [
@@ -94,6 +102,10 @@ mod tests {
         assert_eq!(INSTANCE_LOCK_FILE, "instance.lock");
         assert_eq!(REQUESTS_DIR, "requests");
         assert_eq!(SHOW_SETTINGS_REQUEST, "show-settings");
+        assert_eq!(QUIT_REQUEST, "quit");
+        assert_eq!(WINDOWS_INSTALL_DIR, "repo-terrarium");
+        assert_eq!(WINDOWS_UNINSTALL_KEY, "io.github.faircat-gd.repo-terrarium");
+        assert_eq!(WINDOWS_RUN_VALUE, "io.github.faircat-gd.repo-terrarium");
         assert_eq!(
             TABLES,
             [

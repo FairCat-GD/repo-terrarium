@@ -5,6 +5,48 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-20
+
+Packaging. Repo Terrarium installs: a DMG for Apple silicon Macs, one for Intel Macs, and a
+per-user installer for Windows, built and drafted as a GitHub Release by a workflow started by
+hand. The builds are unsigned: macOS opens the app after System Settings' Open Anyway, and
+Windows after SmartScreen's Run anyway.
+
+### Added
+
+- **Mac DMGs,** for Apple silicon and for Intel Macs, macOS 13 and later. Drag the app to
+  Applications. It has no Dock icon, as before, and its icon is a placeholder until the real one
+  is drawn.
+- **A Windows installer** that installs for the current user alone, with no pages to click
+  through: it puts the app in place, adds it to the Start menu and the installed apps, and
+  opens it. Uninstalling quits a running strip first, so its edge of the screen is given back,
+  and removes its login item. The terrarium's history and settings are kept on both platforms.
+- **The reason macOS shows** before the app first reads a repository in Documents, Desktop,
+  Downloads or on another drive: "Repo Terrarium reads the repository you connected to grow its
+  terrarium. It only reads, and never changes or uploads anything."
+- **`repo-terrarium --quit`** asks the running app to quit, and waits for it.
+- **Licence notices** ship with the app (`LICENSES.txt`): its own, its art's, and those of every
+  crate it is built from.
+
+### Changed
+
+- **On Windows 11 24H2 and later, no console window flashes** when the strip starts from
+  Explorer, the Start menu or at login; a terminal's console is still used. The exe also
+  carries its icon and its name, which Task Manager shows.
+- **Knip finds node installed by nvm, fnm, Volta, asdf or mise** when the app was opened from
+  Finder or at login, whose search path holds none of them.
+
+### Fixed
+
+- **The Windows exe no longer holds the build machine's folder names,** which the C code's
+  checks kept, and a crash log names a dependency's file without the folder it was built in.
+
+### Security
+
+- **The GitHub Actions weather's connection** takes rustls-webpki 0.103.16 and webpki-roots
+  1.0.10, which refuse certificates from the distrusted emSign intermediates
+  (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
 ## [0.30.1] - 2026-10-20
 
 More plants. A terrarium grows three times as many plants as before, up to 72 with twelve

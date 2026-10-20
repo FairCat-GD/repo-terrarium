@@ -169,25 +169,112 @@ const NODE_NAMES: &[&str] = if cfg!(windows) {
 /// The person's ffmpeg: on `PATH`, then, on macOS, where its package managers put it; never
 /// one inside `outside`, the repository.
 pub fn find_ffmpeg(outside: Option<&Path>) -> Option<Tool> {
-    find_installed(FFMPEG_NAMES, outside)
+    find_installed(FFMPEG_NAMES, &[], outside)
 }
 
-/// The person's node, looked for as ffmpeg is; never one inside `outside`, the repository, so
-/// a repository cannot hand Knip a node of its own.
+/// The person's node, looked for as ffmpeg is, then, off Windows, where version managers keep
+/// the ones they install: a shell adds their folders to its `PATH`, which an app opened from
+/// Finder or at login never sees. Never one inside `outside`, the repository, so a repository
+/// cannot hand Knip a node of its own.
 pub fn find_node(outside: Option<&Path>) -> Option<Tool> {
-    find_installed(NODE_NAMES, outside)
+    let managed = if cfg!(windows) {
+        Vec::new()
+    } else {
+        std::env::var_os("HOME")
+            .map(|home| version_manager_dirs(Path::new(&home)))
+            .unwrap_or_default()
+    };
+    find_installed(NODE_NAMES, &managed, outside)
 }
 
-/// The first of `names` on `PATH`, then, on macOS, where its package managers put tools.
-fn find_installed(names: &[&str], outside: Option<&Path>) -> Option<Tool> {
+/// The first of `names` on `PATH`, then, on macOS, where its package managers put tools, then
+/// in `more`.
+fn find_installed(names: &[&str], more: &[PathBuf], outside: Option<&Path>) -> Option<Tool> {
     let also: &[&str] = if cfg!(target_os = "macos") {
         MACOS_TOOL_DIRS
     } else {
         &[]
     };
-    let also: Vec<&Path> = also.iter().map(Path::new).collect();
+    let also: Vec<&Path> = also
+        .iter()
+        .map(Path::new)
+        .chain(more.iter().map(PathBuf::as_path))
+        .collect();
     let path = std::env::var_os("PATH");
     find_tool(names, path.as_deref(), &also, outside)
+}
+
+/// The folders under `home` holding the node each version manager would run, in a fixed order:
+/// nvm's default when it names an installed version, else its newest; fnm's default, else its
+/// newest (in macOS's folder, then the XDG one); and the newest of Volta's, asdf's and mise's.
+/// Each is the real binary's folder, never a manager's shim: a shim needs the shell's
+/// environment to find its node, and a run passes only `PATH`.
+pub fn version_manager_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let nvm = home.join(".nvm/versions/node");
+    let default = std::fs::read_to_string(home.join(".nvm/alias/default")).ok();
+    if let Some(version) = pick(&nvm, default.as_deref().map(str::trim)) {
+        dirs.push(nvm.join(version).join("bin"));
+    }
+    for fnm in [
+        home.join("Library/Application Support/fnm"),
+        home.join(".local/share/fnm"),
+    ] {
+        let default = fnm.join("aliases/default/bin");
+        let versions = fnm.join("node-versions");
+        if default.is_dir() {
+            dirs.push(default);
+        } else if let Some(version) = pick(&versions, None) {
+            dirs.push(versions.join(version).join("installation/bin"));
+        }
+    }
+    for installs in [
+        ".volta/tools/image/node",
+        ".asdf/installs/nodejs",
+        ".local/share/mise/installs/node",
+    ] {
+        let installs = home.join(installs);
+        if let Some(version) = pick(&installs, None) {
+            dirs.push(installs.join(version).join("bin"));
+        }
+    }
+    dirs
+}
+
+/// The version folder in `dir` that `wanted` names (a version, or its first numbers, with or
+/// without a `v`), the newest of those it names; else the newest of all. An alias that names
+/// no number (`lts/*`, `node`) is the newest too.
+fn pick(dir: &Path, wanted: Option<&str>) -> Option<OsString> {
+    let mut versions: Vec<((u64, u64, u64), OsString)> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name();
+            Some((node_version(name.to_str()?)?, name))
+        })
+        .collect();
+    versions.sort();
+    let wanted = wanted
+        .map(|wanted| wanted.trim_start_matches('v'))
+        .filter(|wanted| wanted.starts_with(|c: char| c.is_ascii_digit()));
+    let named = |name: &OsString| {
+        let name = name.to_str().unwrap_or("").trim_start_matches('v');
+        wanted.is_some_and(|wanted| name == wanted || name.starts_with(&format!("{wanted}.")))
+    };
+    versions
+        .iter()
+        .rev()
+        .find(|(_, name)| named(name))
+        .or(versions.last())
+        .map(|(_, name)| name.clone())
+}
+
+/// A version folder's name as numbers: `v22.11.0`, `22.11.0` or `22`.
+fn node_version(name: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = name.trim_start_matches('v').split('.');
+    let mut next = || parts.next().map_or(Some(0), |part| part.parse().ok());
+    let version = (next()?, next()?, next()?);
+    name.starts_with(|c: char| c == 'v' || c.is_ascii_digit())
+        .then_some(version)
 }
 
 /// The first file named one of `names` that can run, in each absolute directory of `path` in
@@ -1653,5 +1740,72 @@ mod tests {
         let repo = root.join("repo");
         assert_eq!(find_tool(NODE_NAMES, Some(&path), &[], Some(&repo)), None);
         assert!(find_tool(NODE_NAMES, Some(&path), &[], None).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_is_found_where_each_version_manager_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        // Nothing installed: no folder.
+        assert!(version_manager_dirs(&home).is_empty());
+        for version in ["v18.20.4", "v20.9.0", "v20.18.1", "v22.11.0", "notes"] {
+            std::fs::create_dir_all(home.join(".nvm/versions/node").join(version)).unwrap();
+        }
+        let nvm = |version: &str| home.join(".nvm/versions/node").join(version).join("bin");
+        // No default: the newest.
+        assert_eq!(version_manager_dirs(&home), [nvm("v22.11.0")]);
+        std::fs::create_dir_all(home.join(".nvm/alias")).unwrap();
+        for (alias, chosen) in [
+            ("20\n", "v20.18.1"),
+            ("v18.20.4", "v18.20.4"),
+            ("lts/*", "v22.11.0"),
+            ("16", "v22.11.0"),
+        ] {
+            std::fs::write(home.join(".nvm/alias/default"), alias).unwrap();
+            assert_eq!(version_manager_dirs(&home), [nvm(chosen)], "{alias:?}");
+        }
+        std::fs::remove_dir_all(home.join(".nvm")).unwrap();
+
+        // fnm's default, else its newest; Volta's, asdf's and mise's newest.
+        let fnm = home.join("Library/Application Support/fnm");
+        std::fs::create_dir_all(fnm.join("node-versions/v20.1.0/installation/bin")).unwrap();
+        std::fs::create_dir_all(fnm.join("node-versions/v21.0.0/installation/bin")).unwrap();
+        let xdg = home.join(".local/share/fnm");
+        std::fs::create_dir_all(xdg.join("aliases/default/bin")).unwrap();
+        for installs in [
+            ".volta/tools/image/node/20.0.0",
+            ".volta/tools/image/node/9.9.9",
+            ".asdf/installs/nodejs/22.1.0",
+            ".local/share/mise/installs/node/22",
+            ".local/share/mise/installs/node/latest",
+        ] {
+            std::fs::create_dir_all(home.join(installs)).unwrap();
+        }
+        assert_eq!(
+            version_manager_dirs(&home),
+            [
+                fnm.join("node-versions/v21.0.0/installation/bin"),
+                xdg.join("aliases/default/bin"),
+                home.join(".volta/tools/image/node/20.0.0/bin"),
+                home.join(".asdf/installs/nodejs/22.1.0/bin"),
+                home.join(".local/share/mise/installs/node/22/bin"),
+            ]
+        );
+        // Found by the lookup after PATH and the package managers' folders.
+        tool_file(&home.join(".asdf/installs/nodejs/22.1.0/bin/node"), true);
+        let found = find_tool(
+            NODE_NAMES,
+            None,
+            &version_manager_dirs(&home)
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>(),
+            None,
+        );
+        assert_eq!(
+            found.map(|tool| tool.path().to_path_buf()),
+            Some(home.join(".asdf/installs/nodejs/22.1.0/bin/node"))
+        );
     }
 }

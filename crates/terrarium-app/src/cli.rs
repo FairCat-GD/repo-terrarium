@@ -25,6 +25,12 @@ pub enum Command {
     /// `--probe-readme`: print the Windows probe's tester instructions, which
     /// `cargo xtask probe-zip` puts in the zip beside the exe.
     ProbeReadme,
+    /// `--package-copy`: print the words the installers carry, which `cargo xtask package`
+    /// puts in them.
+    PackageCopy,
+    /// `--quit`: ask the running app to quit, and wait for it; the Windows installer's first
+    /// step, and its uninstaller's.
+    Quit,
     /// `replay <path> --dump`: replay a repository with no window and print truth's canonical
     /// dump; `--gif <file>`: write its whole history as a time-lapse instead.
     Replay(ReplayArgs),
@@ -162,6 +168,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, UsageE
         Command::Demo
     } else if first == "--probe-readme" {
         Command::ProbeReadme
+    } else if first == "--package-copy" {
+        Command::PackageCopy
+    } else if first == "--quit" {
+        Command::Quit
     } else if first == "replay" {
         return parse_replay(&mut args);
     } else if first == "discover" {
@@ -481,6 +491,14 @@ mod tests {
     fn the_probe_readme_is_a_command_of_its_own() {
         assert_eq!(parse_strs(&["--probe-readme"]), Ok(Command::ProbeReadme));
         assert_eq!(parse_strs(&["--probe-readme", "x"]), unexpected("x"));
+    }
+
+    #[test]
+    fn the_installers_words_and_quitting_are_commands_of_their_own() {
+        assert_eq!(parse_strs(&["--package-copy"]), Ok(Command::PackageCopy));
+        assert_eq!(parse_strs(&["--package-copy", "x"]), unexpected("x"));
+        assert_eq!(parse_strs(&["--quit"]), Ok(Command::Quit));
+        assert_eq!(parse_strs(&["--quit", "--demo"]), unexpected("--demo"));
     }
 
     #[test]

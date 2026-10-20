@@ -1,54 +1,31 @@
-//! `cargo xtask size` (N-08): the release binary of each platform, built as it ships, stays
-//! under 25 MB with the tier-one grammars in it. A fat-LTO build takes minutes, so it is run like
-//! `bench`, when a change could move the size (a dependency, a grammar, the art, a profile), not
-//! as a `verify` stage. On the Mac it measures the Mac's
-//! binary and the Windows exe cross-built as `probe-zip` builds it; on Windows, the one it builds.
+//! `cargo xtask size` (N-08): each release binary, built as the installers ship it
+//! (`release`), stays under 25 MB with the tier-one grammars in it. A fat-LTO build takes
+//! minutes, so it is run like `bench`, when a change could move the size (a dependency, a
+//! grammar, the art, a profile), not as a `verify` stage. On the Mac it measures both Macs'
+//! binaries and the Windows exe cross-built as the installer carries it; on Windows, the exe.
+//! `package` passes the same verdict on every binary it ships, which is how the release
+//! workflow runs it.
 
-use std::ffi::OsString;
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
-use crate::{probe_zip, sweep};
+use crate::package;
+use crate::release::Target;
 
 /// N-08's "< 25 MB", read in decimal megabytes, the stricter reading.
 const BUDGET_BYTES: u64 = 25_000_000;
 
 pub fn run(root: &Path) -> ExitCode {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let built = Command::new(&cargo)
-        .args(probe_zip::BUILD)
-        .current_dir(root)
-        .status();
-    if !built.is_ok_and(|status| status.success()) {
-        println!("size: the release build failed");
-        return ExitCode::FAILURE;
-    }
-    let mut binaries = vec![
-        sweep::target_dir(root)
-            .join("release")
-            .join(format!("repo-terrarium{}", std::env::consts::EXE_SUFFIX)),
-    ];
-    if !cfg!(windows) {
-        match probe_zip::build_windows(root) {
-            Ok(exe) => binaries.push(exe),
-            Err(err) => {
-                println!("size: {err}");
-                return ExitCode::FAILURE;
-            }
-        }
+    let mut targets = Target::host_defaults();
+    if !targets.contains(&Target::Windows) {
+        targets.push(Target::Windows);
     }
     let mut all_within = true;
-    for binary in binaries {
-        let bytes = match std::fs::metadata(&binary) {
-            Ok(metadata) => metadata.len(),
-            Err(err) => {
-                println!("size: {}: {err}", binary.display());
-                return ExitCode::FAILURE;
-            }
-        };
-        let (within, said) = verdict(bytes);
-        println!("size: {} {said}", binary.display());
-        all_within &= within;
+    for target in targets {
+        if let Err(err) = package::binary(root, target) {
+            println!("size: {err}");
+            all_within = false;
+        }
     }
     if all_within {
         ExitCode::SUCCESS
@@ -58,7 +35,7 @@ pub fn run(root: &Path) -> ExitCode {
 }
 
 /// Whether `bytes` is within the budget, and the line that says so.
-fn verdict(bytes: u64) -> (bool, String) {
+pub fn verdict(bytes: u64) -> (bool, String) {
     let within = bytes < BUDGET_BYTES;
     let megabytes = bytes / 10_000;
     let said = format!(

@@ -1,0 +1,102 @@
+# The release: the Mac's DMGs (Apple silicon and Intel) and the Windows x64 installer, drafted
+# as a GitHub Release. It runs only when started by hand (Actions > release > Run workflow); no
+# push or pull request starts it, so the repository still has no CI, and `cargo xtask verify`,
+# run before every commit, stays the gate. The draft's tag, v<version>, is made when the release
+# is published.
+#
+# Every step that builds or checks is an xtask command, so the same work runs on the Mac.
+
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install
+      - name: Package both Macs
+        run: cargo xtask package
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos
+          path: target/package/*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install
+      - name: Package
+        run: cargo xtask package
+      # Installs, runs and uninstalls on this machine, in a data folder of its own.
+      - name: Install test
+        run: cargo xtask install-test
+      # N-07 on Windows. Its outcome is recorded; a difference is a truth finding, not a reason
+      # to hold the installers back.
+      - name: Golden replay
+        continue-on-error: true
+        run: cargo xtask golden --check
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows
+          path: target/package/*-setup.exe
+          if-no-files-found: error
+
+  release:
+    name: Draft the release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd dist
+          setup=(repo-terrarium-*-windows-x64-setup.exe)
+          version=${setup[0]#repo-terrarium-}
+          version=${version%-windows-x64-setup.exe}
+          for file in "repo-terrarium-$version-macos-arm64.dmg" "repo-terrarium-$version-macos-x64.dmg"; do
+            test -f "$file" || { echo "missing $file"; exit 1; }
+          done
+          test "$(ls | wc -l)" -eq 3 || { ls; echo "expected three installers"; exit 1; }
+          sha256sum -- * > SHA256SUMS
+          tag="v$version"
+          # A draft of this version from an earlier run takes the new files; a published one is
+          # never touched.
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2> /dev/null); then
+            test "$draft" = true || { echo "$tag is already published"; exit 1; }
+            gh release upload "$tag" --clobber -- *
+          else
+            gh release create "$tag" --draft --target "$SHA" --title "$version" --notes "" -- *
+          fi

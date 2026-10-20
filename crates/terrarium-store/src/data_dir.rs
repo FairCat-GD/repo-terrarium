@@ -10,7 +10,7 @@ use terrarium_truth::RepoSeed;
 
 use crate::identifiers::{
     BUNDLE_ID, DATA_DIR_ENV, DATABASE_FILE, INSTANCE_LOCK_FILE, LOCAL_TESTS_DIR, LOGS_DIR,
-    REQUESTS_DIR, SHOW_SETTINGS_REQUEST,
+    QUIT_REQUEST, REQUESTS_DIR, SHOW_SETTINGS_REQUEST,
 };
 
 /// A data directory: the database, the local test results, the running app's lock and the
@@ -101,6 +101,11 @@ impl DataDir {
     pub fn show_settings_request(&self) -> PathBuf {
         self.requests_dir().join(SHOW_SETTINGS_REQUEST)
     }
+
+    /// The request to quit.
+    pub fn quit_request(&self) -> PathBuf {
+        self.requests_dir().join(QUIT_REQUEST)
+    }
 }
 
 /// This crate's own tests, or any test nextest runs: nextest sets `NEXTEST` in every test
@@ -169,6 +174,7 @@ mod tests {
             data.show_settings_request(),
             dir.join("requests").join("show-settings")
         );
+        assert_eq!(data.quit_request(), dir.join("requests").join("quit"));
     }
 
     #[test]
