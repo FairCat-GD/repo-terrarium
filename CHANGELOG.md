@@ -15,7 +15,7 @@ same history grows a fuller world (simulation version 10).
 
 - **Three times the plants:** a repository's terrarium holds 18 plants at the least and 72 at
   the most, three times as many as before, and weeds follow, 6 to 24. Its twelve trees stand
-  in pairs, in groves and alone. The simulation version is now 10: the history is replayed once
+  in pairs, in groves and alone, side by side with their own kind when the wood is full. The simulation version is now 10: the history is replayed once
   at the next launch.
 - **Every plant the terrarium grows is drawn:** the strip has room for more than it ever grows,
   where a large terrarium's youngest plants used to go undrawn.
@@ -25,6 +25,8 @@ same history grows a fuller world (simulation version 10).
   the moon and the stars keep their places.
 - **More ground cover is drawn:** up to 24 pieces of litter, 18 of fungus and 18 decorative
   tufts, for the larger terrarium's fall.
+- **The pinning probe reports the pointer across the whole strip,** where the ground now
+  stands; only outside the strip is reported as outside.
 
 ## [0.30.0] - 2026-10-20
 

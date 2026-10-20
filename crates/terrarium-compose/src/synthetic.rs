@@ -42,7 +42,8 @@ const THRIVING_FROM: u8 = 60;
 const ALIVE_FROM: u8 = 35;
 /// Soil below which weeds take free slots.
 const WEEDS_BELOW: u8 = 45;
-/// The most weeds: a third of the plant capacity, at most 24, as truth's.
+/// The most weeds the poorest soil grows here: 18, under truth's most of 24 (a third of its
+/// plant capacity), so plants still stand among them.
 const MAX_WEEDS: u32 = 18;
 /// The most litter: as much as the composer draws.
 const MAX_LITTER: u32 = 24;

@@ -75,6 +75,10 @@ const HALF_RESTYLE: u32 = RESTYLE_MS / 2;
 /// [`sway::GUST_EVERY`] motion turns, and in dim mode one turn in [`DIM_EVERY`] moves. Once a
 /// turn's gust is over, the plant's next is that many turns on.
 const MOTION_AHEAD: u64 = sway::GUST_EVERY * DIM_EVERY;
+/// How many turns past the running one a resident's next move is looked for: five motion
+/// turns, dim mode's four turns to each. Building a turn's plans is the costly part of the
+/// search, so the gusts' longer horizon is searched without them.
+const RESIDENTS_AHEAD: u64 = 5 * DIM_EVERY;
 const FRAME_WIDTH: i32 = NATIVE_WIDTH.cast_signed();
 const FRAME_HEIGHT: i32 = NATIVE_HEIGHT.cast_signed();
 const GROUND: i32 = GROUND_Y.cast_signed();
@@ -1102,24 +1106,26 @@ impl Composer {
                     }
                 }
             }
-            let end = turn_start(w + 1);
-            // A resident that has faded out is drawn no more, though it stays until the next
-            // update prunes it, so its routine's frames change nothing.
-            let shown_at = |key: &(u32, u8), moment: Millis| {
-                self.residents.get(key).is_some_and(|shown| {
-                    shown.opacity.target() == SHOWN || moment < shown.opacity.end()
-                })
-            };
-            for (key, (plan, _)) in &self.resident_plans(art, table, w) {
-                next.take(
-                    plan_next(&art.catalog, table, plan, now, start)
-                        .filter(|&moment| moment < end && shown_at(key, moment)),
-                );
-            }
-            // A turn to come begins with each resident where its plan puts it, which need not
-            // be where the turn before left it: another place, facing or routine.
-            if start > now && self.residents_change_at(art, table, start) {
-                next.take(Some(start));
+            if w <= running + RESIDENTS_AHEAD && !self.residents.is_empty() {
+                let end = turn_start(w + 1);
+                // A resident that has faded out is drawn no more, though it stays until the
+                // next update prunes it, so its routine's frames change nothing.
+                let shown_at = |key: &(u32, u8), moment: Millis| {
+                    self.residents.get(key).is_some_and(|shown| {
+                        shown.opacity.target() == SHOWN || moment < shown.opacity.end()
+                    })
+                };
+                for (key, (plan, _)) in &self.resident_plans(art, table, w) {
+                    next.take(
+                        plan_next(&art.catalog, table, plan, now, start)
+                            .filter(|&moment| moment < end && shown_at(key, moment)),
+                    );
+                }
+                // A turn to come begins with each resident where its plan puts it, which need
+                // not be where the turn before left it: another place, facing or routine.
+                if start > now && self.residents_change_at(art, table, start) {
+                    next.take(Some(start));
+                }
             }
             if next.0.is_some() {
                 return next.0;

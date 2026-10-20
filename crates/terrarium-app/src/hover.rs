@@ -1,12 +1,13 @@
-//! The pointer over the strip, in native pixels: the scene's, as the probe records it, and the
-//! viewport's, which the soil panel and the hover labels are hit-tested in.
+//! The pointer over the strip, in native pixels: as the probe records it, and as the soil panel
+//! and the hover labels are hit-tested in, both in the viewport's columns.
 
 use serde::Serialize;
-use terrarium_compose::frame::{NATIVE_HEIGHT, NATIVE_WIDTH};
+use terrarium_compose::frame::NATIVE_HEIGHT;
 use terrarium_compose::scale::StripScale;
 
-/// Where the pointer is, in the scene's own 640×74 pixels. A wider viewport's columns either
-/// side of the scene, and any letterbox, are not the scene.
+/// Where the pointer is, in the strip's native pixels: the viewport's columns, which the
+/// ground spreads across, so a point names what stands under the pointer at any width. Only the
+/// letterbox, and anything outside the strip, is not the scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativePoint {
@@ -14,27 +15,18 @@ pub enum NativePoint {
         x: u32,
         y: u32,
     },
-    /// Beside the scene: the viewport's columns either side of it, or the letterbox.
+    /// Beside the scene: the letterbox, or outside the strip.
     Padding,
 }
 
-/// Maps a position in the window's physical pixels to the native scene.
+/// Maps a position in the window's physical pixels to the strip's native pixels.
 pub fn to_native(x: f64, y: f64, scale: &StripScale) -> NativePoint {
-    let (Some(x), Some(y)) = (whole_pixel(x), whole_pixel(y)) else {
-        return NativePoint::Padding;
-    };
-    let Some(image_x) = x.checked_sub(scale.image_x) else {
-        return NativePoint::Padding;
-    };
-    let inset = u32::try_from(scale.viewport().inset()).unwrap_or(0);
-    let Some(x) = (image_x / scale.scale).checked_sub(inset) else {
-        return NativePoint::Padding;
-    };
-    let y = y / scale.scale;
-    if x < NATIVE_WIDTH && y < NATIVE_HEIGHT {
-        NativePoint::Scene { x, y }
-    } else {
-        NativePoint::Padding
+    match to_viewport(x, y, scale) {
+        Some(point) => NativePoint::Scene {
+            x: point.x.cast_unsigned(),
+            y: point.y.cast_unsigned(),
+        },
+        None => NativePoint::Padding,
     }
 }
 
@@ -112,34 +104,40 @@ mod tests {
     }
 
     #[test]
-    fn physical_pixels_map_to_native_pixels() {
+    fn physical_pixels_map_to_native_pixels_across_the_viewport() {
         let scale = scale();
         assert_eq!(
-            to_native(232.0, 0.0, &scale),
+            to_native(0.0, 0.0, &scale),
             NativePoint::Scene { x: 0, y: 0 }
         );
         assert_eq!(
             to_native(235.9, 3.9, &scale),
-            NativePoint::Scene { x: 0, y: 0 }
+            NativePoint::Scene { x: 58, y: 0 }
         );
         assert_eq!(
             to_native(236.0, 4.0, &scale),
-            NativePoint::Scene { x: 1, y: 1 }
+            NativePoint::Scene { x: 59, y: 1 }
         );
         assert_eq!(
-            to_native(2791.5, 295.5, &scale),
-            NativePoint::Scene { x: 639, y: 73 }
+            to_native(3023.5, 295.5, &scale),
+            NativePoint::Scene { x: 755, y: 73 }
         );
     }
 
     #[test]
-    fn the_viewport_beside_the_scene_and_the_outside_are_not_the_scene() {
+    fn only_outside_the_strip_is_not_the_scene() {
         let scale = scale();
-        assert_eq!(to_native(231.9, 10.0, &scale), NativePoint::Padding);
-        assert_eq!(to_native(2792.0, 10.0, &scale), NativePoint::Padding);
+        assert_eq!(to_native(3024.0, 10.0, &scale), NativePoint::Padding);
         assert_eq!(to_native(500.0, 296.0, &scale), NativePoint::Padding);
         assert_eq!(to_native(-0.5, 10.0, &scale), NativePoint::Padding);
         assert_eq!(to_native(500.0, f64::NAN, &scale), NativePoint::Padding);
+        // A screen wider than the widest viewport letterboxes either side.
+        let wide = StripScale::for_physical_width(1700, SizeStep::Full);
+        assert!(wide.image_x > 0);
+        assert_eq!(
+            to_native(f64::from(wide.image_x) - 1.0, 10.0, &wide),
+            NativePoint::Padding
+        );
     }
 
     #[test]
@@ -171,7 +169,7 @@ mod tests {
     fn a_move_without_an_enter_counts_as_inside() {
         let mut hover = HoverTracker::default();
         let point = hover.moved(300.0, 8.0, &scale());
-        assert_eq!(point, NativePoint::Scene { x: 17, y: 2 });
+        assert_eq!(point, NativePoint::Scene { x: 75, y: 2 });
         assert_eq!(hover.last(), Some(point));
         assert!(!hover.enter());
         assert!(hover.leave());

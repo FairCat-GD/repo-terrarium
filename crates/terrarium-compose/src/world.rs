@@ -663,6 +663,23 @@ mod tests {
     }
 
     #[test]
+    fn every_monument_stands_between_a_mid_and_a_near_cell_clear_of_the_trees() {
+        use crate::slots::{Band, PATTERN, band_cells};
+        for &k in &MONUMENT_BOUNDARIES {
+            let mut sides = [PATTERN[k - 1], PATTERN[k]];
+            sides.sort();
+            assert_eq!(sides, [Band::Mid, Band::Near], "boundary {k}");
+            // Three cells or more from any tree cell, either way.
+            let nearest = band_cells(Band::Far)
+                .iter()
+                .map(|&cell| (usize::from(cell) * 2 + 1).abs_diff(k * 2) / 2)
+                .min()
+                .unwrap();
+            assert!(nearest >= 3, "boundary {k}: a tree {nearest} cells away");
+        }
+    }
+
+    #[test]
     fn the_ground_spreads_with_the_width_and_stands_still_at_640() {
         let salt = salts().next().unwrap();
         let scene = WorldLayout::new(salt, table().world(), Viewport::SCENE);

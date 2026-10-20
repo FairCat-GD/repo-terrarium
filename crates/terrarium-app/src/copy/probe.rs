@@ -686,7 +686,7 @@ fn activity_text(activity: &Activity) -> String {
 fn point_text(point: NativePoint) -> String {
     match point {
         NativePoint::Scene { x, y } => format!("native ({x}, {y})"),
-        NativePoint::Padding => "beside the scene".to_owned(),
+        NativePoint::Padding => "outside the strip".to_owned(),
     }
 }
 

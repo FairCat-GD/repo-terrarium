@@ -7,10 +7,12 @@
 //! - **Bands.** A plant stands in a cell of its species' band.
 //! - **Kept.** A plant stays in its cell for as long as truth keeps its id and species. Nothing
 //!   ever pushes it out, so a plant never jumps.
-//! - **No neighbours alike.** Neighbouring cells of a band never hold one species. Placement
-//!   checks it, and a removal can never break it.
+//! - **No neighbours alike.** Neighbouring cells of the mid and near bands never hold one
+//!   species. Placement checks it, and a removal can never break it.
 //! - **Trees.** Each third has four tree cells, standing in a pair, a grove or alone, so a
-//!   third holds at most four mature trees, and a tree matures where it stands.
+//!   third holds at most four mature trees, and a tree matures where it stands. A tree takes a
+//!   cell beside its own species only when no other is free, as a wood of one kind grows, so
+//!   every tree truth grows is drawn whichever of its two species the seeds favour.
 //! - **Ceiling.** At most [`CEILING`] plants are placed, 70% of the cells, which is more than
 //!   truth ever grows. Were it not, a terrarium would grow taller and fuller rather than into
 //!   more sprites: the waiting plants are placed mature first, and the rest are not drawn,
@@ -244,16 +246,22 @@ pub fn assign_spots(
     spots
 }
 
-/// The first acceptable cell of the band, probing from the plant's preferred one.
+/// The first acceptable cell of the band, probing from the plant's preferred one: one beside
+/// no plant of its species, or for a tree, failing that, any free one.
 fn free_cell(cells: &[Option<PlantSpecies>; CELLS], band: Band, view: &PlantView) -> Option<u8> {
     let list = band_cells(band);
     let n = list.len();
     let start = usize::from(view.order) * stride(n) % n.max(1);
-    (0..n).map(|k| (start + k) % n).find_map(|i| {
-        let cell = list[i];
-        let free = cells[usize::from(cell)].is_none();
-        (free && !beside(cells, list, i, view.species)).then_some(cell)
-    })
+    let probe = || (0..n).map(|k| (start + k) % n);
+    let free = |i: usize| cells[usize::from(list[i])].is_none();
+    probe()
+        .find(|&i| free(i) && !beside(cells, list, i, view.species))
+        .or_else(|| {
+            (band == Band::Far)
+                .then(|| probe().find(|&i| free(i)))
+                .flatten()
+        })
+        .map(|i| list[i])
 }
 
 /// Whether a band neighbour of the band's `i`-th cell holds `species`.
@@ -427,21 +435,68 @@ mod tests {
     }
 
     #[test]
-    fn a_monoculture_never_stands_side_by_side() {
-        let oaks = (0..20)
-            .map(|i| view(i, PlantSpecies::Oak, GrowthStage::Mature, 0))
+    fn a_monoculture_never_stands_side_by_side_but_a_wood_of_one_kind_fills_its_band() {
+        let ferns = (0..60)
+            .map(|i| view(i, PlantSpecies::Fern, GrowthStage::Mature, 0))
             .collect();
-        let placement = fresh(&scene(PresentationState::Thriving, oaks));
+        let placement = fresh(&scene(PresentationState::Thriving, ferns));
         let cells: Vec<u8> = placement.plants.values().map(|p| p.cell).collect();
-        assert_eq!(cells.len(), 6, "{cells:?}");
-        let far = band_cells(Band::Far);
-        for pair in far.windows(2) {
+        let mid = band_cells(Band::Mid);
+        assert_eq!(cells.len(), mid.len().div_ceil(2), "{cells:?}");
+        for pair in mid.windows(2) {
             assert!(
                 !(cells.contains(&pair[0]) && cells.contains(&pair[1])),
                 "{cells:?}"
             );
         }
-        assert_eq!(placement.occupied(), FLOOR);
+        // Trees of one kind stand side by side once nothing else is free.
+        let oaks = (0..20)
+            .map(|i| view(i, PlantSpecies::Oak, GrowthStage::Mature, 0))
+            .collect();
+        let placement = fresh(&scene(PresentationState::Thriving, oaks));
+        assert_eq!(placement.plants.len(), band_cells(Band::Far).len());
+    }
+
+    #[test]
+    fn every_tree_is_placed_whichever_species_the_seeds_favour() {
+        // Truth's twelve tree slots, its two tree species in any split, and the rest of the
+        // terrarium at its fullest.
+        for oaks in 0..=12_u16 {
+            let mut plants: Vec<PlantView> = (0..12_u16)
+                .map(|i| {
+                    let species = if i < oaks {
+                        PlantSpecies::Oak
+                    } else {
+                        PlantSpecies::Birch
+                    };
+                    view(u32::from(i), species, GrowthStage::Mature, 6 * i + 2)
+                })
+                .collect();
+            let herbs = [
+                PlantSpecies::Fern,
+                PlantSpecies::Reed,
+                PlantSpecies::Foxglove,
+                PlantSpecies::Clover,
+                PlantSpecies::Thistle,
+                PlantSpecies::MossMound,
+            ];
+            plants.extend((12..72_u16).map(|i| {
+                view(
+                    u32::from(i),
+                    herbs[usize::from(i) % 6],
+                    GrowthStage::Young,
+                    i,
+                )
+            }));
+            let placement = fresh(&scene(PresentationState::Thriving, plants));
+            let trees = placement
+                .plants
+                .values()
+                .filter(|p| PATTERN[usize::from(p.cell)] == Band::Far)
+                .count();
+            assert_eq!(trees, 12, "{oaks} oaks");
+            assert_eq!(placement.plants.len(), 72, "{oaks} oaks");
+        }
     }
 
     #[test]

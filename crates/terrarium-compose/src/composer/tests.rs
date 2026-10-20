@@ -918,10 +918,16 @@ fn wind_sways_at_most_six_plants_their_foliage_and_blooms_only() {
             "the first turn is still"
         );
         let mut seen = BTreeSet::new();
+        // The plants leaning at any moment of each turn: at most six in all.
+        let mut by_turn: BTreeMap<u64, BTreeSet<Subject>> = BTreeMap::new();
         // Every cell gusts once in a gust's cycle of turns, each pose held 300 ms at the least.
         let cycle = 24_000 * (1 + sway::GUST_EVERY);
         for ms in (24_000..cycle).step_by(150) {
             let (subjects, parts) = leaning(&composer, &table, Millis(ms));
+            by_turn
+                .entry(ms / 24_000)
+                .or_default()
+                .extend(subjects.iter().copied());
             assert!(subjects.len() <= sway::MOST_SWAYING);
             assert!(
                 parts.iter().all(|&part| part == 1 || part == 2),
@@ -947,6 +953,12 @@ fn wind_sways_at_most_six_plants_their_foliage_and_blooms_only() {
             .collect();
         assert!(living.len() > sway::MOST_SWAYING);
         assert_eq!(seen, living, "every living plant takes its turn");
+        for (turn, swayed) in by_turn {
+            assert!(
+                swayed.len() <= sway::MOST_SWAYING,
+                "turn {turn}: {swayed:?}"
+            );
+        }
     }
     thriving.wind = Wind::Calm;
     let mut composer = Composer::new(&table, preset::SALT);

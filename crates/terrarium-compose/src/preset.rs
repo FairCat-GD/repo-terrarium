@@ -512,12 +512,16 @@ mod tests {
             // Never more than truth's terrarium holds.
             assert!(plants.len() <= 72, "{name}");
         }
+        // And all twelve are drawn.
+        let table = ArtTable::new(&Art::embedded().catalog).unwrap();
+        let bands = crate::place::Bands::new(&table);
         for name in ["thriving", "mature", "dormant"] {
-            let trees = scene(name)
-                .unwrap()
+            let empty = crate::place::Placement::default();
+            let placement = crate::place::place(&empty, &scene(name).unwrap(), &bands);
+            let trees = placement
                 .plants
-                .iter()
-                .filter(|p| tree(p.species))
+                .values()
+                .filter(|p| tree(p.view.species))
                 .count();
             assert_eq!(trees, TREES, "{name}");
         }
