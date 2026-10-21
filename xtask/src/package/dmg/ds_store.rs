@@ -66,7 +66,8 @@ pub fn write(records: &[Record]) -> Result<Vec<u8>, String> {
     for record in &sorted {
         leaf.extend(encode(record));
     }
-    if leaf.len() > 1 << LEAF_BLOCK.1 {
+    // A reader trusts the page size `DSDB` states, so a node holds no more than a page.
+    if leaf.len() > usize::try_from(PAGE).unwrap_or(0) {
         return Err(format!(
             "the window's records take {} bytes, more than one leaf holds",
             leaf.len()
@@ -409,11 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn a_window_too_big_for_one_leaf_or_a_damaged_file_is_refused() {
+    fn a_window_bigger_than_a_page_or_a_damaged_file_is_refused() {
         let big = vec![Record {
             name: ".".to_owned(),
             code: *b"icvp",
-            value: Value::Blob(vec![0; 9000]),
+            value: Value::Blob(vec![0; 5000]),
         }];
         assert!(write(&big).is_err());
         let mut file = write(&records()).unwrap();

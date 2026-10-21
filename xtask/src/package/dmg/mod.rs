@@ -73,8 +73,19 @@ pub fn image(
     work: &Path,
 ) -> Result<(), String> {
     let writable = work.join("writable.dmg");
-    let _ = fs::remove_file(&writable);
     let _ = fs::remove_file(dmg);
+    let made = make(staging, volume, app, dmg, &writable);
+    let _ = fs::remove_file(&writable);
+    made
+}
+
+fn make(
+    staging: &Path,
+    volume: &str,
+    app: &str,
+    dmg: &Path,
+    writable: &Path,
+) -> Result<(), String> {
     let kilobytes = (folder_size(staging)? + ROOM) / 1024;
     hdiutil(&[
         "create".as_ref(),
@@ -89,9 +100,10 @@ pub fn image(
         "UDRW".as_ref(),
         "-size".as_ref(),
         format!("{kilobytes}k").as_ref(),
+        "-ov".as_ref(),
         writable.as_os_str(),
     ])?;
-    let mounted = Mounted::attach(&writable, true)?;
+    let mounted = Mounted::attach(writable, true)?;
     let mount = mounted.path();
     let records = window(app, &picture_facts(mount, volume)?)?;
     let store = mount.join(DS_STORE);
@@ -110,10 +122,10 @@ pub fn image(
         writable.as_os_str(),
         "-format".as_ref(),
         "UDZO".as_ref(),
+        "-ov".as_ref(),
         "-o".as_ref(),
         dmg.as_os_str(),
-    ])?;
-    fs::remove_file(&writable).map_err(|err| format!("{}: {err}", writable.display()))
+    ])
 }
 
 /// Mounts `dmg` read-only and checks what a person who opens it gets; a line for each check,
@@ -121,14 +133,16 @@ pub fn image(
 pub fn check(dmg: &Path, volume: &str, app: &str) -> Result<Vec<String>, String> {
     let mounted = Mounted::attach(dmg, false)?;
     let lines = check_mounted(mounted.path(), volume, app);
-    mounted.detach()?;
-    lines
+    let detached = mounted.detach();
+    let lines = lines?;
+    detached?;
+    Ok(lines)
 }
 
 fn check_mounted(mount: &Path, volume: &str, app: &str) -> Result<Vec<String>, String> {
     let mut lines = vec![format!("{volume}:")];
 
-    let named = output(
+    let named = run(
         Command::new("diskutil").arg("info").arg(mount),
         "diskutil info",
     )?;
@@ -167,7 +181,7 @@ fn check_mounted(mount: &Path, volume: &str, app: &str) -> Result<Vec<String>, S
     )?;
     lines.push("  the app's seal holds".to_owned());
 
-    let tiff = output(
+    let tiff = run(
         Command::new("tiffutil")
             .arg("-info")
             .arg(mount.join(PICTURE)),
@@ -189,7 +203,7 @@ fn check_mounted(mount: &Path, volume: &str, app: &str) -> Result<Vec<String>, S
     }
     lines.push(format!("  its picture at {width}×{height} and at 2×"));
 
-    let info = output(
+    let info = run(
         Command::new("xattr")
             .args(["-px", "com.apple.FinderInfo"])
             .arg(mount),
@@ -370,13 +384,16 @@ impl Mounted {
         self.at.path()
     }
 
+    /// Detaches the volume; when that fails, dropping it still forces it off, before its
+    /// temporary folder, which must never be emptied while a volume is mounted on it.
     fn detach(mut self) -> Result<(), String> {
-        self.attached = false;
         hdiutil(&[
             "detach".as_ref(),
             "-quiet".as_ref(),
             self.at.path().as_os_str(),
-        ])
+        ])?;
+        self.attached = false;
+        Ok(())
     }
 }
 
@@ -412,19 +429,6 @@ fn hdiutil(args: &[&OsStr]) -> Result<(), String> {
         .first()
         .map_or_else(String::new, |a| a.to_string_lossy().into_owned());
     Err(format!("hdiutil {verb} failed: {last}"))
-}
-
-/// What `command` prints, when it succeeds.
-fn output(command: &mut Command, what: &str) -> Result<String, String> {
-    let out = command.output().map_err(|err| format!("{what}: {err}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(format!(
-            "{what} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ))
-    }
 }
 
 #[cfg(test)]

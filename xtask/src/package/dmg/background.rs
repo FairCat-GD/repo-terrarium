@@ -67,6 +67,7 @@ pub fn tiff(picture: &Picture, out: &Path) -> Result<(), String> {
             .arg(out),
         "tiffutil -cathidpicheck",
     )
+    .map(drop)
 }
 
 #[cfg(test)]

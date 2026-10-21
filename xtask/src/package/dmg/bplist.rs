@@ -173,16 +173,24 @@ mod tests {
             .unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
-        let xml = String::from_utf8(out.stdout).unwrap();
+        // plutil's spacing and line breaks are its own; only what it read is checked.
+        let xml: String = String::from_utf8(out.stdout)
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        let base64 = "BwcH".repeat(100);
         for part in [
-            "<key>arrangeBy</key>\n\t<string>none</string>",
-            "<key>iconSize</key>\n\t<real>128</real>",
-            "<key>labelOnBottom</key>\n\t<true/>",
-            "<key>name</key>\n\t<string>Terrário</string>",
-            "<key>viewOptionsVersion</key>\n\t<integer>1</integer>",
-            "<key>backgroundImageAlias</key>\n\t<data>\n\tBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH",
+            "<key>arrangeBy</key><string>none</string>",
+            "<key>labelOnBottom</key><true/>",
+            "<key>name</key><string>Terrário</string>",
+            "<key>viewOptionsVersion</key><integer>1</integer>",
+            &format!("<key>backgroundImageAlias</key><data>{base64}</data>"),
         ] {
             assert!(xml.contains(part), "{part} is not in\n{xml}");
         }
+        assert!(
+            xml.contains("<key>iconSize</key><real>128</real>")
+                || xml.contains("<key>iconSize</key><real>128.0</real>")
+        );
     }
 }

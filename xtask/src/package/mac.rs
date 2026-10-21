@@ -53,8 +53,9 @@ pub fn package(
     ));
     // The volume is named with the version, so two DMGs open at once are told apart.
     let volume = format!("{} {}", contents.words.product, contents.version);
-    dmg::image(&staging, &volume, &app_name, &image, &work)?;
+    let made = dmg::image(&staging, &volume, &app_name, &image, &work);
     let _ = fs::remove_dir_all(&staging);
+    made?;
     for line in dmg::check(&image, &volume, &app_name)? {
         println!("{line}");
     }
@@ -124,10 +125,11 @@ fn symlink(_: &str, link: &Path) -> Result<(), String> {
     Err(format!("{} is made on a Mac", link.display()))
 }
 
-pub(super) fn run(command: &mut Command, what: &str) -> Result<(), String> {
+/// Runs `command`; what it printed, when it succeeds.
+pub(super) fn run(command: &mut Command, what: &str) -> Result<String, String> {
     let out = command.output().map_err(|err| format!("{what}: {err}"))?;
     if out.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         Err(format!(
             "{what} failed: {}{}",
