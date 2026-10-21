@@ -5,6 +5,25 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-10-21
+
+A new Mac installer. Opening the DMG shows a window of its own picture, with the app on the left
+and the Applications folder on the right, to drag one onto the other. Repo Terrarium is for
+Apple silicon Macs; the Intel DMG is gone.
+
+### Changed
+
+- **The DMG opens on a window to install from:** a picture of a woodland verge, the app and
+  Applications either side of its arrow, and nothing else of Finder's. The disk is named with
+  the version, "Repo Terrarium 0.31.1", and shows the app's icon.
+- **The app's icon is an oak,** drawn at each size on its own, in place of the placeholder.
+  Windows also gets its 24-pixel size.
+
+### Removed
+
+- **The DMG for Intel Macs.** Repo Terrarium installs on Macs with Apple silicon, macOS 13 and
+  later.
+
 ## [0.31.0] - 2026-10-20
 
 Packaging. Repo Terrarium installs: a DMG for Apple silicon Macs, one for Intel Macs, and a

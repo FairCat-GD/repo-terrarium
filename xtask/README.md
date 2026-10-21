@@ -314,10 +314,19 @@ one-time command. On Windows the target is built with Microsoft's own tools.
 (`.github/workflows/release.yml`), started by hand, runs it on a Mac and on Windows and drafts a
 GitHub Release with what it makes.
 
-- **On a Mac:** `repo-terrarium-<version>-macos-arm64.dmg` and `…-macos-x64.dmg`. Each holds
-  `Repo Terrarium.app`: its `Info.plist` (the bundle id, macOS 13, no Dock icon, and the reason
-  macOS shows before the app reads a guarded folder), the binary, the icon and `LICENSES.txt`,
-  sealed with an ad-hoc signature, beside a link to `/Applications`.
+- **On a Mac:** `repo-terrarium-<version>-macos-arm64.dmg`, for Apple silicon (Intel Macs are
+  not supported). It holds `Repo Terrarium.app`: its `Info.plist` (the bundle id, macOS 13, no
+  Dock icon, and the reason macOS shows before the app reads a guarded folder), the binary, the
+  icon and `LICENSES.txt`, sealed with an ad-hoc signature, beside a link to `/Applications`.
+- **The DMG's window:** opened, the DMG shows its picture (`packaging/dmg/README.md`) with the
+  app on the left and Applications on the right, 80-point icons and no toolbar, and the volume,
+  named `Repo Terrarium <version>`, shows the app's icon. The task writes the window's
+  `.DS_Store` itself, with the alias Finder follows to the picture, in a writable image it
+  mounts out of Finder's sight (`package/dmg/`), so nothing opens and the release workflow's
+  runner makes the same DMG. Once compressed, the DMG is mounted read-only and checked: what its
+  root holds, the app's seal, the picture at 1× and 2×, the volume's icon flag, and a
+  `.DS_Store` that reads back as the window this volume needs and names no folder of the build
+  machine.
 - **On Windows,** or on a Mac with `--windows`:
   `repo-terrarium-<version>-windows-x64-setup.exe`, a quiet per-user NSIS installer
   (`packaging/windows/installer.nsi`), compiled by NSIS's `makensis` (Homebrew's on a Mac).
@@ -356,7 +365,7 @@ above, in `target/probe/repo-terrarium-<version>-probe-windows-x64.zip` (under
 
 `cargo xtask size` builds and checks each binary as the release build above does, and fails
 unless each is under 25,000,000 bytes (N-08's "< 25 MB", read in decimal megabytes): on the Mac
-both Macs' binaries and the cross-built Windows exe; on Windows the exe. A fat-LTO build takes
+the Mac's binary and the cross-built Windows exe; on Windows the exe. A fat-LTO build takes
 minutes, so it runs like `bench`, when a change could move the size (a dependency, a grammar,
 the art, a profile), not as a `verify` stage. `package` passes the same verdict on every binary
 it ships.

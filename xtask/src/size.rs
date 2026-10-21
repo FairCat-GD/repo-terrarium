@@ -1,8 +1,8 @@
 //! `cargo xtask size` (N-08): each release binary, built as the installers ship it
 //! (`release`), stays under 25 MB with the tier-one grammars in it. A fat-LTO build takes
 //! minutes, so it is run like `bench`, when a change could move the size (a dependency, a
-//! grammar, the art, a profile), not as a `verify` stage. On the Mac it measures both Macs'
-//! binaries and the Windows exe cross-built as the installer carries it; on Windows, the exe.
+//! grammar, the art, a profile), not as a `verify` stage. On the Mac it measures the Mac's
+//! binary and the Windows exe cross-built as the installer carries it; on Windows, the exe.
 //! `package` passes the same verdict on every binary it ships, which is how the release
 //! workflow runs it.
 

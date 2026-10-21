@@ -36,22 +36,20 @@ const MACOS_MINIMUM_PARTS: (u32, u32, u32) = (13, 0, 0);
 const CARGO_HOME_AS: &str = "/cargo";
 const ROOT_AS: &str = "/repo-terrarium";
 
-/// What the installers are built for: both Macs and Windows x64 (Windows on ARM runs the x64
-/// one under emulation).
+/// What the installers are built for: Apple silicon Macs and Windows x64 (Windows on ARM runs
+/// the x64 one under emulation). Intel Macs are not supported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    MacArm,
-    MacIntel,
+    Mac,
     Windows,
 }
 
 impl Target {
-    pub const ALL: [Target; 3] = [Target::MacArm, Target::MacIntel, Target::Windows];
+    pub const ALL: [Target; 2] = [Target::Mac, Target::Windows];
 
     pub fn triple(self) -> &'static str {
         match self {
-            Target::MacArm => "aarch64-apple-darwin",
-            Target::MacIntel => "x86_64-apple-darwin",
+            Target::Mac => "aarch64-apple-darwin",
             Target::Windows => windows::TARGET,
         }
     }
@@ -59,14 +57,13 @@ impl Target {
     /// How a package's file name names it.
     pub fn label(self) -> &'static str {
         match self {
-            Target::MacArm => "macos-arm64",
-            Target::MacIntel => "macos-x64",
+            Target::Mac => "macos-arm64",
             Target::Windows => "windows-x64",
         }
     }
 
     pub fn is_mac(self) -> bool {
-        matches!(self, Target::MacArm | Target::MacIntel)
+        self == Target::Mac
     }
 
     /// The executable's file name on this target.
@@ -84,10 +81,10 @@ impl Target {
             .find(|target| target.triple() == triple)
     }
 
-    /// What this machine builds unless told otherwise: a Mac both Macs, Windows itself.
+    /// What this machine builds unless told otherwise: each its own.
     pub fn host_defaults() -> Vec<Target> {
         if cfg!(target_os = "macos") {
-            vec![Target::MacArm, Target::MacIntel]
+            vec![Target::Mac]
         } else if cfg!(windows) {
             vec![Target::Windows]
         } else {
@@ -201,8 +198,7 @@ fn remap_flags(root: &Path, cargo_home: &Path) -> Vec<OsString> {
 /// The variable cc-rs reads the target's C flags from.
 fn c_flags_var(target: Target) -> &'static str {
     match target {
-        Target::MacArm => "CFLAGS_aarch64_apple_darwin",
-        Target::MacIntel => "CFLAGS_x86_64_apple_darwin",
+        Target::Mac => "CFLAGS_aarch64_apple_darwin",
         Target::Windows => "CFLAGS_x86_64_pc_windows_msvc",
     }
 }
@@ -332,6 +328,12 @@ pub const RT_GROUP_ICON: u16 = 14;
 pub const RT_VERSION: u16 = 16;
 pub const RT_MANIFEST: u16 = 24;
 
+/// The build machine's folders that `bytes` names, found as `check` finds them in a binary.
+pub fn machine_traces(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let machine = Machine::here()?;
+    Ok(traces(bytes, &[&machine.home, &machine.cargo_home], false))
+}
+
 /// Each of `folders` that `bytes` holds, as a path in either slash, in UTF-8 or UTF-16 (the
 /// Windows C runtime's `assert` keeps its file names wide); in any case of its letters when
 /// `any_case`, as Windows reads paths.
@@ -390,22 +392,19 @@ mod tests {
     fn each_target_has_its_triple_label_and_binary() {
         assert_eq!(
             Target::ALL.map(Target::triple),
-            [
-                "aarch64-apple-darwin",
-                "x86_64-apple-darwin",
-                "x86_64-pc-windows-msvc"
-            ]
+            ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
         );
         assert_eq!(
             Target::ALL.map(Target::label),
-            ["macos-arm64", "macos-x64", "windows-x64"]
+            ["macos-arm64", "windows-x64"]
         );
-        assert_eq!(Target::MacIntel.binary_name(), "repo-terrarium");
+        assert_eq!(Target::Mac.binary_name(), "repo-terrarium");
         assert_eq!(Target::Windows.binary_name(), "repo-terrarium.exe");
         assert_eq!(
-            Target::from_triple("x86_64-apple-darwin"),
-            Some(Target::MacIntel)
+            Target::from_triple("aarch64-apple-darwin"),
+            Some(Target::Mac)
         );
+        assert_eq!(Target::from_triple("x86_64-apple-darwin"), None);
         assert_eq!(Target::from_triple("aarch64-pc-windows-msvc"), None);
     }
 
@@ -425,13 +424,13 @@ mod tests {
     fn the_c_maps_the_cargo_folder_away_and_the_windows_c_has_no_asserts() {
         let home = Path::new("/home/x/.cargo");
         assert_eq!(
-            c_flags(Target::MacArm, home).unwrap(),
+            c_flags(Target::Mac, home).unwrap(),
             "-ffile-prefix-map=/home/x/.cargo=/cargo"
         );
         let windows = c_flags(Target::Windows, home).unwrap();
         let windows = windows.to_str().unwrap();
         assert!(windows.starts_with("-DNDEBUG"), "{windows}");
-        assert!(c_flags(Target::MacArm, Path::new("/a b/.cargo")).is_err());
+        assert!(c_flags(Target::Mac, Path::new("/a b/.cargo")).is_err());
     }
 
     #[test]

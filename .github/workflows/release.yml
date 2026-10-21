@@ -1,8 +1,8 @@
-# The release: the Mac's DMGs (Apple silicon and Intel) and the Windows x64 installer, drafted
-# as a GitHub Release. It runs only when started by hand (Actions > release > Run workflow); no
-# push or pull request starts it, so the repository still has no CI, and `cargo xtask verify`,
-# run before every commit, stays the gate. The draft's tag, v<version>, is made when the release
-# is published.
+# The release: the Mac's DMG (Apple silicon) and the Windows x64 installer, drafted as a GitHub
+# Release. It runs only when started by hand (Actions > release > Run workflow); no push or pull
+# request starts it, so the repository still has no CI, and `cargo xtask verify`, run before
+# every commit, stays the gate. The draft's tag, v<version>, is made when the release is
+# published.
 #
 # Every step that builds or checks is an xtask command, so the same work runs on the Mac.
 
@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install
-      - name: Package both Macs
+      - name: Package the Mac
         run: cargo xtask package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -86,10 +86,9 @@ jobs:
           setup=(repo-terrarium-*-windows-x64-setup.exe)
           version=${setup[0]#repo-terrarium-}
           version=${version%-windows-x64-setup.exe}
-          for file in "repo-terrarium-$version-macos-arm64.dmg" "repo-terrarium-$version-macos-x64.dmg"; do
-            test -f "$file" || { echo "missing $file"; exit 1; }
-          done
-          test "$(ls | wc -l)" -eq 3 || { ls; echo "expected three installers"; exit 1; }
+          dmg="repo-terrarium-$version-macos-arm64.dmg"
+          test -f "$dmg" || { echo "missing $dmg"; exit 1; }
+          test "$(ls | wc -l)" -eq 2 || { ls; echo "expected two installers"; exit 1; }
           sha256sum -- * > SHA256SUMS
           tag="v$version"
           # A draft of this version from an earlier run takes the new files; a published one is

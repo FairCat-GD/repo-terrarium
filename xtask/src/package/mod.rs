@@ -1,7 +1,7 @@
 //! `cargo xtask package`: the installers, into `target/package/`.
 //!
-//! - **On a Mac:** a DMG for Apple silicon and one for Intel Macs; with `--windows`, the
-//!   Windows installer too, cross-built through xwin (`windows`), with Homebrew's makensis.
+//! - **On a Mac:** the DMG for Apple silicon (`dmg`); with `--windows`, the Windows installer
+//!   too, cross-built through xwin (`windows`), with Homebrew's makensis.
 //! - **On Windows:** the Windows x64 installer.
 //! - `--target <triple>` makes one alone.
 //!
@@ -9,6 +9,7 @@
 //! `packaging/icon/`, and its words read from the app's copy module. The release workflow
 //! (`.github/workflows/release.yml`) runs this same command on each platform.
 
+mod dmg;
 pub mod icon;
 mod mac;
 mod notices;
@@ -93,12 +94,14 @@ fn package(root: &Path, targets: &[Target]) -> Result<Vec<PathBuf>, String> {
     for &target in targets {
         let notices = notices::notices(root, target)?;
         if target.is_mac() {
+            let picture = dmg::background::load(root)?;
             let binary = build_checked(root, target, None)?;
             let contents = mac::Contents {
                 words: &words,
                 version: VERSION,
                 icns: &icns,
                 notices: &notices,
+                picture: &picture,
             };
             made.push(mac::package(target, &binary, &contents, &out_dir)?);
         } else {
@@ -136,21 +139,13 @@ fn build_checked(root: &Path, target: Target, res: Option<&Path>) -> Result<Path
     Ok(binary)
 }
 
-/// Runs the binary's `--version` where this machine can: a Mac its own code, and the Intel
-/// Mac's through Rosetta when it is installed; Windows its own. A binary this machine cannot
-/// run is said so, and passes.
+/// Runs the binary's `--version` where this machine can: a Mac its own, Windows its own. A
+/// binary this machine cannot run is said so, and passes.
 fn runs(target: Target, binary: &Path) -> Result<String, String> {
     if !target.native() {
         return Ok("  not run here: built for another system".to_owned());
     }
-    let mut command = if target == Target::MacIntel && cfg!(target_arch = "aarch64") {
-        let mut rosetta = Command::new("arch");
-        rosetta.arg("-x86_64").arg(binary);
-        rosetta
-    } else {
-        Command::new(binary)
-    };
-    let out = command
+    let out = Command::new(binary)
         .arg("--version")
         .output()
         .map_err(|err| format!("{} --version: {err}", binary.display()))?;
@@ -158,9 +153,6 @@ fn runs(target: Target, binary: &Path) -> Result<String, String> {
     let wanted = format!("{BINARY} {VERSION}");
     if out.status.success() && said.trim() == wanted {
         return Ok(format!("  runs here: {wanted}"));
-    }
-    if String::from_utf8_lossy(&out.stderr).contains("Bad CPU type") {
-        return Ok("  not run here: this Mac runs no Intel code (no Rosetta)".to_owned());
     }
     Err(format!(
         "{} --version said {:?}, not {wanted:?}",
@@ -197,17 +189,15 @@ mod tests {
         let args =
             |args: &[&str]| targets(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>());
         assert_eq!(
-            args(&["--target", "x86_64-apple-darwin"]),
-            Ok(vec![Target::MacIntel])
+            args(&["--target", "aarch64-apple-darwin"]),
+            Ok(vec![Target::Mac])
         );
+        assert!(args(&["--target", "x86_64-apple-darwin"]).is_err());
         assert!(args(&["--target", "aarch64-pc-windows-msvc"]).is_err());
         assert!(args(&["--everything"]).is_err());
         if cfg!(target_os = "macos") {
-            assert_eq!(args(&[]), Ok(vec![Target::MacArm, Target::MacIntel]));
-            assert_eq!(
-                args(&["--windows"]),
-                Ok(vec![Target::MacArm, Target::MacIntel, Target::Windows])
-            );
+            assert_eq!(args(&[]), Ok(vec![Target::Mac]));
+            assert_eq!(args(&["--windows"]), Ok(vec![Target::Mac, Target::Windows]));
         }
     }
 }

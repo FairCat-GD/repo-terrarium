@@ -22,6 +22,8 @@ pub struct Image {
 #[derive(Debug)]
 pub struct Icon {
     pub s16: Image,
+    /// Windows' small icon at 150% scaling.
+    pub s24: Option<Image>,
     pub s32: Image,
     pub s48: Option<Image>,
     pub s64: Image,
@@ -31,6 +33,7 @@ pub struct Icon {
 fn shape(side: u32) -> Option<(f64, f64)> {
     match side {
         16 => Some((1.0, 3.0)),
+        24 => Some((2.0, 4.0)),
         32 => Some((3.0, 6.0)),
         48 => Some((5.0, 8.0)),
         64 => Some((7.0, 11.0)),
@@ -56,15 +59,26 @@ pub fn load(root: &Path) -> Result<Icon, String> {
     };
     Ok(Icon {
         s16: required(16)?,
+        s24: read(24)?,
         s32: required(32)?,
         s48: read(48)?,
         s64: required(64)?,
     })
 }
 
-/// A PNG of any colour type as RGBA: palettes and transparency are expanded, and 16-bit samples
-/// kept to their high byte, as an editor's 16-bit export of 8-bit art holds them.
+/// A square PNG as an icon's source.
 fn decode(bytes: &[u8]) -> Result<Image, String> {
+    let (width, height, rgba) = decode_rgba(bytes)?;
+    if width != height {
+        return Err(format!("is {width}×{height}, not square"));
+    }
+    Ok(Image { side: width, rgba })
+}
+
+/// A PNG of any colour type as its width, height and RGBA pixels: palettes and transparency
+/// are expanded, and 16-bit samples kept to their high byte, as an editor's 16-bit export of
+/// 8-bit art holds them.
+pub fn decode_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let mut decoder = Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(
         Transformations::EXPAND | Transformations::ALPHA | Transformations::STRIP_16,
@@ -74,9 +88,6 @@ fn decode(bytes: &[u8]) -> Result<Image, String> {
     let frame = reader
         .next_frame(&mut pixels)
         .map_err(|err| err.to_string())?;
-    if frame.width != frame.height {
-        return Err(format!("is {}×{}, not square", frame.width, frame.height));
-    }
     let pixels = &pixels[..frame.buffer_size()];
     let rgba = match (frame.color_type, frame.bit_depth) {
         (ColorType::Rgba, BitDepth::Eight) => pixels.to_vec(),
@@ -88,10 +99,7 @@ fn decode(bytes: &[u8]) -> Result<Image, String> {
             .collect(),
         (color, depth) => return Err(format!("is {depth:?} {color:?}, not 8-bit colour")),
     };
-    Ok(Image {
-        side: frame.width,
-        rgba,
-    })
+    Ok((frame.width, frame.height, rgba))
 }
 
 /// Whether `image` is `side` square and fills the rounded square: every pixel whose centre is
@@ -188,10 +196,14 @@ pub fn mac_sizes(icon: &Icon) -> Sizes {
     sizes
 }
 
-/// Windows' sizes: 16, 32 and 64 as drawn, 48 drawn or the 16 at ×3, and 256 the 64 at ×4.
+/// Windows' sizes: 16, 32 and 64 as drawn, 24 when it is drawn, 48 drawn or the 16 at ×3, and
+/// 256 the 64 at ×4.
 pub fn windows_sizes(icon: &Icon) -> Sizes {
     let mut sizes = Sizes::new();
     sizes.insert(16, png(&icon.s16));
+    if let Some(s24) = &icon.s24 {
+        sizes.insert(24, png(s24));
+    }
     sizes.insert(32, png(&icon.s32));
     let s48 = icon.s48.clone().unwrap_or_else(|| scale(&icon.s16, 3));
     sizes.insert(48, png(&s48));
@@ -369,6 +381,7 @@ mod tests {
         Icon {
             s16: filled(16),
             s32: filled(32),
+            s24: None,
             s48: None,
             s64: filled(64),
         }
@@ -420,5 +433,18 @@ mod tests {
         let offset =
             usize::try_from(u32::from_le_bytes(entry(0)[12..16].try_into().unwrap())).unwrap();
         assert_eq!(&ico[offset..offset + 8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn a_drawn_24_joins_the_windows_icon() {
+        let mut with = icon();
+        with.s24 = Some(filled(24));
+        let sizes = windows_sizes(&with);
+        assert_eq!(
+            sizes.keys().copied().collect::<Vec<_>>(),
+            [16, 24, 32, 48, 64, 256]
+        );
+        assert_eq!(decode(&sizes[&24]), Ok(filled(24)));
+        assert_eq!(&ico(&sizes)[4..6], &[6, 0]);
     }
 }

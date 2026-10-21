@@ -6,7 +6,8 @@
 //!   nothing without at least that, and a downloaded app whose bundle is not sealed is called
 //!   damaged rather than offered Open Anyway. It names no developer, so this is still the
 //!   unsigned build ships; a Developer ID replaces it once there is one.
-//! - **The DMG:** the app beside a link to `/Applications`, compressed.
+//! - **The DMG** (`dmg`): the app beside a link to `/Applications`, in a window of its own
+//!   picture, compressed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use std::process::{Command, Stdio};
 
 use terrarium_store::identifiers::{BINARY, BUNDLE_ID};
 
+use super::dmg::{self, background::Picture};
 use super::plist::{ICON_FILE, info_plist};
 use super::words::Words;
 use crate::release::Target;
@@ -24,6 +26,8 @@ pub struct Contents<'a> {
     pub version: &'a str,
     pub icns: &'a [u8],
     pub notices: &'a str,
+    /// The DMG window's picture.
+    pub picture: &'a Picture,
 }
 
 /// Bundles, signs and images `binary` for `target` into `out_dir`; the DMG's path.
@@ -33,20 +37,28 @@ pub fn package(
     contents: &Contents,
     out_dir: &Path,
 ) -> Result<PathBuf, String> {
-    let staging = out_dir.join("work").join(target.label());
+    let work = out_dir.join("work");
+    let staging = work.join(target.label());
     let _ = fs::remove_dir_all(&staging);
-    let app = staging.join(format!("{}.app", contents.words.product));
+    let app_name = format!("{}.app", contents.words.product);
+    let app = staging.join(&app_name);
     bundle(&app, binary, contents)?;
     sign(&app)?;
-    symlink("/Applications", &staging.join("Applications"))?;
-    let dmg = out_dir.join(format!(
+    symlink("/Applications", &staging.join(dmg::LINK))?;
+    dmg::stage(&staging, contents.picture, contents.icns)?;
+    let image = out_dir.join(format!(
         "{BINARY}-{}-{}.dmg",
         contents.version,
         target.label()
     ));
-    image(&staging, &contents.words.product, &dmg)?;
+    // The volume is named with the version, so two DMGs open at once are told apart.
+    let volume = format!("{} {}", contents.words.product, contents.version);
+    dmg::image(&staging, &volume, &app_name, &image, &work)?;
     let _ = fs::remove_dir_all(&staging);
-    Ok(dmg)
+    for line in dmg::check(&image, &volume, &app_name)? {
+        println!("{line}");
+    }
+    Ok(image)
 }
 
 fn bundle(app: &Path, binary: &Path, contents: &Contents) -> Result<(), String> {
@@ -112,31 +124,7 @@ fn symlink(_: &str, link: &Path) -> Result<(), String> {
     Err(format!("{} is made on a Mac", link.display()))
 }
 
-/// The DMG of `folder`, named `volume`. `hdiutil` can find its device busy for a moment, so it
-/// is tried three times.
-fn image(folder: &Path, volume: &str, dmg: &Path) -> Result<(), String> {
-    let _ = fs::remove_file(dmg);
-    let mut last = String::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-        }
-        let made = Command::new("hdiutil")
-            .args(["create", "-quiet", "-volname", volume, "-fs", "HFS+"])
-            .args(["-format", "UDZO", "-ov", "-srcfolder"])
-            .arg(folder)
-            .arg(dmg)
-            .output()
-            .map_err(|err| format!("hdiutil: {err}"))?;
-        if made.status.success() {
-            return Ok(());
-        }
-        last = String::from_utf8_lossy(&made.stderr).into_owned();
-    }
-    Err(format!("hdiutil create failed: {last}"))
-}
-
-fn run(command: &mut Command, what: &str) -> Result<(), String> {
+pub(super) fn run(command: &mut Command, what: &str) -> Result<(), String> {
     let out = command.output().map_err(|err| format!("{what}: {err}"))?;
     if out.status.success() {
         Ok(())
