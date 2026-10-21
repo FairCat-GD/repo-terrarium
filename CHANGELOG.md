@@ -16,8 +16,8 @@ with the terrarium in motion, and an account of how it is built.
   terrarium and its soil panel, the reports it reads, the time-lapse, settings and privacy.
 - **The README opens with a time-lapse** of the sample repository's history, as the app draws
   it.
-- **How it is built** (`docs/ARCHITECTURE.md`), and the temperate biome's art
-  bible (`docs/art/temperate.md`).
+- **How it is built** (`docs/ARCHITECTURE.md`), and the temperate biome's art bible
+  (`docs/art/temperate.md`).
 
 ## [0.31.1] - 2026-10-21
 

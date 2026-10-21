@@ -16,10 +16,10 @@ telemetry.
 
 ## Install
 
-Repo Terrarium runs on Macs with Apple silicon (macOS 13 or later) and on 64-bit Windows 10 and
-11. Download the DMG or the Windows installer from the
-[Releases](https://github.com/FairCat-GD/repo-terrarium/releases) page. The builds aren't signed
-yet, so the first launch needs one extra step, which the
+Repo Terrarium runs on Macs with Apple silicon (macOS 13 or later) and on 64-bit Windows 10
+and 11. Download the DMG or the Windows installer from the
+[Releases](https://github.com/FairCat-GD/repo-terrarium/releases) page. The builds aren't
+signed yet, so the first launch needs one extra step, which the
 [user guide](docs/USER-GUIDE.md#installing) walks through.
 
 ## Build from source
