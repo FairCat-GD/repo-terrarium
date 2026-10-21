@@ -5,6 +5,20 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-21
+
+The first round of work is complete. Repo Terrarium now has a user guide, a README that opens
+with the terrarium in motion, and an account of how it is built.
+
+### Added
+
+- **A user guide** (`docs/USER-GUIDE.md`): installing, connecting a repository, reading the
+  terrarium and its soil panel, the reports it reads, the time-lapse, settings and privacy.
+- **The README opens with a time-lapse** of the sample repository's history, as the app draws
+  it.
+- **How it is built** (`docs/ARCHITECTURE.md`), and the temperate biome's art
+  bible (`docs/art/temperate.md`).
+
 ## [0.31.1] - 2026-10-21
 
 A new Mac installer. Opening the DMG shows a window of its own picture, with the app on the left

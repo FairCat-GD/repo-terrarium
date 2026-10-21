@@ -1,68 +1,47 @@
+<p align="center">
+  <img src="docs/images/terrarium.gif" width="640" alt="A pixel-art terrarium strip: plants, small creatures and weather over a band of soil, changing as a repository's history plays back">
+</p>
+
 # Repo Terrarium
 
-An ambient pixel-art strip for a developer's second monitor. It shows a living terrarium whose
-climate is one local git repository: coverage is light, code health is soil, activity is rain,
-and CI or local tests are the weather. It is built in Rust for macOS and Windows.
+A small pixel-art terrarium for the edge of your second monitor. It grows from a git repository
+on your computer: test coverage is its light, code health is its soil, your commits are its rain,
+and your tests or CI are its weather. Keep the code healthy and the commits coming and it grows
+lush. Leave it alone for a month and it goes dormant behind fogged glass, and when the tests
+fail, a storm rolls in.
 
-## Status
+Repo Terrarium only reads your repository and never changes anything in it. Nothing leaves your
+computer unless you connect GitHub Actions for CI weather, and there are no accounts or
+telemetry.
 
-Pre-release, in a private repository, at version 0.21.0. The strip:
-- is a borderless band along the bottom of a monitor;
-- on macOS, is pinned below ordinary windows;
-- on Windows, is a topmost bar on a reserved edge, the way the taskbar is. It is untested on
-  real hardware yet;
-- runs on one local repository: with none connected, a window opens to choose and connect one
-  (`--repo <path>` connects it from the command line), and a plain run opens the one connected
-  last. One app runs at a time; launching it again shows its settings;
-- reads the repository's history, its coverage, test and dead-code reports, and the test runs
-  `record-tests` records;
-- simulates from them, the same way on every computer, and draws:
-  - the plants;
-  - the residents;
-  - the standing stones and the fossils;
-  - the events that happen to them, in the sky and on the ground;
-- has a raise hotkey (Ctrl+Alt+T) and a right-click **Settings** (where the repository is,
-  relinking it, a new terrarium, disconnecting) and **Quit**.
+## Install
 
-## Prerequisites
+Repo Terrarium runs on Macs with Apple silicon (macOS 13 or later) and on 64-bit Windows 10 and
+11. Download the DMG or the Windows installer from the
+[Releases](https://github.com/FairCat-GD/repo-terrarium/releases) page. The builds aren't signed
+yet, so the first launch needs one extra step, which the
+[user guide](docs/USER-GUIDE.md#installing) walks through.
 
-- **Rust** through [rustup](https://rustup.rs). The toolchain is pinned in `rust-toolchain.toml`
-  (1.98.1, with rustfmt, clippy and the `x86_64-pc-windows-msvc` target), and rustup installs it
-  on first use.
-- **For `verify`:** `cargo install --locked cargo-nextest@0.9.146 cargo-deny@0.20.2`. `verify`
-  checks these exact versions, because `deny.toml` is written for cargo-deny 0.20.
+## Build from source
 
-## Build and run
+You'll need [Rust](https://rustup.rs); the right toolchain installs itself.
 
 ```sh
-cargo run -p terrarium-app -- --repo <path>          # connects a repository and runs the strip
-cargo run -p terrarium-app                           # the one connected last, or the connect window
-cargo run -p terrarium-app -- --demo                 # the strip through its named looks
-cargo run -p terrarium-app -- discover <path>        # what each report adapter finds there
-cargo run -p terrarium-app -- record-tests -- <cmd>  # runs tests; their result is the weather
-cargo run -p terrarium-app -- replay <path> --dump   # a headless replay, as text
-cargo run -p terrarium-app -- replay <path> --gif out.gif  # its whole time-lapse, as a GIF
-cargo run -p terrarium-app -- --version              # prints the version
-cargo run -p terrarium-app -- --probe pinning        # the pinning checklist, with a report
-cargo xtask verify                                   # the gate: green before every commit
-cargo xtask probe-zip                                # the Windows probe zip for testers
-cargo xtask render --demo out.png                    # the sample scene, out.png and out@3x.png
+cargo run -p terrarium-app -- --repo <path>   # connect a repository and run the strip
+cargo run -p terrarium-app -- --demo          # the strip through its sample looks
 ```
 
-Right-click the strip for its settings, the time-lapse, a pause, or to quit.
+`cargo xtask verify` runs all the checks, and [xtask/README.md](xtask/README.md) describes the
+other development tasks.
 
-There is no CI. `cargo xtask verify` runs locally before every commit. It includes a clippy pass
-for the Windows target, so Windows code is compiled and linted on a Mac.
+## More
 
-## Layout
-
-- `crates/`: the seven crates, each with a `README.md` saying what it owns and why.
-- `xtask/`: development tasks (`cargo xtask verify`, `assets`, `bench`, `fixture`, `gallery`,
-  `golden`, `probe-zip`, `render`).
-- `art-assets/`: the art, byte for byte as delivered.
-- `tests/fixtures/`: fictional test data.
+- [User guide](docs/USER-GUIDE.md): connecting a repository, reading the terrarium, settings
+  and privacy.
+- [Architecture](docs/ARCHITECTURE.md): how it's built.
+- [Changelog](CHANGELOG.md).
 
 ## License
 
-- Code: MIT or Apache-2.0, at your option (`LICENSE-MIT`, `LICENSE-APACHE`).
-- Art in `art-assets/`: CC BY-SA 4.0 (`LICENSE-ART.md`); the bitmap fonts are public domain.
+The code is MIT or Apache-2.0, at your option (`LICENSE-MIT`, `LICENSE-APACHE`). The art is by
+Svyat Marutyak under CC BY-SA 4.0 (`LICENSE-ART.md`), and the bitmap fonts are public domain.

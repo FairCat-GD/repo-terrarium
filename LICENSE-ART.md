@@ -1,6 +1,8 @@
 # Art license
 
-The art in `art-assets/` is © 2026 Svyat Marutyak, licensed under the Creative Commons
+The art in `art-assets/`, the app icon in `packaging/icon/`, the installer's picture in
+`packaging/dmg/` and the time-lapse at the top of the README (`docs/images/terrarium.gif`, drawn
+from that art) are © 2026 Svyat Marutyak, licensed under the Creative Commons
 Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0):
 <https://creativecommons.org/licenses/by-sa/4.0/legalcode>.
 
