@@ -137,7 +137,7 @@ names, the settings keys, and the Windows install folder, uninstall key and logi
 
 | ID | Budget | Where it stands |
 |---|---|---|
-| N-01 | CPU under 1% of a core, an hour's average | 0.69% over an hour on Apple silicon (`xtask soak`), and 0.80% over ten minutes with today's plant count. Windows unmeasured. |
+| N-01 | CPU under 1% of a core, an hour's average | 0.69% over an hour on Apple silicon (`xtask soak`); over ten minutes 0.80% with today's plant count, and lately about 1% on any version (0.965% at 0.32.2). Windows unmeasured. |
 | N-02 | Memory under 80 MB | About 20 MB settled and 48 MB at peak on Apple silicon. Windows unmeasured. |
 | N-03 | At most 15 fps; none when still | The pacer, the frame gate and the soak. |
 | N-04 | Readings updated within 60 ms of the adapters | `engine/tests/live.rs`. |
@@ -214,7 +214,7 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 | Bench at 0.32.3 (`cargo xtask bench`) | Measured | Budget |
 |---|---|---|
 | Loading the catalog, cold | 1.98 ms | 20 ms |
-| Compositing a busy frame (278 draws), median | 0.161 ms | 1 ms |
+| Compositing a busy frame (278 draws), median | 0.250 ms | 1 ms |
 | Reading 10,000 commits | 3.57 s | 10 s |
 | Measuring 107,100 lines of source; one changed file | 201 ms; 0.48 ms | 1 s; 50 ms |
 | First-connect replay of 10,003 commits (N-05) | 3.53 s, the replay itself 6.56 ms | 30 s |
