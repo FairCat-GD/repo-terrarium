@@ -193,8 +193,8 @@ gif = { version = "0.14.2", default-features = false, features = ["std", "raii_n
 # The lexer behind xtask's scan of truth's sources; `span-locations` gives line numbers.
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["span-locations"] }
 toml = "1.2.2"
-# The engine's watcher: FSEvents on macOS, ReadDirectoryChangesW on Windows. Not the 9.0 release
-# candidates.
+# The engine's watcher: FSEvents on macOS, ReadDirectoryChangesW on Windows. 8.x: 9.0
+# changes the API and the form of event paths, so it is an update of its own.
 notify = "8.2.2"
 # A new terrarium's install salt, from the OS's random source (I-2).
 getrandom = "0.4.3"

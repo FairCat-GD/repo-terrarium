@@ -1,7 +1,8 @@
 # Changelog
 
 What shipped, per version. The format follows [Keep a Changelog](https://keepachangelog.com/).
-Each step of development is a minor version, `0.<n>.0`, until the first public release.
+Each step of development is a minor version, `0.<n>.0`, and maintenance between steps a patch
+version, such as `0.32.1`.
 
 ## [Unreleased]
 

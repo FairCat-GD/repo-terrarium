@@ -211,7 +211,7 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 | Catalog | 778 sprites (160 of them glyphs) over 661 distinct images, 114 animations, 2 fonts, 10 event groups |
 | verify | 13 stages; 8 workspace members |
 
-| Bench (`cargo xtask bench`) | Measured | Budget |
+| Bench at 0.32.0 (`cargo xtask bench`) | Measured | Budget |
 |---|---|---|
 | Loading the catalog, cold | 2.46 ms | 20 ms |
 | Compositing a busy frame (278 draws), median | 0.240 ms | 1 ms |
