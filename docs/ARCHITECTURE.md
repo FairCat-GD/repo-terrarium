@@ -199,11 +199,11 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 
 ## Baseline
 
-| At 0.32.0 | Count |
+| At 0.32.2 | Count |
 |---|---|
-| Tests (nextest, all features) | 1,373 passed, 0 skipped |
-| per crate | adapters 162, app 285, compose 321, engine 140, platform 76, store 53, truth 174, xtask 162 |
-| The app as released (verify's second nextest) | 271 passed |
+| Tests (nextest, all features) | 1,378 passed, 0 skipped |
+| per crate | adapters 162, app 287, compose 321, engine 143, platform 76, store 53, truth 174, xtask 162 |
+| The app as released (verify's second nextest) | 273 passed |
 | Doctests | 2 |
 | Pixel snapshots | 81 pictures (compose 69, app 12), each a PNG and a hash of its raw pixels, and 2 hash-only snapshots (the time-lapse GIF, the climate export): 164 `.snap` files |
 | Golden replay | `tests/golden/arc.dump`, 6,446 lines at `SIM_VERSION` 10, SHA-256 `54d27544e6066a765c1de7d427dd33f8aca5d804ae756fd8dd98ca35dcd8a971` |
@@ -211,18 +211,18 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 | Catalog | 778 sprites (160 of them glyphs) over 661 distinct images, 114 animations, 2 fonts, 10 event groups |
 | verify | 13 stages; 8 workspace members |
 
-| Bench at 0.32.0 (`cargo xtask bench`) | Measured | Budget |
+| Bench at 0.32.2 (`cargo xtask bench`) | Measured | Budget |
 |---|---|---|
-| Loading the catalog, cold | 2.46 ms | 20 ms |
-| Compositing a busy frame (278 draws), median | 0.240 ms | 1 ms |
-| Reading 10,000 commits | 3.66 s | 10 s |
-| Measuring 107,100 lines of source; one changed file | 211 ms; 0.57 ms | 1 s; 50 ms |
-| First-connect replay of 10,003 commits (N-05) | 3.59 s, the replay itself 6.65 ms | 30 s |
-| Live: first connect and refresh | 3.81 s | 30 s |
-| Live: connect again from the cache; its first refresh | under 1 ms; 3.62 s | 250 ms; 5 s |
-| Live: a refresh after a commit; after a tag on an old commit | 0.361 s; 0.255 s | 1 s; 2 s |
+| Loading the catalog, cold | 2.66 ms | 20 ms |
+| Compositing a busy frame (278 draws), median | 0.159 ms | 1 ms |
+| Reading 10,000 commits | 3.62 s | 10 s |
+| Measuring 107,100 lines of source; one changed file | 200 ms; 0.50 ms | 1 s; 50 ms |
+| First-connect replay of 10,003 commits (N-05) | 3.52 s, the replay itself 6.51 ms | 30 s |
+| Live: first connect and refresh | 3.72 s | 30 s |
+| Live: connect again from the cache; its first refresh | under 1 ms; 3.57 s | 250 ms; 5 s |
+| Live: a refresh after a commit; after a tag on an old commit | 0.350 s; 0.251 s | 1 s; 2 s |
 
-| Size at 0.32.1 (`cargo xtask size`, N-08) | Bytes |
+| Size at 0.32.2 (`cargo xtask size`, N-08) | Bytes |
 |---|---|
-| macOS, Apple silicon | 22,649,696 |
-| Windows x64, cross-built on the Mac | 24,758,784 (241 KB under the budget) |
+| macOS, Apple silicon | 22,073,920 |
+| Windows x64, cross-built on the Mac | 24,178,176 (822 KB under the budget) |

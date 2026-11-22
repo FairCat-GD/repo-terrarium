@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.32.1"
+version = "0.32.2"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -21,19 +21,19 @@ terrarium-platform = { path = "crates/terrarium-platform" }
 winit = "0.30.13"
 softbuffer = { version = "0.4.8", default-features = false }
 raw-window-handle = "0.6.2"
-global-hotkey = "0.8.0"
+global-hotkey = "0.10.0"
 # The egui windows: egui-winit and egui-wgpu on wgpu, never eframe. Only the backends each OS
 # uses, and no clipboard, links or Linux window systems. `pollster` runs egui-wgpu's two async
 # calls, which finish on their first poll.
-egui = { version = "0.36.2", default-features = false, features = ["default_fonts"] }
-egui-winit = { version = "0.36.2", default-features = false }
-egui-wgpu = { version = "0.36.2", default-features = false, features = ["winit"] }
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+egui-winit = { version = "0.37.0", default-features = false }
+egui-wgpu = { version = "0.37.0", default-features = false, features = ["winit"] }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "wgsl", "metal", "dx12"] }
 pollster = "1.0.3"
-muda = { version = "0.20.0", default-features = false }
+muda = { version = "0.21.2", default-features = false }
 # The folder picker, one step of the two-step connect and locate flows. Only the macOS and
 # Windows dialogs: no Linux portal or GTK.
-rfd = { version = "0.17.2", default-features = false }
+rfd = { version = "0.18.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Truth: postcard for the cache, without the heapless it never uses; SHA-256 for golden hashes
@@ -60,9 +60,9 @@ gix = { version = "=0.88.0", default-features = false, features = [
     "blob-diff",
     "pack-cache-lru-dynamic",
 ] }
-# Source metrics, parsed in process (tree-sitter 0.26.x). The tier-one grammars, each through
+# Source metrics, parsed in process (tree-sitter 0.27.x). The tier-one grammars, each through
 # `tree-sitter-language`; the TypeScript crate holds TypeScript and TSX.
-tree-sitter = "0.26.13"
+tree-sitter = "0.27.2"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-javascript = "0.25.0"
 tree-sitter-python = "0.25.0"
@@ -193,9 +193,8 @@ gif = { version = "0.14.2", default-features = false, features = ["std", "raii_n
 # The lexer behind xtask's scan of truth's sources; `span-locations` gives line numbers.
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["span-locations"] }
 toml = "1.2.2"
-# The engine's watcher: FSEvents on macOS, ReadDirectoryChangesW on Windows. 8.x: 9.0
-# changes the API and the form of event paths, so it is an update of its own.
-notify = "8.2.2"
+# The engine's watcher: FSEvents on macOS, ReadDirectoryChangesW on Windows.
+notify = "9.0.0"
 # A new terrarium's install salt, from the OS's random source (I-2).
 getrandom = "0.4.3"
 

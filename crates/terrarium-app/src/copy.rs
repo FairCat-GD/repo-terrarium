@@ -1006,7 +1006,7 @@ pub mod settings {
     use terrarium_engine::{CiStatus, KnipStatus};
 
     use super::{PRODUCT_NAME, VERSION};
-    use crate::hotkey::{Platform, Refusal};
+    use crate::hotkey::{BindError, Platform, Refusal};
     use crate::prefs::AdapterKind;
 
     pub const REPOSITORY: &str = "Repository";
@@ -1369,8 +1369,14 @@ pub mod settings {
         }
     }
 
-    pub fn not_registered(err: &impl Display) -> String {
-        format!("These keys could not be registered: {err}")
+    pub const ANOTHER_APP: &str = "Another app has these keys.";
+
+    pub fn not_registered(err: &BindError) -> String {
+        match err {
+            BindError::Taken(_) => refusal(Refusal::Taken, Platform::THIS).to_owned(),
+            BindError::Os(global_hotkey::Error::AlreadyRegistered(_)) => ANOTHER_APP.to_owned(),
+            BindError::Os(err) => format!("These keys could not be registered: {err}"),
+        }
     }
 
     // Day, night and dim mode.
@@ -2068,6 +2074,34 @@ mod tests {
             }
         }
         literals
+    }
+
+    #[test]
+    fn keys_not_registered_say_who_has_them() {
+        use crate::hotkey::BindError;
+        let keys = Which::Raise.default_binding();
+        let hotkey = global_hotkey::hotkey::HotKey::new(None, Code::KeyT);
+        assert_eq!(
+            settings::not_registered(&BindError::Taken(hotkey)),
+            "The other hotkey has these keys."
+        );
+        assert_eq!(
+            settings::not_registered(&BindError::Os(global_hotkey::Error::AlreadyRegistered(
+                hotkey
+            ))),
+            "Another app has these keys."
+        );
+        assert_eq!(
+            settings::not_registered(&BindError::Os(global_hotkey::Error::FailedToRegister(
+                "RegisterEventHotKey failed".into()
+            ))),
+            "These keys could not be registered: Unable to register hotkey: RegisterEventHotKey failed"
+        );
+        // The terminal keeps global-hotkey's own text.
+        assert!(
+            hotkey_unavailable(Which::Raise, keys, &BindError::Taken(hotkey))
+                .contains("could not be registered: HotKey already registered: HotKey {")
+        );
     }
 
     #[test]

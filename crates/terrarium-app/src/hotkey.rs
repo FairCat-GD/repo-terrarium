@@ -3,6 +3,8 @@
 //! free; it is stored in a form of its own, `ctrl+alt+T`, that no library's spelling can change.
 //! Their presses are forwarded to the event loop as they happen; nothing polls for them.
 
+use std::fmt;
+
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use winit::event_loop::EventLoopProxy;
@@ -91,7 +93,7 @@ impl Mods {
             (self.control, Modifiers::CONTROL),
             (self.option, Modifiers::ALT),
             (self.shift, Modifiers::SHIFT),
-            (self.command, Modifiers::SUPER),
+            (self.command, Modifiers::META),
         ]
         .into_iter()
         .filter(|(on, _)| *on)
@@ -260,6 +262,31 @@ impl Platform {
     };
 }
 
+/// Why a hotkey's keys could not be registered.
+#[derive(Debug)]
+pub enum BindError {
+    /// The other hotkey holds them.
+    Taken(HotKey),
+    /// The OS refused them (another app may hold them), or the hotkeys could not be made.
+    Os(global_hotkey::Error),
+}
+
+impl From<global_hotkey::Error> for BindError {
+    fn from(err: global_hotkey::Error) -> Self {
+        BindError::Os(err)
+    }
+}
+
+/// global-hotkey's own text, as the terminal and the probe report it.
+impl fmt::Display for BindError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BindError::Taken(hotkey) => global_hotkey::Error::AlreadyRegistered(*hotkey).fmt(f),
+            BindError::Os(err) => err.fmt(f),
+        }
+    }
+}
+
 /// The registered hotkeys, each bound on its own, so one the OS refuses never costs the other.
 /// Dropping it unregisters them.
 pub struct Hotkeys {
@@ -279,13 +306,13 @@ impl Hotkeys {
     /// Registers `binding` for `which`. The new key is taken before the old one is let go, so
     /// a refusal leaves the hotkey as it was. Keys the other hotkey holds are refused: they
     /// stay its own.
-    pub fn bind(&mut self, which: Which, binding: Binding) -> Result<(), global_hotkey::Error> {
+    pub fn bind(&mut self, which: Which, binding: Binding) -> Result<(), BindError> {
         let hotkey = binding.hotkey();
         if self.bound.get(which) == Some(hotkey) {
             return Ok(());
         }
-        if self.bound.get(which.other()) == Some(hotkey) {
-            return Err(global_hotkey::Error::AlreadyRegistered(hotkey));
+        if self.bound.taken(which, hotkey) {
+            return Err(BindError::Taken(hotkey));
         }
         self.manager.register(hotkey)?;
         if let Some(old) = self.bound.slot(which).replace(hotkey) {
@@ -318,6 +345,11 @@ impl Bound {
             Which::Raise => self.raise,
             Which::TimeLapse => self.timelapse,
         }
+    }
+
+    /// Whether the other hotkey holds `hotkey`, so `which` may not take it.
+    fn taken(self, which: Which, hotkey: HotKey) -> bool {
+        self.get(which.other()) == Some(hotkey)
     }
 
     fn slot(&mut self, which: Which) -> &mut Option<HotKey> {
@@ -411,12 +443,26 @@ mod tests {
         assert_eq!(hotkey.key, Code::F12);
         assert_eq!(
             hotkey.mods,
-            Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::SUPER
+            Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::META
         );
         assert_eq!(
             Which::Raise.default_binding().hotkey(),
             HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT)
         );
+    }
+
+    #[test]
+    fn keys_the_other_hotkey_holds_are_taken_and_its_own_are_not() {
+        let raise = Which::Raise.default_binding().hotkey();
+        let timelapse = Which::TimeLapse.default_binding().hotkey();
+        let bound = Bound {
+            raise: Some(raise),
+            timelapse: None,
+        };
+        assert!(bound.taken(Which::TimeLapse, raise));
+        assert!(!bound.taken(Which::Raise, raise));
+        assert!(!bound.taken(Which::TimeLapse, timelapse));
+        assert!(!Bound::default().taken(Which::Raise, raise));
     }
 
     #[test]

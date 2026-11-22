@@ -59,7 +59,7 @@ use crate::egui_host::WindowKind;
 use crate::feed::Overrides;
 use crate::feed::{Feed, Feeder, Os};
 use crate::gpu::Gpu;
-use crate::hotkey::{self, Hotkeys, Which};
+use crate::hotkey::{self, BindError, Hotkeys, Which};
 use crate::hover::{self, HoverTracker, ViewportPoint};
 use crate::instance::{Instance, Request, RequestWatch};
 use crate::lifecycle::{self, Job, Outcome};
@@ -1026,6 +1026,7 @@ impl Strip {
                     self.hotkeys = Some(hotkeys);
                 }
                 Err(err) => {
+                    let err = BindError::Os(err);
                     for which in Which::ALL {
                         self.hotkey_unavailable(which, self.prefs.binding(which), &err);
                     }
@@ -1737,7 +1738,7 @@ impl Strip {
 
     /// Runs the strip on `pref`, unsaved: the model, what follows from it, and the settings
     /// window. A hotkey the OS refuses changes nothing.
-    fn apply_pref(&mut self, pref: &Pref) -> Result<(), global_hotkey::Error> {
+    fn apply_pref(&mut self, pref: &Pref) -> Result<(), BindError> {
         if let Pref::Hotkey(which, binding) = *pref {
             self.bind(which, binding)?;
         }
@@ -1766,7 +1767,7 @@ impl Strip {
 
     /// Registers `binding` for `which`, making the hotkeys first if they could not be made at
     /// the start; the other hotkey's keys are registered too if they are not yet.
-    fn bind(&mut self, which: Which, binding: hotkey::Binding) -> Result<(), global_hotkey::Error> {
+    fn bind(&mut self, which: Which, binding: hotkey::Binding) -> Result<(), BindError> {
         let other = self.prefs.binding(which.other());
         if let Some(hotkeys) = &mut self.hotkeys {
             hotkeys.bind(which, binding)?;
@@ -1807,12 +1808,7 @@ impl Strip {
     }
 
     /// Says a hotkey could not be registered; the probe hears of the raise's.
-    fn hotkey_unavailable(
-        &mut self,
-        which: Which,
-        binding: hotkey::Binding,
-        err: &global_hotkey::Error,
-    ) {
+    fn hotkey_unavailable(&mut self, which: Which, binding: hotkey::Binding, err: &BindError) {
         eprintln!("{}", copy::hotkey_unavailable(which, binding, err));
         self.set_unregistered(which, Some(copy::settings::not_registered(err)));
         if which == Which::Raise {

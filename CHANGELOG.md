@@ -6,6 +6,17 @@ version, such as `0.32.1`.
 
 ## [Unreleased]
 
+## [0.32.2] - 2026-11-22
+
+### Changed
+
+- The windows' buttons are a little roomier, with rounder corners.
+
+### Fixed
+
+- On macOS, Settings now says when another app already has a hotkey's keys. Before, the keys
+  were accepted and the hotkey did nothing.
+
 ## [0.32.1] - 2026-11-22
 
 ### Security

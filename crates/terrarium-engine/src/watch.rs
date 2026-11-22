@@ -18,8 +18,12 @@
 //!
 //! Every directory is registered in one batch, so `FSEvents` starts one stream for all of them:
 //! each start costs a fixed delay, up to more than half a second, and watching directory by
-//! directory restarts the stream each time. On macOS every root is canonical: `FSEvents` names
-//! `/private/var/…` for a `/var/…` path.
+//! directory restarts the stream each time. A batch stops at the first directory the OS refuses
+//! (one removed since the set was made), so the rest are registered again without it.
+//!
+//! On macOS every root is canonical, as `FSEvents` keys its own watches, so two spellings of one
+//! directory (`/var/…` and `/private/var/…`) are one root. Events name a root as it was
+//! registered, so they come back canonical too.
 //!
 //! Each event that touched something is passed on at once. The worker's schedule is the
 //! debounce: it refreshes once events have stopped for 500 ms.
@@ -27,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
+use notify::{PathOp, RecommendedWatcher, UpdatePathsError, Watcher as _};
 use terrarium_adapters::discovery;
 
 /// The files of `HEAD` and `packed-refs`, and the locks git writes them through.
@@ -246,19 +250,38 @@ impl Watcher {
                     send(touched);
                 }
             })?;
-        let mut paths = watcher.paths_mut();
-        for (dir, &recursive) in &set.dirs {
-            let mode = if recursive {
-                RecursiveMode::Recursive
-            } else {
-                RecursiveMode::NonRecursive
-            };
-            // A directory removed since the set was made is simply not watched.
-            let _ = paths.add(dir, mode);
-        }
-        paths.commit()?;
+        let ops = set
+            .dirs
+            .iter()
+            .map(|(dir, &recursive)| {
+                if recursive {
+                    PathOp::watch_recursive(dir)
+                } else {
+                    PathOp::watch_non_recursive(dir)
+                }
+            })
+            .collect();
+        register(ops, |ops| watcher.update_paths(ops).map_err(Box::new))?;
         Ok(Watcher { _watcher: watcher })
     }
+}
+
+/// Registers `ops` through `update`, leaving out each one it refuses: notify stops a batch at
+/// the first directory it cannot watch, and a directory removed since the set was made must not
+/// cost the others. A failure that is no one directory's (the stream would not start) is the
+/// watch's.
+fn register(
+    mut ops: Vec<PathOp>,
+    mut update: impl FnMut(Vec<PathOp>) -> Result<(), Box<UpdatePathsError>>,
+) -> Result<(), notify::Error> {
+    while !ops.is_empty() {
+        match update(std::mem::take(&mut ops)) {
+            Ok(()) => {}
+            Err(err) if err.origin.is_some() => ops = err.remaining,
+            Err(err) => return Err(err.source),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -410,5 +433,69 @@ mod tests {
         assert!(set.classify(&canonical(&own).join("HEAD")).git);
         assert!(set.classify(&common.join("packed-refs")).git);
         assert!(!set.classify(&common.join("HEAD.orig")).git);
+    }
+
+    #[test]
+    fn a_refused_directory_is_left_out_and_the_rest_registered() {
+        let ops = ["a", "b", "c", "d"].map(PathOp::watch_non_recursive).into();
+        let mut watched = Vec::new();
+        let refuse = |op: &PathOp| op.as_path() == Path::new("b") || op.as_path() == Path::new("d");
+        let result = register(ops, |ops| {
+            let mut ops = ops.into_iter();
+            while let Some(op) = ops.next() {
+                if refuse(&op) {
+                    return Err(Box::new(UpdatePathsError::new(
+                        notify::Error::path_not_found(),
+                        Some(op),
+                        ops.collect(),
+                    )));
+                }
+                watched.push(op.as_path().to_path_buf());
+            }
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert_eq!(watched, [PathBuf::from("a"), PathBuf::from("c")]);
+    }
+
+    #[test]
+    fn a_failure_that_is_no_directory_s_fails_the_watch() {
+        let ops = vec![PathOp::watch_non_recursive("a")];
+        let mut tries = 0;
+        let result = register(ops, |ops| {
+            tries += 1;
+            Err(Box::new(UpdatePathsError::new(
+                notify::Error::generic("no stream"),
+                None,
+                ops,
+            )))
+        });
+        assert!(result.is_err());
+        assert_eq!(tries, 1);
+    }
+
+    #[test]
+    fn a_directory_removed_before_the_watch_costs_only_itself() {
+        let l = layout(&[]);
+        let set = set(&l);
+        // The status directory sorts first, so it heads the batch.
+        assert!(set.dirs.keys().next().is_some_and(|dir| *dir == l.status));
+        fs::remove_dir(&l.status).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _watcher = Watcher::start(&set, move |touched| {
+            let _ = tx.send(touched);
+        })
+        .unwrap();
+        fs::write(l.git.join("refs/heads/main"), "0".repeat(40)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let heard = std::iter::from_fn(|| {
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .ok()
+        })
+        .any(|touched| touched.git);
+        assert!(
+            heard,
+            "the ref written after the missing directory was seen"
+        );
     }
 }
