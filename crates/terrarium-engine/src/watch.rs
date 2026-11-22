@@ -18,8 +18,9 @@
 //!
 //! Every directory is registered in one batch, so `FSEvents` starts one stream for all of them:
 //! each start costs a fixed delay, up to more than half a second, and watching directory by
-//! directory restarts the stream each time. A batch stops at the first directory the OS refuses
-//! (one removed since the set was made), so the rest are registered again without it.
+//! directory restarts the stream each time. A directory removed since the set was made is left
+//! out. A batch stops at the first directory the OS refuses, so a fresh watcher takes the rest:
+//! only a batch that registers every directory and starts its stream is a watch.
 //!
 //! On macOS every root is canonical, as `FSEvents` keys its own watches, so two spellings of one
 //! directory (`/var/…` and `/private/var/…`) are one root. Events name a root as it was
@@ -30,6 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use notify::{PathOp, RecommendedWatcher, UpdatePathsError, Watcher as _};
 use terrarium_adapters::discovery;
@@ -230,28 +232,55 @@ impl Watcher {
     /// be watched is left out: the hourly catch-up still reads what it would have shown.
     pub fn start(
         set: &WatchSet,
-        send: impl Fn(Touched) + Send + 'static,
+        send: impl Fn(Touched) + Send + Sync + 'static,
     ) -> Result<Watcher, notify::Error> {
-        let classify = set.clone();
-        let mut watcher =
-            notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-                let touched = match result {
-                    Ok(event) if event.need_rescan() => Touched::BOTH,
-                    Ok(event) => event
-                        .paths
-                        .iter()
-                        .fold(Touched::default(), |touched, path| {
-                            touched.or(classify.classify(path))
-                        }),
-                    // A watch that failed may have missed anything.
-                    Err(_) => Touched::BOTH,
-                };
-                if touched.any() {
-                    send(touched);
-                }
-            })?;
-        let ops = set
+        let send = Arc::new(send);
+        let dirs = set
             .dirs
+            .iter()
+            .filter(|(dir, _)| dir.is_dir())
+            .map(|(dir, &recursive)| (dir.clone(), recursive))
+            .collect();
+        let watcher = start_each(dirs, |ops| {
+            let classify = set.clone();
+            let send = Arc::clone(&send);
+            let mut watcher =
+                notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                    let touched = match result {
+                        Ok(event) if event.need_rescan() => Touched::BOTH,
+                        Ok(event) => event
+                            .paths
+                            .iter()
+                            .fold(Touched::default(), |touched, path| {
+                                touched.or(classify.classify(path))
+                            }),
+                        // A watch that failed may have missed anything.
+                        Err(_) => Touched::BOTH,
+                    };
+                    if touched.any() {
+                        send(touched);
+                    }
+                })
+                .map_err(|err| Box::new(UpdatePathsError::new(err, None, Vec::new())))?;
+            watcher.update_paths(ops).map_err(Box::new)?;
+            Ok(watcher)
+        })?;
+        Ok(Watcher { _watcher: watcher })
+    }
+}
+
+/// Starts a watcher over `dirs` through `attempt`, which makes a fresh one and registers every
+/// directory it is given. notify stops a batch at the first directory it cannot watch, and one
+/// removed meanwhile must cost only itself, so each refused directory is left out and the rest
+/// go to a fresh watcher. A fresh watcher, unlike one reused, starts its stream only once every
+/// directory is registered, and reports when it cannot: so a watcher returned is one that runs.
+/// A failure that is no one directory's is the watch's.
+fn start_each<W>(
+    mut dirs: BTreeMap<PathBuf, bool>,
+    mut attempt: impl FnMut(Vec<PathOp>) -> Result<W, Box<UpdatePathsError>>,
+) -> Result<W, notify::Error> {
+    loop {
+        let ops = dirs
             .iter()
             .map(|(dir, &recursive)| {
                 if recursive {
@@ -261,27 +290,14 @@ impl Watcher {
                 }
             })
             .collect();
-        register(ops, |ops| watcher.update_paths(ops).map_err(Box::new))?;
-        Ok(Watcher { _watcher: watcher })
-    }
-}
-
-/// Registers `ops` through `update`, leaving out each one it refuses: notify stops a batch at
-/// the first directory it cannot watch, and a directory removed since the set was made must not
-/// cost the others. A failure that is no one directory's (the stream would not start) is the
-/// watch's.
-fn register(
-    mut ops: Vec<PathOp>,
-    mut update: impl FnMut(Vec<PathOp>) -> Result<(), Box<UpdatePathsError>>,
-) -> Result<(), notify::Error> {
-    while !ops.is_empty() {
-        match update(std::mem::take(&mut ops)) {
-            Ok(()) => {}
-            Err(err) if err.origin.is_some() => ops = err.remaining,
-            Err(err) => return Err(err.source),
+        match attempt(ops) {
+            Ok(watcher) => return Ok(watcher),
+            Err(err) => match &err.origin {
+                Some(op) if dirs.remove(op.as_path()).is_some() => {}
+                _ => return Err(err.source),
+            },
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -435,15 +451,20 @@ mod tests {
         assert!(!set.classify(&common.join("HEAD.orig")).git);
     }
 
-    #[test]
-    fn a_refused_directory_is_left_out_and_the_rest_registered() {
-        let ops = ["a", "b", "c", "d"].map(PathOp::watch_non_recursive).into();
-        let mut watched = Vec::new();
-        let refuse = |op: &PathOp| op.as_path() == Path::new("b") || op.as_path() == Path::new("d");
-        let result = register(ops, |ops| {
+    /// A fake start: each attempt is a fresh watcher, which refuses the first of `refused` it
+    /// is given, and otherwise holds what it was given.
+    fn attempts(
+        refused: &[&str],
+        dirs: &[&str],
+    ) -> (Result<Vec<PathBuf>, notify::Error>, Vec<Vec<PathBuf>>) {
+        let mut tried = Vec::new();
+        let dirs = dirs.iter().map(|dir| (PathBuf::from(dir), false)).collect();
+        let result = start_each(dirs, |ops| {
+            tried.push(ops.iter().map(|op| op.as_path().to_path_buf()).collect());
+            let mut watched = Vec::new();
             let mut ops = ops.into_iter();
             while let Some(op) = ops.next() {
-                if refuse(&op) {
+                if refused.iter().any(|dir| op.as_path() == Path::new(dir)) {
                     return Err(Box::new(UpdatePathsError::new(
                         notify::Error::path_not_found(),
                         Some(op),
@@ -452,19 +473,34 @@ mod tests {
                 }
                 watched.push(op.as_path().to_path_buf());
             }
-            Ok(())
+            Ok(watched)
         });
-        assert!(result.is_ok());
-        assert_eq!(watched, [PathBuf::from("a"), PathBuf::from("c")]);
+        (result, tried)
+    }
+
+    #[test]
+    fn each_refused_directory_is_left_out_and_a_fresh_watcher_takes_the_rest() {
+        let (watched, tried) = attempts(&["b", "d"], &["a", "b", "c", "d"]);
+        let paths = |dirs: &[&str]| dirs.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(watched.unwrap(), paths(&["a", "c"]));
+        assert_eq!(
+            tried,
+            [
+                paths(&["a", "b", "c", "d"]),
+                paths(&["a", "c", "d"]),
+                paths(&["a", "c"])
+            ]
+        );
+        // Every directory refused: a watcher of nothing.
+        assert_eq!(attempts(&["a"], &["a"]).0.unwrap(), paths(&[]));
     }
 
     #[test]
     fn a_failure_that_is_no_directory_s_fails_the_watch() {
-        let ops = vec![PathOp::watch_non_recursive("a")];
         let mut tries = 0;
-        let result = register(ops, |ops| {
+        let result = start_each(BTreeMap::from([(PathBuf::from("a"), false)]), |ops| {
             tries += 1;
-            Err(Box::new(UpdatePathsError::new(
+            Err::<(), _>(Box::new(UpdatePathsError::new(
                 notify::Error::generic("no stream"),
                 None,
                 ops,
@@ -472,30 +508,17 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(tries, 1);
-    }
-
-    #[test]
-    fn a_directory_removed_before_the_watch_costs_only_itself() {
-        let l = layout(&[]);
-        let set = set(&l);
-        // The status directory sorts first, so it heads the batch.
-        assert!(set.dirs.keys().next().is_some_and(|dir| *dir == l.status));
-        fs::remove_dir(&l.status).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _watcher = Watcher::start(&set, move |touched| {
-            let _ = tx.send(touched);
-        })
-        .unwrap();
-        fs::write(l.git.join("refs/heads/main"), "0".repeat(40)).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let heard = std::iter::from_fn(|| {
-            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                .ok()
-        })
-        .any(|touched| touched.git);
-        assert!(
-            heard,
-            "the ref written after the missing directory was seen"
-        );
+        // A refusal naming a directory not asked for ends the watch rather than looping.
+        let mut tries = 0;
+        let result = start_each(BTreeMap::from([(PathBuf::from("a"), false)]), |ops| {
+            tries += 1;
+            Err::<(), _>(Box::new(UpdatePathsError::new(
+                notify::Error::path_not_found(),
+                Some(PathOp::watch_non_recursive("z")),
+                ops,
+            )))
+        });
+        assert!(result.is_err());
+        assert_eq!(tries, 1);
     }
 }

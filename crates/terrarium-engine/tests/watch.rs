@@ -363,3 +363,41 @@ fn a_live_session_never_writes_into_the_repository() {
     engine.shutdown();
     assert_eq!(snapshot(&dir.path().join("repo")), before);
 }
+
+#[test]
+fn a_directory_removed_before_the_watch_costs_only_itself() {
+    use terrarium_engine::watch::{Places, WatchSet, Watcher};
+    let dir = tempfile::tempdir().unwrap();
+    let git = dir.path().join("repo/.git");
+    fs::create_dir_all(git.join("refs/heads")).unwrap();
+    let status = dir.path().join("data/local-tests");
+    fs::create_dir_all(&status).unwrap();
+    let set = WatchSet::new(&Places {
+        git_dir: &git,
+        common_dir: &git,
+        root: None,
+        patterns: &[],
+        status_dir: &status,
+        status_name: "abc123",
+    });
+    // The status directory sorts first, so it heads the batch.
+    let first = set.dirs.keys().next().unwrap();
+    assert!(first.ends_with("data/local-tests"), "{first:?}");
+    fs::remove_dir(&status).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _watcher = Watcher::start(&set, move |touched| {
+        let _ = tx.send(touched);
+    })
+    .unwrap();
+    fs::write(git.join("refs/heads/main"), "0".repeat(40)).unwrap();
+    let until = Instant::now() + PATIENCE;
+    let heard = std::iter::from_fn(|| {
+        rx.recv_timeout(until.saturating_duration_since(Instant::now()))
+            .ok()
+    })
+    .any(|touched| touched.git);
+    assert!(
+        heard,
+        "the ref written after the missing directory was seen"
+    );
+}
