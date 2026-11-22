@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(sunk.plants.len(), thriving.plants.len() - 1);
 
         let washed = with(&sunk, EventKind::RainAfterDrought);
-        assert!(washed.ground_marks.is_empty());
+        assert_eq!(washed.ground_marks, []);
         let burnt_then_washed = with(&burnt, EventKind::RainAfterDrought);
         assert_eq!(marks(&burnt_then_washed), [GroundMark::FreshSoil]);
     }

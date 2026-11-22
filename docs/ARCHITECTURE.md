@@ -153,7 +153,7 @@ names, the settings keys, and the Windows install folder, uninstall key and logi
 
 ## Pins
 
-The toolchain is pinned in `rust-toolchain.toml` (1.98.1, with the Windows target), the minimum
+The toolchain is pinned in `rust-toolchain.toml` (1.100.0, with the Windows target), the minimum
 Rust in `[workspace.package]` (1.95), and every dependency in the workspace manifest, which
 says why each is there. gix, insta, keyring and keyring-core are pinned exactly. A pin moves
 only on purpose, never in passing; a gix bump can change truth.
@@ -199,7 +199,7 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 
 ## Baseline
 
-| At 0.32.2 | Count |
+| At 0.32.3 | Count |
 |---|---|
 | Tests (nextest, all features) | 1,378 passed, 0 skipped |
 | per crate | adapters 162, app 287, compose 321, engine 143, platform 76, store 53, truth 174, xtask 162 |
@@ -211,18 +211,18 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 | Catalog | 778 sprites (160 of them glyphs) over 661 distinct images, 114 animations, 2 fonts, 10 event groups |
 | verify | 13 stages; 8 workspace members |
 
-| Bench at 0.32.2 (`cargo xtask bench`) | Measured | Budget |
+| Bench at 0.32.3 (`cargo xtask bench`) | Measured | Budget |
 |---|---|---|
-| Loading the catalog, cold | 2.66 ms | 20 ms |
-| Compositing a busy frame (278 draws), median | 0.159 ms | 1 ms |
-| Reading 10,000 commits | 3.62 s | 10 s |
-| Measuring 107,100 lines of source; one changed file | 200 ms; 0.50 ms | 1 s; 50 ms |
-| First-connect replay of 10,003 commits (N-05) | 3.52 s, the replay itself 6.51 ms | 30 s |
-| Live: first connect and refresh | 3.72 s | 30 s |
-| Live: connect again from the cache; its first refresh | under 1 ms; 3.57 s | 250 ms; 5 s |
-| Live: a refresh after a commit; after a tag on an old commit | 0.350 s; 0.251 s | 1 s; 2 s |
+| Loading the catalog, cold | 1.98 ms | 20 ms |
+| Compositing a busy frame (278 draws), median | 0.161 ms | 1 ms |
+| Reading 10,000 commits | 3.57 s | 10 s |
+| Measuring 107,100 lines of source; one changed file | 201 ms; 0.48 ms | 1 s; 50 ms |
+| First-connect replay of 10,003 commits (N-05) | 3.53 s, the replay itself 6.56 ms | 30 s |
+| Live: first connect and refresh | 3.76 s | 30 s |
+| Live: connect again from the cache; its first refresh | under 1 ms; 3.55 s | 250 ms; 5 s |
+| Live: a refresh after a commit; after a tag on an old commit | 0.347 s; 0.253 s | 1 s; 2 s |
 
-| Size at 0.32.2 (`cargo xtask size`, N-08) | Bytes |
+| Size at 0.32.3 (`cargo xtask size`, N-08) | Bytes |
 |---|---|
-| macOS, Apple silicon | 22,073,920 |
-| Windows x64, cross-built on the Mac | 24,178,176 (822 KB under the budget) |
+| macOS, Apple silicon | 22,032,368 |
+| Windows x64, cross-built on the Mac | 24,223,232 (777 KB under the budget) |

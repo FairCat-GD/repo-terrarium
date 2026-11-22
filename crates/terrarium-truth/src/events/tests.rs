@@ -187,7 +187,7 @@ fn marks_settle_expire_cap_and_wash_away() {
     events.begin(Tick::new(20 + 14 * 24));
     assert_eq!(events.marks.len(), 1);
     events.begin(Tick::new(10 + 30 * 24));
-    assert!(events.marks.is_empty());
+    assert_eq!(events.marks, []);
     // At most three, the oldest leaving first.
     for tick in 1..=4 {
         events.mark(GroundMark::Sinkhole, Tick::new(tick), Some(tick));
@@ -470,7 +470,7 @@ fn a_large_deletion_opens_a_sinkhole_that_swallows_one_plant() {
         }],
         ..commit(31, 30 * 24 + 9)
     };
-    assert!(candidates(&grown(&[rename]), &[], 30 * 24 + 9).is_empty());
+    assert_eq!(candidates(&grown(&[rename]), &[], 30 * 24 + 9), []);
 }
 
 #[test]
@@ -628,7 +628,10 @@ fn a_clearing_burn_needs_a_fifth_and_five_items_both_known() {
     // A feature branch's report is never taken.
     let mut feature = report(1, 10, true);
     feature.head.at_default_tip = false;
-    assert!(candidates(&commits, &[report(0, 50, true), feature], 3 * 24).is_empty());
+    assert_eq!(
+        candidates(&commits, &[report(0, 50, true), feature], 3 * 24),
+        []
+    );
 }
 
 #[test]
@@ -680,7 +683,7 @@ fn the_first_commit_after_two_silent_weeks_is_rain_after_drought() {
     let before = replay(&commits, &observations, 20 * 24 + 2);
     assert_eq!(before.events.marks.len(), 1);
     let after = replay(&commits, &observations, 20 * 24 + 3);
-    assert!(after.events.marks.is_empty());
+    assert_eq!(after.events.marks, []);
     assert!(after.vegetation.boost);
     assert!(!replay(&commits, &observations, 21 * 24).vegetation.boost);
 }
@@ -701,7 +704,7 @@ fn a_day_of_three_times_the_usual_churn_is_a_windstorm_that_brings_litter() {
     // While the baselines settle, a gust is no windstorm.
     let mut early = daily_commits(&[1; 12]);
     early[10].added = 1_000;
-    assert!(candidates(&early, &[], 12 * 24).is_empty());
+    assert_eq!(candidates(&early, &[], 12 * 24), []);
 }
 
 #[test]
@@ -720,7 +723,7 @@ fn a_branch_switch_fires_nothing() {
         weather(ci("main"), 40, 2, "main", Some(true)),
         rewrite(50, "refs/heads/feature/fern", Some(9), Vec::new()),
     ];
-    assert!(candidates(&commits, &observations, 6 * 24).is_empty());
+    assert_eq!(candidates(&commits, &observations, 6 * 24), []);
 }
 
 #[test]

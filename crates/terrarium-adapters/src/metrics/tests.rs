@@ -813,7 +813,7 @@ fn todo_density_is_markers_per_thousand_lines_on_section_4_3s_curve() {
     assert_eq!(reading.contributors[0].path, "a.ts");
     let clear = measured(&[("a.rs", file(Language::Rust, lines(50, 0, 0, 0), 0))]);
     assert_eq!(clear.todo_density().unwrap().normalized, Q16::ONE);
-    assert!(clear.todo_density().unwrap().contributors.is_empty());
+    assert_eq!(clear.todo_density().unwrap().contributors, []);
     let empty = measured(&[("a.rs", file(Language::Rust, Counted::default(), 0))]);
     assert_eq!(empty.todo_density(), None);
 }

@@ -30,14 +30,14 @@ fn version_prints_the_binary_name_and_workspace_version() {
         String::from_utf8(out.stdout).unwrap(),
         format!("repo-terrarium {}\n", env!("CARGO_PKG_VERSION"))
     );
-    assert!(out.stderr.is_empty());
+    assert_eq!(out.stderr, [] as [u8; 0]);
 }
 
 #[test]
 fn an_unexpected_argument_exits_with_status_2() {
     let out = repo_terrarium(&["--bogus"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     assert!(String::from_utf8(out.stderr).unwrap().contains("'--bogus'"));
 }
 
@@ -45,7 +45,7 @@ fn an_unexpected_argument_exits_with_status_2() {
 fn a_probe_without_a_kind_exits_with_status_2() {
     let out = repo_terrarium(&["--probe"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     assert!(
         String::from_utf8(out.stderr)
             .unwrap()
@@ -57,7 +57,7 @@ fn a_probe_without_a_kind_exits_with_status_2() {
 fn an_unknown_probe_kind_exits_with_status_2() {
     let out = repo_terrarium(&["--probe", "weather"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     assert!(String::from_utf8(out.stderr).unwrap().contains("'weather'"));
 }
 
@@ -68,7 +68,7 @@ fn the_probe_readme_is_printed_whole_and_opens_no_window() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("Repo Terrarium: the Windows pinning probe\n"));
     assert!(text.contains("run-probe.cmd"));
-    assert!(out.stderr.is_empty());
+    assert_eq!(out.stderr, [] as [u8; 0]);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn repo_naming_no_repository_exits_before_the_strip_opens() {
         &["--repo", nowhere.to_str().unwrap()],
     );
     assert_eq!(out.status.code(), Some(1));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
         stderr.starts_with("repo-terrarium: ")
@@ -142,7 +142,7 @@ mod replay {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(out.stderr.is_empty());
+        assert_eq!(out.stderr, [] as [u8; 0]);
         let text = String::from_utf8(out.stdout).unwrap();
         assert!(text.starts_with(&format!(
             "sim_version = {}\n",
@@ -168,7 +168,7 @@ mod replay {
         let empty = dir.path().to_str().unwrap();
         let out = repo_terrarium(&["replay", empty, "--dump"]);
         assert_eq!(out.status.code(), Some(1));
-        assert!(out.stdout.is_empty());
+        assert_eq!(out.stdout, [] as [u8; 0]);
         let message = String::from_utf8(out.stderr).unwrap();
         assert!(
             message.contains("could not be read as a git repository"),
@@ -189,7 +189,7 @@ mod replay {
     fn replay_without_dump_exits_with_status_2() {
         let out = repo_terrarium(&["replay", "moss"]);
         assert_eq!(out.status.code(), Some(2));
-        assert!(out.stdout.is_empty());
+        assert_eq!(out.stdout, [] as [u8; 0]);
         assert!(String::from_utf8(out.stderr).unwrap().contains("--dump"));
     }
 
@@ -389,11 +389,11 @@ mod discover {
             "{text}"
         );
         assert!(!text.contains(dir.path().to_str().unwrap()), "{text}");
-        assert!(out.stderr.is_empty());
+        assert_eq!(out.stderr, [] as [u8; 0]);
 
         let not_a_repo = repo_terrarium(&["discover", dir.path().to_str().unwrap()]);
         assert_eq!(not_a_repo.status.code(), Some(1));
-        assert!(not_a_repo.stdout.is_empty());
+        assert_eq!(not_a_repo.stdout, [] as [u8; 0]);
         let missing = repo_terrarium(&["discover"]);
         assert_eq!(missing.status.code(), Some(2));
     }
@@ -498,7 +498,7 @@ mod record_tests {
             format!("repo-terrarium {}\n", env!("CARGO_PKG_VERSION")),
             "the command's own output passes through"
         );
-        assert!(passed.stderr.is_empty());
+        assert_eq!(passed.stderr, [] as [u8; 0]);
         let recorded = status(&status_file);
         assert_eq!(recorded["format"], "repo-terrarium-local-tests");
         assert_eq!(recorded["exit_code"], 0);
@@ -587,7 +587,7 @@ mod record_tests {
             &["record-tests", "--", BINARY, "--version"],
         );
         assert_eq!(refused.status.code(), Some(125));
-        assert!(refused.stdout.is_empty());
+        assert_eq!(refused.stdout, [] as [u8; 0]);
         assert!(
             String::from_utf8(refused.stderr)
                 .unwrap()
@@ -596,7 +596,7 @@ mod record_tests {
 
         let usage = repo_terrarium_in(&path, &data, &["record-tests", BINARY]);
         assert_eq!(usage.status.code(), Some(2));
-        assert!(usage.stdout.is_empty());
+        assert_eq!(usage.stdout, [] as [u8; 0]);
         assert!(!status_file.exists());
     }
 }

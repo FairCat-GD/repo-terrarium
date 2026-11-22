@@ -6,6 +6,13 @@ version, such as `0.32.1`.
 
 ## [Unreleased]
 
+## [0.32.3] - 2026-11-22
+
+### Changed
+
+- The git reader, gitoxide, is updated to 0.90, and the app is now built with Rust 1.100.
+  Nothing you see changes.
+
 ## [0.32.2] - 2026-11-22
 
 ### Changed

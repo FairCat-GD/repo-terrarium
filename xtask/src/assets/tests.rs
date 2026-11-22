@@ -105,7 +105,7 @@ fn the_delivered_package_passes_and_packs_the_same_bytes_twice() {
     let names: Vec<&str> = output.keys().map(String::as_str).collect();
     assert_eq!(names, ["temperate/atlas.bin", "temperate/catalog.bin"]);
     assert_eq!(build(&package).output, Some(output.clone()));
-    assert!(compare(&output, &output).is_empty());
+    assert_eq!(compare(&output, &output), []);
 
     let catalog = Catalog::decode(
         &output["temperate/catalog.bin"],
@@ -516,8 +516,11 @@ fn write_mode_rewrites_what_changed_and_removes_what_is_no_longer_generated() {
     assert_eq!(read_generated(dir.path()).unwrap(), output);
 
     let unchanged = read_generated(dir.path()).unwrap();
-    assert!(write(dir.path(), &output, &unchanged).unwrap().is_empty());
-    assert!(compare(&output, &unchanged).is_empty());
+    assert_eq!(
+        write(dir.path(), &output, &unchanged).unwrap(),
+        [] as [String; 0]
+    );
+    assert_eq!(compare(&output, &unchanged), []);
 }
 
 #[test]
@@ -526,7 +529,7 @@ fn check_7_compares_byte_for_byte_both_ways() {
         ("temperate/atlas.bin".to_owned(), vec![0, 1, 2, 3]),
         ("temperate/catalog.bin".to_owned(), vec![9, 9]),
     ]);
-    assert!(compare(&output, &output).is_empty());
+    assert_eq!(compare(&output, &output), []);
 
     let mut flipped = output.clone();
     flipped.get_mut("temperate/atlas.bin").unwrap()[2] ^= 1;

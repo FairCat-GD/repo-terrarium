@@ -251,7 +251,7 @@ fn without_the_opt_in_for_this_repository_knip_never_runs() {
     thread::sleep(Duration::from_millis(500));
     engine.shutdown_and_join();
     assert_eq!(fx.runs(), 0, "Knip ran without the opt-in");
-    assert!(fx.dead_code().is_empty());
+    assert_eq!(fx.dead_code(), []);
 }
 
 #[test]

@@ -1459,11 +1459,7 @@ mod tests {
             )
             .unwrap()
         );
-        assert!(
-            table
-                .resident(ResidentSpecies::Snail, LifeStage::Pupa)
-                .is_empty()
-        );
+        assert_eq!(table.resident(ResidentSpecies::Snail, LifeStage::Pupa), []);
         assert_eq!(
             table
                 .resident(ResidentSpecies::Snail, LifeStage::Dying)
@@ -1475,7 +1471,7 @@ mod tests {
         assert_eq!(table.glass(GlassFilm::Dust, 0), None);
         assert!(table.glass(GlassFilm::Dust, MAX_GLASS_LEVEL).is_some());
         assert_eq!(table.glass(GlassFilm::Dust, MAX_GLASS_LEVEL + 1), None);
-        assert!(table.wind(Wind::Calm).is_empty());
+        assert_eq!(table.wind(Wind::Calm), []);
         assert_eq!(
             table.event(EventKind::Storm),
             table.event(EventKind::Clearing)

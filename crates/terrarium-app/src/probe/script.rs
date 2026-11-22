@@ -170,7 +170,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let (a, b) = (items(Phase::A), items(Phase::B));
-        assert!(!a.is_empty());
+        assert_ne!(a, []);
         assert_eq!(a.len(), b.len());
         for ((a_key, a_text, a_level), (b_key, b_text, b_level)) in a.into_iter().zip(b) {
             assert_eq!((a_key, a_text), (b_key, b_text));

@@ -281,7 +281,7 @@ mod tests {
         // No root, no stones.
         let mut bare = Landmarks::default();
         bare.raise(Tick::new(10 * YEAR), None);
-        assert!(bare.monuments.is_empty());
+        assert_eq!(bare.monuments, []);
     }
 
     #[test]
@@ -323,7 +323,7 @@ mod tests {
             ..deleting(3, 7, &[("src/feature", 900)])
         };
         landmarks.bury(&seed, &side);
-        assert!(landmarks.fossils.is_empty());
+        assert_eq!(landmarks.fossils, []);
         landmarks.bury(&seed, &deleting(4, 8, &[("src/legacy", 500)]));
         assert_eq!(landmarks.fossils.len(), 1);
         let fossil = &landmarks.fossils[0];

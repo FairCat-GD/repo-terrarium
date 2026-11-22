@@ -432,7 +432,7 @@ fn an_answer_for_another_repository_is_not_recorded() {
         read: Read::Decided(Some(("main".into(), verdict(true, 1)))),
     };
     assert!(!live.ci_answered(elsewhere, false));
-    assert!(fx.ci_rows().is_empty());
+    assert_eq!(fx.ci_rows(), []);
     assert_eq!(
         live.tools().ci,
         CiStatus::Quiet,

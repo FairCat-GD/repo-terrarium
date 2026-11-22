@@ -450,11 +450,14 @@ mod tests {
                 "\\Users\\someone\\.cargo (UTF-16)"
             ]
         );
-        assert!(traces(b"/cargo/registry/src", &[folder], false).is_empty());
+        assert_eq!(
+            traces(b"/cargo/registry/src", &[folder], false),
+            [] as [String; 0]
+        );
         // Windows reads paths in any case, and so does its scan.
         let windows = Path::new(r"C:\Users\Someone");
         let other = b"C:\\USERS\\someone\\.cargo";
-        assert!(traces(other, &[windows], false).is_empty());
+        assert_eq!(traces(other, &[windows], false), [] as [String; 0]);
         assert_eq!(
             traces(other, &[windows], true),
             [r"c:\users\someone (UTF-8)"]

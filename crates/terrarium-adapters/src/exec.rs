@@ -1679,7 +1679,7 @@ mod tests {
         assert_eq!(kept, ["SystemRoot", "TEMP", "TMP"]);
         assert_eq!(kept_env(WINDOWS_KEPT_ENV, |_| None), []);
         if !cfg!(windows) {
-            assert!(KEPT_ENV.is_empty());
+            assert_eq!(KEPT_ENV, [] as [&str; 0]);
         }
     }
 
@@ -1748,7 +1748,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         // Nothing installed: no folder.
-        assert!(version_manager_dirs(&home).is_empty());
+        assert_eq!(version_manager_dirs(&home), [] as [PathBuf; 0]);
         for version in ["v18.20.4", "v20.9.0", "v20.18.1", "v22.11.0", "notes"] {
             std::fs::create_dir_all(home.join(".nvm/versions/node").join(version)).unwrap();
         }

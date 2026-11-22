@@ -542,7 +542,7 @@ mod tests {
         let at = |secs| start + Duration::from_secs(secs);
         assert_eq!(soak.due(), Some(at(10)));
         assert!(!soak.sample(at(5), Counts::default()));
-        assert!(soak.report.samples.is_empty());
+        assert_eq!(soak.report.samples, []);
         soak.covered(true, at(8));
         assert!(!soak.sample(at(12), Counts::default()));
         assert_eq!(soak.due(), Some(at(20)));

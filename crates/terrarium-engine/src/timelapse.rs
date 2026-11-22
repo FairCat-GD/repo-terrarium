@@ -370,7 +370,7 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert!(lapse.closes().is_empty());
+        assert_eq!(lapse.closes(), []);
     }
 
     /// Why a test's visitor stopped the replay.

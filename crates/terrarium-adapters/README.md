@@ -138,9 +138,9 @@ The feature writes, so only xtask and dev-dependencies may turn it on.
 - It depends on no workspace crate except `terrarium-truth`.
 - It is the only crate allowed an HTTP client: `ureq`, in the `ci` module only.
   `cargo xtask verify` checks that no other crate can reach `ureq`.
-- gix is pinned exactly (`=0.88.0`): a bump can change line counts and so truth. It is opened
+- gix is pinned exactly (`=0.90.0`): a bump can change line counts and so truth. It is opened
   read-only and isolated. The git command line is never run.
-- tree-sitter (0.26.x) and the grammars change only future observations, never replay; a change
+- tree-sitter (0.27.x) and the grammars change only future observations, never replay; a change
   to how the same commit is counted bumps `METRICS_VERSION`.
 - A parse failure degrades to `Unknown`, never to zero, and an unknown report is never
   recorded: the last reading holds and turns stale.

@@ -273,7 +273,10 @@ mod tests {
 
     #[test]
     fn committed_files_that_hold_the_fresh_dump_pass() {
-        assert!(problems(Some(V1), Some(&sha_line(V1)), V1).is_empty());
+        assert_eq!(
+            problems(Some(V1), Some(&sha_line(V1)), V1),
+            [] as [String; 0]
+        );
     }
 
     #[test]

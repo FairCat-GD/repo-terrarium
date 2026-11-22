@@ -62,11 +62,11 @@ fn the_first_update_fades_everything_in_from_nothing() {
     let mut composer = Composer::new(&table, preset::SALT);
     // No label: its fade is the quickest, and would have finished by the middle.
     composer.update(&scene("thriving"), &overlay(&[]), Millis(1000));
-    assert!(visible(&composer, &table, Millis(1000)).is_empty());
+    assert_eq!(visible(&composer, &table, Millis(1000)), []);
     // Within the residents' quicker fade too.
     let middle = visible(&composer, &table, Millis(1600));
     let art = Art::embedded();
-    assert!(!middle.is_empty());
+    assert_ne!(middle, []);
     assert!(
         middle
             .iter()
@@ -313,7 +313,7 @@ fn a_pale_turn_fades_the_foliage_and_never_the_stem() {
         .into_iter()
         .filter(|d| matches!(d.piece, Piece::Stem { .. }))
         .collect();
-    assert!(!stems.is_empty());
+    assert_ne!(stems, []);
     assert!(stems.iter().all(|d| d.opacity == SHOWN));
 }
 
@@ -381,7 +381,7 @@ fn night_only_art_is_gone_by_day_and_day_only_art_by_night() {
         .filter(|keyed| keyed.draw.sprite == glow)
         .map(|keyed| keyed.draw.opacity)
         .collect();
-    assert!(!glows.is_empty());
+    assert_ne!(glows, []);
     assert!(
         glows
             .iter()
@@ -964,7 +964,7 @@ fn wind_sways_at_most_six_plants_their_foliage_and_blooms_only() {
     let mut composer = Composer::new(&table, preset::SALT);
     composer.update(&thriving, &overlay(&[]), Millis(0));
     for ms in (24_000..72_000).step_by(100) {
-        assert!(leaning(&composer, &table, Millis(ms)).0.is_empty());
+        assert_eq!(leaning(&composer, &table, Millis(ms)).0, []);
     }
 }
 
@@ -983,7 +983,7 @@ fn a_wind_change_waits_for_the_next_turn_and_dim_quarters_the_gusts() {
         ..scene.clone()
     };
     composer.update(&calm, &overlay(&[]), moving);
-    assert!(!leaning(&composer, &table, moving).0.is_empty());
+    assert_ne!(leaning(&composer, &table, moving).0, []);
     assert!((48_000..96_000).all(|ms| leaning(&composer, &table, Millis(ms)).0.is_empty()));
     // Dimmed, only every fourth turn gusts.
     let mut composer = Composer::new(&table, preset::SALT);
@@ -1385,7 +1385,7 @@ fn the_moon_shows_its_phase_and_new_moon_shows_none() {
     let at = |composer: &Composer| of(composer, &table, 255, composer.settled_at(), Subject::Moon);
     let date = |date| OverlayInput::new(Vec::new(), LocalClock::noon(date));
     composer.update(&input, &date(sky::LocalDate::new(2026, 3, 19)), Millis(0));
-    assert!(at(&composer).is_empty());
+    assert_eq!(at(&composer), []);
     composer.update(
         &input,
         &date(sky::LocalDate::new(2026, 3, 15)),

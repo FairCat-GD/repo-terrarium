@@ -643,9 +643,9 @@ mod tests {
         assert!(!found.local_tests);
         assert_eq!(found.knip_config, None);
         assert_eq!(found.knip_installed, None);
-        assert!(found.ci_workflows.is_empty());
+        assert_eq!(found.ci_workflows, [] as [String; 0]);
         assert_eq!(found.github, None);
-        assert!(found.runners.is_empty());
+        assert_eq!(found.runners, []);
     }
 
     #[test]

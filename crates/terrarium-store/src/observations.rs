@@ -421,7 +421,7 @@ mod tests {
         let ours = fx.store.create_terrarium(&new_terrarium(1)).unwrap();
         let theirs = fx.store.create_terrarium(&new_terrarium(2)).unwrap();
         let with = record(ObservationKind::Coverage, 100);
-        assert!(!with.contributors.is_empty());
+        assert_ne!(with.contributors, []);
         let mut without = record(ObservationKind::Coverage, 101);
         without.contributors.clear();
         let a = fx.store.append_observation(ours, &with).unwrap();

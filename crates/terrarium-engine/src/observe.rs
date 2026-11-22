@@ -727,7 +727,10 @@ mod tests {
             .map(|r| r.kind)
             .collect();
         assert_eq!(kinds, [ObservationKind::TodoDensity]);
-        assert!(metrics(&Measurement::default(), Enabled::default(), &head(), 50).is_empty());
+        assert_eq!(
+            metrics(&Measurement::default(), Enabled::default(), &head(), 50),
+            []
+        );
     }
 
     #[test]

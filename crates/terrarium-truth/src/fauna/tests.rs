@@ -111,7 +111,7 @@ fn the_pool_is_known() {
         [Snail, Firefly, Woodlouse, Springtail, Harvestman]
     );
     let fresh = Fauna::new(&seed(7));
-    assert!(fresh.residents.is_empty());
+    assert_eq!(fresh.residents, []);
     assert_eq!((fresh.next_id, fresh.arrivals), (1, Q16::ZERO));
 }
 
@@ -188,7 +188,7 @@ fn old_age_shows_dying_for_one_close_and_the_room_refills_at_once() {
     run(&mut dying, &seed, &food, ONE, 1..=1, |today| {
         today.inactive = true;
     });
-    assert!(dying.residents.is_empty());
+    assert_eq!(dying.residents, []);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn decomposers_live_on_decay_but_never_breed() {
     assert_eq!((fauna.laid, fauna.arrived, fauna.left), (0, 0, 1));
     // When the decay is gone, it goes hungry too.
     run(&mut fauna, &seed, &bare(), TWO, 91..=150, |_| {});
-    assert!(fauna.residents.is_empty());
+    assert_eq!(fauna.residents, []);
 }
 
 #[test]
@@ -441,7 +441,7 @@ fn inactivity_pauses_ageing_and_births_but_not_leaving() {
     run(&mut fauna, &seed, &bare(), SIX, 31..=80, |today| {
         today.inactive = true;
     });
-    assert!(fauna.residents.is_empty());
+    assert_eq!(fauna.residents, []);
     assert_eq!(fauna.left, 2);
 }
 

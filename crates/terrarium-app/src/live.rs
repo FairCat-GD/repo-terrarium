@@ -375,7 +375,7 @@ mod tests {
     fn the_label_follows_the_engine_and_the_scene_freezes_while_the_repository_is_gone() {
         let mut view = LiveView::new("moss".into(), None);
         assert_eq!(view.scene().weather, Weather::Haze);
-        assert!(view.scene().plants.is_empty());
+        assert_eq!(view.scene().plants, []);
         assert_eq!(view.label(), ["moss"]);
         assert_eq!(view.apply(Update::Progress(40)), Changed::Label);
         assert_eq!(view.label(), ["moss", "history 40%"]);

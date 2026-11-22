@@ -581,7 +581,7 @@ mod tests {
         let file = export(&fx, id);
         let report = fx.store.import_observations(id, &file[..]).unwrap();
         assert_eq!((report.inserted, report.duplicates), (0, 7));
-        assert!(report.conflicts.is_empty());
+        assert_eq!(report.conflicts, []);
         assert_eq!(export(&fx, id), file);
     }
 

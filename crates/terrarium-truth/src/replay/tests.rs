@@ -213,7 +213,7 @@ fn a_rewrite_that_drops_a_deletion_drops_its_fossil() {
         resumed.advance_through(&prepared, Tick::new(120)),
         Err(ReplayError::NeedsFullReplay)
     );
-    assert!(replay(&rewritten, &[], 120).landmarks.fossils.is_empty());
+    assert_eq!(replay(&rewritten, &[], 120).landmarks.fossils, []);
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn a_source_switch_is_not_a_transition() {
 #[test]
 fn the_first_close_is_the_next_midnight() {
     let commits = [commit(1, 0)];
-    assert!(replay(&commits, &[], 23).daily.is_empty());
+    assert_eq!(replay(&commits, &[], 23).daily, []);
     let state = replay(&commits, &[], 24);
     assert_eq!(state.daily.len(), 1);
     assert_eq!(state.daily[0].tick, Tick::new(24));
@@ -303,7 +303,7 @@ fn the_first_close_is_the_next_midnight() {
     state
         .advance_through(&prepared, Tick::new(14))
         .expect("advances");
-    assert!(state.daily.is_empty());
+    assert_eq!(state.daily, []);
     state
         .advance_through(&prepared, Tick::new(15))
         .expect("advances");

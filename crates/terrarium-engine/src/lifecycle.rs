@@ -330,7 +330,7 @@ mod tests {
         let theirs = connect(&there, &repo, seed);
         let moved = import(&there, theirs.id, &file).unwrap();
         assert_eq!((moved.inserted, moved.duplicates), (recorded.inserted, 0));
-        assert!(moved.conflicts.is_empty());
+        assert_eq!(moved.conflicts, []);
         assert_eq!(replayed(&there, &theirs), replayed(&here, &mine));
         // Moved twice, nothing changes.
         let again = import(&there, theirs.id, &file).unwrap();

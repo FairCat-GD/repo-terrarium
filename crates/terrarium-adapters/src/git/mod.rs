@@ -100,9 +100,9 @@ pub struct GitRepo {
 /// How every repository is opened: isolated, with replace refs out of reach.
 fn open_options() -> gix::open::Options {
     gix::open::Options::isolated()
-        // Replace refs are install-local and would make two clones disagree. They are looked up
-        // under a namespace nothing writes to, which holds however gix reads
-        // `core.useReplaceRefs` (0.88 reads its value inverted).
+        // Replace refs are install-local and would make two clones disagree, and gix applies
+        // them by default. They are looked up under a namespace nothing writes to, which holds
+        // whichever way a gix version reads `core.useReplaceRefs`.
         .config_overrides(["gitoxide.objects.replaceRefBase=refs/terrarium/no-replacements/"])
 }
 

@@ -62,7 +62,7 @@ mod tests {
         assert_eq!(item.asked, [true]);
         let mut item = mock(Ok(()));
         assert_eq!(first_run(&mut item, false), None);
-        assert!(item.asked.is_empty());
+        assert_eq!(item.asked, [] as [bool; 0]);
     }
 
     #[test]

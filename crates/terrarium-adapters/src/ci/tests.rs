@@ -29,7 +29,7 @@ fn the_newest_decided_commit_gives_the_verdict() {
     let pass = verdict_of("pass").unwrap();
     assert!(pass.passed);
     assert_eq!((pass.sha.as_str(), pass.workflows), (A, 2));
-    assert!(pass.failing.is_empty());
+    assert_eq!(pass.failing, [] as [String; 0]);
 
     let fail = verdict_of("fail").unwrap();
     assert!(!fail.passed);

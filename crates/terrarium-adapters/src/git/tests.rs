@@ -184,7 +184,7 @@ fn a_rename_is_listed_and_is_not_a_deletion() {
         }]
     );
     assert_eq!(d.removed, 90);
-    assert!(d.renames.is_empty());
+    assert_eq!(d.renames, []);
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn a_shallow_boundary_stands_in_for_the_root() {
     let history = read(&repo);
     assert_eq!(history.commits.len(), 3);
     assert_eq!(history.notes.shallow_boundary, ids[2..3]);
-    assert!(history.notes.missing_objects.is_empty());
+    assert_eq!(history.notes.missing_objects, []);
     let boundary = facts(&history, &ids[2]);
     assert_eq!(
         (boundary.added, boundary.parents, boundary.tick),
@@ -443,7 +443,7 @@ fn a_dangling_ref_is_skipped() {
     assert_eq!(git.default_branch(), Ok("main".into()));
     let history = read(&repo);
     assert_eq!(history.commits.len(), 1);
-    assert!(history.commits[0].tags.is_empty());
+    assert_eq!(history.commits[0].tags, []);
 }
 
 #[test]
@@ -859,7 +859,7 @@ fn a_rewrite_carries_what_git_read_of_each_commit_it_took_off() {
         .collect();
     assert_eq!(taken.len(), 2);
     assert_eq!(taken[0].1, T0 + 20 * HOUR);
-    assert!(taken[0].2.is_empty());
+    assert_eq!(taken[0].2, []);
     assert_eq!(
         taken[1],
         (
@@ -940,7 +940,7 @@ fn a_rewrite_names_the_commits_that_left_the_default_chain() {
     assert_eq!(left, [ids[2].clone()]);
     // A new tag reads everything again and moves nothing.
     let (left, _) = left_chain(|repo, ids| repo.tag_lightweight("v1", &ids[2]).unwrap());
-    assert!(left.is_empty());
+    assert_eq!(left, []);
 }
 
 #[test]
@@ -1316,7 +1316,7 @@ fn the_arc_reads_as_scripted() {
             .all(|r| r.from.starts_with(fixture::ARC_RENAMED_FROM)
                 && r.to.starts_with(fixture::ARC_RENAMED_TO))
     );
-    assert!(rename.deleted_dirs.is_empty());
+    assert_eq!(rename.deleted_dirs, []);
     let deletion = facts(&history, &arc.deletion);
     assert_eq!(deletion.deleted_dirs.len(), 1);
     assert_eq!(deletion.deleted_dirs[0].path, fixture::ARC_DELETED_DIR);

@@ -1066,7 +1066,7 @@ mod tests {
         };
         let burns = |ms| of(&composer, after(now, ms), |s| matches!(s, Subject::Burn(_)));
         let before = weeds(0);
-        assert!(!before.is_empty());
+        assert_ne!(before, []);
         let keys = |draws: &[KeyedDraw]| -> Vec<_> { draws.iter().map(|k| k.key).collect() };
         let cells: BTreeSet<u8> = before.iter().filter_map(|k| k.key.subject.cell()).collect();
         assert!(
@@ -1113,13 +1113,13 @@ mod tests {
         let playing = composer.show_depicted(after(now, 1)).map(|d| d.subject);
         assert!(matches!(playing, Some(Subject::Burn(cell)) if cells.contains(&cell)));
         // The ash clears; the sprinkles come over 900 ms, hold and go over 1200; the soil stays.
-        assert!(burns(941).is_empty());
+        assert_eq!(burns(941), []);
         let sprinkles = |ms| {
             of(&composer, after(now, ms), |s| {
                 matches!(s, Subject::Sprinkle(_))
             })
         };
-        assert!(sprinkles(941).is_empty());
+        assert_eq!(sprinkles(941), []);
         let rising = opacities(&sprinkles(941 + 450));
         assert!(rising.iter().all(|&o| o > 0 && o < 255), "{rising:?}");
         assert_eq!(
@@ -1127,7 +1127,7 @@ mod tests {
             BTreeSet::from([255])
         );
         assert_eq!(sprinkles(941 + 900).len(), cells.len());
-        assert!(sprinkles(941 + 2700).is_empty());
+        assert_eq!(sprinkles(941 + 2700), []);
         assert_eq!(composer.show_end(), Some(after(now, 1 + 940 + 2700)));
         let settled = composer.settled_at();
         assert_eq!(
@@ -1176,12 +1176,12 @@ mod tests {
             &with(&thriving(), EventKind::ClearingBurn, Side::Left),
         );
         assert_eq!(composer.show, None);
-        assert!(
+        assert_eq!(
             of(&composer, after(now, 300), |s| matches!(
                 s,
                 Subject::Burn(_)
-            ))
-            .is_empty()
+            )),
+            []
         );
         let soil = |ms| {
             of(&composer, after(now, ms), |s| {
@@ -1270,7 +1270,7 @@ mod tests {
         };
         // The bolt is over 333 ms in; the scorch enters over 600, holds 900, exits over 1200.
         let bolt = 1 + 332;
-        assert!(scorch(bolt).is_empty());
+        assert_eq!(scorch(bolt), []);
         let entering = scorch(bolt + 300)[0].draw.opacity;
         assert!(entering > 0 && entering < 255);
         let held = scorch(bolt + 600);
@@ -1280,7 +1280,7 @@ mod tests {
         assert_eq!(foliage(bolt + 1500), 0, "and goes behind it");
         assert_eq!(foliage(bolt + 2100), 255, "then comes back under it");
         assert_eq!(scorch(bolt + 2100)[0].draw.opacity, 255);
-        assert!(scorch(bolt + 2700).is_empty());
+        assert_eq!(scorch(bolt + 2700), []);
         assert_eq!(composer.show_end(), Some(after(now, bolt + 2700)));
         // In its plant's layer, keyed at its plant's ground point, over the plant.
         let plant_key = of(&composer, after(now, 1), |s| s == plant)
@@ -1334,12 +1334,12 @@ mod tests {
         let (composer, now, _) = struck(PlantState::Dead, false);
         assert!(composer.scorched().is_none());
         for ms in [400, 1000, 2000] {
-            assert!(
+            assert_eq!(
                 of(&composer, after(now, ms), |s| matches!(
                     s,
                     Subject::Scorch { .. }
-                ))
-                .is_empty()
+                )),
+                []
             );
         }
         assert_eq!(composer.show_end(), Some(after(now, 1 + 332)));
@@ -1420,7 +1420,7 @@ mod tests {
     #[test]
     fn an_earthquake_opens_its_crack_in_three_frames_into_the_settled_one_that_stays() {
         let (composer, now) = played(&poor(), &with(&poor(), EventKind::Earthquake, Side::Left));
-        assert!(marks_at(&composer, now).is_empty());
+        assert_eq!(marks_at(&composer, now), []);
         let mut seen = Vec::new();
         for ms in [1, 167, 333, 499] {
             let marks = marks_at(&composer, after(now, ms));
@@ -1645,8 +1645,8 @@ mod tests {
                 |s| matches!(s, Subject::Fossil { id, .. } if id == taken.id),
             )
         };
-        assert!(!fossil(after(now, 1)).is_empty());
-        assert!(fossil(composer.settled_at()).is_empty());
+        assert_ne!(fossil(after(now, 1)), []);
+        assert_eq!(fossil(composer.settled_at()), []);
     }
 
     #[test]
@@ -1667,7 +1667,7 @@ mod tests {
         composer.update(&base, &overlay(false), settled);
         let leaving = marks_at(&composer, after(settled, 1500));
         assert!(leaving[0].2 > 0 && leaving[0].2 < 255);
-        assert!(marks_at(&composer, composer.settled_at()).is_empty());
+        assert_eq!(marks_at(&composer, composer.settled_at()), []);
     }
 
     #[test]

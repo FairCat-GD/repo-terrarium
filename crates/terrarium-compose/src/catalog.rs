@@ -678,7 +678,7 @@ mod tests {
     fn the_embedded_art_decodes() {
         let art = Art::embedded();
         assert_eq!(art.catalog.biome, "temperate");
-        assert!(!art.catalog.sprites.is_empty());
+        assert_ne!(art.catalog.sprites, []);
     }
 
     #[test]

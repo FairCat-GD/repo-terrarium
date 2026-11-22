@@ -337,7 +337,7 @@ fn a_failing_plant_that_recovers_in_time_lives() {
     assert!(vegetation.plants.iter().all(|p| p.low_since.is_some()));
     run(&mut vegetation, &seed, 81..=140, |_| {});
     assert!(thriving(&vegetation, 1_000));
-    assert!(vegetation.litter.is_empty());
+    assert_eq!(vegetation.litter, []);
 }
 
 #[test]
@@ -608,7 +608,7 @@ fn a_sinkhole_swallows_one_living_plant_and_leaves_no_litter() {
     let key = crate::landmarks::commit_key(&crate::test_support::id(4));
     assert_eq!(vegetation.swallow(&seed, key), Some(7));
     assert_eq!(vegetation.plants.len(), 6);
-    assert!(vegetation.litter.is_empty());
+    assert_eq!(vegetation.litter, []);
     let mut bare = Vegetation::new(&seed);
     assert_eq!(bare.swallow(&seed, key), None);
 }

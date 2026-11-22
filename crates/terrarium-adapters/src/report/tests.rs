@@ -396,7 +396,7 @@ fn jest_junit_pytest_and_vitest_read_alike() {
     let vitest = read(&dir, Format::JUnit, &[".vitest/junit/output.xml"]);
     assert_eq!(known_passed(&vitest), Some(true));
     assert_eq!(known(&vitest).reading.normalized(), Some(Q16::ONE));
-    assert!(known(&vitest).contributors.is_empty());
+    assert_eq!(known(&vitest).contributors, []);
 }
 
 #[test]

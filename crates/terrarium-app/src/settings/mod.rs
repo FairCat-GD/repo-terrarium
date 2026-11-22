@@ -419,6 +419,6 @@ mod tests {
             changes.into_iter().map(Intent::Set).collect::<Vec<_>>()
         );
         assert_eq!(intents.len(), 3);
-        assert!(form.take_intents().is_empty());
+        assert_eq!(form.take_intents(), []);
     }
 }

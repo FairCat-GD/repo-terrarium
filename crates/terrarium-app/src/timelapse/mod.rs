@@ -370,7 +370,7 @@ pub(crate) mod tests {
         // A window since closed: nothing is taken.
         let read = || Msg::Read(Ok(std::sync::Arc::clone(&lapse)));
         assert!(!said(&mut session, &mut form, 6, read(), now));
-        assert!(session.days().is_empty());
+        assert_eq!(session.days(), [] as [i64; 0]);
 
         // Its own: the history is taken, and the whole range asked for by day.
         assert!(said(&mut session, &mut form, 7, read(), now));

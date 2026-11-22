@@ -82,7 +82,11 @@ impl Differ {
             },
             gix::diff::blob::Pipeline::new(
                 gix::diff::blob::pipeline::WorktreeRoots::default(),
-                gix::filter::plumbing::Pipeline::default(),
+                gix::filter::plumbing::Pipeline::new(
+                    gix::command::Context::default(),
+                    repo.object_hash(),
+                    gix::filter::plumbing::pipeline::Options::default(),
+                ),
                 Vec::new(),
                 gix::diff::blob::pipeline::Options {
                     large_file_threshold_bytes: LARGEST_TEXT_BLOB_BYTES,
@@ -130,7 +134,7 @@ impl Differ {
             &mut self.resources,
             &mut self.tree_state,
             &repo.objects,
-            |change| -> gix::ExnResult<gix::diff::tree_with_rewrites::Action> {
+            |change| -> gix::Result<gix::diff::tree_with_rewrites::Action> {
                 items.push(own(change));
                 Ok(std::ops::ControlFlow::Continue(()))
             },

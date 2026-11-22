@@ -81,9 +81,9 @@ mod tests {
         let base = Instant::now();
         let mut schedule = RepaintSchedule::default();
         schedule.request(7, ms(base, 100));
-        assert!(schedule.take_due(ms(base, 50)).is_empty());
+        assert_eq!(schedule.take_due(ms(base, 50)), [] as [i32; 0]);
         assert_eq!(schedule.take_due(ms(base, 100)), [7]);
-        assert!(schedule.take_due(ms(base, 5_000)).is_empty());
+        assert_eq!(schedule.take_due(ms(base, 5_000)), [] as [i32; 0]);
         assert_eq!(schedule.next(), None);
     }
 

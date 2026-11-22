@@ -376,7 +376,7 @@ mod tests {
         for weather in [Weather::Overcast, Weather::Haze, Weather::Storm] {
             assert!(clouds(weather).is_empty(), "{weather:?}");
         }
-        assert!(!clouds(Weather::Clear).is_empty());
+        assert_ne!(clouds(Weather::Clear), []);
         assert!(Weather::ALL.iter().all(|&w| clouds(w).len() <= MAX_CLOUDS));
     }
 }

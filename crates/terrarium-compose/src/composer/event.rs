@@ -1261,7 +1261,7 @@ mod tests {
             // scene's sun, moon and stars as much as the backdrop.
             let line = keyed[front].draw.x + SEAM;
             let cut: Vec<_> = keyed.iter().filter_map(|k| k.draw.clip).collect();
-            assert!(!cut.is_empty());
+            assert_ne!(cut, []);
             assert!(
                 cut.iter().all(|c| c.x == line || c.x + c.w == line),
                 "{cut:?} at {line}"
@@ -1431,7 +1431,7 @@ mod tests {
         assert_eq!(first[0].draw.sprite, frames[0]);
         assert_eq!(bolt(now.plus(1 + 166))[0].draw.sprite, frames[1]);
         assert!(bolt(now.plus(1 + 332)).is_empty(), "played once");
-        assert!(bolt(now.plus(60_000)).is_empty());
+        assert_eq!(bolt(now.plus(60_000)), []);
         // Above the struck plant: centred on its slot, down to its crown.
         let placed = composer.placement.plants[&id.unwrap()];
         let x = composer.layout.slot(placed.cell).x;
@@ -1504,7 +1504,7 @@ mod tests {
             let w = i32::from(art().catalog.sprite(frames[0]).rect.w);
             // Held, the streaks show at the art's own opacity.
             let own = art().catalog.sprite(frames[0]).opacity;
-            assert!(streaks(now).is_empty());
+            assert_eq!(streaks(now), []);
             let held = streaks(now.plus(RAIN_FADE_MS + 1000));
             assert_eq!(
                 held.len(),
@@ -1534,7 +1534,7 @@ mod tests {
                 .draw
                 .opacity;
             assert!(falling > 0 && falling < own);
-            assert!(streaks(end).is_empty());
+            assert_eq!(streaks(end), []);
             assert_eq!(composer.settled_at(), end);
         }
     }
@@ -1631,7 +1631,7 @@ mod tests {
             );
             let (composer, now) = played(&scene(Weather::Clear), &after, preset::SALT);
             let lit = |at: Millis| of(&composer, at, |s| s == Subject::Light);
-            assert!(lit(now).is_empty());
+            assert_eq!(lit(now), []);
             let half = lit(now.plus(600))[0].draw;
             assert_eq!(half.blend, blend);
             assert!(half.opacity > 0 && half.opacity < opacity);
@@ -1662,14 +1662,14 @@ mod tests {
         composer.update(&rain, &overlay(false), now.plus(5000));
         assert_eq!(composer.settled_at(), end, "not begun again");
         composer.update(&rain, &overlay(false), end.plus(1000));
-        assert!(of(&composer, end.plus(5000), |s| s == Subject::Rain).is_empty());
+        assert_eq!(of(&composer, end.plus(5000), |s| s == Subject::Rain), []);
         // Another instance of the kind plays.
         let again = carrying(
             scene(Weather::Clear),
             event(EventKind::RainAfterDrought, 41, Side::Left),
         );
         composer.update(&again, &overlay(false), end.plus(2000));
-        assert!(!of(&composer, end.plus(6000), |s| s == Subject::Rain).is_empty());
+        assert_ne!(of(&composer, end.plus(6000), |s| s == Subject::Rain), []);
     }
 
     /// An instance the scenes carry again after another came between plays no more: a debug
@@ -1693,7 +1693,7 @@ mod tests {
             later,
             "the first does not play again"
         );
-        assert!(of(&composer, later.plus(6000), |s| s == Subject::Rain).is_empty());
+        assert_eq!(of(&composer, later.plus(6000), |s| s == Subject::Rain), []);
         assert!(now < end);
     }
 
@@ -1714,12 +1714,12 @@ mod tests {
         let first = of(&composer, at, |s| s == Subject::Leaf(0));
         assert_eq!(first.len(), 1);
         assert!(first[0].draw.x > 830, "{}", first[0].draw.x);
-        assert!(
+        assert_eq!(
             of(&composer, composer.settled_at(), |s| matches!(
                 s,
                 Subject::Leaf(_)
-            ))
-            .is_empty()
+            )),
+            []
         );
     }
 
@@ -1739,9 +1739,12 @@ mod tests {
         // It is passed over for good, even once the rain is over.
         composer.update(&blow, &overlay(false), end.plus(1000));
         for at in (now.0..end.0 + 60_000).step_by(500) {
-            assert!(of(&composer, Millis(at), |s| matches!(s, Subject::Leaf(_))).is_empty());
+            assert_eq!(
+                of(&composer, Millis(at), |s| matches!(s, Subject::Leaf(_))),
+                []
+            );
         }
-        assert!(!of(&composer, now.plus(5000), |s| s == Subject::Rain).is_empty());
+        assert_ne!(of(&composer, now.plus(5000), |s| s == Subject::Rain), []);
     }
 
     #[test]
@@ -1802,7 +1805,7 @@ mod tests {
         // Dormant, everyone sleeps; the first commit back ends dormancy, and the rain's scene
         // wakes them from the next turn.
         let dormant = preset::scene("dormant").unwrap();
-        assert!(!dormant.residents.is_empty());
+        assert_ne!(dormant.residents, []);
         let mut back = carrying(
             scene(Weather::Clear),
             event(EventKind::RainAfterDrought, 50, Side::Left),

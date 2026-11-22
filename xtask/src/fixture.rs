@@ -417,7 +417,7 @@ mod tests {
         let report = store
             .import_observations(terrarium, committed.as_bytes())
             .unwrap();
-        assert!(report.conflicts.is_empty());
+        assert_eq!(report.conflicts, []);
         assert_eq!(report.duplicates, 0);
         let lines = committed.lines().count() - 1;
         assert_eq!(usize::try_from(report.inserted).unwrap(), lines);

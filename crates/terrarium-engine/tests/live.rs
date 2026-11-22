@@ -274,7 +274,7 @@ fn a_report_is_recorded_once_and_again_only_when_it_changes() {
     let fx = Fixture::new(12);
     let mut live = fx.connect();
     shown(&mut live, Cause::Connect, true);
-    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Coverage), []);
 
     fx.report("coverage/lcov.info", LCOV);
     let first = refresh(&mut live, Cause::Watch, true);
@@ -313,7 +313,7 @@ fn a_refresh_reading_the_reports_takes_a_new_report_path_in_and_watches_it() {
     shown(&mut live, Cause::Connect, true);
     fx.report("out/cov.info", LCOV);
     refresh(&mut live, Cause::Watch, true);
-    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Coverage), []);
     assert!(!watches(&fx, &live, "out"));
 
     fx.store()
@@ -322,7 +322,7 @@ fn a_refresh_reading_the_reports_takes_a_new_report_path_in_and_watches_it() {
     // A refresh that reads no reports leaves the settings for the next that does, whatever
     // its cause.
     refresh(&mut live, Cause::Hour, false);
-    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Coverage), []);
     let asked = shown(&mut live, Cause::Retry, true);
     assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
     assert!(asked.details.found.coverage);
@@ -341,8 +341,8 @@ fn an_adapter_turned_off_is_neither_read_nor_watched_until_it_is_on_again() {
     fx.report("junit.xml", JUNIT);
     let mut live = fx.connect();
     let first = shown(&mut live, Cause::Connect, true);
-    assert!(fx.rows(ObservationKind::Coverage).is_empty());
-    assert!(fx.rows(ObservationKind::Weather).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Coverage), []);
+    assert_eq!(fx.rows(ObservationKind::Weather), []);
     // Still found, so the panel can say it is there but off.
     let found = first.details.found;
     assert!(found.coverage && found.test_report);
@@ -354,7 +354,7 @@ fn an_adapter_turned_off_is_neither_read_nor_watched_until_it_is_on_again() {
         .unwrap();
     let again = shown(&mut live, Cause::Request, true);
     assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
-    assert!(fx.rows(ObservationKind::Weather).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Weather), []);
     assert!(again.details.found.enabled.coverage);
     assert!(watches(&fx, &live, "coverage"));
 }
@@ -373,7 +373,7 @@ fn a_report_still_being_written_waits_for_a_follow_up() {
         done.follow_up
             .is_some_and(|wait| wait <= Duration::from_millis(500))
     );
-    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Coverage), []);
     fx.report("coverage/lcov.info", LCOV);
     refresh(&mut live, Cause::FollowUp, true);
     assert_eq!(fx.rows(ObservationKind::Coverage).len(), 1);
@@ -462,7 +462,7 @@ fn a_rewrite_replays_in_full_and_records_one_ref_rewrite() {
     let tip = fx.repo.tip("moss");
     fx.repo.reset("main", &tip).unwrap();
     shown(&mut live, Cause::Watch, true);
-    assert!(fx.rows(ObservationKind::RefRewrite).is_empty());
+    assert_eq!(fx.rows(ObservationKind::RefRewrite), []);
 
     // Reset back a week and committed again: history before the open hour changed.
     fx.repo.reset("main", &fx.main[5]).unwrap();
@@ -478,7 +478,7 @@ fn a_rewrite_replays_in_full_and_records_one_ref_rewrite() {
     assert_eq!(rewrites[0].record.head.commit, new);
     // Off the old chain: main's last six days, the commit on top and the branch's commit.
     assert_eq!(raw.rewritten, Some(8));
-    assert!(raw.fossils.is_empty());
+    assert_eq!(raw.fossils, []);
     assert_eq!(live.state(), Some(&fx.full_replay()));
     let quake = rewritten.scene.event.expect("an earthquake");
     assert_eq!(
@@ -535,7 +535,7 @@ fn a_rewrite_that_takes_a_fossil_records_it_and_opens_a_sinkhole_for_it() {
     let shaken = shown(&mut live, Cause::Watch, true);
     let rows = fx.rows(ObservationKind::RefRewrite);
     let raw: RefRewriteRaw = serde_json::from_str(&rows[0].record.raw).unwrap();
-    assert!(raw.fossils.is_empty());
+    assert_eq!(raw.fossils, []);
     let left: Vec<(&CommitId, &str, u64)> = raw
         .left
         .iter()
@@ -549,7 +549,7 @@ fn a_rewrite_that_takes_a_fossil_records_it_and_opens_a_sinkhole_for_it() {
         (raw.rewritten, left),
         (Some(1), vec![(&cleared, "src/old", 600)])
     );
-    assert!(shaken.scene.fossils.is_empty());
+    assert_eq!(shaken.scene.fossils, []);
     assert_eq!(
         shaken.scene.event.map(|e| e.kind),
         Some(EventKind::Earthquake)
@@ -686,7 +686,7 @@ fn reading_back_a_move_made_while_closed_never_sends_the_history_s_percent_back(
         1,
         "the move was read back"
     );
-    assert!(!heard.is_empty());
+    assert_ne!(heard, [] as [u8; 0]);
     assert!(heard.windows(2).all(|pair| pair[0] <= pair[1]), "{heard:?}");
 }
 
@@ -718,7 +718,7 @@ fn a_fast_forward_made_while_closed_through_a_merge_records_nothing() {
         .read_history("main", &mut |_| ControlFlow::Continue(()))
         .unwrap();
     assert!(!history.on_default_chain(&old_tip), "off the chain");
-    assert!(fx.rows(ObservationKind::RefRewrite).is_empty());
+    assert_eq!(fx.rows(ObservationKind::RefRewrite), []);
 }
 
 #[test]
@@ -1289,7 +1289,7 @@ fn a_disconnect_deleting_observations_leaves_nothing_of_the_terrarium() {
     lifecycle::disconnect(&fx.data(), terrarium.id, true).unwrap();
     let store = fx.store();
     assert_eq!(store.terrarium(terrarium.id).unwrap(), None);
-    assert!(store.observations(terrarium.id, None).unwrap().is_empty());
+    assert_eq!(store.observations(terrarium.id, None).unwrap(), []);
     assert_eq!(store.sim_cache(terrarium.id).unwrap(), None);
     assert_eq!(store.install_value(InstallKey::ShownEvents).unwrap(), None);
     assert_eq!(store.setting::<i64>(SETTING_REPO_ACTIVE).unwrap(), None);
@@ -1300,7 +1300,7 @@ fn a_disconnect_deleting_observations_leaves_nothing_of_the_terrarium() {
     let mut again = fx.connect();
     assert_ne!(again.terrarium().install_salt, terrarium.install_salt);
     shown(&mut again, Cause::Connect, false);
-    assert!(fx.rows(ObservationKind::Coverage).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Coverage), []);
 }
 
 #[test]
@@ -1584,7 +1584,7 @@ fn the_source_is_measured_only_while_head_is_at_the_default_tip() {
     let mut live = fx.connect();
     let (first, _) = first_and_follow_up(&mut live);
     assert_eq!(first.follow_up, None, "nothing waits for a follow-up");
-    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Complexity), []);
     fx.repo.set_head("main").unwrap();
     refresh(&mut live, Cause::Watch, false);
     let rows = fx.rows(ObservationKind::Complexity);
@@ -1600,7 +1600,7 @@ fn a_metric_switched_off_is_not_recorded_and_switched_on_is_recorded_at_the_same
         .set_setting(SETTING_COMPLEXITY_ENABLED, &false)
         .unwrap();
     first_and_follow_up(&mut live);
-    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Complexity), []);
     assert_eq!(fx.rows(ObservationKind::TodoDensity).len(), 1);
     fx.store()
         .set_setting(SETTING_COMPLEXITY_ENABLED, &true)
@@ -1635,7 +1635,7 @@ fn a_metric_switched_on_before_a_restart_is_measured_at_the_same_tip() {
         .unwrap();
     let mut live = fx.connect();
     first_and_follow_up(&mut live);
-    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Complexity), []);
     drop(live);
     fx.store()
         .set_setting(SETTING_COMPLEXITY_ENABLED, &true)
@@ -1694,7 +1694,7 @@ fn a_tip_whose_tree_cannot_be_read_is_a_problem_the_refresh_carries_once() {
         again.problem, None,
         "the tip is not tried again until it moves"
     );
-    assert!(fx.rows(ObservationKind::Complexity).is_empty());
+    assert_eq!(fx.rows(ObservationKind::Complexity), []);
 }
 
 const KNIP: &str = r#"{"issues":[{"file":"web/garden.ts","exports":[{"name":"weed"}]},{"file":"web/old.ts","files":[{"name":"web/old.ts"}]}]}"#;
@@ -1764,5 +1764,5 @@ fn a_knip_report_with_its_adapter_off_or_no_export_counted_records_nothing() {
         .set_setting(SETTING_DEAD_CODE_ENABLED, &false)
         .unwrap();
     refresh(&mut live, Cause::Request, true);
-    assert!(fx.rows(ObservationKind::DeadCode).is_empty());
+    assert_eq!(fx.rows(ObservationKind::DeadCode), []);
 }
