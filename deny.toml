@@ -13,7 +13,22 @@ targets = [
 ]
 
 [advisories]
-ignore = []
+# Unsoundness is checked in every crate that is linked, not only in the direct dependencies.
+unsound = "all"
+# heapless 0.8 is linked only through gix-hash's faster-hex 0.10, which uses it only when its
+# `alloc` feature is off. gix-hash enables `std`, which implies `alloc`, so no heapless code
+# is compiled in. Remove these once gix-hash depends on a faster-hex past 0.10.
+ignore = [
+    { id = "RUSTSEC-2026-0574", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0575", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0576", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0577", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0578", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0579", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0580", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0581", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+    { id = "RUSTSEC-2026-0582", reason = "heapless 0.8, unused by faster-hex 0.10 with alloc" },
+]
 
 [licenses]
 # Code is MIT OR Apache-2.0; everything linked must be compatible with it.

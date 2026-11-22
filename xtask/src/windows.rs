@@ -250,7 +250,7 @@ mod tests {
     /// The libsqlite3-sys release both settings were checked against. The test below fails when
     /// the lock moves past it, so an upgrade re-checks the lint's switch and the real build
     /// together.
-    const CHECKED_LIBSQLITE3_SYS: &str = "0.38.2";
+    const CHECKED_LIBSQLITE3_SYS: &str = "0.39.1";
 
     fn lld() -> Lld {
         Lld {

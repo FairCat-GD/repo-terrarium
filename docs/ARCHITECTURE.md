@@ -222,7 +222,7 @@ Windows, runs `install-test` and the golden replay on Windows, and drafts a GitH
 | Live: connect again from the cache; its first refresh | under 1 ms; 3.62 s | 250 ms; 5 s |
 | Live: a refresh after a commit; after a tag on an old commit | 0.361 s; 0.255 s | 1 s; 2 s |
 
-| Size (`cargo xtask size`, N-08) | Bytes |
+| Size at 0.32.1 (`cargo xtask size`, N-08) | Bytes |
 |---|---|
-| macOS, Apple silicon | 22,607,648 |
-| Windows x64, cross-built on the Mac | 24,696,832 (303 KB under the budget) |
+| macOS, Apple silicon | 22,649,696 |
+| Windows x64, cross-built on the Mac | 24,758,784 (241 KB under the budget) |

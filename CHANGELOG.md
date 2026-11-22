@@ -5,6 +5,12 @@ Each step of development is a minor version, `0.<n>.0`, until the first public r
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-11-22
+
+### Security
+
+- SQLite is updated to 3.54.1, which fixes CVE-2026-119375.
+
 ## [0.32.0] - 2026-10-21
 
 The first round of work is complete. Repo Terrarium now has a user guide, a README that opens
